@@ -1,0 +1,109 @@
+{% if import_report %}
+{% set summary = import_report.summary %}
+<div class="card import-report" style="margin-bottom: 1.25rem;">
+    <div class="flex justify-between items-center" style="gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <h3 style="margin: 0;">Tracking File Import</h3>
+        {% if import_report.generated_at %}
+        <span class="text-xs text-muted">Last import: {{ import_report.generated_at | datetime }}</span>
+        {% endif %}
+    </div>
+
+    <div class="chips" style="margin-bottom: 0.75rem;">
+        <span class="chip good">{{ summary.imported }} new record{{ 's' if summary.imported != 1 }}</span>
+        <span class="chip good">{{ summary.imported_days }} day{{ 's' if summary.imported_days != 1 }} imported</span>
+        <span class="chip warn">{{ summary.skipped }} skipped</span>
+        <span class="chip">{{ summary.ignored }} ignored</span>
+        <span class="chip {{ 'good' if summary.stats_complete_days == summary.imported_days and summary.imported_days else 'warn' }}">
+            {{ summary.stats_added }} day{{ 's' if summary.stats_added != 1 }} gained stats
+        </span>
+        <span class="chip">
+            {{ summary.stats_days }} day{{ 's' if summary.stats_days != 1 }} with stats
+            ({{ summary.stats_complete_days }} complete)
+        </span>
+    </div>
+
+    {% if import_report.tracking_error %}
+    <div class="alert alert-info" style="margin-bottom: 0.75rem;">{{ import_report.tracking_error }}</div>
+    {% endif %}
+    {% if import_report.stats_error %}
+    <div class="alert alert-error" style="margin-bottom: 0.75rem;">
+        <strong>Statistics unavailable:</strong> {{ import_report.stats_error }}
+        <div class="text-xs" style="margin-top: 0.25rem;">
+            Imported days are kept; their records have no total size, transferred bytes, duration
+            or db_safe data from the main log.
+        </div>
+    </div>
+    {% endif %}
+
+    {% if import_report.days %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Outcome</th>
+                    <th>Result</th>
+                    <th>Records</th>
+                    <th>Statistics</th>
+                    <th>Note</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for day in import_report.days %}
+                <tr>
+                    <td class="font-mono">{{ day.day if day.day else day.date }}</td>
+                    <td>
+                        {% if day.outcome == 'imported' %}
+                        <span class="badge badge-success">new</span>
+                        {% elif day.outcome == 'skipped' %}
+                        <span class="badge badge-running">skipped</span>
+                        {% else %}
+                        <span class="badge badge-failure">ignored</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ day.status or '-' }}</td>
+                    <td>
+                        {% if day.outcome == 'imported' %}
+                        {{ day.records_created }}{% if day.attached %} <span class="text-xs text-muted">({{ day.attached | join(', ') }})</span>{% endif %}
+                        {% else %}-{% endif %}
+                    </td>
+                    <td>
+                        {% if day.stats %}
+                            {% set have = day.stats.values() | select | list | length %}
+                            {% if have == 4 %}
+                            <span class="badge badge-success">all 4</span>
+                            {% elif have %}
+                            <span class="badge badge-running">{{ have }}/4</span>
+                            {% else %}
+                            <span class="badge badge-failure">missing</span>
+                            {% endif %}
+                            {% if day.stats_added %}<span class="chip good">added now</span>{% endif %}
+                            <div class="text-xs text-muted" style="margin-top: 0.2rem;">
+                                {% for key, label in [('total_size', 'size'), ('transferred', 'sent'), ('duration', 'time'), ('db_safe', 'db_safe')] %}
+                                <span title="{{ label }}">{{ '✓' if day.stats[key] else '✗' }} {{ label }}</span>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                        <span class="text-xs text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-xs text-muted">
+                        {% if day.detail %}{{ day.detail }}<br>{% endif %}
+                        {% if day.outcome == 'imported' and day.stats_note %}{{ day.stats_note }}
+                        {% elif day.stats_note %}<span class="text-muted">stats: {{ day.stats_note }}</span>
+                        {% elif not day.detail %}-{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-sm text-muted" style="margin: 0;">The tracking file has no date lines.</p>
+    {% endif %}
+    <p class="text-xs text-muted" style="margin: 0.75rem 0 0 0;">
+        Every date line in {{ import_report.tracking_path }} has one outcome. Sunday snapshot and cleanup
+        entries are counted with their day's record. Days skipped because the day already had a record are not imported again.
+    </p>
+</div>
+{% endif %}

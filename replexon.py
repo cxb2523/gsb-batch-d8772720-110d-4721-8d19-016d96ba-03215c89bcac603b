@@ -200,28 +200,49 @@ def import_logs():
     click.echo(BANNER)
     from app.config import settings
     from app.database import SessionLocal
-    from app.services.log_parser import (
-        parse_full_log, extract_stats_file, enrich_from_stats,
-    )
+    from app.services.log_parser import parse_full_log, extract_stats_file
 
     # Step 1: Extract stats from the big log (one-time, slow but cached)
     click.echo("[IMPORT] Extracting stats from main log (this may take a few minutes)...")
-    stats_path = extract_stats_file(settings.backup_log_path)
-    if stats_path:
-        click.echo(f"[OK] Stats extracted to {stats_path}")
+    extraction = extract_stats_file(settings.backup_log_path)
+    if extraction:
+        click.echo(f"[OK] Stats extracted to {extraction.path}")
     else:
-        click.echo("[WARN] Could not extract stats from main log (file missing or timeout)")
+        click.echo(f"[WARN] Could not extract stats from main log: {extraction.error}")
 
     # Step 2: Import tracking file + enrich from stats
     click.echo("[IMPORT] Importing backup records...")
     db = SessionLocal()
     try:
-        count = parse_full_log(db, settings.backup_log_path)
-        click.echo(f"[OK] Imported {count} new backup records.")
-
-        if stats_path:
-            enriched = enrich_from_stats(db, stats_path)
-            click.echo(f"[OK] Enriched {enriched} records with size/duration data.")
+        report = parse_full_log(db, settings.backup_log_path, extraction=extraction)
+        summary = report.summary()
+        click.echo(
+            f"[OK] Imported {summary['imported']} new backup records "
+            f"from {summary['imported_days']} day(s); "
+            f"{summary['skipped']} skipped, {summary['ignored']} ignored."
+        )
+        click.echo(
+            f"[STATS] {summary['stats_days']} day(s) with statistics, "
+            f"{summary['stats_complete_days']} complete."
+        )
+        if report.stats_error:
+            click.echo(f"[WARN] Statistics: {report.stats_error}")
+        for day in report.days:
+            label = {"imported": "NEW ", "skipped": "SKIP", "invalid": "BAD "}.get(day.outcome, day.outcome)
+            date_text = day.day.isoformat() if day.day else day.date_text
+            extra = []
+            if day.attached:
+                extra.append("+" + "/".join(day.attached))
+            if day.stats:
+                have = sum(1 for v in day.stats.values() if v)
+                extra.append(f"stats {have}/4")
+            elif day.outcome == "imported":
+                extra.append("no stats")
+            click.echo(f"  [{label}] {date_text}" + (f"  ({', '.join(extra)})" if extra else ""))
+            if day.detail:
+                click.echo(f"         {day.detail}")
+            if day.outcome == "imported" and day.stats_note:
+                click.echo(f"         stats: {day.stats_note}")
     finally:
         db.close()
 

@@ -37,9 +37,15 @@ async def _poll_logs():
             await asyncio.sleep(settings.log_poll_interval)
             db = SessionLocal()
             try:
-                count = parse_incremental(db, settings.backup_log_path)
-                if count:
-                    logger.info(f"Parsed {count} new backup entries from log")
+                report = parse_incremental(db, settings.backup_log_path)
+                if report.records_created:
+                    logger.info(
+                        "Parsed %d new backup records (%d day(s) imported, %d skipped, %d ignored)",
+                        report.records_created, report.imported_days,
+                        report.skipped_days, report.ignored_lines,
+                    )
+                    if report.stats_error:  # only with new days, or every poll would repeat it
+                        logger.warning("Log import statistics unavailable: %s", report.stats_error)
                 check_running_backup(db)
             finally:
                 db.close()
@@ -151,9 +157,15 @@ async def lifespan(app: FastAPI):
         from app.services.log_parser import parse_full_log
         db = SessionLocal()
         try:
-            count = parse_full_log(db, settings.backup_log_path)
-            if count:
-                logger.info(f"Initial import: {count} backup records from log")
+            report = parse_full_log(db, settings.backup_log_path)
+            if report.records_created:
+                logger.info(
+                    "Initial import: %d backup records (%d day(s) imported, %d skipped, %d ignored)",
+                    report.records_created, report.imported_days,
+                    report.skipped_days, report.ignored_lines,
+                )
+            if report.stats_error:
+                logger.warning("Initial import statistics unavailable: %s", report.stats_error)
         finally:
             db.close()
     except Exception:

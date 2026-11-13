@@ -30,6 +30,10 @@ Docker is now the main way to run RePlexOn. The separate Docker edition is merge
 - The Logs page shows a single time, not "8:00 – 8:00", for instant entries such as snapshots.
 - Importing the 1.x tracking file and log stored local times as if they were UTC; they are now converted, and rows imported earlier are converted once at the first 2.0 start (the database is copied to `replexon.db.pre-tzfix` first).
 
+### Changed (tracking-file import)
+- Importing the tracking file now reports one outcome per date line — imported, skipped (that local day already has a record) or ignored (invalid date) — with the record count, the Sunday snapshot/cleanup entries attached to that day, and which of the four statistics (total size, transferred bytes, duration, db_safe) were filled from the main log. The latest report is shown at the top of the Logs page with summary counts; `import-logs` prints it too.
+- A failed statistics extraction (grep timeout or a missing command) is named in the report and on each affected day; the imported day records are kept, never rolled back. The tracking file format is unchanged, and re-importing still never creates duplicate records.
+
 ### Removed
 - msmtp support, crontab reading/editing (`CRON_EDIT_ENABLED`, `CRON_USER`), `config.example.yaml`.
 

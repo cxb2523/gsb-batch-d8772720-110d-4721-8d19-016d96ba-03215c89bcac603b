@@ -11,6 +11,7 @@ from app.services import timefmt
 from app.dependencies import get_current_user, get_db
 from app.models.backup import BackupRun
 from app.models.user import User
+from app.services.log_parser import load_report
 from app.utils.security import generate_csrf_token
 
 router = APIRouter()
@@ -77,6 +78,7 @@ async def logs_page(
         "search": search,
         "date_from": date_from,
         "date_to": date_to,
+        "import_report": load_report(db),
     }
 
     # HTMX partial: only return the table + pagination

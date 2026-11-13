@@ -104,9 +104,11 @@ def test_tracking_file_import_stores_utc(db, ny, tmp_path):
     from app.services.log_parser import import_from_tracking_file
     tracking = tmp_path / "plex-backup-tracking.log"
     tracking.write_text("2026-10-08:success\n")
-    assert import_from_tracking_file(db, str(tracking)) == 1
+    assert import_from_tracking_file(db, str(tracking)).records_created == 1
     assert db.query(BackupRun).one().started_at == datetime(2026, 10, 8, 7, 0)  # 3 AM EDT
-    assert import_from_tracking_file(db, str(tracking)) == 0  # same local day: not imported twice
+    again = import_from_tracking_file(db, str(tracking))
+    assert again.records_created == 0  # same local day: not imported twice
+    assert again.skipped_days == 1  # and the outcome says why
 
 
 # ---------- scheduler ----------
