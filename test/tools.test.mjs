@@ -1,0 +1,267 @@
+// Tool contract test.
+//
+// The README promises one tool with a specific name and parameter set. The upstream list can
+// change without a single commit here, and the README would start lying silently. These checks
+// catch that before a user does.
+//
+// Two tests call the API for real, because the part of this README a reader is most likely to
+// be caught by is the output-format behaviour, and a schema check cannot see it. Both run with
+// jsRendering off, so the pair costs 2 credits, which is the price of a canary that can fail
+// for the right reason.
+//
+// Run: HASDATA_API_KEY=your_key_here npm test
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const ENDPOINT = 'https://mcp.hasdata.com/mcp?apis=web_scraping';
+const KEY = process.env.HASDATA_API_KEY;
+const TIMEOUT_MS = 45_000;
+
+const TOOL = 'hasdata_web_scraping_web_scraping_scrapeWebPage';
+const REQUIRED = ['url'];
+
+// Parameters the README documents by name.
+const PARAMS = [
+    'outputFormat', 'jsRendering', 'proxyType', 'proxyCountry', 'headers', 'wait', 'waitFor',
+    'jsScenario', 'extractRules', 'aiExtractRules', 'extractLinks', 'extractEmails', 'screenshot',
+    'blockResources', 'blockAds', 'blockUrls', 'includeOnlyTags', 'excludeTags', 'removeBase64Images',
+];
+
+// Values the README lists.
+const ENUMS = {
+    proxyType: ['datacenter', 'residential'],
+    proxyCountry: ['US', 'UK', 'DE', 'IE', 'FR', 'IT', 'SE', 'BR', 'CA', 'JP', 'SG', 'IN', 'ID'],
+};
+const FORMATS = ['html', 'text', 'markdown', 'json'];
+
+// A streamable HTTP body arrives either as plain JSON or as server-sent events. One SSE event
+// can span several data: lines, several events can share one response, and a server is free to
+// send progress notifications before the answer. So collect every event and pick the message
+// carrying our request id instead of trusting the first data: line.
+function parseRpc(raw, id) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return JSON.parse(trimmed);
+
+    const messages = [];
+    for (const event of trimmed.split(/\r?\n\r?\n+/)) {
+        const data = event
+            .split(/\r?\n/)
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(5).replace(/^ /, ''))
+            .join('\n');
+        if (!data || data === '[DONE]') continue;
+        try {
+            messages.push(JSON.parse(data));
+        } catch {
+            // A keep-alive or a partial event is not our response.
+        }
+    }
+    assert.ok(messages.length, `no JSON-RPC message in the response: ${raw.slice(0, 300)}`);
+    const match = messages.find((m) => m.id === id);
+    assert.ok(match, `no message with id ${id} in the response: ${raw.slice(0, 300)}`);
+    return match;
+}
+
+let nextId = 1;
+
+async function rpc(method, params = {}) {
+    // The CI key sits on the free plan, where concurrency is 1. When several of
+    // these repos are pushed at once their contract runs collide, and HasData
+    // answers 429 with code concurrency_limit straight away rather than queueing.
+    // That is a plan limit, not a broken contract, so the call is retried before
+    // the test gives up. A 401 still fails on the first attempt.
+    for (let attempt = 1; ; attempt++) {
+        const id = nextId++;
+        const res = await fetch(ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'x-api-key': KEY,
+                'Content-Type': 'application/json',
+                // The server answers over streamable HTTP, so accept both a plain body and a stream.
+                Accept: 'application/json, text/event-stream',
+            },
+            body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+            signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+        assert.equal(res.status, 200, `${method} returned ${res.status}`);
+        const raw = await res.text();
+        if (raw.includes('concurrency_limit') && attempt < 5) {
+            await new Promise((r) => setTimeout(r, attempt * 4000));
+            continue;
+        }
+        // The two live checks fetch a third-party page through a proxy, and that hop fails on its
+        // own schedule. An errorType of proxyConnection says the target never loaded, which tells
+        // us nothing about the output-format contract, so retry it the same way.
+        if (proxyFailed(raw) && attempt < 3) {
+            await new Promise((r) => setTimeout(r, attempt * 3000));
+            continue;
+        }
+        return { raw, body: parseRpc(raw, id) };
+    }
+}
+
+function proxyFailed(raw) {
+    return raw.includes('proxyConnection') || raw.includes('proxy connection to the target failed');
+}
+
+function payloadOf(body) {
+    const text = body.result?.content?.[0]?.text ?? '';
+    return { text, payload: JSON.parse(text) };
+}
+
+// One network round trip for every test that needs the list.
+let toolsPromise;
+function listTools() {
+    toolsPromise ??= rpc('tools/list').then(({ body }) => {
+        assert.ok(body.result?.tools, 'the response carried no result.tools');
+        return body.result.tools;
+    });
+    return toolsPromise;
+}
+
+const live = { skip: KEY ? false : 'HASDATA_API_KEY is not set, skipping the live checks' };
+
+test('apis=web_scraping exposes the documented tool and nothing else', live, async () => {
+    const tools = await listTools();
+    const names = tools.map((t) => t.name).sort().join(', ');
+    assert.equal(tools.length, 1, `expected 1 tool, got ${tools.length}: ${names}`);
+    assert.equal(tools[0].name, TOOL, `the tool is now called ${tools[0].name}`);
+});
+
+test('the tool still requires a url and carries a description', live, async () => {
+    const [tool] = await listTools();
+    const required = tool.inputSchema?.required ?? [];
+    for (const param of REQUIRED) {
+        assert.ok(required.includes(param), `${TOOL} should require ${param}, declares: ${required.join(', ') || 'nothing'}`);
+    }
+    assert.ok((tool.description || '').trim().length > 20, `${TOOL} has an empty or near-empty description`);
+});
+
+test('the parameters the README documents are still in the schema', live, async () => {
+    const [tool] = await listTools();
+    const props = tool.inputSchema?.properties ?? {};
+    for (const param of PARAMS) {
+        assert.ok(props[param], `${TOOL} no longer accepts ${param}`);
+    }
+    for (const [param, values] of Object.entries(ENUMS)) {
+        const offered = props[param]?.enum ?? [];
+        for (const value of values) {
+            assert.ok(offered.includes(value), `${param} no longer accepts ${value}, offers: ${offered.join(', ') || 'no enum'}`);
+        }
+    }
+    const formats = props.outputFormat?.items?.enum ?? [];
+    for (const value of FORMATS) {
+        assert.ok(formats.includes(value), `outputFormat no longer accepts ${value}, offers: ${formats.join(', ') || 'no enum'}`);
+    }
+});
+
+// The README says a single non-json format arrives as a string at the top level. That is the
+// first thing a reader relies on, and no schema check can see it.
+test('a single markdown request still returns the page as top-level text', live, async (t) => {
+    const { raw, body } = await rpc('tools/call', {
+        name: TOOL,
+        arguments: { url: 'https://hasdata.com/', outputFormat: ['markdown'], jsRendering: false },
+    });
+    // A proxy that never reached the target proves nothing either way, so this is a skip and
+    // not a failure. A contract change would surface as a wrong shape, not as a dead fetch.
+    if (proxyFailed(raw)) return t.skip('the proxy could not load the target page');
+    assert.ok(!raw.includes('401 Unauthorized'), 'HasData rejected the key');
+    assert.ok(!raw.includes('"isError":true'), `the tool call failed: ${raw.slice(0, 300)}`);
+
+    const { text, payload } = payloadOf(body);
+    assert.equal(payload.status, 200, `the target page answered ${payload.status}`);
+    assert.equal(typeof payload.text, 'string', `expected the content in top-level text: ${text.slice(0, 300)}`);
+    assert.ok(payload.text.length, 'top-level text came back empty, so the page was not rendered to markdown');
+    assert.equal(payload.json, null, 'json should stay null when only markdown is requested');
+});
+
+// And the README says that asking for json moves everything inside it, with extractRules landing
+// in extractedData. That is the shape every structured-extraction prompt depends on.
+test('a json request still puts extractRules output in extractedData', live, async (t) => {
+    const { raw, body } = await rpc('tools/call', {
+        name: TOOL,
+        arguments: {
+            // example.com dropped its h1 and now asks not to be used for testing, so this
+            // points at a page we control and selects title, which every page has.
+            url: 'https://hasdata.com/',
+            outputFormat: ['json'],
+            jsRendering: false,
+            extractRules: { pageTitle: 'title' },
+        },
+    });
+    // A proxy that never reached the target proves nothing either way, so this is a skip and
+    // not a failure. A contract change would surface as a wrong shape, not as a dead fetch.
+    if (proxyFailed(raw)) return t.skip('the proxy could not load the target page');
+    assert.ok(!raw.includes('401 Unauthorized'), 'HasData rejected the key');
+    assert.ok(!raw.includes('"isError":true'), `the tool call failed: ${raw.slice(0, 300)}`);
+
+    const { text, payload } = payloadOf(body);
+    assert.ok(payload.json, `expected a json object in the response: ${text.slice(0, 300)}`);
+    assert.equal(payload.json.statusCode, 200, `the target page answered ${payload.json.statusCode}`);
+    assert.ok(
+        payload.json.extractedData,
+        `extractRules produced no extractedData: ${JSON.stringify(payload.json).slice(0, 300)}`
+    );
+    assert.ok(
+        payload.json.extractedData.pageTitle,
+        `the title selector matched nothing: ${JSON.stringify(payload.json.extractedData).slice(0, 200)}`
+    );
+});
+
+// The prompts and resources section of the README is generated from the live server, and the
+// server changes it without a commit here: Indeed gained two parameter resources overnight on
+// 2026-10-08 and the table fell behind the same day. These checks need no API key, because
+// prompts/list and resources/list are served without one, so they run on a fork too.
+// README prompts and resources section
+const README_MD = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+
+async function anonymousRpc(method) {
+    const id = nextId++;
+    const res = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method, params: {} }),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    assert.equal(res.status, 200, `${method} returned ${res.status}`);
+    return parseRpc(await res.text(), id).result;
+}
+
+// The section writes "ships one prompt" for a single entry and "ships 7 prompts" otherwise.
+const statedCount = (verb) => {
+    const m = README_MD.match(new RegExp(verb + String.raw`\s+(one|\d+)\s`));
+    if (!m) return null;
+    return m[1] === 'one' ? 1 : Number(m[1]);
+};
+
+test('the README states how many prompts the server serves', async () => {
+    const { prompts } = await anonymousRpc('prompts/list');
+    const stated = statedCount('ships');
+    if (!prompts.length) {
+        assert.equal(stated, null, 'the README claims prompts the server does not serve');
+        return;
+    }
+    assert.ok(stated !== null, 'the server serves prompts and the README does not say how many');
+    assert.equal(stated, prompts.length, `the README says ${stated} prompts, the server serves ${prompts.length}`);
+});
+
+test('the README states how many resources the server serves', async () => {
+    const { resources } = await anonymousRpc('resources/list');
+    const stated = statedCount('exposes');
+    if (!resources.length) {
+        assert.equal(stated, null, 'the README claims resources the server does not serve');
+        return;
+    }
+    assert.ok(stated !== null, 'the server serves resources and the README does not say how many');
+    assert.equal(stated, resources.length, `the README says ${stated} resources, the server serves ${resources.length}`);
+});
+
+test('every parameter with a fixed list is named in the README', async () => {
+    const { resources } = await anonymousRpc('resources/list');
+    const missing = resources
+        .map((r) => (r.uri || '').split('/').pop())
+        .filter((p) => p && !README_MD.includes(`\`${p}\``));
+    assert.deepEqual(missing, [], `parameters the README does not name: ${missing.join(', ')}`);
+});
