@@ -1,0 +1,35 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hasdata-google-trends-mcp",
+  "version": "1.0.2",
+  "description": "Google Trends data for Cursor and any MCP client, as structured JSON. Compare several search terms in one call and read interest over time, interest by region, rising and top related queries, and related topics. Target a country or narrow down to subregion, metro or city, set a date range and time zone, filter by category, and switch the Google property between web search, images, news, shopping and YouTube. Useful for SEO and content planning, brand and product monitoring, seasonal demand research and market analysis. Runs as a remote server hosted by HasData over streamable HTTP, so there is nothing to install and no Google account anywhere in the flow. Works with Claude, Cursor, VS Code and any client that speaks MCP.",
+  "author": {
+    "name": "HasData",
+    "url": "https://hasdata.com"
+  },
+  "homepage": "https://hasdata.com/apis/google-trends-api",
+  "repository": "https://github.com/HasData/google-trends-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "google-trends",
+    "google-trends-mcp",
+    "trends",
+    "search-interest",
+    "trending-topics",
+    "related-queries",
+    "keyword-research",
+    "seo",
+    "content-strategy",
+    "market-research",
+    "brand-monitoring",
+    "seasonal-demand",
+    "youtube-trends",
+    "cursor",
+    "claude",
+    "ai-agent",
+    "hasdata",
+    "scraper"
+  ]
+}
