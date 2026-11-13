@@ -1,0 +1,1849 @@
+"""Command-line interface for IntelliScrape.
+
+The simplest way to scrape any website.
+Just: intelliscrape <url>
+
+IntelliScrape automatically:
+- Analyzes the site type and protection level
+- Selects the best engine
+- Uses free proxies when needed (no API key required!)
+- Configures rate limiting automatically
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import io
+from urllib.parse import urlsplit
+
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.panel import Panel
+from rich.table import Table
+
+from .core import IntelliScrape, scrape
+from .intelligent import SiteAnalyzer
+from .crawler import crawl
+from .auth import Authenticator, LoginCredentials
+from .forms import FormSubmitter
+from .pagination import Paginator
+from .export import DataExporter
+from .downloader import Downloader
+from .cookies import CookieManager
+from .interceptor import RequestInterceptor
+from .link_checker import check_links as _check_links
+from .exceptions import IntelliScrapeError
+from .progress import ScrapeProgress
+
+
+# Fix Windows console encoding for Unicode output
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+console = Console()
+
+
+# Status icons for progress reporting
+_STATUS_ICONS = {
+    "trying": "[dim]...[/dim]",
+    "blocked": "[red]BLOCKED[/red]",
+    "captcha_detected": "[yellow]CAPTCHA[/yellow]",
+    "solving": "[yellow]SOLVING[/yellow]",
+    "solved": "[green]SOLVED[/green]",
+    "js_only": "[dim]JS-only[/dim]",
+    "success": "[green]OK[/green]",
+    "failed": "[red]FAIL[/red]",
+    "all_failed": "[red]ALL FAILED[/red]",
+    "idle": "[dim]...[/dim]",
+}
+
+
+def _verbose_progress(p: ScrapeProgress) -> None:
+    """Print real-time progress to console."""
+    icon = _STATUS_ICONS.get(p.status, "")
+    attempt_str = f"[{p.attempt}/{p.total_attempts}]" if p.total_attempts else ""
+
+    if p.status == "trying":
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon}")
+    elif p.status == "blocked":
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon} — {p.message}")
+    elif p.status in ("captcha_detected", "solving"):
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon} — {p.message}")
+    elif p.status == "solved":
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon} — {p.message}")
+    elif p.status == "js_only":
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon}")
+    elif p.status == "success":
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon} [{p.elapsed_seconds:.1f}s]")
+    elif p.status == "failed":
+        console.print(f"  {attempt_str} [cyan]{p.engine}[/cyan] {icon} — {p.message}")
+    elif p.status == "all_failed":
+        console.print(f"  [red]All engines failed after {p.elapsed_seconds:.1f}s[/red]")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="intelliscrape",
+        description="Scrape any website in one command.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic scraping (intelligent mode on by default)
+  intelliscrape https://example.com
+  intelliscrape https://example.com -o output.txt
+  intelliscrape https://example.com --json
+  
+  # Analyze site (see what approach IntelliScrape would use)
+  intelliscrape https://amazon.com --analyze
+  
+  # Find free proxies
+  intelliscrape --find-proxies
+  
+  # Use free proxies (automatic!)
+  intelliscrape https://amazon.com --use-free-proxies
+  
+  # Disable intelligent mode (manual control)
+  intelliscrape https://example.com --no-intelligent
+  
+  # Login and scrape
+  intelliscrape https://site.com --login --username user --password pass
+  
+  # Save/load cookies
+  intelliscrape https://site.com --save-cookies cookies.json
+  intelliscrape https://site.com --load-cookies cookies.json
+  
+  # Block URLs
+  intelliscrape https://site.com --block "analytics,tracking,ads"
+  
+  # Custom headers
+  intelliscrape https://site.com --header "Authorization: Bearer xxx"
+  
+  # Pagination
+  intelliscrape https://example.com/products --paginate --max-pages 10
+  
+  # Search
+  intelliscrape https://google.com --search "python scraping"
+  
+  # Download files
+  intelliscrape https://example.com --download
+  intelliscrape https://example.com --download-images
+  
+  # Export formats
+  intelliscrape https://example.com --export csv -o data.csv
+  
+  # Crawl entire site
+  intelliscrape https://docs.python.org --crawl --max-pages 50
+  
+  # Convert entire site to Markdown for LLM ingestion
+  intelliscrape https://docs.python.org --markdown --md-depth 3
+  intelliscrape https://docs.python.org --markdown --md-output ./corpus --md-images
+  
+  # Extract design system (colors, fonts, spacing) to design.md
+  intelliscrape https://stripe.com --design
+  intelliscrape https://stripe.com --design -o acme-design.md
+
+  # With residential proxy (for better quality)
+  intelliscrape https://amazon.com --brightdata-key YOUR_KEY
+  
+  # Manual CAPTCHA solving (opens visible browser when CAPTCHA detected)
+  intelliscrape https://site-with-captcha.com --manual-captcha
+        """,
+    )
+
+    # Main URL (optional for some commands)
+    parser.add_argument("url", nargs="?", help="URL to scrape")
+
+    # Output options
+    parser.add_argument("-o", "--output", help="Save output to file")
+    parser.add_argument("--json", action="store_true", help="Output structured JSON")
+    parser.add_argument("--raw", action="store_true", help="Output raw HTML")
+
+    # Intelligent mode
+    parser.add_argument("--analyze", action="store_true", help="Analyze site and show recommendations")
+    parser.add_argument("--no-intelligent", action="store_true", help="Disable intelligent auto-detection")
+
+    # Free proxy options
+    parser.add_argument("--find-proxies", action="store_true", help="Find and test free proxies")
+    parser.add_argument("--use-free-proxies", action="store_true", help="Use free proxies (automatic)")
+    parser.add_argument("--no-free-proxies", action="store_true", help="Disable free proxy finder")
+
+    # Proxy providers (for residential proxies)
+    parser.add_argument("--brightdata-key", type=str, help="Bright Data API key for residential proxies")
+    parser.add_argument("--scraperapi-key", type=str, help="ScraperAPI key")
+    parser.add_argument("--oxylabs-key", type=str, help="Oxylabs API key")
+    parser.add_argument("--smartproxy-key", type=str, help="Smartproxy API key")
+
+    # Authentication
+    parser.add_argument("--login", action="store_true", help="Login to site")
+    parser.add_argument("--username", type=str, help="Login username/email")
+    parser.add_argument("--password", type=str, help="Login password")
+    parser.add_argument("--login-url", type=str, help="Explicit login URL")
+    parser.add_argument("--manual-login", action="store_true", help="Open browser for manual login (for SPA sites)")
+
+    # Cookies
+    parser.add_argument("--save-cookies", type=str, help="Save cookies to file")
+    parser.add_argument("--load-cookies", type=str, help="Load cookies from file")
+
+    # Request modification
+    parser.add_argument("--block", type=str, help="Block URLs (comma-separated patterns)")
+    parser.add_argument("--header", type=str, action="append", help="Add header (Key: Value)")
+
+    # Pagination
+    parser.add_argument("--paginate", action="store_true", help="Auto-follow pagination")
+    parser.add_argument("--max-pages", type=int, default=50, help="Max pages to scrape")
+
+    # Search
+    parser.add_argument("--search", type=str, help="Submit search query on a specific page")
+    parser.add_argument(
+        "--web-search",
+        type=str,
+        metavar="QUERY",
+        help="Search the web (DuckDuckGo → Google News → Bing News) and return a list of results",
+    )
+    parser.add_argument(
+        "--search-limit",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Max results for --web-search (default: 10)",
+    )
+    parser.add_argument(
+        "--fetch-content",
+        action="store_true",
+        help="When used with --web-search, also scrape the full text of each result page",
+    )
+
+    # Export
+    parser.add_argument("--export", choices=["json", "csv", "excel", "sqlite", "text", "markdown"],
+                       help="Export format")
+
+    # Crawl
+    parser.add_argument("--crawl", action="store_true", help="Crawl entire website")
+
+    # Link checking
+    parser.add_argument("--check-links", action="store_true",
+                       help="Check all links on the page and report status")
+
+    # Website intelligence
+    parser.add_argument("--tech", action="store_true",
+                       help="Detect website technology stack (frameworks, CMS, analytics, CDN, etc.)")
+
+    # Design extraction
+    parser.add_argument("--design", action="store_true",
+                       help="Extract the design system (colors, fonts, spacing) into a Markdown file")
+    parser.add_argument("--design-scope", choices=["page", "site"], default="page",
+                       help="Design extraction scope: page or site (default: page)")
+    parser.add_argument("--design-output", type=str, default=None,
+                       help="Output directory for design artifacts (default: ./design-output)")
+    parser.add_argument("--design-max-pages", type=int, default=1,
+                       help="Max pages to sample for site scope (default: 1)")
+    parser.add_argument("--design-verify", action="store_true",
+                       help="Verify component recipes (requires browser verification)")
+    parser.add_argument("--design-static", action="store_true",
+                       help="Use fast static extraction instead of browser rendering (skips computed styles)")
+    parser.add_argument("--design-profiles", type=str, default="desktop,mobile",
+                       help="Comma-separated capture profiles (default: desktop,mobile)")
+    parser.add_argument("--design-schemes", type=str, default="light",
+                       help="Comma-separated color schemes to probe (default: light)")
+    parser.add_argument("--design-overwrite", action="store_true",
+                       help="Overwrite existing design output directory")
+
+    # API detection
+    parser.add_argument("--detect-api", action="store_true",
+                       help="Detect API endpoints, third-party services, and exposed keys")
+
+    # SEO analysis
+    parser.add_argument("--seo", action="store_true",
+                       help="Run full SEO audit (on-page, technical, content, schema)")
+
+    # Backlink discovery
+    parser.add_argument("--backlinks", action="store_true",
+                       help="Discover backlinks via search engine queries")
+    parser.add_argument("--backlink-limit", type=int, default=50,
+                       help="Max backlinks to find (default: 50)")
+    parser.add_argument("--backlink-sources", type=str, default="google,bing",
+                       help="Search engines to use (default: google,bing)")
+    parser.add_argument("--no-scrape-backlinks", action="store_true",
+                       help="Skip scraping referring pages (just return search results)")
+
+    # Downloads
+    parser.add_argument("--download", action="store_true", help="Download linked files")
+    parser.add_argument("--download-images", action="store_true", help="Download all images")
+    parser.add_argument("--download-dir", default="downloads", help="Download directory")
+
+    # Mirror (HTTrack-style full site download)
+    parser.add_argument("--mirror", action="store_true",
+                       help="Mirror entire website for offline browsing (HTTrack-style)")
+    parser.add_argument("--mirror-depth", type=int, default=5,
+                       help="Max recursion depth for mirroring (default: 5)")
+    parser.add_argument("--mirror-output", default="./mirror",
+                       help="Output directory for mirror (default: ./mirror)")
+    parser.add_argument("--mirror-zip", type=str, default=None,
+                       help="Also create a ZIP archive at this path")
+    parser.add_argument("--mirror-delay", type=float, default=0.5,
+                       help="Delay between requests in seconds (default: 0.5)")
+    parser.add_argument("--mirror-exclude", action="append", default=[],
+                       help="Exclude patterns (repeatable, e.g. '*.pdf')")
+    parser.add_argument("--mirror-include", action="append", default=[],
+                       help="Include patterns (repeatable, e.g. '/docs/*')")
+    parser.add_argument("--mirror-update", action="store_true",
+                       help="Update existing mirror (resume)")
+    parser.add_argument("--mirror-engine", default="static",
+                       choices=["static", "playwright", "camoufox", "nodriver", "auto"],
+                       help="Engine for mirroring (default: static)")
+    parser.add_argument("--mirror-proxy", type=str, default=None,
+                       help="Proxy URL for mirroring (e.g. socks5://host:port)")
+    parser.add_argument("--mirror-warc", type=str, default=None,
+                       help="Also create a WARC archive at this path")
+    parser.add_argument("--no-robots", action="store_true",
+                       help="Ignore robots.txt")
+
+    # Markdown (LLM ingestion corpus)
+    parser.add_argument("--markdown", action="store_true",
+                       help="Convert entire website to Markdown for LLM ingestion (RAG, fine-tuning)")
+    parser.add_argument("--md-depth", type=int, default=5,
+                       help="Max recursion depth for Markdown conversion (default: 5)")
+    parser.add_argument("--md-output", default="./markdown",
+                       help="Output directory for Markdown corpus (default: ./markdown)")
+    parser.add_argument("--md-merge", dest="md_merge", action="store_true", default=True,
+                       help="Generate llms.txt, llms-full.txt and index.md (default: on)")
+    parser.add_argument("--no-md-merge", dest="md_merge", action="store_false",
+                       help="Skip llms.txt/llms-full.txt/index.md generation")
+    parser.add_argument("--md-frontmatter", dest="md_frontmatter", action="store_true", default=True,
+                       help="Add YAML frontmatter (title, url, date, word count) to each page (default: on)")
+    parser.add_argument("--no-md-frontmatter", dest="md_frontmatter", action="store_false",
+                       help="Skip YAML frontmatter")
+    parser.add_argument("--md-images", action="store_true",
+                       help="Keep image references in Markdown")
+    parser.add_argument("--md-keep-nav", action="store_true",
+                       help="Keep navigation/footer/aside content in Markdown")
+
+    # Force browser
+    parser.add_argument("--engine", choices=["static", "playwright_stealth", "camoufox", "nodriver", "drissionpage"],
+                        help="Force a specific engine")
+    parser.add_argument("--force-browser", action="store_true", help="Force browser engine")
+
+    # Manual CAPTCHA
+    parser.add_argument("--manual-captcha", action="store_true",
+                       help="When a CAPTCHA is detected, open a visible browser and wait for you to solve it")
+
+    # Verbose progress
+    parser.add_argument("-v", "--verbose", action="store_true",
+                       help="Show real-time progress (which engine is running, CAPTCHA detection, etc.)")
+
+    # Browser management
+    parser.add_argument("--install-browser", nargs="?", const="mini", default=None,
+                        choices=["mini", "full"], metavar="PROFILE",
+                        help="Install the Camoufox stealth browser and exit "
+                             "(profiles: mini ~330 MB trimmed [default], full ~930 MB)")
+    parser.add_argument("--browser-status", action="store_true",
+                        help="Show whether the Camoufox browser is installed and exit")
+
+    args = parser.parse_args(argv)
+
+    # Handle commands that don't require URL
+    if args.browser_status:
+        from . import browser_setup
+
+        if browser_setup.camoufox_browser_installed():
+            print("Camoufox browser: INSTALLED")
+            print(f"  Location: {browser_setup.get_install_dir()}")
+            return 0
+        print("Camoufox browser: NOT INSTALLED")
+        print(f"  Install with: intelliscrape --install-browser [mini|full]")
+        return 1
+
+    if args.install_browser:
+        from . import browser_setup
+
+        ok = browser_setup.install_camoufox(profile=args.install_browser)
+        return 0 if ok else 1
+
+    if args.find_proxies:
+        return _find_proxies(args)
+
+    if not args.url and not args.web_search:
+        parser.error("URL is required for most commands")
+
+    try:
+        # --web-search does not need a URL
+        if args.web_search:
+            return _web_search_cmd(args)
+
+        # Handle analyze command
+        if args.analyze:
+            return _analyze(args)
+        
+        if args.check_links:
+            return _check_links_cmd(args)
+        elif args.tech:
+            return _tech_report(args)
+        elif args.design:
+            return _design_report(args)
+        elif args.detect_api:
+            return _detect_api_report(args)
+        elif args.seo:
+            return _seo_report(args)
+        elif args.backlinks:
+            return _backlinks_report(args)
+        elif args.crawl:
+            return _crawl(args)
+        elif args.paginate:
+            return _paginate(args)
+        elif args.search:
+            return _search(args)
+        elif args.markdown:
+            return _markdown(args)
+        elif args.mirror:
+            return _mirror(args)
+        elif args.download or args.download_images:
+            return _download(args)
+        else:
+            return _scrape(args)
+    except IntelliScrapeError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        return 1
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        return 1
+
+
+def _create_scraper(args) -> IntelliScrape:
+    """Create scraper with CLI options."""
+    # Parse headers
+    headers = {}
+    if args.header:
+        for h in args.header:
+            if ":" in h:
+                key, value = h.split(":", 1)
+                headers[key.strip()] = value.strip()
+
+    # Create scraper with intelligent mode
+    scraper = IntelliScrape(
+        brightdata_key=args.brightdata_key,
+        scraperapi_key=args.scraperapi_key,
+        oxylabs_key=args.oxylabs_key,
+        smartproxy_key=args.smartproxy_key,
+        intelligent=not args.no_intelligent,
+        use_free_proxies=not args.no_free_proxies,
+        manual_captcha=args.manual_captcha,
+        auto_install_browser=True,  # CLI: offer to fetch the stealth browser when needed
+    )
+
+    # Apply headers to all engines
+    if headers:
+        for engine in scraper.engines.values():
+            if hasattr(engine, 'session'):
+                engine.session.headers.update(headers)
+            if hasattr(engine, 'headers'):
+                engine.headers.update(headers)
+
+    return scraper
+
+
+def _find_proxies(args) -> int:
+    """Find and test free proxies."""
+    from .proxy.free_finder import FreeProxyFinder
+    
+    finder = FreeProxyFinder()
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Finding free proxies...", total=None)
+        
+        proxies = finder.find_proxies(
+            protocol="https",
+            test=True,
+            max_workers=10,
+        )
+        
+        progress.update(task, completed=True)
+    
+    if not proxies:
+        console.print("[yellow]No working proxies found[/yellow]")
+        return 1
+    
+    # Create table
+    table = Table(title=f"Found {len(proxies)} Working Proxies")
+    table.add_column("Proxy URL", style="cyan")
+    table.add_column("Speed", style="green")
+    table.add_column("Status", style="yellow")
+    
+    for proxy in sorted(proxies, key=lambda p: p.speed)[:20]:  # Show top 20
+        table.add_row(
+            proxy.url,
+            f"{proxy.speed:.2f}s",
+            "Working" if proxy.is_working else "Failed",
+        )
+    
+    console.print(table)
+    console.print(f"\n[green]Use with: intelliscrape <url> --use-free-proxies[/green]")
+    
+    return 0
+
+
+def _analyze(args) -> int:
+    """Analyze a site and show recommendations."""
+    analyzer = SiteAnalyzer()
+    analysis = analyzer.analyze(args.url)
+
+    # Create analysis table
+    table = Table(title=f"Site Analysis: {analysis.domain}", show_header=False)
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Site Type", analysis.site_type.value)
+    table.add_row("Protection Level", analysis.protection_level.value)
+    table.add_row("Requires Browser", "Yes" if analysis.requires_browser else "No")
+    table.add_row("Requires Residential Proxy", "Yes" if analysis.requires_residential_proxy else "No")
+    table.add_row("Recommended Engine", analysis.recommended_engine)
+    table.add_row("Recommended Delay", f"{analysis.recommended_delay:.1f} seconds")
+    table.add_row("Recommended Batch Size", str(analysis.recommended_batch_size))
+
+    console.print(table)
+
+    # Show notes
+    if analysis.notes:
+        console.print("\n[bold]Notes:[/bold]")
+        for note in analysis.notes:
+            console.print(f"  • {note}")
+
+    # Show proxy status
+    scraper = _create_scraper(args)
+    proxy_status = scraper.get_proxy_status()
+    
+    console.print("\n[bold]Proxy Status:[/bold]")
+    console.print(f"  • User proxies: {proxy_status['user_proxies']}")
+    console.print(f"  • Providers available: {', '.join(proxy_status['providers_available']) or 'None'}")
+    console.print(f"  • Healthy proxies: {proxy_status['healthy_proxies']}")
+    console.print(f"  • Free proxies enabled: {'Yes' if not args.no_free_proxies else 'No'}")
+
+    return 0
+
+
+def _check_links_cmd(args) -> int:
+    """Check all links on a page and display results."""
+    scraper = _create_scraper(args)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Checking links on {args.url}...", total=None)
+
+        # Fetch the page HTML first (uses the scraper's engine chain)
+        html = scraper.scrape(args.url, return_raw=True, force_browser=args.force_browser)
+
+        progress.update(task, description="Checking link statuses...")
+
+        # Use the link_checker with a session from the scraper's static engine
+        from requests import Session
+        from .downloader import create_session as _create_session
+
+        session = _create_session()
+        try:
+            report = _check_links(
+                args.url,
+                timeout=10,
+                session=session,
+                downloader=lambda url, timeout: html,
+            )
+        finally:
+            session.close()
+
+        progress.update(task, completed=True)
+
+    # --- Summary panel ---
+    s = report.summary
+    console.print()
+    console.print(Panel(
+        f"[bold]URL:[/bold] {report.url}\n"
+        f"[bold]Total links:[/bold] {s.total}\n"
+        f"[green]OK:[/green] {s.ok}  "
+        f"[yellow]Redirected:[/yellow] {s.redirected}  "
+        f"[red]Broken:[/red] {s.broken}  "
+        f"[red]Error:[/red] {s.error}  "
+        f"[red]Timeout:[/red] {s.timeout}\n"
+        f"[bold]Internal:[/bold] {s.internal}  "
+        f"[bold]External:[/bold] {s.external}\n"
+        f"[bold]Success rate:[/bold] {s.success_rate:.1f}%",
+        title="Link Check Summary",
+        border_style="blue",
+    ))
+
+    # --- By-type breakdown ---
+    if s.by_type:
+        type_table = Table(title="Links by Type", show_header=True)
+        type_table.add_column("Type", style="cyan")
+        type_table.add_column("Count", justify="right", style="green")
+        for lt, count in sorted(s.by_type.items(), key=lambda x: -x[1]):
+            type_table.add_row(lt, str(count))
+        console.print(type_table)
+
+    # --- Broken links detail ---
+    broken = [(r.url, r.status_code, r.error) for r in report.links if not r.is_ok]
+    if broken:
+        broken_table = Table(title="Broken Links", show_header=True)
+        broken_table.add_column("URL", style="red")
+        broken_table.add_column("Status", justify="right", style="yellow")
+        broken_table.add_column("Error", style="dim")
+        for lnk, code, err in broken[:50]:  # limit to first 50
+            broken_table.add_row(lnk, str(code) if code else "-", err or "")
+        console.print(broken_table)
+        if len(broken) > 50:
+            console.print(f"  [dim]... and {len(broken) - 50} more broken links[/dim]")
+    else:
+        console.print("[green]All links are working![/green]")
+
+    # --- Export ---
+    if args.export:
+        export_data = [
+            {
+                "url": r.url,
+                "status_code": r.status_code,
+                "status": r.status.value,
+                "type": r.link_type.value,
+                "is_external": r.is_external,
+                "redirect_url": r.redirect_url or "",
+                "error": r.error or "",
+            }
+            for r in report.links
+        ]
+        return _export_content(export_data, args.export, args.output, args.url)
+
+    if args.output:
+        import json as _json
+        export_data = [
+            {
+                "url": r.url,
+                "status_code": r.status_code,
+                "status": r.status.value,
+                "type": r.link_type.value,
+                "is_external": r.is_external,
+                "redirect_url": r.redirect_url or "",
+                "error": r.error or "",
+            }
+            for r in report.links
+        ]
+        with open(args.output, "w", encoding="utf-8") as f:
+            _json.dump(export_data, f, indent=2, ensure_ascii=False)
+        console.print(f"[green]Saved link check results to {args.output}[/green]")
+
+    return 0
+
+
+def _tech_report(args) -> int:
+    """Detect and display website technology stack."""
+    scraper = _create_scraper(args)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Analyzing {args.url}...", total=None)
+
+        tech = scraper.detect_tech(args.url, force_browser=args.force_browser)
+
+        progress.update(task, completed=True)
+
+    # --- Summary panel ---
+    s = tech.summary
+    total = len(tech.all_tech)
+    console.print()
+    console.print(Panel(
+        f"[bold]URL:[/bold] {tech.url}\n"
+        f"[bold]Technologies found:[/bold] {total}",
+        title="Website Intelligence",
+        border_style="blue",
+    ))
+
+    # --- Category tables ---
+    category_labels = {
+        "frameworks": "Frameworks",
+        "css_frameworks": "CSS Frameworks",
+        "js_libraries": "JS Libraries",
+        "analytics": "Analytics & Tracking",
+        "cdn": "CDN",
+        "hosting": "Hosting / Platform",
+        "cms": "CMS",
+        "payment": "Payment Providers",
+        "languages": "Languages / Runtimes",
+        "email_marketing": "Email / Marketing",
+        "other": "Other",
+    }
+
+    for attr, label in category_labels.items():
+        items = getattr(tech, attr)
+        if not items:
+            continue
+        table = Table(title=label, show_header=True)
+        table.add_column("Technology", style="cyan")
+        table.add_column("Confidence", justify="right", style="green")
+        table.add_column("Evidence", style="dim")
+        for t in items:
+            table.add_row(
+                t.name,
+                f"{t.confidence:.0%}",
+                ", ".join(t.evidence[:3]),
+            )
+        console.print(table)
+
+    # --- Server headers ---
+    interesting_headers = {
+        k: v for k, v in tech.headers.items()
+        if k.lower() in (
+            "server", "x-powered-by", "x-generator",
+            "via", "x-amz-cf-pop", "x-vercel",
+            "cf-ray", "x-shopify-stage",
+        )
+    }
+    if interesting_headers:
+        htable = Table(title="Server Headers", show_header=True)
+        htable.add_column("Header", style="cyan")
+        htable.add_column("Value", style="green")
+        for k, v in interesting_headers.items():
+            htable.add_row(k, v)
+        console.print(htable)
+
+    if total == 0:
+        console.print("[yellow]No technologies detected.[/yellow]")
+
+    # --- Export ---
+    if args.export:
+        return _export_content(tech.to_dict(), args.export, args.output, args.url)
+
+    if args.output:
+        import json as _json
+        with open(args.output, "w", encoding="utf-8") as f:
+            _json.dump(tech.to_dict(), f, indent=2, ensure_ascii=False)
+        console.print(f"[green]Saved tech report to {args.output}[/green]")
+
+    return 0
+
+
+def _design_report(args) -> int:
+    """Extract a design reference and write DESIGN.md/design.json/tokens.css/preview.html.
+
+    Uses the live browser engine by default (computed styles + geometry). Pass
+    --design-static for the fast no-browser fallback.
+
+    Stable exit statuses:
+      0 = succeeded    1 = internal failure
+      2 = partial      3 = blocked target
+    """
+    import json as _json
+    from pathlib import Path
+
+    from .design.service import extract_design as _extract
+    from .design.models import DesignExtraction
+
+    out_dir = Path(args.design_output or "design-output")
+    if out_dir.exists() and any(out_dir.iterdir()) and not args.design_overwrite:
+        console.print(
+            f"[red]Output directory {out_dir} already exists and is not empty.[/red]\n"
+            f"Pass --design-overwrite to replace it, or choose another --design-output."
+        )
+        return 1
+
+    profiles = [p.strip() for p in (args.design_profiles or "desktop,mobile").split(",") if p.strip()]
+    schemes = [s.strip() for s in (args.design_schemes or "light").split(",") if s.strip()]
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Measuring {args.url}...", total=None)
+
+        if args.design_static:
+            scraper = _create_scraper(args)
+            report_static = scraper.extract_design(args.url, static=True, force_browser=args.force_browser)
+            # Adapt the static DesignReport into the shared manifest shape.
+            out_dir.mkdir(parents=True, exist_ok=True)
+            md_path = out_dir / "DESIGN.md"
+            md_path.write_text(report_static.to_markdown(), encoding="utf-8")
+            progress.update(task, completed=True)
+            console.print()
+            console.print(Panel(
+                f"[bold]URL:[/bold] {report_static.url}\n[bold]Markdown:[/bold] {md_path}\n"
+                f"[yellow]Static fallback: computed styles and geometry were not measured.[/yellow]",
+                title="Design Extract (static)", border_style="blue",
+            ))
+            return 0
+
+        result: DesignExtraction = _extract(
+            args.url,
+            scope=args.design_scope,
+            profiles=profiles,
+            max_pages=args.design_max_pages,
+            color_schemes=schemes,
+        )
+        progress.update(task, completed=True)
+
+    if args.json:
+        # Machine-readable JSON on stdout; progress already went to stderr.
+        sys.stdout.write(result.to_json() + "\n")
+
+    manifest = result.save(str(out_dir), screenshots=True)
+
+    console.print()
+    console.print(Panel(
+        f"[bold]URL:[/bold] {result.capture.requested_url}\n"
+        f"[bold]Status:[/bold] {result.status}\n"
+        f"[bold]Output:[/bold] {out_dir}",
+        title="Design Extract", border_style="blue",
+    ))
+
+    st = result.stats
+    summary = Table(show_header=False)
+    summary.add_row("Status", str(result.status))
+    summary.add_row("Colors", str(st["colors"]))
+    summary.add_row("Font families", str(st["fonts"]))
+    summary.add_row("Spacing values", str(st["spacing"]))
+    summary.add_row("Border radii", str(st["radii"]))
+    summary.add_row("Shadows", str(st["shadows"]))
+    summary.add_row("Breakpoints", str(st["breakpoints"]))
+    summary.add_row("CSS variables", str(st["css_variables"]))
+    summary.add_row("Components", str(result.coverage.components_found))
+    summary.add_row("Elements measured", str(result.coverage.elements_visible))
+    console.print(summary)
+
+    if result.tokens_by_category("color"):
+        colors = Table(title="Top colors", show_header=True)
+        colors.add_column("Color", style="cyan")
+        colors.add_column("Role", style="dim")
+        colors.add_column("Basis", style="green")
+        for t in result.tokens_by_category("color")[:15]:
+            colors.add_row(t.value, t.role or "—", "inferred" if t.role_status == "inferred" else "measured")
+        console.print(colors)
+
+    if result.gaps:
+        console.print()
+        console.print("[yellow]Gaps / limitations:[/yellow]")
+        for g in result.gaps:
+            console.print(f"  [dim]·[/dim] [yellow]{g.code}[/yellow]: {g.message}")
+
+    console.print()
+    for name, path in manifest.items():
+        console.print(f"[green]  {name}[/green] → {path}")
+
+    # Map extraction status to the documented exit codes.
+    if result.status == "succeeded":
+        return 0
+    if result.status == "partial":
+        return 2
+    if result.status == "blocked":
+        return 3
+    return 1
+
+
+def _mirror(args) -> int:
+    """Mirror entire website for offline browsing."""
+    from .track.mirror import mirror as mirror_site
+
+    url = args.url.rstrip("/")
+    console.print(f"[bold cyan]Mirroring:[/bold cyan] {url}")
+    console.print(f"[dim]Output: {args.mirror_output}[/dim]")
+    console.print(f"[dim]Depth: {args.mirror_depth}, Delay: {args.mirror_delay}s[/dim]")
+
+    extra = {
+        "delay": args.mirror_delay,
+        "respect_robots": not args.no_robots,
+        "update_mode": args.mirror_update,
+        "engine": args.mirror_engine,
+    }
+    if args.mirror_exclude:
+        extra["exclude_patterns"] = args.mirror_exclude
+    if args.mirror_include:
+        extra["include_patterns"] = args.mirror_include
+    if args.mirror_proxy:
+        extra["proxy"] = args.mirror_proxy
+
+    result = mirror_site(
+        url, output_dir=args.mirror_output, max_depth=args.mirror_depth,
+        save_zip=args.mirror_zip, save_warc=args.mirror_warc, **extra,
+    )
+
+    console.print()
+    size_mb = result.total_bytes / (1024 * 1024)
+    elapsed = result.elapsed_seconds
+    speed = result.total_bytes / elapsed if elapsed > 0 else 0
+
+    if result.errors == 0:
+        console.print(Panel(
+            f"[green]Mirror complete![/green]\n"
+            f"Pages: {result.pages_downloaded} | Assets: {result.assets_downloaded}\n"
+            f"Errors: {result.errors} | Size: {size_mb:.1f} MB\n"
+            f"Time: {elapsed:.1f}s | Speed: {speed/1024:.1f} KB/s\n"
+            f"Output: {result.output_dir}",
+            title="Mirror Result",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel(
+            f"[yellow]Mirror completed with errors[/yellow]\n"
+            f"Pages: {result.pages_downloaded} | Assets: {result.assets_downloaded}\n"
+            f"Errors: {result.errors} | Size: {size_mb:.1f} MB\n"
+            f"Time: {elapsed:.1f}s | Speed: {speed/1024:.1f} KB/s\n"
+            f"Output: {result.output_dir}",
+            title="Mirror Result",
+            border_style="yellow",
+        ))
+
+    if result.zip_path:
+        console.print(f"[green]ZIP created: {result.zip_path}[/green]")
+    if result.warc_path:
+        console.print(f"[green]WARC created: {result.warc_path}[/green]")
+
+    return 0
+
+
+def _markdown(args) -> int:
+    """Convert an entire website to Markdown for LLM ingestion."""
+    from .markdown import markdown_site
+
+    url = args.url.rstrip("/")
+    console.print(f"[bold cyan]Converting to Markdown:[/bold cyan] {url}")
+    console.print(f"[dim]Output: {args.md_output}[/dim]")
+    console.print(f"[dim]Depth: {args.md_depth}, Delay: {args.mirror_delay}s[/dim]")
+
+    extra = {
+        "delay": args.mirror_delay,
+        "respect_robots": not args.no_robots,
+        "engine": args.mirror_engine,
+        "markdown_merge": args.md_merge,
+        "markdown_frontmatter": args.md_frontmatter,
+        "markdown_keep_nav": args.md_keep_nav,
+        "markdown_images": args.md_images,
+    }
+    if args.mirror_exclude:
+        extra["exclude_patterns"] = args.mirror_exclude
+    if args.mirror_include:
+        extra["include_patterns"] = args.mirror_include
+    if args.mirror_proxy:
+        extra["proxy"] = args.mirror_proxy
+
+    result = markdown_site(
+        url, output_dir=args.md_output, max_depth=args.md_depth,
+        save_zip=args.mirror_zip, save_warc=args.mirror_warc, **extra,
+    )
+
+    console.print()
+    elapsed = result.elapsed_seconds
+
+    if result.errors == 0:
+        console.print(Panel(
+            f"[green]Markdown conversion complete![/green]\n"
+            f"Pages: {result.pages_converted} | Chars: {result.total_chars:,}\n"
+            f"Errors: {result.errors} | Time: {elapsed:.1f}s\n"
+            f"Output: {result.output_dir}",
+            title="Markdown Result",
+            border_style="green",
+        ))
+    else:
+        console.print(Panel(
+            f"[yellow]Markdown conversion completed with errors[/yellow]\n"
+            f"Pages: {result.pages_converted} | Chars: {result.total_chars:,}\n"
+            f"Errors: {result.errors} | Time: {elapsed:.1f}s\n"
+            f"Output: {result.output_dir}",
+            title="Markdown Result",
+            border_style="yellow",
+        ))
+
+    if result.llms_file:
+        console.print(f"[green]Site map: {result.llms_file}[/green]")
+    if result.llms_full_file:
+        console.print(f"[green]Merged corpus: {result.llms_full_file}[/green]")
+    if result.index_file:
+        console.print(f"[green]Index: {result.index_file}[/green]")
+    if result.zip_path:
+        console.print(f"[green]ZIP created: {result.zip_path}[/green]")
+    if result.warc_path:
+        console.print(f"[green]WARC created: {result.warc_path}[/green]")
+
+    return 0
+
+
+def _scrape(args) -> int:
+    """Scrape a single page with spinner."""
+    scraper = _create_scraper(args)
+
+    # Handle login
+    if args.login or args.manual_login:
+        auth = Authenticator()
+
+        if args.manual_login:
+            # Manual login: open browser directly
+            console.print("[cyan]Opening browser for manual login...[/cyan]")
+            console.print("[dim]Login manually, then come back here.[/dim]")
+
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                success = auth._login_manual(p, args.url, timeout=30)
+        else:
+            # Automated login with credentials
+            if not args.username or not args.password:
+                console.print("[red]Error: --username and --password required for login[/red]")
+                return 1
+
+            credentials = LoginCredentials(
+                username=args.username,
+                password=args.password,
+            )
+            success = auth.login(args.url, credentials, login_url=args.login_url)
+
+        if success:
+            console.print("[green]Login successful![/green]")
+            # Transfer authenticated cookies to scraper engines
+            auth_cookies = dict(auth.session.cookies)
+            if auth_cookies:
+                scraper.session_manager.update_cookies(auth_cookies)
+                console.print(f"[dim]Transferred {len(auth_cookies)} cookies to scraper[/dim]")
+            
+            # Transfer auth token (for SPA/Firebase auth)
+            auth_token = ""
+            base_url = f"{urlsplit(args.url).scheme}://{urlsplit(args.url).netloc}"
+            if base_url in auth.sessions:
+                auth_token = auth.sessions[base_url].auth_token
+            if auth_token:
+                scraper.session_manager.set_auth_token(auth_token)
+                console.print("[dim]Transferred auth token to scraper (SPA mode)[/dim]")
+            else:
+                console.print("[dim]Cookies transferred for authentication[/dim]")
+        else:
+            console.print("[yellow]Login failed. Possible reasons:[/yellow]")
+            console.print("[dim]  - Wrong credentials[/dim]")
+            console.print("[dim]  - Login URL not found or changed[/dim]")
+            console.print("[dim]  - CAPTCHA or 2FA required[/dim]")
+            console.print("[dim]Continuing anyway...[/dim]")
+
+    # Load cookies
+    if args.load_cookies:
+        cookie_mgr = CookieManager()
+        try:
+            with open(args.load_cookies, "r") as f:
+                cookies = json.load(f)
+            cookie_mgr.save_cookies(args.url, cookies)
+            console.print(f"[green]Loaded cookies from {args.load_cookies}[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Could not load cookies: {e}[/yellow]")
+
+    # Scrape
+    progress_cb = _verbose_progress if args.verbose else None
+
+    if args.verbose:
+        console.print(f"\n[bold]Scraping {args.url}[/bold]")
+        console.print()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=not args.verbose,
+    ) as progress:
+        task = progress.add_task(f"Scraping {args.url}..." if not args.verbose else "", total=None)
+
+        if args.json:
+            result = scraper.get_structured(args.url, engine=args.engine, force_browser=args.force_browser)
+            content = json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+        else:
+            content = scraper.scrape(args.url, return_raw=args.raw, engine=args.engine,
+                                    force_browser=args.force_browser, on_progress=progress_cb)
+
+        progress.update(task, completed=True)
+
+    # Save cookies
+    if args.save_cookies:
+        cookie_mgr = CookieManager()
+        # Get cookies from the scraper's engines
+        cookies = {}
+        for engine in scraper.engines.values():
+            if hasattr(engine, 'session'):
+                cookies.update(dict(engine.session.cookies))
+                break
+        cookie_mgr.save_cookies(args.url, cookies)
+        with open(args.save_cookies, "w") as f:
+            json.dump(cookies, f, indent=2)
+        console.print(f"[green]Saved cookies to {args.save_cookies}[/green]")
+
+    # Export
+    if args.export:
+        return _export_content(content, args.export, args.output, args.url)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(content)
+        console.print(f"[green]Saved to {args.output}[/green]")
+    else:
+        print(content)
+
+    return 0
+
+
+def _paginate(args) -> int:
+    """Scrape with pagination."""
+    scraper = _create_scraper(args)
+    paginator = Paginator()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Paginating...", total=args.max_pages)
+
+        pages = []
+        current_url = args.url
+        current_page = 1
+
+        while current_url and current_page <= args.max_pages:
+            # Fetch page
+            content = scraper.scrape(current_url, force_browser=args.force_browser)
+            pages.append({"url": current_url, "content": content, "page": current_page})
+
+            progress.update(task, advance=1, description=f"Page {current_page}...")
+
+            # Find next page
+            html = scraper.scrape(current_url, return_raw=True, force_browser=args.force_browser)
+            current_url = paginator.find_next_page(html, current_url, current_page)
+            current_page += 1
+
+        progress.update(task, completed=args.max_pages, description="Pagination complete!")
+
+    # Summary
+    console.print()
+    console.print(Panel(
+        f"[green]Scraped: {len(pages)} pages[/green]\n"
+        f"URL: {args.url}",
+        title="Pagination Summary",
+        border_style="blue",
+    ))
+
+    # Export
+    if args.export:
+        return _export_content(pages, args.export, args.output, args.url)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            for page in pages:
+                f.write(f"{'='*80}\n")
+                f.write(f"URL: {page['url']}\n")
+                f.write(f"Page: {page['page']}\n")
+                f.write(f"{'='*80}\n\n")
+                f.write(page['content'])
+                f.write("\n\n")
+        console.print(f"[green]Saved {len(pages)} pages to {args.output}[/green]")
+    else:
+        for page in pages:
+            print(f"\n{'='*80}")
+            print(f"URL: {page['url']}")
+            print(f"Page: {page['page']}")
+            print(f"{'='*80}\n")
+            print(page['content'])
+
+    return 0
+
+
+def _web_search_cmd(args) -> int:
+    """Run a web search and display results as a rich table."""
+    from .web_search import web_search as _web_search
+
+    query = args.web_search
+    limit = getattr(args, "search_limit", 10)
+    fetch_content = getattr(args, "fetch_content", False)
+
+    scraper = _create_scraper(args)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(
+            f"Searching for '{query}'" + (" + fetching content..." if fetch_content else "") + "...",
+            total=None,
+        )
+        report = _web_search(
+            query,
+            limit=limit,
+            fetch_content=fetch_content,
+            scraper=scraper,
+        )
+        progress.update(task, completed=True)
+
+    console.print()
+    console.print(Panel(
+        f"[bold]Query:[/bold] {report.query}\n"
+        f"[bold]Engine used:[/bold] {report.engine_used or '[yellow]none — all engines failed[/yellow]'}\n"
+        f"[bold]Results:[/bold] {report.total}",
+        title="Web Search",
+        border_style="blue",
+    ))
+
+    if not report.results:
+        console.print("[yellow]No results found.[/yellow]")
+        return 1
+
+    # Build the results table
+    table = Table(show_header=True, show_lines=True)
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Title", style="cyan", min_width=20, max_width=40)
+    table.add_column("URL", style="blue", min_width=25, max_width=45, overflow="fold")
+    table.add_column("Snippet", style="white", min_width=30, max_width=60)
+    if fetch_content:
+        table.add_column("Content preview", style="dim", min_width=30, max_width=50)
+
+    for r in report.results:
+        snippet_display = (r.snippet[:150] + "…") if len(r.snippet) > 150 else r.snippet
+        row = [str(r.rank), r.title, r.url, snippet_display]
+        if fetch_content:
+            if r.content:
+                preview = r.content[:120].replace("\n", " ").strip()
+                preview = (preview + "…") if len(r.content) > 120 else preview
+            else:
+                preview = "[dim]—[/dim]"
+            row.append(preview)
+        table.add_row(*row)
+
+    console.print(table)
+
+    # Export
+    if args.export:
+        return _export_content(
+            [r.to_dict() for r in report.results],
+            args.export,
+            args.output,
+            f"web_search:{query}",
+        )
+
+    if args.output:
+        import json as _json
+        with open(args.output, "w", encoding="utf-8") as f:
+            _json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
+        console.print(f"[green]Saved to {args.output}[/green]")
+
+    return 0
+
+
+def _search(args) -> int:
+    """Submit search and scrape results."""
+    scraper = _create_scraper(args)
+    form_submitter = FormSubmitter()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Searching '{args.search}'...", total=None)
+
+        # Get the page
+        html = scraper.scrape(args.url, return_raw=True, force_browser=args.force_browser)
+
+        # Find and submit search form
+        result_html = form_submitter.search(
+            html,
+            args.search,
+            base_url=args.url,
+        )
+
+        progress.update(task, completed=True)
+
+    if result_html:
+        # Extract text from results
+        content = scraper.scrape(args.url, force_browser=args.force_browser)
+
+        # Export
+        if args.export:
+            return _export_content(content, args.export, args.output, args.url)
+
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(content)
+            console.print(f"[green]Saved to {args.output}[/green]")
+        else:
+            print(content)
+    else:
+        console.print("[yellow]No search form found[/yellow]")
+
+    return 0
+
+
+def _detect_api_report(args) -> int:
+    """Detect and display API endpoints, third-party services, and key exposures."""
+    scraper = _create_scraper(args)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Scanning {args.url} for APIs...", total=None)
+
+        report = scraper.detect_apis(args.url, force_browser=args.force_browser)
+
+        progress.update(task, completed=True)
+
+    # --- Summary panel ---
+    summary = report.summary
+    console.print()
+    console.print(Panel(
+        f"[bold]URL:[/bold] {report.url}\n"
+        f"[bold]Endpoints:[/bold] {len(report.endpoints)}\n"
+        f"[bold]Third-party services:[/bold] {len(report.third_party_apis)}\n"
+        f"[bold]Documentation found:[/bold] {len(report.documentation)}\n"
+        f"[bold]Key exposures:[/bold] {len(report.key_exposures)}",
+        title="API Detection Report",
+        border_style="blue",
+    ))
+
+    # --- Endpoints table ---
+    if report.endpoints:
+        table = Table(title="API Endpoints", show_header=True)
+        table.add_column("URL", style="cyan", max_width=60)
+        table.add_column("Method", style="green")
+        table.add_column("Category", style="yellow")
+        table.add_column("Source", style="dim")
+        table.add_column("Confidence", justify="right", style="green")
+        for ep in report.endpoints:
+            table.add_row(
+                ep.url,
+                ep.method,
+                ep.category,
+                ep.source,
+                f"{ep.confidence:.0%}",
+            )
+        console.print(table)
+
+    # --- Third-party services ---
+    if report.third_party_apis:
+        console.print()
+        console.print("[bold]Third-party API services detected:[/bold]")
+        for svc in report.third_party_apis:
+            console.print(f"  • {svc}")
+
+    # --- Documentation ---
+    if report.documentation:
+        console.print()
+        console.print("[bold]API documentation endpoints:[/bold]")
+        for doc in report.documentation:
+            console.print(f"  • {doc}")
+
+    # --- Key exposures ---
+    if report.key_exposures:
+        console.print()
+        ktable = Table(title="API Key / Credential Exposures", show_header=True)
+        ktable.add_column("Provider", style="red")
+        ktable.add_column("Type", style="yellow")
+        ktable.add_column("Severity", style="bold red")
+        ktable.add_column("Evidence (redacted)", style="dim")
+        for key in report.key_exposures:
+            severity_color = {"high": "bold red", "medium": "yellow", "low": "dim"}.get(key.severity, "white")
+            ktable.add_row(
+                key.provider,
+                key.key_type,
+                f"[{severity_color}]{key.severity.upper()}[/{severity_color}]",
+                key.evidence,
+            )
+        console.print(ktable)
+
+    if report.total == 0:
+        console.print("[yellow]No API endpoints or services detected.[/yellow]")
+
+    # --- Export ---
+    if args.export:
+        return _export_content(report.to_dict(), args.export, args.output, args.url)
+
+    if args.output:
+        import json as _json
+        with open(args.output, "w", encoding="utf-8") as f:
+            _json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
+        console.print(f"[green]Saved API report to {args.output}[/green]")
+
+    return 0
+
+
+def _seo_report(args) -> int:
+    """Run full SEO audit and display results."""
+    from .seo import SEOAnalyzer
+
+    scraper = _create_scraper(args)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Auditing SEO for {args.url}...", total=None)
+
+        html = scraper.scrape(args.url, return_raw=True, force_browser=args.force_browser)
+        report = SEOAnalyzer.analyze_html(html, args.url)
+
+        progress.update(task, completed=True)
+
+    # --- Score panel ---
+    score_color = "green" if report.overall_score >= 70 else "yellow" if report.overall_score >= 50 else "red"
+    console.print()
+    console.print(Panel(
+        f"[bold]URL:[/bold] {report.url}\n"
+        f"[bold]SEO Score:[/bold] [{score_color}]{report.overall_score}/100[/{score_color}]\n"
+        f"[bold]Title:[/bold] {report.title[:80]}{'...' if len(report.title) > 80 else ''}\n"
+        f"[bold]Meta Description:[/bold] {report.meta_description[:100]}{'...' if len(report.meta_description) > 100 else ''}\n"
+        f"[bold]Reading Time:[/bold] {report.content.reading_time_minutes:.1f} min\n"
+        f"[bold]Word Count:[/bold] {report.content.word_count:,}\n"
+        f"[bold]Canonical:[/bold] {report.canonical or 'None'}",
+        title="SEO Report",
+        border_style="blue",
+    ))
+
+    # --- Score breakdown by check ---
+    check_table = Table(title="Score Breakdown", show_header=True)
+    check_table.add_column("Check", style="cyan")
+    check_table.add_column("Score", justify="right")
+    check_table.add_column("Status", justify="center")
+
+    for check in report.checks:
+        check_color = "green" if check.score >= 0.7 else "yellow" if check.score >= 0.4 else "red"
+        status = "[green]PASS[/green]" if check.passed else "[red]FAIL[/red]"
+        check_table.add_row(
+            check.name.replace("_", " ").title(),
+            f"[{check_color}]{check.score*100:.0f}%[/{check_color}]",
+            status,
+        )
+
+    console.print(check_table)
+
+    # --- Content Analysis ---
+    ca = report.content
+    content_table = Table(title="Content Analysis", show_header=True)
+    content_table.add_column("Metric", style="cyan")
+    content_table.add_column("Value", justify="right", style="green")
+
+    content_table.add_row("Word Count", f"{ca.word_count:,}")
+    content_table.add_row("Sentences", f"{ca.sentence_count:,}")
+    content_table.add_row("Paragraphs", f"{ca.paragraph_count:,}")
+    content_table.add_row("Avg Sentence Length", f"{ca.avg_sentence_length:.1f} words")
+    content_table.add_row("Reading Time", f"{ca.reading_time_minutes:.1f} min")
+    content_table.add_row("Readability (F-K Grade)", f"{ca.flesch_kincaid_grade:.1f}")
+
+    console.print(content_table)
+
+    # --- Top Keywords ---
+    if ca.top_keywords:
+        kw_table = Table(title="Top Keywords", show_header=True)
+        kw_table.add_column("Keyword", style="cyan")
+        kw_table.add_column("Count", justify="right", style="green")
+        kw_table.add_column("Density", justify="right", style="yellow")
+
+        for word, count, density in ca.top_keywords[:10]:
+            kw_table.add_row(word, str(count), f"{density:.2f}%")
+
+        console.print(kw_table)
+
+    # --- Link Analysis ---
+    la = report.links
+    link_table = Table(title="Link Analysis", show_header=True)
+    link_table.add_column("Metric", style="cyan")
+    link_table.add_column("Value", justify="right", style="green")
+
+    link_table.add_row("Total Links", f"{la.total:,}")
+    link_table.add_row("[green]Internal[/green]", f"{la.internal:,}")
+    link_table.add_row("[yellow]External[/yellow]", f"{la.external:,}")
+    link_table.add_row("Dofollow", f"{la.dofollow:,}")
+    link_table.add_row("Nofollow", f"{la.nofollow:,}")
+    if la.sponsored:
+        link_table.add_row("Sponsored", f"{la.sponsored:,}")
+    if la.ugc:
+        link_table.add_row("UGC", f"{la.ugc:,}")
+    link_table.add_row("Empty Anchors", f"[red]{la.empty_anchors}[/red]" if la.empty_anchors else "0")
+
+    console.print(link_table)
+
+    if la.external_domains:
+        console.print(f"  [dim]External domains: {', '.join(la.external_domains[:8])}[/dim]")
+
+    # --- Heading Hierarchy ---
+    ha = report.headings
+    if ha.counts:
+        heading_summary = "  ".join(
+            f"[bold]{tag.upper()}[/bold]: {count}" for tag, count in sorted(ha.counts.items())
+        )
+        console.print()
+        console.print(f"[bold]Heading Structure:[/bold] {heading_summary}")
+
+        if ha.hierarchy:
+            console.print()
+            console.print("[bold]Heading Hierarchy:[/bold]")
+            for level, text in ha.hierarchy[:20]:
+                indent = "  " * (level - 1)
+                tag_color = "red" if level == 1 else "yellow" if level == 2 else "green"
+                console.print(f"  {indent}[{tag_color}]h{level}[/{tag_color}] {text[:70]}{'...' if len(text) > 70 else ''}")
+            if len(ha.hierarchy) > 20:
+                console.print(f"  [dim]... and {len(ha.hierarchy) - 20} more headings[/dim]")
+
+    # --- Image Audit ---
+    ia = report.images
+    if ia.total > 0:
+        img_table = Table(title="Image Audit", show_header=True)
+        img_table.add_column("Metric", style="cyan")
+        img_table.add_column("Value", justify="right", style="green")
+
+        img_table.add_row("Total Images", f"{ia.total:,}")
+        alt_pct = ia.alt_coverage * 100
+        alt_color = "green" if alt_pct >= 80 else "yellow" if alt_pct >= 50 else "red"
+        img_table.add_row(f"Alt Text Coverage", f"[{alt_color}]{alt_pct:.0f}%[/{alt_color}] ({ia.with_alt}/{ia.total})")
+        img_table.add_row("Missing Alt", f"[red]{ia.missing_alt}[/red]" if ia.missing_alt else "0")
+        img_table.add_row("Empty Alt", f"{ia.empty_alt}")
+        img_table.add_row("Lazy Loaded", f"{ia.lazy_loaded}")
+
+        console.print(img_table)
+
+        if ia.external_domains:
+            console.print(f"  [dim]Image domains: {', '.join(ia.external_domains[:5])}[/dim]")
+
+    # --- Technical SEO ---
+    ta = report.technical
+    tech_table = Table(title="Technical SEO", show_header=True)
+    tech_table.add_column("Check", style="cyan")
+    tech_table.add_column("Status", justify="center")
+
+    # Viewport
+    vp_status = "[green]PASS[/green]" if ta.has_viewport else "[red]MISSING[/red]"
+    tech_table.add_row("Viewport Meta", vp_status)
+
+    # HTTPS
+    https_status = "[green]Yes[/green]" if ta.is_https else "[red]No[/red]"
+    tech_table.add_row("HTTPS", https_status)
+
+    # Language
+    lang_status = f"[green]{ta.lang_attribute}[/green]" if ta.has_lang else "[red]MISSING[/red]"
+    tech_table.add_row("Language", lang_status)
+
+    # Canonical
+    can_status = "[green]Present[/green]" if ta.has_canonical else "[yellow]Missing[/yellow]"
+    tech_table.add_row("Canonical", can_status)
+
+    # Robots
+    if ta.robots_meta:
+        robots_display = ta.robots_meta[:40]
+        if ta.is_noindex:
+            robots_display = f"[red]{robots_display}[/red]"
+        tech_table.add_row("Robots Meta", robots_display)
+    else:
+        tech_table.add_row("Robots Meta", "[dim]None[/dim]")
+
+    # Hreflang
+    if ta.hreflang_tags:
+        tech_table.add_row("Hreflang", f"{len(ta.hreflang_tags)} tags ({'x-default present' if ta.has_x_default else '[red]no x-default[/red]'})")
+
+    console.print(tech_table)
+
+    # --- Performance ---
+    pa = report.performance
+    perf_table = Table(title="Page Performance", show_header=True)
+    perf_table.add_column("Metric", style="cyan")
+    perf_table.add_column("Value", justify="right", style="green")
+
+    perf_table.add_row("DOM Elements", f"{pa.total_dom_elements:,}")
+    perf_table.add_row("Scripts", f"{pa.script_count} ({pa.external_scripts} external, {pa.inline_scripts} inline)")
+    perf_table.add_row("Stylesheets", f"{pa.stylesheet_count} ({pa.external_stylesheets} external)")
+    if pa.inline_css_size > 0:
+        perf_table.add_row("Inline CSS", f"{pa.inline_css_size:,} bytes")
+
+    console.print(perf_table)
+
+    if pa.external_domains:
+        console.print(f"  [dim]External domains loaded: {', '.join(pa.external_domains[:8])}[/dim]")
+
+    # --- Schema types ---
+    if report.schema_types:
+        console.print()
+        console.print(f"[bold]Schema Types:[/bold] {', '.join(report.schema_types)}")
+
+    # --- OG Tags ---
+    if report.og_tags:
+        og_table = Table(title="Open Graph", show_header=True)
+        og_table.add_column("Tag", style="cyan")
+        og_table.add_column("Value", style="green", max_width=60)
+        for k, v in report.og_tags.items():
+            og_table.add_row(k, v[:60] + ("..." if len(v) > 60 else ""))
+        console.print(og_table)
+
+    # --- Issues ---
+    # --- Critical issues ---
+    if report.critical_issues:
+        console.print()
+        console.print("[bold red]Critical Issues:[/bold red]")
+        for issue in report.critical_issues:
+            console.print(f"  [red]![/red] {issue.message}")
+            if issue.suggestion:
+                console.print(f"    [dim]→ {issue.suggestion}[/dim]")
+
+    # --- Warnings ---
+    if report.warnings:
+        console.print()
+        console.print("[bold yellow]Warnings:[/bold yellow]")
+        for issue in report.warnings:
+            console.print(f"  [yellow]![/yellow] {issue.message}")
+            if issue.suggestion:
+                console.print(f"    [dim]→ {issue.suggestion}[/dim]")
+
+    # --- Info ---
+    if report.info_issues:
+        console.print()
+        console.print("[bold]Suggestions:[/bold]")
+        for issue in report.info_issues:
+            console.print(f"  [dim]• {issue.message}[/dim]")
+            if issue.suggestion:
+                console.print(f"    [dim]→ {issue.suggestion}[/dim]")
+
+    if not report.issues:
+        console.print()
+        console.print("[green]No SEO issues found![/green]")
+
+    # --- Export ---
+    if args.export:
+        return _export_content(report.to_dict(), args.export, args.output, args.url)
+
+    if args.output:
+        import json as _json
+        with open(args.output, "w", encoding="utf-8") as f:
+            _json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
+        console.print(f"[green]Saved SEO report to {args.output}[/green]")
+
+    return 0
+
+
+def _backlinks_report(args) -> int:
+    """Discover backlinks via search engine queries."""
+    from .seo import BacklinkAnalyzer
+
+    sources = [s.strip() for s in args.backlink_sources.split(",")]
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Finding backlinks for {args.url}...", total=None)
+
+        def on_progress(msg):
+            progress.update(task, description=msg)
+
+        report = BacklinkAnalyzer.find(
+            args.url,
+            limit=args.backlink_limit,
+            sources=sources,
+            scrape_backlinks=not args.no_scrape_backlinks,
+            on_progress=on_progress,
+        )
+
+        progress.update(task, completed=True)
+
+    # --- Summary panel ---
+    console.print()
+    console.print(Panel(
+        f"[bold]Target:[/bold] {report.target}\n"
+        f"[bold]Backlinks found:[/bold] {len(report.backlinks)} "
+        f"([green]{report.verified_count} verified[/green] / "
+        f"[yellow]{report.unverified_count} unverified[/yellow])\n"
+        f"[bold]Unique domains:[/bold] {report.unique_domains}\n"
+        f"[bold]Dofollow:[/bold] {report.dofollow_count}  "
+        f"[bold]Nofollow:[/bold] {report.nofollow_count}\n"
+        f"[bold]Search engines:[/bold] {', '.join(report.search_engines_used)}",
+        title="Backlink Report",
+        border_style="blue",
+    ))
+
+    # --- Backlinks table ---
+    if report.backlinks:
+        bl_table = Table(title="Backlinks", show_header=True)
+        bl_table.add_column("Source URL", style="cyan", max_width=55)
+        bl_table.add_column("Anchor Text", style="green", max_width=30)
+        bl_table.add_column("Rel", style="yellow")
+        bl_table.add_column("Engine", style="dim")
+        bl_table.add_column("Status", style="dim")
+
+        for bl in report.backlinks[:50]:  # Show top 50
+            rel_display = bl.rel_type if bl.rel_type != "follow" else "[green]follow[/green]"
+            status_display = "[green]verified[/green]" if bl.verified else "[yellow]unverified[/yellow]"
+            bl_table.add_row(
+                bl.source_url[:55],
+                bl.anchor_text[:30] or "[dim]—[/dim]",
+                rel_display,
+                bl.search_engine,
+                status_display,
+            )
+
+        console.print(bl_table)
+
+        if len(report.backlinks) > 50:
+            console.print(f"  [dim]... and {len(report.backlinks) - 50} more backlinks[/dim]")
+        if report.unverified_count:
+            console.print(
+                "[dim]Unverified results are pages the search engines returned but where "
+                "no direct link to the target could be confirmed.[/dim]"
+            )
+    else:
+        console.print("[yellow]No backlinks found.[/yellow]")
+
+    # --- Anchor text distribution ---
+    anchor_dist = report.anchor_text_distribution
+    if anchor_dist:
+        console.print()
+        console.print("[bold]Top Anchor Texts:[/bold]")
+        for text, count in list(anchor_dist.items())[:10]:
+            console.print(f"  {count}x  {text[:50]}{'...' if len(text) > 50 else ''}")
+
+    # --- Errors ---
+    if report.errors:
+        console.print()
+        console.print("[yellow]Search errors:[/yellow]")
+        for err in report.errors:
+            console.print(f"  [dim]• {err}[/dim]")
+
+    # --- Export ---
+    if args.export:
+        return _export_content(report.to_dict(), args.export, args.output, args.url)
+
+    if args.output:
+        import json as _json
+        with open(args.output, "w", encoding="utf-8") as f:
+            _json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
+        console.print(f"[green]Saved backlink report to {args.output}[/green]")
+
+    return 0
+
+
+def _crawl(args) -> int:
+    """Crawl a website with progress bar."""
+    scraper = _create_scraper(args)
+    progress_cb = _verbose_progress if args.verbose else None
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Crawling...", total=args.max_pages)
+
+        def on_page(done, failed):
+            progress.update(task, completed=done + failed)
+
+        result = crawl(
+            args.url,
+            max_pages=args.max_pages,
+            on_page=on_page,
+            scraper=scraper,
+            on_progress=progress_cb,
+        )
+
+        progress.update(task, completed=args.max_pages, description="Crawl complete!")
+
+    # Summary
+    console.print()
+    console.print(Panel(
+        f"[green]Scraped: {result.total_pages} pages[/green]\n"
+        f"[red]Failed: {result.total_failed} pages[/red]\n"
+        f"URL: {args.url}",
+        title="Crawl Summary",
+        border_style="blue",
+    ))
+
+    # Convert to exportable format
+    pages = [{"url": p.url, "content": p.content} for p in result.pages]
+
+    # Export
+    if args.export:
+        return _export_content(pages, args.export, args.output, args.url)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(result.to_text())
+        console.print(f"[green]Saved {result.total_pages} pages to {args.output}[/green]")
+    else:
+        print(result.to_text())
+
+    return 0
+
+
+def _download(args) -> int:
+    """Download files from page."""
+    scraper = _create_scraper(args)
+    downloader = Downloader()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task(f"Downloading from {args.url}...", total=None)
+
+        # Get the page
+        html = scraper.scrape(args.url, return_raw=True, force_browser=args.force_browser)
+
+        if args.download_images:
+            results = downloader.download_images(html, args.url, args.download_dir)
+        else:
+            results = downloader.download_links(html, args.url, args.download_dir)
+
+        progress.update(task, completed=True)
+
+    # Summary
+    successful = sum(1 for r in results if r.success)
+    failed = sum(1 for r in results if not r.success)
+
+    console.print()
+    console.print(Panel(
+        f"[green]Downloaded: {successful} files[/green]\n"
+        f"[red]Failed: {failed} files[/red]\n"
+        f"Directory: {args.download_dir}",
+        title="Download Summary",
+        border_style="blue",
+    ))
+
+    return 0
+
+
+def _export_content(content, format: str, output: str, url: str) -> int:
+    """Export content to specified format."""
+    if isinstance(content, str):
+        # Parse text content into structured data
+        data = [{"url": url, "content": content}]
+    else:
+        data = content
+
+    # Determine output filename
+    if not output:
+        output = f"output.{format if format != 'markdown' else 'md'}"
+
+    # Export
+    result = DataExporter.export(data, format=format, file=output)
+    console.print(f"[green]Exported to {output} ({format})[/green]")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

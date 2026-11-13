@@ -1,0 +1,108 @@
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "intelliscrape"
+version = "3.2.0"
+description = "Advanced web scraping library with anti-detection, TLS impersonation, and stealth browsing. Scrapes 98% of websites."
+readme = "README.md"
+license = "LGPL-2.1"
+requires-python = ">=3.9"
+
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+    "curl_cffi>=0.7.0",
+    "playwright>=1.40.0",
+    "markdownify>=1.0.0",
+    "rich",
+    "fastapi[standard]>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0.0",
+    "psycopg[binary]>=3.2.0",
+    "defusedxml",
+]
+
+authors = [
+  {name = "GuixJoy", email = "guixjoy@users.noreply.github.com"},
+]
+
+keywords = [
+    "web scraping",
+    "anti-detection",
+    "stealth browser",
+    "tls fingerprint",
+    "captcha solving",
+    "proxy rotation",
+    "python scraper",
+    "playwright",
+    "beautifulsoup",
+    "data extraction",
+    "cloudflare bypass",
+    "nodriver",
+    "camoufox",
+    "website mirroring",
+    "httrack",
+    "warc",
+    "offline browsing",
+]
+
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+
+[project.optional-dependencies]
+stealth = [
+    "nodriver>=0.30",
+]
+camoufox = [
+    "camoufox>=0.1.0",
+]
+captcha = [
+    "capsolver>=1.0.0",
+]
+async = [
+    "aiohttp>=3.9.0",
+]
+all = [
+    "nodriver>=0.30",
+    "camoufox>=0.1.0",
+    "capsolver>=1.0.0",
+    "playwright",
+    "aiohttp>=3.9.0",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+
+[project.scripts]
+intelliscrape = "intelliscrape.cli:main"
+
+
+[project.urls]
+Homepage = "https://github.com/GuixJoy/IntelliScrape"
+Documentation = "https://github.com/GuixJoy/IntelliScrape#readme"
+Repository = "https://github.com/GuixJoy/IntelliScrape"
+Issues = "https://github.com/GuixJoy/IntelliScrape/issues"
+
+[tool.setuptools.package-data]
+"intelliscrape.design" = ["collect.js"]
