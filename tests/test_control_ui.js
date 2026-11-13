@@ -45,7 +45,7 @@ const fixture = {token:"synthetic",version:"2.7.0-local-panel",code_root:"synthe
     {instance_id:2,alive:true,phase:"recording",pause_supported:true,pause_requested:false,
       status:{live_id:"123",segment_index:1,elapsed_seconds:45,planned_duration_seconds:60,
         latest_response_t:1760000000,last_persisted_t:1760000002,last_persisted_sequence:42,
-        unattributed_response_count:3,journal_error:true,last_scan_result:"non_digital",
+        unattributed_response_count:3,journal_error:true,stopwait_record_gap:true,last_scan_result:"non_digital",
         pending_rooms:2,pending_archive_reason:"自然结束尾批归档失败，保留原始数据"}}]};
 fixture.settings.instances=fixture.instances;
 fixture.default_settings=JSON.parse(JSON.stringify(fixture.settings));
@@ -137,6 +137,7 @@ async function main() {
   assert.match(statusDetail.textContent,/最近落盘：.*序号 42/);
   assert.match(statusDetail.textContent,/未归属响应：3 条/);
   assert.match(statusDetail.textContent,/原始响应写入错误/);
+  assert.match(statusDetail.textContent,/停等结局记录存在写入缺口/);
   assert.match(statusDetail.textContent,/最近扫描：非数字人/);
   assert.match(statusDetail.textContent,/待归档房间：2 间/);
   assert.match(statusDetail.textContent,/自然结束尾批归档失败/);

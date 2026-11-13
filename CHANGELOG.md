@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 新增停等结局记录：登录失效重新注入 Cookie、人工验证码等待、人工登录等待分别追加写入实例暂存目录的 `stop_wait_outcomes.jsonl`，记录房间 liveId、实例端口、发生时间和等待上限；等待结束区分完成、超时与收到停止请求。
+- 停等记录写入失败只在状态 `stopwait_record_gap` 中标记缺口，不影响采集主流程；人工登录等待超时仍按原逻辑以退出码 3 退出，等待时长不因记录而改变。
+
 ### Fixed
 - 2.6.1：完整响应写入 staging 扫描 journal 与段 journal，内存预览保留 800000 字符上限并记录截断元数据；最终 JSON 仍内嵌完整 responses。
 - 统一监听与扫描共享状态锁，拒绝 liveId 不匹配的迟到直播详情；验证码改为有限时人工等待，控制台显示等待状态。

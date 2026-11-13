@@ -35,6 +35,7 @@ from src.utils.runtime_options import read_runtime_options
 from src.crawler.response_attribution import attribution_status, detail_live_urls
 from src.crawler.retry_state import RetryState, RetryStateError
 from src.crawler.recovery import reconcile_room
+from src.crawler.stopwait_records import StopWaitRecords
 from src.utils.digital_flags import (
     find_values_by_key, parse_json_body,
     summarize_digital_flags, title_keywords_in_values,
@@ -70,7 +71,35 @@ RUNTIME = read_runtime_options()
 status_data = {"pid": os.getpid(), "port": PORT, "run_id": RUN_ID,
                "latest_response_t": None, "last_response_sequence": 0,
                "unattributed_response_count": 0, "journal_error": False,
-               "last_persisted_sequence": 0, "last_persisted_t": None}
+               "last_persisted_sequence": 0, "last_persisted_t": None,
+               "stopwait_record_gap": False}
+
+
+def _mark_stopwait_gap():
+    """Record-writing problems are reported, never raised into capture."""
+    status_data["stopwait_record_gap"] = True
+    # Persist the marker into the existing status snapshot without dropping
+    # the last published phase fields.
+    if not STATUS_FILE or not os.path.isfile(STATUS_FILE):
+        return
+    try:
+        with open(STATUS_FILE, encoding="utf-8") as stream:
+            current = json.load(stream)
+        if not isinstance(current, dict):
+            return
+        current["stopwait_record_gap"] = True
+        atomic_json(STATUS_FILE, current)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+try:
+    STOPWAIT = StopWaitRecords(OUTDIR, PORT, RUN_ID, INSTANCE_ID, on_gap=_mark_stopwait_gap)
+except Exception:
+    STOPWAIT = None
+    _mark_stopwait_gap()
+
+
 processed_state_path = (Path(STATUS_FILE).parent / f"worker_state_{INSTANCE_ID}.json"
                         if STATUS_FILE else None)
 try:
@@ -246,31 +275,81 @@ def get_cookie_header():
 
 def wait_for_human_captcha(page, timeout=180):
     """Wait for user to finish captcha; stop request can interrupt wait."""
+    records = globals().get("STOPWAIT")
+    status_snapshot = globals().get("status_data")
+    live_id = status_snapshot.get("live_id") if isinstance(status_snapshot, dict) else None
+    if live_id is None:
+        capture_state = globals().get("state")
+        if isinstance(capture_state, dict):
+            live_id = capture_state.get("live_id")
+    started = time.monotonic()
+    wait_started = False
+
+    def finish(outcome):
+        if records and wait_started:
+            records.captcha_wait_finished(
+                live_id=live_id, outcome=outcome,
+                waited_seconds=round(time.monotonic() - started, 1),
+                limit_seconds=timeout)
+
     try:
         if not page.ele('#nc_1_wrapper', timeout=1):
             return True
         publish_status("captcha_required", reason="请在 Edge 页面手动完成验证码")
+        if records:
+            records.captcha_wait_started(live_id=live_id, limit_seconds=timeout)
+            wait_started = True
         log("  页面需要人工完成验证码；等待最多 180 秒")
-        deadline = time.monotonic() + timeout
+        deadline = started + timeout
         while time.monotonic() < deadline:
             process_pending_command()
             if stop_requested():
+                finish("stop_requested")
                 return False
             if not page.ele('#nc_1_wrapper', timeout=1):
                 publish_status("scanning", reason="")
                 log("  人工验证码已完成，恢复扫描")
+                finish("completed")
                 return True
             time.sleep(1)
         publish_status("waiting", reason="人工验证码等待超时")
         log("  人工验证码等待超时")
+        finish("timeout")
         return False
     except Exception:
+        finish("failed")
         return False
 
 REAL_LOGIN = {"unb", "sgcookie", "thb"}
 def logged_in():
     try: return bool(REAL_LOGIN & {c.get("name") for c in page.cookies()})
     except: return False
+
+
+def wait_for_manual_login(timeout=300):
+    """Wait for a human login; unchanged timeout/exit semantics, now recorded.
+
+    Returns one of ``completed`` / ``timeout`` / ``stop_requested``.  Record
+    writing is best-effort and can never lengthen the wait or alter the result.
+    """
+    records = globals().get("STOPWAIT")
+    started = time.monotonic()
+    if records:
+        records.manual_login_wait_started(
+            live_id=None, limit_seconds=timeout, trigger_reason="initial_login_required")
+    deadline = started + timeout
+    while not logged_in() and not stop_requested() and time.monotonic() < deadline:
+        time.sleep(2)
+    if logged_in():
+        outcome = "completed"
+    else:
+        outcome = "stop_requested" if stop_requested() else "timeout"
+    if records:
+        records.manual_login_wait_finished(
+            live_id=None, outcome=outcome,
+            waited_seconds=round(time.monotonic() - started, 1),
+            limit_seconds=timeout)
+    return outcome
 
 
 def login_expired():
@@ -304,6 +383,31 @@ def refresh_login():
     except Exception as e:
         log(f"  refresh_login 异常: {e}")
     return False
+
+
+def reinject_login(live_id=None, trigger_reason="login_expired_response",
+                   manual_login_wait=False):
+    """Re-inject saved cookies after login expiry and record the outcome.
+
+    The record captures the trigger, the injection result, and whether the
+    caller then falls into a blocking human-login wait.  Recording failures
+    never change the returned result or the capture flow.
+    """
+    success = refresh_login()
+    records = globals().get("STOPWAIT")
+    if records:
+        if success:
+            follow_up = "resume_capture"
+        elif manual_login_wait:
+            follow_up = "manual_login_wait"
+        else:
+            follow_up = "retry_after_cooldown"
+        records.cookie_reinjection(
+            live_id=live_id, trigger_reason=trigger_reason, success=bool(success),
+            manual_login_required=not success, manual_login_wait=bool(manual_login_wait),
+            follow_up_action=follow_up,
+            detail=None if success else "cookie_reinjection_insufficient_or_failed")
+    return success
 
 def listen_loop():
     while True:
@@ -817,16 +921,25 @@ else:
                 page.set.cookies(json.load(saved_file))
             page.refresh()
             time.sleep(3)
+            _startup_injection = ("success" if logged_in() else "failed")
         except Exception as error:
             log(f"Cookie 读取失败: {type(error).__name__}")
+            _startup_injection = "failed"
+        if globals().get("STOPWAIT"):
+            globals()["STOPWAIT"].cookie_reinjection(
+                live_id=None, trigger_reason="startup_login_required",
+                success=_startup_injection == "success",
+                manual_login_required=not logged_in(),
+                manual_login_wait=not logged_in(),
+                follow_up_action=("manual_login_wait" if not logged_in() else "resume_capture"),
+                detail=None if _startup_injection == "success" else
+                       "startup_cookie_reinjection_insufficient")
     if not logged_in():
         log("请在新开的 Edge 窗口登录，程序最多等候 5 分钟")
         publish_status("login_required")
-        deadline = time.monotonic() + 300
-        while not logged_in() and not stop_requested() and time.monotonic() < deadline:
-            time.sleep(2)
-        if not logged_in():
-            publish_status("stopped" if stop_requested() else "login_timeout")
+        outcome = wait_for_manual_login(timeout=300)
+        if outcome != "completed":
+            publish_status("stopped" if outcome == "stop_requested" else "login_timeout")
             sys.exit(3)
 if logged_in() and os.environ.get("LIVE_SAVE_COOKIES", "1") != "0":
     try:
@@ -1014,7 +1127,7 @@ while True:
                        retry_exhausted=entry["retry_exhausted"])
         if login_expired():
             log("  ⚠️ 检测到登录失效，尝试重新注入 Cookie...")
-            refresh_login()
+            reinject_login(lid, trigger_reason="login_expired_response")
         time.sleep(5); continue
 
     # 录制
@@ -1067,7 +1180,7 @@ while True:
         log(f"  room_{lid} 录制失败")
         if login_expired():
             log("  ⚠️ 检测到登录失效，尝试重新注入 Cookie...")
-            refresh_login()
+            reinject_login(lid, trigger_reason="login_expired_response")
         last_record[lid] = now
         status_data["previous_room_id"] = str(lid)
         entry = retry_state.failed(lid, "record_segment_failed")

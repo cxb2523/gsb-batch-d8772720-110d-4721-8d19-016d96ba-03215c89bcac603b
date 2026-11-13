@@ -96,6 +96,7 @@ function statusDetails(status, waitingReason="") {
   if(Number.isFinite(status.unattributed_response_count))lines.push("未归属响应："+status.unattributed_response_count+" 条");
   if(status.journal_error===true)lines.push("原始响应写入错误");
   else if(status.journal_error===false)lines.push("原始响应写入正常");
+  if(status.stopwait_record_gap===true)lines.push("停等结局记录存在写入缺口");
   if(typeof status.last_scan_result==="string"&&status.last_scan_result)lines.push("最近扫描："+scanResultName(status.last_scan_result));
   const pending=pendingRoomCount(status);if(pending!==null)lines.push("待归档房间："+pending+" 间");
   if(typeof status.pending_archive_reason==="string"&&status.pending_archive_reason)lines.push("归档说明："+status.pending_archive_reason);
