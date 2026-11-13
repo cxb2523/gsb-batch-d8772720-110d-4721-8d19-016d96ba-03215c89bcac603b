@@ -356,6 +356,37 @@ scrape --jsonl --row "article" --field "title=h2" --field "date=time/@datetime" 
 
 The whole page is read and the output built in memory: `--jsonl` changes the format, not the memory use.
 
+### Batch: a list of URLs
+
+Fetching one URL at a time means a single network error loses the whole run. Use `--urls FILE` to fetch one page after the other, each with the same extraction as a single URL, and `--retries N` to retry a page that fails:
+
+```bash
+# urls.txt: one URL per line; blank lines and lines starting with # are skipped
+scrape --urls urls.txt --retries 2 -e "//h1/text()"
+```
+
+- Pages are requested one at a time, in file order.
+- Each page keeps the single URL rules: 30 s timeout, `-u` User-Agent, HTTP 4xx and 5xx are a failure for that page. A failed page does not stop the batch.
+- `--retries N` (default 0) adds N attempts when a page fails with a network error or a 5xx. A 4xx is never retried.
+- At the end one line goes to stderr, such as `3/5 pages ok (failed: https://e.org/two)`. The exit code is 0 when every page worked and 1 when at least one failed; the pages that worked keep their output.
+- Without `--jsonl`, each successful page prints its results as usual, and each failed page prints one line on stderr.
+
+With `--jsonl` every page gives one JSON object, in file order. `data` holds that page's result as with a single URL, and a failed page has `error` instead:
+
+```bash
+scrape --urls urls.txt --retries 2 --jsonl -e "//h1/text()"
+# {"url": "https://e.org/one", "ok": true, "attempts": 1, "data": ["One"]}
+# {"url": "https://e.org/two", "ok": false, "attempts": 3, "error": "HTTP 500"}
+```
+
+`attempts` counts every request made for the page, including the first. To rerun only the failed pages, filter the output:
+
+```bash
+scrape --urls urls.txt --jsonl -e "//h1/text()" | jq -r 'select(.ok == false) | .url' > retry.txt
+```
+
+Batch mode only works with the per-page output options: `-e`, `-t`, `-a`, `-b`, `-j`, `--json-array`, `--jsonl`, `--absolute-urls`, plus `-u` and `--retries`. The HTML argument, `-r`, `-x`, `--row`/`--field` and `--base-url` are refused, as is `--retries` with no `--urls` or a negative `--retries`. A conflict exits with code 1, stdout empty and one `Error:` line on stderr. Single URL and stdin input are unchanged.
+
 ### Absolute URLs
 
 Links and images often have relative values. Use `--absolute-urls` to get absolute `href` and `src` values, in every output mode except `-t`:

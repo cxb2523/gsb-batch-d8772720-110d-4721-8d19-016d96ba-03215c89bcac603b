@@ -860,3 +860,321 @@ def test_row_rejects_invalid_expressions():
 def test_jsonl_rejects_other_output_modes():
     for flags in (["-t"], ["-x"], ["-a", "href"], ["-b"], ["-j"]):
         assert "--jsonl" in rows_error("--jsonl", "-e", "a", *flags)
+
+
+class BatchHandler(BaseHTTPRequestHandler):
+    """Answers with the configured status per path, counting each request."""
+
+    def __init__(self, *args, routes=None, counts=None, agents=None, **kwargs):
+        self.routes = routes
+        self.counts = counts
+        self.agents = agents
+        super().__init__(*args, **kwargs)
+
+    def do_GET(self):
+        count = self.counts.get(self.path, 0) + 1
+        self.counts[self.path] = count
+        self.agents.setdefault(self.path, self.headers.get("User-Agent"))
+        status, body = self.routes(self.path, count)
+        self.send_response(status)
+        if body is not None:
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body is not None:
+            self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def run_batch_server(routes):
+    counts = {}
+    agents = {}
+    handler = lambda *args, **kwargs: BatchHandler(
+        *args, routes=routes, counts=counts, agents=agents, **kwargs
+    )
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, counts, agents
+
+
+def stop_server(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+def flaky_routes(path, count):
+    """The first two requests to /flaky fail with 500, then it works."""
+    if path == "/flaky":
+        return (500, b"<h1>boom</h1>") if count <= 2 else (200, b"<h1>flaky ok</h1>")
+    if path == "/missing":
+        return 404, b"<h1>nope</h1>"
+    return 200, b"<h1>fine</h1>"
+
+
+def write_urls(tmp_path, *lines):
+    path = tmp_path / "urls.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def test_batch_retries_5xx_and_reports_each_page_in_order(tmp_path):
+    server, thread, counts, _ = run_batch_server(flaky_routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(
+            tmp_path,
+            "# pages to scrape",
+            "",
+            f"{base}/flaky",
+            f"{base}/missing",
+            "   ",
+            f"{base}/fine",
+        )
+        result = run_scrape("--urls", urls, "--retries", "2", "--jsonl", "-e", "//h1/text()")
+    finally:
+        stop_server(server, thread)
+
+    lines = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [line["url"] for line in lines] == [
+        f"{base}/flaky", f"{base}/missing", f"{base}/fine"
+    ]
+    assert lines[0] == {"url": f"{base}/flaky", "ok": True, "attempts": 3,
+                        "data": ["flaky ok"]}
+    assert lines[1]["ok"] is False
+    assert lines[1]["attempts"] == 1  # 404 is not retried
+    assert lines[1]["error"]
+    assert lines[2] == {"url": f"{base}/fine", "ok": True, "attempts": 1,
+                        "data": ["fine"]}
+    assert counts["/flaky"] == 3
+    assert counts["/missing"] == 1
+
+    assert result.returncode == 1
+    assert "2/3 pages ok" in result.stderr
+    assert f"{base}/missing" in result.stderr
+
+
+def test_batch_without_jsonl_prints_pages_and_failure_lines(tmp_path):
+    server, thread, _, _ = run_batch_server(flaky_routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(tmp_path, f"{base}/flaky", f"{base}/missing", f"{base}/fine")
+        result = run_scrape("--urls", urls, "--retries", "2", "-e", "//h1/text()", "-t")
+    finally:
+        stop_server(server, thread)
+
+    assert result.returncode == 1
+    # Successful pages keep their output, in URL order, despite the failure
+    assert result.stdout == "flaky ok\nfine\n"
+    failure_lines = [l for l in result.stderr.splitlines() if "/missing" in l]
+    assert any("1" in line and "404" in line for line in failure_lines)
+    assert "2/3 pages ok" in result.stderr
+
+
+def test_batch_all_pages_ok_exits_zero(tmp_path):
+    server, thread, _, _ = run_batch_server(flaky_routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(tmp_path, f"{base}/fine", f"{base}/fine")
+        result = run_scrape("--urls", urls, "-e", "//h1/text()")
+    finally:
+        stop_server(server, thread)
+
+    assert result.returncode == 0
+    assert result.stdout == "fine\nfine\n"
+    assert "2/2 pages ok" in result.stderr
+
+
+def test_batch_retries_default_zero(tmp_path):
+    server, thread, counts, _ = run_batch_server(flaky_routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(tmp_path, f"{base}/flaky")
+        result = run_scrape("--urls", urls, "--jsonl", "-e", "//h1/text()")
+    finally:
+        stop_server(server, thread)
+
+    assert result.returncode == 1
+    assert counts["/flaky"] == 1
+    line = json.loads(result.stdout)
+    assert line["ok"] is False
+    assert line["attempts"] == 1
+
+
+def test_batch_network_error_is_retried(tmp_path):
+    # A port with no listener: connection refused, a network error
+    urls = write_urls(tmp_path, "http://127.0.0.1:1/never")
+    result = run_scrape("--urls", urls, "--retries", "2", "--jsonl", "-e", "//h1")
+
+    assert result.returncode == 1
+    line = json.loads(result.stdout)
+    assert line["ok"] is False
+    assert line["attempts"] == 3
+    assert line["error"]
+
+
+def test_batch_uses_user_agent_and_page_url(tmp_path):
+    seen = {}
+
+    def routes(path, count):
+        return 200, b'<a href="rel.html">l</a>'
+
+    server, thread, _, agents = run_batch_server(routes)
+    try:
+        port = server.server_address[1]
+        base = f"http://127.0.0.1:{port}"
+        urls = write_urls(tmp_path, f"{base}/dir/page.html")
+        result = run_scrape("--urls", urls, "--jsonl", "--absolute-urls",
+                            "-u", "batch-agent/1.0", "-e", "//a/@href")
+    finally:
+        stop_server(server, thread)
+
+    assert result.returncode == 0
+    assert agents["/dir/page.html"] == "batch-agent/1.0"
+    line = json.loads(result.stdout)
+    assert line["data"] == [f"{base}/dir/rel.html"]
+
+
+def cli_errors(result):
+    """stderr lines from scrape itself, without the runpy import warning."""
+    return [line for line in result.stderr.splitlines() if not line.startswith("<frozen runpy>")]
+
+
+def test_batch_conflicting_arguments_are_usage_errors(tmp_path):
+    urls = write_urls(tmp_path, "http://127.0.0.1:1/x")
+    for flags in (
+        ["page.html"],
+        ["-r"],
+        ["-x"],
+        ["--row", "a", "--field", "t=h1"],
+        ["--base-url", "https://e.org/"],
+    ):
+        result = run_scrape("--urls", urls, "-e", "//h1", *flags)
+        assert result.returncode == 1, flags
+        assert result.stdout == ""
+        errors = cli_errors(result)
+        assert errors[0].startswith("Error: "), flags
+        assert "Traceback" not in result.stderr
+
+
+def test_batch_retries_needs_urls_and_must_not_be_negative(tmp_path):
+    only_retries = run_scrape("--retries", "2", "-e", "//h1", input_data="<h1>x</h1>")
+    assert only_retries.returncode == 1
+    assert only_retries.stdout == ""
+    assert "--urls" in only_retries.stderr
+
+    urls = write_urls(tmp_path, "http://127.0.0.1:1/x")
+    negative = run_scrape("--urls", urls, "--retries", "-1", "-e", "//h1")
+    assert negative.returncode == 1
+    assert negative.stdout == ""
+    assert "--retries" in negative.stderr
+
+
+def test_batch_missing_option_values_are_usage_errors(tmp_path):
+    urls = write_urls(tmp_path, "http://127.0.0.1:1/x")
+    for flags in (["--urls"], ["--retries"], ["--urls", urls, "--retries"]):
+        result = run_scrape(*flags, "-e", "//h1")
+        assert result.returncode == 1, flags
+        assert result.stdout == ""
+        assert cli_errors(result)[0].startswith("Error: "), flags
+
+
+def test_batch_missing_urls_file_is_an_error(tmp_path):
+    result = run_scrape("--urls", str(tmp_path / "nope.txt"), "-e", "//h1")
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert cli_errors(result)[0].startswith("Error: ")
+    assert "nope.txt" in result.stderr
+
+
+def test_batch_url_list_skips_comments_and_blank_lines(tmp_path):
+    server, thread, counts, _ = run_batch_server(flaky_routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(tmp_path, "# all comments", "", "   ", f"  {base}/fine  ")
+        result = run_scrape("--urls", urls, "--jsonl", "-e", "//h1/text()")
+    finally:
+        stop_server(server, thread)
+
+    assert result.returncode == 0
+    lines = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [line["url"] for line in lines] == [f"{base}/fine"]
+    assert counts == {"/fine": 1}
+    assert "1/1 pages ok" in result.stderr
+
+
+def test_batch_empty_url_list_is_a_successful_run(tmp_path):
+    urls = write_urls(tmp_path, "# nothing to do", "")
+    result = run_scrape("--urls", urls, "-e", "//h1")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert "0/0 pages ok" in result.stderr
+
+
+def test_batch_invalid_xpath_is_an_error_before_any_request(tmp_path):
+    server, thread, counts, _ = run_batch_server(flaky_routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(tmp_path, f"{base}/fine")
+        result = run_scrape("--urls", urls, "-e", "//[bad")
+    finally:
+        stop_server(server, thread)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "Error: invalid XPath" in result.stderr
+    assert counts == {}
+
+
+def test_batch_parse_failure_on_one_page_does_not_stop_the_batch(tmp_path):
+    def routes(path, count):
+        if path == "/empty":
+            return 200, b"<!-- nothing -->"
+        return 200, b"<h1>ok</h1>"
+
+    server, thread, _, _ = run_batch_server(routes)
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        urls = write_urls(tmp_path, f"{base}/empty", f"{base}/good")
+        result = run_scrape("--urls", urls, "--jsonl", "-e", "//h1/text()")
+    finally:
+        stop_server(server, thread)
+
+    lines = [json.loads(line) for line in result.stdout.splitlines()]
+    assert lines[0]["ok"] is False
+    assert lines[0]["error"]
+    assert lines[0]["attempts"] == 1
+    assert lines[1] == {"url": f"{base}/good", "ok": True, "attempts": 1,
+                        "data": ["ok"]}
+    assert result.returncode == 1
+    assert "1/2 pages ok" in result.stderr
+
+
+def test_single_url_and_stdin_behaviour_is_unchanged():
+    html = "<html><body><h1>same</h1></body></html>"
+
+    stdin = run_scrape("-e", "//h1/text()", "-t", input_data=html)
+    assert stdin.returncode == 0
+    assert stdin.stdout == "same\n"
+    assert cli_errors(stdin) == []
+
+    server, thread = run_test_server(html.encode("utf-8"))
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        single = run_scrape(url, "-e", "//h1/text()", "-t")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert single.returncode == 0
+    assert single.stdout == "same\n"
+    assert "pages ok" not in single.stderr
+
+    missing = run_scrape("-e", "//h1", input_data="<html></html>")
+    assert missing.returncode == 0
+

@@ -1,5 +1,14 @@
 # LOG
 
+## 2026-11-14
+
+- v1.3.8: `--urls FILE` per il batch di URL e `--retries N` per i soli errori di rete e 5xx; un 4xx non viene ritentato
+- Batch: pagine in ordine di file, un oggetto per riga con `url`, `ok`, `attempts` e `data` o `error` se `--jsonl`; senza `--jsonl` una riga su stderr per pagina fallita e un riepilogo `N/M pages ok` con gli URL falliti
+- Batch: le pagine riuscite tengono l'output, il codice di uscita è 1 se una pagina fallisce; input a URL singolo e stdin invariati
+- Conflitti in batch (argomento HTML, `-r`, `-x`, `--row`/`--field`, `--base-url`, `--retries` da solo o negativo): errore di una riga, stdout vuoto, codice 1
+- Test: server HTTP locale con due 500 e poi 200 (`--retries 2` → `attempts` 3), 404 senza retry (`attempts` 1), conflitti, valore mancante o non valido di `--retries`, XPath non valido, casi singolo URL e stdin
+- Nota: 10 test di codifica falliscono già prima di questa modifica su Windows (cp1252, UTF-8 e testo con `è`); non toccati questi percorsi
+
 ## 2026-11-06
 
 - v1.3.7 su PyPI, CI verde su Python 3.8-3.14; change `resolve-relative-urls` e `row-field-extraction` archiviate

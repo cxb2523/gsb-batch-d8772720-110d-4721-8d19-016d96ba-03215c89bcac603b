@@ -150,6 +150,8 @@ One JSON result per line, for `jq`, DuckDB and pipelines on large output. Releas
 
 Options for timeout, custom headers and perhaps cookies, for sites that need an `Accept-Language`, for example. Avoid duplicating curl: piping through stdin remains a good alternative.
 
+Batch retries (`--urls` with `--retries`) are in place. Still open: a configurable timeout and a delay between attempts, for servers that rate-limit.
+
 ### 15. Smaller ideas to evaluate
 
 - Limit on the number of results, to explore a page without printing everything.

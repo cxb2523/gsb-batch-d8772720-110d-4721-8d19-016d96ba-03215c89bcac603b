@@ -573,6 +573,39 @@ Madrid</pre>
       </div>
     </div>
 
+    <!-- 12 -->
+    <div class="card rounded-xl overflow-hidden">
+      <div class="px-5 py-3 border-b flex items-center gap-3" style="background:rgba(255,255,255,0.02);border-color:#1a2433;">
+        <span class="font-mono text-xs font-bold" style="color:var(--green);">12</span>
+        <span class="badge-pipe text-xs px-2 py-0.5 rounded font-mono">pipeline</span>
+        <span class="font-semibold text-sm text-white">Scrape a list of URLs, retrying failures</span>
+      </div>
+      <div class="p-5 grid md:grid-cols-3 gap-4">
+        <div>
+          <p class="section-label mb-2">Objective</p>
+          <p class="text-sm" style="color:#94a3b8;">Read the URLs from a file, one per line, and extract one page after the other. Blank lines and lines starting with <code class="font-mono text-xs" style="color:var(--green);">#</code> are skipped. <code class="font-mono text-xs" style="color:var(--green);">--retries 2</code> retries a page on a network error or a 5xx, never on a 4xx. A failed page does not stop the batch: <code class="font-mono text-xs" style="color:var(--green);">--jsonl</code> gives one object per page with <code class="font-mono text-xs" style="color:var(--green);">url</code>, <code class="font-mono text-xs" style="color:var(--green);">ok</code>, <code class="font-mono text-xs" style="color:var(--green);">attempts</code> and <code class="font-mono text-xs" style="color:var(--green);">data</code> or <code class="font-mono text-xs" style="color:var(--green);">error</code>, so failed pages can be rerun on their own. The exit code is 1 when a page failed.</p>
+        </div>
+        <div>
+          <p class="section-label mb-2">Command</p>
+          <div class="code-block p-3 flex items-start justify-between gap-2">
+            <pre class="font-mono text-xs" style="color:#cbd5e1;">scrape \
+  --urls urls.txt \
+  --retries 2 \
+  --jsonl -e <span style="color:#fbbf24;">"//h1/text()"</span></pre>
+            <button onclick="copyCode(this,&quot;scrape --urls urls.txt --retries 2 --jsonl -e &quot;//h1/text()&quot;&quot;)" class="font-mono text-xs px-2 py-1 rounded border flex-shrink-0" style="color:#64748b;border-color:#2d3f55;">Copy</button>
+          </div>
+        </div>
+        <div>
+          <p class="section-label mb-2">Output</p>
+          <div class="code-block p-3">
+            <pre class="font-mono text-xs" style="color:#4ade80;">{"url": "https://e.org/one", "ok": true, "attempts": 1, "data": ["One"]}
+{"url": "https://e.org/two", "ok": false, "attempts": 3, "error": "HTTP 500"}
+# stderr: 1/2 pages ok</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 

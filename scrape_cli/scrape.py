@@ -201,252 +201,32 @@ def is_xpath(expression):
 
     return False
 
-def main():
-    # Command line argument parser definition
-    parser = argparse.ArgumentParser(
-        description=(
-            'Extract parts of an HTML page using an XPath query or CSS3 selector.\n'
-            'Reads static HTML and does not run JavaScript: content built in the\n'
-            'browser is not there. Never prompts for input.'
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''\
-examples:
-  scrape -e "//h1" file.html            XPath: matching elements as HTML
-  scrape -e "h1.title" file.html        CSS selector, detected automatically
-  scrape -e "//a/@href" file.html       attribute values as plain text
-  scrape -e "//a" -a href file.html     same, elements without href skipped
-  scrape -e "count(//a)" file.html      XPath function: one value (string,
-                                        number, true/false)
-  scrape -t file.html                   all body text, no script or style
-  scrape -te "//article" file.html      text of the matching elements
-  scrape -je "a" file.html              JSON
-  scrape --json-array -e "a" file.html  JSON, always a flat list
-  scrape --absolute-urls -e "//a/@href" https://example.org/
-                                        absolute href and src values
-  curl -s https://example.org/ | scrape --base-url https://example.org/ -e "a"
-                                        same, for stdin or a local file
-  scrape --row "article" --field "title=h2" --field "url=.//a/@href" file.html
-                                        one JSON object per article
-  scrape --jsonl -e "//a/@href" file.html
-                                        one JSON value per line
-  scrape -be "//article" file.html      wrap output in <html><body>
-  scrape -x -e "//h1" file.html         test only: exit code, no output
-  scrape -e "//h1" https://example.com  fetch from URL
-  cat file.html | scrape -e "//h1"      read from stdin
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; scrape-cli/1.0)"
+REQUEST_TIMEOUT = 30
 
-output:
-  default  one result after the other, on stdout: elements as HTML, strings
-           (@attr, text(), XPath functions) as plain text
-  -e       repeated: results follow the order of the expressions
-  -j       always {"html": {"body": ...}}, where body is:
-             elements  attributes as @name, text as #text; one match of a tag
-                       is an object, several are a list
-             strings   one is a string, several are a list
-             nothing   null
-  --json-array  always a flat list, one item per result, in expression order:
-             [] for nothing, strings as strings, elements as {"tag": ...},
-             function values as strings: count() gives "2"
-  --row    a list with one object per row, one key per --field in the order
-           given, each value a string or null (no match); "" is a match with
-           no text. Elements give their cleaned text. Rows with no match in
-           any field stay in the list.
-  --jsonl  one JSON value per line: the objects of --row, otherwise the items
-           of --json-array. Nothing at all when there are no results.
 
-exit codes:
-  0  success, also when nothing matches: empty output, or null body with -j
-  1  error, with a message on stderr; with -x, no match, with stderr empty
-  2  invalid usage: unknown option or missing option value
+class PageError(Exception):
+    """Failure on one page, with a one-line message for stderr."""
 
-notes:
-  - No match is not an error: use -x to test for it.
-  - HTML with no elements, such as only spaces or comments, exits 1.
-  - With short flags together, -e goes last: -be, -je, -te. As an argument on
-    its own, -eb or -ej is rejected, because -e would take "b" or "j" as value.
-  - -x evaluates only the first -e.
-  - -t with -e includes the text of any script or style inside the matches.
-  - -j fails with exit 1 on attribute names that are not valid XML, such as
-    @click or :bind. Use -e without -j on those pages.
-  - --field is relative to the row and gives only the first match. Write
-    .//a/@href: a/@href looks among direct children only, and //a is refused
-    because it would read the whole document. In functions, write
-    string(.//h2): string(//h2) is not refused and reads the whole document.
-  - --row is not allowed with -e, -t, -x, -a, -b, -j, --json-array.
-    --jsonl is not allowed with -t, -x, -a, -b, -j.
-  - URLs: 30 s timeout, HTTP errors (4xx, 5xx) exit 1.
-  - --absolute-urls changes href and src in the output, not in selection:
-    a[href^="/"] still matches. Base: the first <base href>, against the page
-    URL or --base-url. No absolute base: exit 1. XPath functions such as
-    string(//a/@href) are not changed. Not with -r, ignored with -t and -x.
-  - Charset: from the meta tag, otherwise UTF-8. If the bytes are not valid
-    UTF-8: Windows-1252, then ISO-8859-1. Other encodings need the meta tag.
-'''
-    )
 
-    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+def detect_charset(html_bytes):
+    """Try to detect charset from meta tag"""
+    try:
+        # Look for charset in first 1024 bytes to be efficient
+        head = html_bytes[:1024].decode('ascii', errors='ignore').lower()
+        meta = re.search(r'<meta[^>]+charset=["\']?([\w-]+)', head)
+        if meta:
+            return meta.group(1)
+    except Exception:
+        pass
+    return None
 
-    # Check for incorrect argument order (-eb instead of -be, -ej instead of -je)
-    for wrong, right in (('-eb', '-be'), ('-ej', '-je')):
-        if wrong in sys.argv[1:]:
-            print(f"Error: use {right} not {wrong}.\n  scrape {right} \"//article\" file.html", file=sys.stderr)
-            sys.exit(1)
-    # Defines the HTML input argument (can be a file, URL or stdin)
-    parser.add_argument('html', nargs='?', type=str, default='',
-                        help="HTML input: local file or http(s) URL. Stdin if omitted", metavar="HTML")
-    # Defines the optional argument to extract from the tag
-    parser.add_argument('-a', '--argument', default="",
-                        help="Output the value of this attribute instead of the element. "
-                             "Elements without it are skipped")
-    # Option to include the result within HTML and BODY tags
-    parser.add_argument('-b', '--body', action='store_true', default=False,
-                        help="Wrap the output in a <!DOCTYPE html><html><body> document. "
-                             "Ignored with -t and -j")
-    # Option to extract only text content
-    parser.add_argument('-t', '--text', action='store_true', default=False,
-                        help="Output text only, with whitespace cleaned. "
-                             "Without -e, all body text except script and style")
-    # Option to output structured JSON (built-in, no external xq needed)
-    parser.add_argument('-j', '--json', action='store_true', default=False,
-                        help="Output structured JSON, see below. Not with -t, -x, -a")
-    parser.add_argument('--json-array', action='store_true', default=False,
-                        help="Output JSON as a flat list, one item per result, see below. Same limits as -j")
-    parser.add_argument('--absolute-urls', action='store_true', default=False,
-                        help="Output href and src values as absolute URLs, see notes")
-    parser.add_argument('--base-url', default=None, metavar="URL",
-                        help="Page URL for stdin and local files. Implies --absolute-urls")
-    parser.add_argument('--row', default=None, metavar="EXPR",
-                        help="Select the elements that give one JSON object each. Needs --field")
-    parser.add_argument('--field', default=[], action='append', metavar="NAME=EXPR",
-                        help="Value of a key in each --row object, relative to the row. Repeatable")
-    parser.add_argument('--jsonl', action='store_true', default=False,
-                        help="Output one JSON value per line, see below. Implies --json-array without --row")
-    # Allows to specify one or more XPath or CSS3 selector expressions
-    parser.add_argument('-e', '--expression', default=[], action='append',
-                        help="XPath query or CSS3 selector, detected automatically. Repeatable")
-    # Option to verify the existence of elements matching the expression
-    parser.add_argument('-x', '--check-existence', dest='check_existence', action='store_true', default=False,
-                        help="Output nothing, exit 0 if the first expression matches, 1 if not")
-    # Option to avoid initial HTML parsing, useful in specific cases like CData
-    parser.add_argument('-r', '--rawinput', action='store_true', default=False,
-                        help="Parse the input as strict XML instead of HTML (useful for CData). "
-                             "Malformed input is an error")
-    parser.add_argument('-u', '--user-agent', default=None,
-                        help="User-Agent for URL requests")
-    args = parser.parse_args()
 
-    if args.jsonl and (args.text or args.check_existence or args.argument or args.body or args.json):
-        print("Error: --jsonl cannot be combined with -t, -x, -a, -b or -j.", file=sys.stderr)
-        sys.exit(1)
-    if bool(args.row) != bool(args.field):
-        print("Error: --row and --field must be used together.", file=sys.stderr)
-        sys.exit(1)
-    fields = {}
-    if args.row:
-        if (args.expression or args.text or args.check_existence or args.argument
-                or args.body or args.json or args.json_array):
-            print("Error: --row cannot be combined with -e, -t, -x, -a, -b, -j or --json-array.", file=sys.stderr)
-            sys.exit(1)
-        fields = parse_fields(args.field)
-    elif args.jsonl:
-        args.json_array = True
-
-    # JSON flag is mutually exclusive with -t, -x, -a
-    json_flag = '--json-array' if args.json_array else '--json'
-    if args.json_array:
-        args.json = True
-    if args.json and args.text:
-        print(f"Error: {json_flag} and --text are mutually exclusive.", file=sys.stderr)
-        sys.exit(1)
-    if args.json and args.check_existence:
-        print(f"Error: {json_flag} and --check-existence are mutually exclusive.", file=sys.stderr)
-        sys.exit(1)
-    if args.json and args.argument:
-        print(f"Error: {json_flag} cannot be combined with -a/--argument.", file=sys.stderr)
-        sys.exit(1)
-
-    if args.base_url and not is_absolute_url(args.base_url):
-        print(f"Error: --base-url must be an absolute URL, got '{args.base_url}'.", file=sys.stderr)
-        sys.exit(1)
-    absolute_urls = args.absolute_urls or bool(args.base_url)
-    if absolute_urls and args.rawinput:
-        print("Error: --absolute-urls and --base-url cannot be combined with -r/--rawinput.", file=sys.stderr)
-        sys.exit(1)
-
-    # Check that at least one expression is provided by the user (unless using -t option)
-    if not args.expression and not args.text and not args.row:
-        print(
-            "Error: no expression specified. Use -e \"//selector\" or -t.\n"
-            "  scrape -e \"//h1\" file.html\n"
-            "  scrape -t file.html",
-            file=sys.stderr
-        )
-        sys.exit(1)
-
-    page_url = args.base_url
-    # Determine the source of the input: URL, file, or stdin
-    if args.html:
-        if args.html.startswith('http://') or args.html.startswith('https://'):
-            # If the input is a URL, download the HTML content
-            try:
-                ua = args.user_agent or "Mozilla/5.0 (compatible; scrape-cli/1.0)"
-                headers = {"User-Agent": ua}
-                response = requests.get(args.html, headers=headers, timeout=30)
-                response.raise_for_status()
-                inp = response.content
-                page_url = page_url or response.url
-            except requests.RequestException as e:
-                print(f"Error downloading HTML: {e}", file=sys.stderr)
-                sys.exit(1)
-        else:
-            # If the input is a local file, try to open it
-            try:
-                inp = open(args.html, 'rb').read()
-            except FileNotFoundError:
-                print(f"Error: The file '{args.html}' was not found.", file=sys.stderr)
-                sys.exit(1)
-            except OSError as e:
-                print(f"Error: cannot read '{args.html}': {e.strerror}", file=sys.stderr)
-                sys.exit(1)
-    else:
-        # If the input is from stdin
-        try:
-            inp = sys.stdin.buffer.read()
-            if not inp:
-                print("Error: No input received from stdin", file=sys.stderr)
-                sys.exit(1)
-        except Exception as e:
-            print(f"Error reading input: {e}", file=sys.stderr)
-            sys.exit(1)
-
-    # Check for empty or invalid input
-    if not inp:
-        print("Error: Input is empty or invalid", file=sys.stderr)
-        sys.exit(1)
-
-    # Convert CSS selectors to XPath if necessary
-    if args.text and not args.expression:
-        # If -t is used without expressions, default to body text excluding scripts and styles
-        expression = ['//body//text()[not(ancestor::script) and not(ancestor::style)]']
-    else:
-        expression = [e if is_xpath(e) else convert_css_to_xpath(e) for e in args.expression]
-
+def parse_document(inp, args):
+    """Parse the input bytes as HTML or XML. Raises PageError with one line."""
     # Create an HTML parser with options for error recovery
     html_parser = etree.HTMLParser(encoding='utf-8', recover=True)
 
-    def detect_charset(html_bytes):
-        """Try to detect charset from meta tag"""
-        try:
-            # Look for charset in first 1024 bytes to be efficient
-            head = html_bytes[:1024].decode('ascii', errors='ignore').lower()
-            meta = re.search(r'<meta[^>]+charset=["\']?([\w-]+)', head)
-            if meta:
-                return meta.group(1)
-        except Exception:
-            pass
-        return None
-
-    # Try to parse the HTML input
     try:
         # First try to detect charset from meta tag
         charset = detect_charset(inp)
@@ -472,32 +252,35 @@ notes:
                     inp = inp.decode('iso-8859-1').encode('utf-8')
             document = etree.fromstring(inp, html_parser)
     except (etree.XMLSyntaxError, UnicodeDecodeError) as e:
-        # Print an error in case of syntax issues in the input
-        print(f"Error parsing {'XML' if args.rawinput else 'HTML'}: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise PageError(f"Error parsing {'XML' if args.rawinput else 'HTML'}: {e}")
 
     if document is None:
-        print("Error parsing HTML: no elements found in the input", file=sys.stderr)
-        sys.exit(1)
+        raise PageError("Error parsing HTML: no elements found in the input")
+    return document
+
+
+def extract_page(inp, page_url, args, expression, fields, absolute_urls):
+    """
+    Extract one page and return (kind, value): kind is 'json' for -j,
+    --json-array and --row, 'text' otherwise. Raises PageError on failure.
+    """
+    document = parse_document(inp, args)
 
     # -t and -x output no attribute values
     base = None
     if absolute_urls and not args.text and not args.check_existence:
         base = document_base(document, page_url)
         if not base:
-            print("Error: no base for --absolute-urls: use --base-url URL, "
-                  "or a page with an absolute <base href>.", file=sys.stderr)
-            sys.exit(1)
+            raise PageError("Error: no base for --absolute-urls: use --base-url URL, "
+                            "or a page with an absolute <base href>.")
 
     if args.row:
         row_expression = args.row if is_xpath(args.row) else convert_css_to_xpath(args.row)
         rows = xpath_result_items(evaluate(document, row_expression))
         if any(isinstance(row, str) or not isinstance(row.tag, str) for row in rows):
-            print(f"Error: --row must select elements, not values: '{args.row}'.", file=sys.stderr)
-            sys.exit(1)
-        write_json([{name: field_value(row, expression, base) for name, expression in fields.items()}
-                    for row in rows], args.jsonl)
-        return
+            raise PageError(f"Error: --row must select elements, not values: '{args.row}'.")
+        return 'json', [{name: field_value(row, expression, base) for name, expression in fields.items()}
+                        for row in rows]
 
     results = []
     string_results = []
@@ -573,18 +356,446 @@ notes:
             else:
                 parsed = xmltodict.parse(wrap_in_body(results))
         except ExpatError as e:
-            print(f"Error: cannot convert result to JSON, it is not valid XML ({e}). "
-                  f"Attribute names like @click or :bind are not supported by {'--json-array' if args.json_array else '-j'}.", file=sys.stderr)
-            sys.exit(1)
-        write_json(parsed, args.jsonl)
-    elif args.body and not args.text:
-        sys.stdout.write(wrap_in_body(results))
-    else:
-        # Normal output (or text-only output when -t is used)
-        for result in results:
-            sys.stdout.write(result + "\n")
+            raise PageError(f"Error: cannot convert result to JSON, it is not valid XML ({e}). "
+                            f"Attribute names like @click or :bind are not supported by "
+                            f"{'--json-array' if args.json_array else '-j'}.")
+        return 'json', parsed
+    if args.body and not args.text:
+        return 'text', wrap_in_body(results)
+    # Normal output (or text-only output when -t is used)
+    return 'text', ''.join(result + "\n" for result in results)
 
+
+def write_output(kind, value, jsonl):
+    """Write the output of one page: a JSON value or plain text."""
+    if kind == 'json':
+        write_json(value, jsonl)
+    else:
+        sys.stdout.write(value)
         sys.stdout.flush()
+
+
+def read_urls(path):
+    """URLs from a text file: one per line, blank lines and # comments skipped."""
+    try:
+        with open(path, encoding='utf-8-sig') as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        print(f"Error: The file '{path}' was not found.", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"Error: cannot read '{path}': {e.strerror}", file=sys.stderr)
+        sys.exit(1)
+    return [line.strip() for line in lines
+            if line.strip() and not line.strip().startswith('#')]
+
+
+def request_error_reason(err):
+    """A short reason from a requests exception."""
+    if isinstance(err, requests.Timeout):
+        return "timeout"
+    if isinstance(err, requests.ConnectionError):
+        return "connection error"
+    text = str(err).strip().splitlines()
+    return (text[0][:200] if text else type(err).__name__)
+
+
+def fetch_page(url, user_agent, retries):
+    """
+    Fetch one page, returning (ok, attempts, content, final_url, reason).
+    Retries only network errors and 5xx; a 4xx is a failure without retry.
+    """
+    if not (url.startswith('http://') or url.startswith('https://')):
+        return False, 1, None, None, "not an http or https URL"
+
+    headers = {"User-Agent": user_agent or DEFAULT_USER_AGENT}
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            if attempts <= retries:
+                continue
+            return False, attempts, None, None, request_error_reason(e)
+
+        status = response.status_code
+        if 500 <= status <= 599:
+            response.close()
+            if attempts <= retries:
+                continue
+            return False, attempts, None, None, f"HTTP {status}"
+        try:
+            response.raise_for_status()
+        except requests.RequestException:
+            # 4xx: never retried
+            response.close()
+            return False, attempts, None, None, f"HTTP {status}"
+        try:
+            # Reading can fail too: a truncated or aborted download
+            return True, attempts, response.content, response.url, None
+        except requests.RequestException as e:
+            response.close()
+            if attempts <= retries:
+                continue
+            return False, attempts, None, None, request_error_reason(e)
+
+
+def check_expressions(expressions):
+    """Fail before any request when an XPath expression does not compile."""
+    for expression in expressions:
+        try:
+            etree.XPath(expression)
+        except etree.XPathError as err:
+            print(f"Error: invalid XPath expression '{expression}': {err}", file=sys.stderr)
+            sys.exit(1)
+
+
+def run_batch(args, expression, fields, absolute_urls):
+    """Fetch every URL in order, one page after the other, and report each."""
+    check_expressions(expression)
+    urls = read_urls(args.urls)
+    retries = args.retries or 0
+    failed = []
+
+    for url in urls:
+        ok, attempts, content, final_url, reason = fetch_page(url, args.user_agent, retries)
+        output = None
+        if ok:
+            try:
+                output = extract_page(content, final_url,
+                                      args, expression, fields, absolute_urls)
+            except PageError as e:
+                ok = False
+                reason = str(e)[len("Error: "):] if str(e).startswith("Error: ") else str(e)
+
+        if args.jsonl:
+            record = {"url": url, "ok": ok, "attempts": attempts}
+            if ok:
+                record["data"] = output[1]
+            else:
+                record["error"] = reason
+            sys.stdout.write(json.dumps(record, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+        elif ok:
+            write_output(output[0], output[1], False)
+        else:
+            print(f"Error: {url} failed after {attempts} attempt(s): {reason}", file=sys.stderr)
+
+        if not ok:
+            failed.append(url)
+
+    summary = f"{len(urls) - len(failed)}/{len(urls)} pages ok"
+    if failed:
+        summary += " (failed: " + ", ".join(failed) + ")"
+    print(summary, file=sys.stderr)
+    return 1 if failed else 0
+
+
+class BatchArgumentParser(argparse.ArgumentParser):
+    """Usage errors of the batch options exit 1, as the rest of batch mode."""
+
+    def error(self, message):
+        if self.batch_option_named(message):
+            print(f"Error: {message}", file=sys.stderr)
+            sys.exit(1)
+        super().error(message)
+
+    @staticmethod
+    def batch_option_named(message):
+        return any(f"argument {name}:" in message for name in ('--urls', '--retries'))
+
+
+def main():
+    # Command line argument parser definition
+    parser = BatchArgumentParser(
+        description=(
+            'Extract parts of an HTML page using an XPath query or CSS3 selector.\n'
+            'Reads static HTML and does not run JavaScript: content built in the\n'
+            'browser is not there. Never prompts for input.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''\
+examples:
+  scrape -e "//h1" file.html            XPath: matching elements as HTML
+  scrape -e "h1.title" file.html        CSS selector, detected automatically
+  scrape -e "//a/@href" file.html       attribute values as plain text
+  scrape -e "//a" -a href file.html     same, elements without href skipped
+  scrape -e "count(//a)" file.html      XPath function: one value (string,
+                                        number, true/false)
+  scrape -t file.html                   all body text, no script or style
+  scrape -te "//article" file.html      text of the matching elements
+  scrape -je "a" file.html              JSON
+  scrape --json-array -e "a" file.html  JSON, always a flat list
+  scrape --absolute-urls -e "//a/@href" https://example.org/
+                                        absolute href and src values
+  curl -s https://example.org/ | scrape --base-url https://example.org/ -e "a"
+                                        same, for stdin or a local file
+  scrape --row "article" --field "title=h2" --field "url=.//a/@href" file.html
+                                        one JSON object per article
+  scrape --jsonl -e "//a/@href" file.html
+                                        one JSON value per line
+  scrape -be "//article" file.html      wrap output in <html><body>
+  scrape -x -e "//h1" file.html         test only: exit code, no output
+  scrape -e "//h1" https://example.com  fetch from URL
+  cat file.html | scrape -e "//h1"      read from stdin
+  scrape --urls urls.txt --retries 2 -e "//h1"
+                                        one page per URL, failed pages retried
+  scrape --urls urls.txt --jsonl -e "a" one JSON object per page
+
+output:
+  default  one result after the other, on stdout: elements as HTML, strings
+           (@attr, text(), XPath functions) as plain text
+  -e       repeated: results follow the order of the expressions
+  -j       always {"html": {"body": ...}}, where body is:
+             elements  attributes as @name, text as #text; one match of a tag
+                       is an object, several are a list
+             strings   one is a string, several are a list
+             nothing   null
+  --json-array  always a flat list, one item per result, in expression order:
+             [] for nothing, strings as strings, elements as {"tag": ...},
+             function values as strings: count() gives "2"
+  --row    a list with one object per row, one key per --field in the order
+           given, each value a string or null (no match); "" is a match with
+           no text. Elements give their cleaned text. Rows with no match in
+           any field stay in the list.
+  --jsonl  one JSON value per line: the objects of --row, otherwise the items
+           of --json-array. Nothing at all when there are no results.
+  --urls   batch mode, see below: one result per page, in the order of FILE:
+             --jsonl  {"url": ..., "ok": true|false, "attempts": N,
+                       "data": the page result} on success; "error" instead of
+                       "data" on failure
+             otherwise  the page results as above, one after the other; a
+                       failed page prints an Error line on stderr and the
+                       batch continues
+
+exit codes:
+  0  success, also when nothing matches: empty output, or null body with -j
+  1  error, with a message on stderr; with -x, no match, with stderr empty;
+     with --urls, at least one page failed (the other pages keep their output)
+  2  invalid usage: unknown option or missing option value, except for --urls
+     and --retries, whose usage errors also exit 1
+
+notes:
+  - No match is not an error: use -x to test for it.
+  - HTML with no elements, such as only spaces or comments, exits 1.
+  - With short flags together, -e goes last: -be, -je, -te. As an argument on
+    its own, -eb or -ej is rejected, because -e would take "b" or "j" as value.
+  - -x evaluates only the first -e.
+  - -t with -e includes the text of any script or style inside the matches.
+  - -j fails with exit 1 on attribute names that are not valid XML, such as
+    @click or :bind. Use -e without -j on those pages.
+  - --field is relative to the row and gives only the first match. Write
+    .//a/@href: a/@href looks among direct children only, and //a is refused
+    because it would read the whole document. In functions, write
+    string(.//h2): string(//h2) is not refused and reads the whole document.
+  - --row is not allowed with -e, -t, -x, -a, -b, -j, --json-array.
+    --jsonl is not allowed with -t, -x, -a, -b, -j.
+  - URLs: 30 s timeout, HTTP errors (4xx, 5xx) exit 1.
+  - --urls: one URL per line, blank lines and lines starting with # skipped.
+    Only -e, -t, -a, -b, -j, --json-array, --jsonl, --absolute-urls, -u,
+    --retries and --version are allowed with it: not the HTML argument, -r,
+    -x, --row, --field or --base-url. Each page follows the single URL rules
+    (30 s timeout, -u, 4xx and 5xx are page failures). --retries N (default 0)
+    adds N attempts for a network error or a 5xx; a 4xx is never retried.
+    Pages are requested one at a time, in file order. At the end one line
+    goes to stderr, such as 3/5 pages ok (failed: url1, url2).
+  - --absolute-urls changes href and src in the output, not in selection:
+    a[href^="/"] still matches. Base: the first <base href>, against the page
+    URL or --base-url. No absolute base: exit 1. XPath functions such as
+    string(//a/@href) are not changed. Not with -r, ignored with -t and -x.
+  - Charset: from the meta tag, otherwise UTF-8. If the bytes are not valid
+    UTF-8: Windows-1252, then ISO-8859-1. Other encodings need the meta tag.
+'''
+    )
+
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+
+    # Check for incorrect argument order (-eb instead of -be, -ej instead of -je)
+    for wrong, right in (('-eb', '-be'), ('-ej', '-je')):
+        if wrong in sys.argv[1:]:
+            print(f"Error: use {right} not {wrong}.\n  scrape {right} \"//article\" file.html", file=sys.stderr)
+            sys.exit(1)
+    # Defines the HTML input argument (can be a file, URL or stdin)
+    parser.add_argument('html', nargs='?', type=str, default='',
+                        help="HTML input: local file or http(s) URL. Stdin if omitted", metavar="HTML")
+    # Defines the optional argument to extract from the tag
+    parser.add_argument('-a', '--argument', default="",
+                        help="Output the value of this attribute instead of the element. "
+                             "Elements without it are skipped")
+    # Option to include the result within HTML and BODY tags
+    parser.add_argument('-b', '--body', action='store_true', default=False,
+                        help="Wrap the output in a <!DOCTYPE html><html><body> document. "
+                             "Ignored with -t and -j")
+    # Option to extract only text content
+    parser.add_argument('-t', '--text', action='store_true', default=False,
+                        help="Output text only, with whitespace cleaned. "
+                             "Without -e, all body text except script and style")
+    # Option to output structured JSON (built-in, no external xq needed)
+    parser.add_argument('-j', '--json', action='store_true', default=False,
+                        help="Output structured JSON, see below. Not with -t, -x, -a")
+    parser.add_argument('--json-array', action='store_true', default=False,
+                        help="Output JSON as a flat list, one item per result, see below. Same limits as -j")
+    parser.add_argument('--absolute-urls', action='store_true', default=False,
+                        help="Output href and src values as absolute URLs, see notes")
+    parser.add_argument('--base-url', default=None, metavar="URL",
+                        help="Page URL for stdin and local files. Implies --absolute-urls")
+    parser.add_argument('--row', default=None, metavar="EXPR",
+                        help="Select the elements that give one JSON object each. Needs --field")
+    parser.add_argument('--field', default=[], action='append', metavar="NAME=EXPR",
+                        help="Value of a key in each --row object, relative to the row. Repeatable")
+    parser.add_argument('--jsonl', action='store_true', default=False,
+                        help="Output one JSON value per line, see below. Implies --json-array without --row")
+    # Allows to specify one or more XPath or CSS3 selector expressions
+    parser.add_argument('-e', '--expression', default=[], action='append',
+                        help="XPath query or CSS3 selector, detected automatically. Repeatable")
+    # Option to verify the existence of elements matching the expression
+    parser.add_argument('-x', '--check-existence', dest='check_existence', action='store_true', default=False,
+                        help="Output nothing, exit 0 if the first expression matches, 1 if not")
+    # Option to avoid initial HTML parsing, useful in specific cases like CData
+    parser.add_argument('-r', '--rawinput', action='store_true', default=False,
+                        help="Parse the input as strict XML instead of HTML (useful for CData). "
+                             "Malformed input is an error")
+    parser.add_argument('-u', '--user-agent', default=None,
+                        help="User-Agent for URL requests")
+    parser.add_argument('--urls', default=None, metavar="FILE",
+                        help="Batch mode: read URLs from FILE, one per line. Blank lines and "
+                             "lines starting with # are skipped")
+    parser.add_argument('--retries', default=None, metavar="N",
+                        help="Extra attempts for a page that fails with a network error or 5xx, "
+                             "with --urls. Default 0; a 4xx is never retried")
+    args = parser.parse_args()
+    if args.retries is not None:
+        if not re.fullmatch(r'-?\d+', args.retries.strip()):
+            print(f"Error: --retries must be a whole number, got '{args.retries}'.", file=sys.stderr)
+            sys.exit(1)
+        args.retries = int(args.retries)
+
+    if args.urls is not None or args.retries is not None:
+        batch_error = None
+        if args.urls is None:
+            batch_error = "--retries needs --urls."
+        elif args.retries is not None and args.retries < 0:
+            batch_error = f"--retries must be 0 or more, got {args.retries}."
+        elif args.html:
+            batch_error = f"--urls cannot be combined with the HTML argument '{args.html}'."
+        elif args.rawinput:
+            batch_error = "--urls cannot be combined with -r/--rawinput."
+        elif args.check_existence:
+            batch_error = "--urls cannot be combined with -x/--check-existence."
+        elif args.row or args.field:
+            batch_error = "--urls cannot be combined with --row or --field."
+        elif args.base_url:
+            batch_error = "--urls cannot be combined with --base-url."
+        if batch_error:
+            print(f"Error: {batch_error}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.jsonl and (args.text or args.check_existence or args.argument or args.body or args.json):
+        print("Error: --jsonl cannot be combined with -t, -x, -a, -b or -j.", file=sys.stderr)
+        sys.exit(1)
+    if bool(args.row) != bool(args.field):
+        print("Error: --row and --field must be used together.", file=sys.stderr)
+        sys.exit(1)
+    fields = {}
+    if args.row:
+        if (args.expression or args.text or args.check_existence or args.argument
+                or args.body or args.json or args.json_array):
+            print("Error: --row cannot be combined with -e, -t, -x, -a, -b, -j or --json-array.", file=sys.stderr)
+            sys.exit(1)
+        fields = parse_fields(args.field)
+    elif args.jsonl:
+        args.json_array = True
+
+    # JSON flag is mutually exclusive with -t, -x, -a
+    json_flag = '--json-array' if args.json_array else '--json'
+    if args.json_array:
+        args.json = True
+    if args.json and args.text:
+        print(f"Error: {json_flag} and --text are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    if args.json and args.check_existence:
+        print(f"Error: {json_flag} and --check-existence are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    if args.json and args.argument:
+        print(f"Error: {json_flag} cannot be combined with -a/--argument.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.base_url and not is_absolute_url(args.base_url):
+        print(f"Error: --base-url must be an absolute URL, got '{args.base_url}'.", file=sys.stderr)
+        sys.exit(1)
+    absolute_urls = args.absolute_urls or bool(args.base_url)
+    if absolute_urls and args.rawinput:
+        print("Error: --absolute-urls and --base-url cannot be combined with -r/--rawinput.", file=sys.stderr)
+        sys.exit(1)
+
+    # Check that at least one expression is provided by the user (unless using -t option)
+    if not args.expression and not args.text and not args.row:
+        print(
+            "Error: no expression specified. Use -e \"//selector\" or -t.\n"
+            "  scrape -e \"//h1\" file.html\n"
+            "  scrape -t file.html",
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    # Convert CSS selectors to XPath if necessary
+    if args.text and not args.expression:
+        # If -t is used without expressions, default to body text excluding scripts and styles
+        expression = ['//body//text()[not(ancestor::script) and not(ancestor::style)]']
+    else:
+        expression = [e if is_xpath(e) else convert_css_to_xpath(e) for e in args.expression]
+
+    if args.urls is not None:
+        return run_batch(args, expression, fields, absolute_urls)
+
+    page_url = args.base_url
+    # Determine the source of the input: URL, file, or stdin
+    if args.html:
+        if args.html.startswith('http://') or args.html.startswith('https://'):
+            # If the input is a URL, download the HTML content
+            try:
+                ua = args.user_agent or DEFAULT_USER_AGENT
+                headers = {"User-Agent": ua}
+                response = requests.get(args.html, headers=headers, timeout=REQUEST_TIMEOUT)
+                response.raise_for_status()
+                inp = response.content
+                page_url = page_url or response.url
+            except requests.RequestException as e:
+                print(f"Error downloading HTML: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # If the input is a local file, try to open it
+            try:
+                inp = open(args.html, 'rb').read()
+            except FileNotFoundError:
+                print(f"Error: The file '{args.html}' was not found.", file=sys.stderr)
+                sys.exit(1)
+            except OSError as e:
+                print(f"Error: cannot read '{args.html}': {e.strerror}", file=sys.stderr)
+                sys.exit(1)
+    else:
+        # If the input is from stdin
+        try:
+            inp = sys.stdin.buffer.read()
+            if not inp:
+                print("Error: No input received from stdin", file=sys.stderr)
+                sys.exit(1)
+        except Exception as e:
+            print(f"Error reading input: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Check for empty or invalid input
+    if not inp:
+        print("Error: Input is empty or invalid", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        kind, value = extract_page(inp, page_url, args, expression, fields, absolute_urls)
+    except PageError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    write_output(kind, value, args.jsonl)
 
 if __name__ == "__main__":
     exit(main())

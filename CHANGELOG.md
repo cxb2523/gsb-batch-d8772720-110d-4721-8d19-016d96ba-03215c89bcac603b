@@ -1,3 +1,7 @@
+# 2026-11-14
+
+- [1.3.8] Added `--urls FILE` for batch mode: one page per URL, in file order, each with the usual extraction, so one failing page no longer stops the run. Added `--retries N` (default 0) for extra attempts on a network error or a 5xx; a 4xx is never retried. With `--jsonl` each page gives one object with `url`, `ok`, `attempts` and either `data` or `error`; without it, failed pages print one line on stderr and a final `N/M pages ok` line lists them. The exit code is 1 when at least one page failed, and the successful pages keep their output. Batch mode refuses the HTML argument, `-r`, `-x`, `--row`/`--field` and `--base-url` as usage errors. Single URL and stdin input are unchanged.
+
 # 2026-11-06
 
 - [1.3.7] Added `--row` and `--field NAME=EXPR`: one JSON object per element, with the same keys and each value a string or `null`, so fields stay together when one is missing. Added `--jsonl`: one JSON value per line. Added `--absolute-urls` and `--base-url`: absolute `href` and `src` values in the output, honouring `<base href>`. Errors with `--json-array` now name that flag. Expressions starting with `./` are now recognized as XPath.
