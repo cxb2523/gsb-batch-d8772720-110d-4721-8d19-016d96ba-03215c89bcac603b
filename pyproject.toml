@@ -1,0 +1,60 @@
+[build-system]
+requires = ["uv_build>=0.9.30"]
+build-backend = "uv_build"
+
+[project]
+name = "unofficial-api-for-xnxx"
+version = "2.4.4"
+description = "An asynchronous Python API wrapper and scraper for xnxx.com"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Johannes Habel", email = "EchterAlsFake@proton.me" }
+]
+keywords = [
+    "api",
+    "scraper",
+    "async",
+    "asyncio",
+    "video-downloader",
+    "selectolax",
+    "curl-cffi",
+    "xnxx"
+]
+dependencies = [
+    "selectolax",
+    "eaf-base-api>=4.2.5",
+    "curl-cffi",
+    "m3u8",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Video"
+]
+
+[project.optional-dependencies]
+av = ["av"]
+
+[project.urls]
+Homepage = "https://github.com/EchterAlsFake/unofficial-api-for-xnxx"
+Repository = "https://github.com/EchterAlsFake/unofficial-api-for-xnxx"
+"Bug Tracker" = "https://github.com/EchterAlsFake/unofficial-api-for-xnxx/issues"
+[project.scripts]
+xnxx_api = "xnxx_api.api:main"
+
+
+[tool.setuptools]
+packages = { find = {} }
+
+
+[tool.uv.build-backend]
+module-name = "xnxx_api"
+module-root = ""
