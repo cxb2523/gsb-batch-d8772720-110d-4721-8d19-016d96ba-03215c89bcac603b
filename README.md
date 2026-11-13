@@ -168,6 +168,13 @@ For development with auto-rebuild:
 npm run watch
 ```
 
+Run the local test suite (no network access or API key required — the AgentQL API is
+replaced by a locally simulated upstream):
+
+```bash
+npm test
+```
+
 If you want to try out development version, you can use the following config instead of the default one:
 
 ```json

@@ -2,12 +2,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import fetch from 'node-fetch';
 
-// Interface for parsing AQL REST API response.
-interface AqlResponse {
-  data: object;
-}
+import { EXTRACT_TOOL_NAME, runExtractWebData } from './extract-web-data.js';
 
 // Create an MCP server with only tools capability (trigger 'query-data' call).
 const server = new Server(
@@ -22,12 +18,13 @@ const server = new Server(
   },
 );
 
-const EXTRACT_TOOL_NAME = 'extract-web-data';
 const AGENTQL_API_KEY = process.env.AGENTQL_API_KEY;
 
 if (!AGENTQL_API_KEY) {
-  console.error('Error: AGENTQL_API_KEY environment variable is required');
-  process.exit(1);
+  // Warn but keep the server alive: each `extract-web-data` call then reports the
+  // missing configuration through the tool result instead of killing the process,
+  // so the caller sees an actionable explanation rather than a dropped connection.
+  console.error('Warning: AGENTQL_API_KEY environment variable is not set; extract-web-data calls will fail.');
 }
 
 // Handler that lists available tools.
@@ -61,46 +58,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   switch (request.params.name) {
     case EXTRACT_TOOL_NAME: {
-      const url = String(request.params.arguments?.url);
-      const prompt = String(request.params.arguments?.prompt);
-      if (!url || !prompt) {
-        throw new Error("Both 'url' and 'prompt' are required");
+      // Every outcome — including missing arguments, upstream errors and network
+      // failures — is reported through the tool's text content, so the caller can
+      // always tell what happened.
+      try {
+        return await runExtractWebData(request.params.arguments, {
+          apiKey: AGENTQL_API_KEY,
+        });
+      } catch (error) {
+        // Last-resort guard: even an unexpected error must surface as a readable
+        // tool outcome instead of an opaque transport-level failure.
+        const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Extraction failed: unexpected internal error while handling '${EXTRACT_TOOL_NAME}'. Reason: ${message}`,
+            },
+          ],
+          isError: true,
+        };
       }
-
-      const endpoint = 'https://api.agentql.com/v1/query-data';
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'X-API-Key': `${AGENTQL_API_KEY}`,
-          'X-TF-Request-Origin': 'mcp-server',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          url: url,
-          prompt: prompt,
-          params: {
-            wait_for: 0,
-            is_scroll_to_bottom_enabled: false,
-            mode: 'fast',
-            is_screenshot_enabled: false,
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`AgentQL API error: ${response.statusText}\n${await response.text()}`);
-      }
-
-      const json = (await response.json()) as AqlResponse;
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(json.data, null, 2),
-          },
-        ],
-      };
     }
 
     default:
