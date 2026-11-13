@@ -181,7 +181,11 @@ export class RtrvrClient {
     }
 
     const requestedMode = request.target ?? this.defaultTarget;
+    const requireLocalSession = request.requireLocalSession ?? false;
+    const explicitDeviceSelection = hasRequestedDevice(request.deviceId);
+    const explicitDeviceId = explicitDeviceSelection ? request.deviceId : undefined;
 
+    // An explicit target is a contract: never re-route it to the other mode.
     if (requestedMode === 'cloud') {
       const data = await this.scrapeRun(request);
       const responseMeta = extractResponseMeta(data);
@@ -190,6 +194,8 @@ export class RtrvrClient {
           selectedMode: 'cloud',
           requestedMode,
           fallbackApplied: false,
+          fallbackReason: undefined,
+          deviceId: undefined,
           requestId: responseMeta.requestId,
           attempt: responseMeta.attempt,
         },
@@ -198,14 +204,14 @@ export class RtrvrClient {
     }
 
     if (requestedMode === 'extension') {
-      const routed = await this.extensionScrapeRun(request);
+      const routed = await this.extensionScrapeRun(request, explicitDeviceId);
       return {
         metadata: {
           selectedMode: routed.selectedMode,
           requestedMode,
           fallbackApplied: routed.selectedMode !== 'extension',
           fallbackReason: routed.fallbackReason,
-          deviceId: request.deviceId,
+          deviceId: explicitDeviceId,
           requestId: routed.requestId,
           attempt: routed.attempt,
         },
@@ -213,9 +219,8 @@ export class RtrvrClient {
       };
     }
 
-    const requireLocalSession = request.requireLocalSession ?? false;
-    const explicitDeviceSelection = hasRequestedDevice(request.deviceId);
-
+    // A pinned device or a required local session constrains auto mode: losing the extension
+    // is an error, never a silent cloud re-route.
     if (requireLocalSession || explicitDeviceSelection) {
       let devices: DeviceListResult | undefined;
       if (!explicitDeviceSelection) {
@@ -228,7 +233,8 @@ export class RtrvrClient {
         }
       }
 
-      const routed = await this.extensionScrapeRun(request);
+      const selectedDeviceId = explicitDeviceId ?? firstDeviceId(devices);
+      const routed = await this.extensionScrapeRun(request, selectedDeviceId);
       if (routed.selectedMode !== 'extension') {
         throw new RtrvrError(
           'Extension scrape adapter is unavailable and local browser session is required.',
@@ -241,7 +247,8 @@ export class RtrvrClient {
           selectedMode: 'extension',
           requestedMode,
           fallbackApplied: false,
-          deviceId: request.deviceId ?? devices?.devices[0]?.deviceId,
+          fallbackReason: undefined,
+          deviceId: selectedDeviceId,
           requestId: routed.requestId,
           attempt: routed.attempt,
         },
@@ -249,28 +256,46 @@ export class RtrvrClient {
       };
     }
 
-    // Auto mode: check for online extension devices, use if available, fall back to cloud
+    // Auto mode: use an online extension device when one is available, otherwise run in cloud.
     const devices = await this.listDevices(request.signal);
+    const selectedDeviceId = devices.online ? firstDeviceId(devices) : undefined;
+
     if (devices.online) {
       try {
-        const routed = await this.extensionScrapeRun(request);
+        const routed = await this.extensionScrapeRun(request, selectedDeviceId);
         return {
           metadata: {
             selectedMode: routed.selectedMode,
             requestedMode,
             fallbackApplied: routed.selectedMode !== 'extension',
             fallbackReason: routed.fallbackReason,
-            deviceId: request.deviceId ?? devices.devices[0]?.deviceId,
+            deviceId: selectedDeviceId,
             requestId: routed.requestId,
             attempt: routed.attempt,
           },
           data: routed.data,
         };
       } catch (error) {
+        // Only a device that vanished between selection and execution may re-route. Every
+        // other failure (bad params, auth, tool errors) must surface unchanged.
         if (!isNoDeviceError(error)) {
           throw error;
         }
-        // Extension device became unavailable, fall through to cloud
+
+        const data = await this.scrapeRun(request);
+        const responseMeta = extractResponseMeta(data);
+        return {
+          metadata: {
+            selectedMode: 'cloud',
+            requestedMode,
+            fallbackApplied: true,
+            fallbackReason: describeExecutionFallback(selectedDeviceId),
+            deviceId: selectedDeviceId,
+            requestId: responseMeta.requestId,
+            attempt: responseMeta.attempt,
+          },
+          data,
+        };
       }
     }
 
@@ -280,10 +305,9 @@ export class RtrvrClient {
       metadata: {
         selectedMode: 'cloud',
         requestedMode,
-        fallbackApplied: devices.online,
-        fallbackReason: devices.online
-          ? 'Extension device became unavailable during execution. Routed to cloud /scrape.'
-          : undefined,
+        fallbackApplied: false,
+        fallbackReason: 'No extension device was online at selection time; auto mode used cloud /scrape.',
+        deviceId: undefined,
         requestId: responseMeta.requestId,
         attempt: responseMeta.attempt,
       },
@@ -503,7 +527,10 @@ export class RtrvrClient {
     return this.run(request);
   }
 
-  private async extensionScrapeRun(request: UnifiedScrapeRequest): Promise<ExtensionScrapeRouteResult> {
+  private async extensionScrapeRun(
+    request: UnifiedScrapeRequest,
+    deviceId: string | undefined = request.deviceId,
+  ): Promise<ExtensionScrapeRouteResult> {
     const params: Record<string, unknown> = {
       urls: request.urls,
       settings: request.settings,
@@ -520,14 +547,15 @@ export class RtrvrClient {
     const routed = await this.observeMcpRun(request, request.trajectoryId, 1, () => this.toolRunWithMetadata({
       tool: TOOL_NAMES.SCRAPE,
       params,
-      deviceId: request.deviceId,
+      deviceId,
       signal: request.signal,
     }));
+
     if (routed.tool === TOOL_NAMES.CLOUD_SCRAPE) {
       return {
         data: routed.data,
         selectedMode: 'cloud',
-        fallbackReason: 'Scrape request resolved to cloud_scrape.',
+        fallbackReason: 'Scrape request resolved to cloud_scrape on the backend.',
         requestId: routed.requestId,
         attempt: routed.attempt,
       };
@@ -710,6 +738,15 @@ function normalizeToolName(tool: string): string {
 
 function hasRequestedDevice(deviceId: string | undefined): boolean {
   return typeof deviceId === 'string' && deviceId.trim().length > 0;
+}
+
+function firstDeviceId(devices: DeviceListResult | undefined): string | undefined {
+  return devices?.devices[0]?.deviceId;
+}
+
+function describeExecutionFallback(deviceId: string | undefined): string {
+  const target = deviceId ? `extension device '${deviceId}'` : 'the selected extension device';
+  return `${target} went offline during execution (it was online when selected). Routed to cloud /scrape.`;
 }
 
 function extractResponseMeta(value: unknown): { requestId?: string; attempt?: number } {

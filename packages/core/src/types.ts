@@ -126,15 +126,32 @@ export interface UnifiedRunRequest extends ExecutionControls {
   extensionParams?: Record<string, unknown>;
 }
 
+/**
+ * Routing decision reported with every unified run/scrape response. It describes the request
+ * that actually left the client, not just the caller's preference.
+ */
 export interface RunMetadata {
+  /** Mode that executed the request. Never `auto`. */
   selectedMode: Exclude<RunMode, 'auto'>;
+  /** Mode the caller asked for (explicit `target`, or the client's default). */
   requestedMode: RunMode;
+  /**
+   * True only when the client re-routed away from the mode it had already selected:
+   * an extension device lost during execution (auto mode), or a backend that resolved the
+   * `scrape` tool to `cloud_scrape`. An explicit `target` is never changed, and a plain
+   * "no device online" selection in auto mode is not a fallback.
+   */
   fallbackApplied: boolean;
+  /** Why the request ended up in `selectedMode`; set whenever a fallback occurred. */
   fallbackReason?: string;
+  /** Extension device the request was routed to, when one was selected. */
   deviceId?: string;
+  /** Server request id of the response that produced `data`. */
   requestId?: string;
+  /** Transport attempt that produced `data` (retries included). */
   attempt?: number;
 }
+
 
 export interface UnifiedRunResponse<T = unknown> {
   metadata: RunMetadata;

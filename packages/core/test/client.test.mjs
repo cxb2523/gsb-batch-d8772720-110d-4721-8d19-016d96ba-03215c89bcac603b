@@ -377,3 +377,246 @@ test('retries transient cloud failures and surfaces attempt metadata', async () 
   assert.equal(result.metadata.selectedMode, 'cloud');
   assert.equal(result.metadata.attempt, 3);
 });
+
+function routingClient(fetchImpl, options = {}) {
+  return new RtrvrClient({
+    apiKey: 'rtrvr_test_key',
+    cloudBaseUrl: 'https://api.test.rtrvr.ai',
+    mcpBaseUrl: 'https://mcp.test.rtrvr.ai',
+    defaultTarget: 'auto',
+    ...options,
+    fetchImpl,
+  });
+}
+
+function mcpScrapeFailure(message, status = 200) {
+  return jsonResponse({ success: false, error: { message } }, status);
+}
+
+test('scrape in auto mode falls back to cloud /scrape when the selected device goes offline during execution', async () => {
+  const calls = [];
+
+  const client = routingClient(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'list_devices') {
+      return jsonResponse({
+        success: true,
+        data: { online: true, deviceCount: 1, devices: [{ deviceId: 'device-1' }] },
+      });
+    }
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'scrape') {
+      return mcpScrapeFailure("Device device-1 is not online. No online chrome extension devices found.");
+    }
+
+    if (String(url) === 'https://api.test.rtrvr.ai/scrape') {
+      return jsonResponse({
+        status: 'success',
+        tabs: [{ url: 'https://example.com', text: 'cloud result' }],
+        metadata: { requestId: 'cloud-req-1' },
+      });
+    }
+
+    throw new Error(`Unexpected call to ${String(url)} (tool: ${body?.tool})`);
+  });
+
+  const result = await client.scrape({ urls: ['https://example.com'] });
+
+  // The extension attempt targeted the selected device, and the fallback used cloud /scrape.
+  assert.deepEqual(calls.map((call) => call.body?.tool ?? call.url), [
+    'list_devices',
+    'scrape',
+    'https://api.test.rtrvr.ai/scrape',
+  ]);
+  assert.equal(calls[1].body.deviceId, 'device-1');
+  assert.equal(calls[2].body.deviceId, undefined);
+  assert.equal(calls[2].body.target, undefined);
+
+  assert.deepEqual(result.data.tabs, [{ url: 'https://example.com', text: 'cloud result' }]);
+  assert.equal(result.metadata.selectedMode, 'cloud');
+  assert.equal(result.metadata.requestedMode, 'auto');
+  assert.equal(result.metadata.fallbackApplied, true);
+  assert.equal(result.metadata.deviceId, 'device-1');
+  assert.equal(result.metadata.requestId, 'cloud-req-1');
+  assert.equal(result.metadata.attempt, 1);
+  // The reason must describe an execution-time disconnection, not an initial empty device list.
+  assert.match(result.metadata.fallbackReason || '', /during execution/i);
+  assert.match(result.metadata.fallbackReason || '', /device-1/);
+  assert.match(result.metadata.fallbackReason || '', /offline|not online|disappear/i);
+});
+
+test('scrape in auto mode rethrows non-device extension failures without falling back', async () => {
+  const calls = [];
+
+  const client = routingClient(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'list_devices') {
+      return jsonResponse({
+        success: true,
+        data: { online: true, deviceCount: 1, devices: [{ deviceId: 'device-1' }] },
+      });
+    }
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'scrape') {
+      return jsonResponse(
+        {
+          success: false,
+          error: {
+            code: 'TOOL_INPUT_INVALID',
+            message: 'Invalid option: settings.selector must be a string.',
+            fields: ['settings.selector'],
+          },
+        },
+        400,
+      );
+    }
+
+    if (String(url) === 'https://api.test.rtrvr.ai/scrape') {
+      return jsonResponse({ status: 'success', tabs: [] });
+    }
+
+    throw new Error(`Unexpected call to ${String(url)} (tool: ${body?.tool})`);
+  });
+
+  await assert.rejects(
+    async () => client.scrape({ urls: ['https://example.com'] }),
+    (error) => {
+      assert.match(error.message, /Invalid option/i);
+      assert.equal(error.code, 'TOOL_INPUT_INVALID');
+      return true;
+    },
+  );
+
+  assert.equal(calls.some((call) => call.url === 'https://api.test.rtrvr.ai/scrape'), false);
+  assert.deepEqual(calls.map((call) => call.body?.tool ?? call.url), ['list_devices', 'scrape']);
+});
+
+test('scrape in auto mode with an explicit deviceId refuses to silently use the cloud on device loss', async () => {
+  const calls = [];
+
+  const client = routingClient(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'scrape') {
+      return mcpScrapeFailure("Device 'device-42' is not online.");
+    }
+
+    if (String(url) === 'https://api.test.rtrvr.ai/scrape') {
+      return jsonResponse({ status: 'success', tabs: [] });
+    }
+
+    throw new Error(`Unexpected call to ${String(url)} (tool: ${body?.tool})`);
+  });
+
+  await assert.rejects(
+    async () => client.scrape({ urls: ['https://example.com'], deviceId: 'device-42' }),
+    /not online/i,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.tool, 'scrape');
+  assert.equal(calls[0].body.deviceId, 'device-42');
+});
+
+test('scrape in auto mode with requireLocalSession and no online devices reports the device list', async () => {
+  const calls = [];
+
+  const client = routingClient(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'list_devices') {
+      return jsonResponse({
+        success: true,
+        data: {
+          online: false,
+          deviceCount: 1,
+          devices: [{ deviceId: 'device-offline', lastSeen: '2026-01-01T00:00:00.000Z' }],
+        },
+      });
+    }
+
+    throw new Error(`Unexpected call to ${String(url)} (tool: ${body?.tool})`);
+  });
+
+  await assert.rejects(
+    async () => client.scrape({ urls: ['https://example.com'], requireLocalSession: true }),
+    (error) => {
+      assert.match(error.message, /requires local browser session/i);
+      assert.equal(error.details.online, false);
+      assert.equal(error.details.deviceCount, 1);
+      assert.equal(error.details.devices.length, 1);
+      assert.equal(error.details.devices[0].deviceId, 'device-offline');
+      assert.equal(error.details.devices[0].lastSeen, '2026-01-01T00:00:00.000Z');
+      return true;
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.tool, 'list_devices');
+});
+
+test('scrape with explicit cloud target never probes or routes through the extension', async () => {
+  const calls = [];
+
+  const client = routingClient(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+
+    if (String(url) === 'https://api.test.rtrvr.ai/scrape') {
+      return jsonResponse({ status: 'success', metadata: { requestId: 'cloud-only' } });
+    }
+
+    throw new Error(`Unexpected call to ${String(url)} (tool: ${body?.tool})`);
+  });
+
+  const result = await client.scrape({
+    urls: ['https://example.com'],
+    target: 'cloud',
+    deviceId: 'device-42',
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.test.rtrvr.ai/scrape');
+  assert.equal(result.metadata.selectedMode, 'cloud');
+  assert.equal(result.metadata.requestedMode, 'cloud');
+  assert.equal(result.metadata.fallbackApplied, false);
+  assert.equal(result.metadata.deviceId, undefined);
+  assert.equal(result.metadata.requestId, 'cloud-only');
+});
+
+test('scrape reports the device it actually routed to in auto mode', async () => {
+  const calls = [];
+
+  const client = routingClient(async (url, init) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ url: String(url), body });
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'list_devices') {
+      return jsonResponse({
+        success: true,
+        data: { online: true, deviceCount: 1, devices: [{ deviceId: 'device-7' }] },
+      });
+    }
+
+    if (String(url) === 'https://mcp.test.rtrvr.ai' && body?.tool === 'scrape') {
+      return jsonResponse({ success: true, data: { tabs: [{ url: 'https://example.com' }] } });
+    }
+
+    throw new Error(`Unexpected call to ${String(url)} (tool: ${body?.tool})`);
+  });
+
+  const result = await client.scrape({ urls: ['https://example.com'] });
+
+  assert.equal(calls[1].body.deviceId, 'device-7');
+  assert.equal(result.metadata.selectedMode, 'extension');
+  assert.equal(result.metadata.requestedMode, 'auto');
+  assert.equal(result.metadata.fallbackApplied, false);
+  assert.equal(result.metadata.deviceId, 'device-7');
+});
+

@@ -258,17 +258,28 @@ This writes the MCP server config to the appropriate location so your AI tool ca
 | `extension` | Extension planner via MCP | Extension scrape via MCP |
 | `auto` (default) | Check extension availability, fallback to cloud | Same with fallback |
 
-The response includes routing metadata:
+The response includes routing metadata describing the request that actually went out:
 
 ```json
 {
   "metadata": {
     "selectedMode": "cloud",
+    "requestedMode": "auto",
     "fallbackApplied": true,
-    "fallbackReason": "no extension devices online"
+    "fallbackReason": "extension device 'device-1' went offline during execution (it was online when selected). Routed to cloud /scrape.",
+    "deviceId": "device-1",
+    "requestId": "req_...",
+    "attempt": 1
   }
 }
 ```
+
+- `selectedMode` / `requestedMode` — what executed and what was asked for (`auto`, `cloud`, `extension`).
+- `fallbackApplied` / `fallbackReason` — `true` only when routing changed after selection: an extension device that went offline mid-execution in `auto` mode, or a backend that resolved the `scrape` tool to `cloud_scrape`. Picking cloud because no device was online at selection time is not a fallback.
+- `deviceId` — the extension device the request was routed to, when one was selected.
+- `requestId` / `attempt` — server request id and transport attempt that produced `data`, including retries.
+
+Explicit `target: 'cloud'` and `target: 'extension'` are never re-routed. A `deviceId` or `requireLocalSession` constraint in `auto` mode fails rather than silently running in the cloud when the extension is unavailable; failures that are not device loss (for example invalid parameters) are rethrown unchanged.
 
 ## Progress Streaming
 
