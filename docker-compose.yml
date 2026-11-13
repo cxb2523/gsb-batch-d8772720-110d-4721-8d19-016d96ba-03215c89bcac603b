@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  jiro:
+    build: .
+    container_name: jiro
+    ports:
+      - "8000:8000"
+    volumes:
+      - jiro-data:/data
+    environment:
+      - JIRO_DB_PATH=/data/jiro.db
+      - JIRO_CACHE_TYPE=sqlite
+      - JIRO_SECRET_KEY=${JIRO_SECRET_KEY:-change-me-in-production}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/v1/monitor/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  dashboard:
+    build: .
+    container_name: jiro-dashboard
+    ports:
+      - "3000:3000"
+    volumes:
+      - jiro-data:/data
+    environment:
+      - JIRO_API_URL=http://jiro:8000
+    command: python -m jiro.dashboard
+    restart: unless-stopped
+
+  # Optional: PostgreSQL for production
+  postgres:
+    image: postgres:15-alpine
+    container_name: jiro-postgres
+    environment:
+      POSTGRES_DB: jiro
+      POSTGRES_USER: jiro
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jiro-password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    profiles:
+      - postgres
+
+  # Optional: Redis for distributed caching
+  redis:
+    image: redis:7-alpine
+    container_name: jiro-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    profiles:
+      - redis
+
+volumes:
+  jiro-data:
+  postgres-data:
+  redis-data:

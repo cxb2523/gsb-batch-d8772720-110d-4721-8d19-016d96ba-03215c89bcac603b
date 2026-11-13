@@ -1,0 +1,138 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jirosearch"
+version = "0.4.0"
+description = "Local-first, AI-native web search & scraping API with 12 social platforms, hybrid search, structured extraction, and Pro tier. A drop-in SerpAPI alternative with MCP server, agentic research, and built-in legal compliance."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Adarsh Kushwah", email = "webcrafterreal@gmail.com" },
+]
+maintainers = [
+    { name = "Blackvault Technology", email = "webcrafterreal@gmail.com" },
+]
+keywords = [
+    "search", "search-api", "web-search", "web-scraping", "scraper",
+    "serpapi-alternative", "serpapi", "self-hosted", "self-hosted-api",
+    "scraping-api", "llm", "agent", "ai-agents", "mcp", "model-context-protocol",
+    "fastapi", "langchain", "llamaindex", "function-calling", "openai",
+    "anthropic", "gemini", "claude", "cursor", "markdown-scraper", "seo",
+    "data-extraction", "agentic-research", "rag",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx[http2]>=0.27",
+    "curl_cffi>=0.15",
+    "brotli>=1.1",
+    "selectolax>=0.3.21",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "typer>=0.12",
+    "rich>=13.0",
+    "PyJWT>=2.8",
+    "aiosqlite>=0.20",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "fakeredis>=2.23",
+       "hypothesis>=6.100", "cryptography>=42", "lxml>=5.0"]
+browser = ["playwright>=1.44"]
+redis = ["redis>=5.0"]
+recipes = ["lxml>=5.0"]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.39"]
+langchain = ["langchain-core>=0.3"]
+llamaindex = ["llama-index-core>=0.12"]
+all = ["playwright>=1.44", "redis>=5.0", "lxml>=5.0",
+       "openai>=1.0", "anthropic>=0.39",
+       "langchain-core>=0.3", "llama-index-core>=0.12"]
+
+[project.scripts]
+jiro = "jiro.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/DevAnimecx/jiro"
+Documentation = "https://github.com/DevAnimecx/jiro#readme"
+Repository = "https://github.com/DevAnimecx/jiro"
+Issues = "https://github.com/DevAnimecx/jiro/issues"
+Changelog = "https://github.com/DevAnimecx/jiro/blob/main/CHANGELOG.md"
+"Buy Me a Coffee" = "https://github.com/sponsors/DevAnimecx"
+
+[tool.setuptools.packages.find]
+include = ["jiro*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "network: tests that require network access (deselect with '-m \"not network\"')",
+    "integration: integration tests requiring services (docker/testcontainers)",
+    "contract: contract tests for API schemas",
+    "chaos: chaos engineering / resilience tests",
+    "property: property-based (hypothesis) tests",
+    "slow: slow running tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+"jiro/audit_chain.py" = ["E741"]
+"jiro/cli.py" = ["E402", "E741"]
+"jiro/feature_flags.py" = ["E402"]
+"jiro/licensing.py" = ["E402", "E741"]
+"jiro/plugins/__init__.py" = ["E402"]
+"jiro/plugins/engine/arxiv.py" = ["E402"]
+"jiro/plugins/engine/github.py" = ["E402", "E741"]
+"jiro/plugins/engine/google_scholar.py" = ["E402"]
+"jiro/plugins/engine/hackernews.py" = ["E402"]
+"jiro/plugins/engine/reddit.py" = ["E402"]
+"jiro/plugins/engine/wikipedia.py" = ["E402", "E741"]
+"jiro/scraping/social/__init__.py" = ["E402"]
+"jiro/secrets.py" = ["E741"]
+"jiro/telemetry.py" = ["E741"]
+# Runtime tests re-export shared pytest fixtures by importing them; ruff reads
+# the imported names as ordinary variables and then flags every parameter that
+# shadows one (F811). F401 is part of the same re-export idiom.
+"tests/conftest_runtime.py" = ["F401"]
+"tests/test_runtime_lifecycle.py" = ["F401", "F811"]
+"tests/test_runtime_persistence.py" = ["F401", "F811"]
+"tests/test_runtime_integration.py" = ["F401", "F811"]
+"tests/test_runtime_recovery.py" = ["F401", "F811"]
+"tests/test_runtime_api.py" = ["F401", "F811"]
+"tests/conftest_memory.py" = ["F401"]
+"tests/test_memory_domain.py" = ["F401", "F811"]
+"tests/test_memory_persistence.py" = ["F401", "F811"]
+"tests/test_memory_retrieval.py" = ["F401", "F811"]
+"tests/test_memory_types.py" = ["F401", "F811"]
+"tests/test_memory_security.py" = ["F401", "F811"]
+"tests/test_memory_integration.py" = ["F401", "F811"]
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_redundant_casts = false
+disallow_untyped_defs = false

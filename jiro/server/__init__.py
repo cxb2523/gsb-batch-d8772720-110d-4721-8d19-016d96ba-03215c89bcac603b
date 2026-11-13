@@ -1,0 +1,424 @@
+"""FastAPI application factory."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Optional
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from jiro import __version__
+from jiro.ai.agent import Agent
+from jiro.ai.llm import LLM
+from jiro.auth import AuthManager
+from jiro.audit import AuditLogger, AuditMiddleware, ComplianceLogger
+from jiro.cache import CacheManager
+from jiro.compliance import ComplianceManager
+from jiro.config import Settings
+from jiro.db import Database
+from jiro.errors import JiroError
+from jiro.log import get_logger, setup_logging
+from jiro.mcp import JiroMCPServer
+from jiro.mcp_http import SessionStore, create_mcp_router, mcp_session_cleanup_loop
+from jiro.scraping.client import ScrapingClient
+from jiro.scraping.engines import SearchOrchestrator
+
+log = get_logger("jiro.server")
+
+
+def create_app(settings: Optional[Settings] = None,
+               config_path: Optional[str] = None) -> FastAPI:
+    settings = settings or Settings.load(config_path)
+    setup_logging(level=settings.logging.get("level", "info"),
+                  file=settings.logging.get("file", ""))
+    log.info("jiro starting", extra={"version": __version__})
+
+    # --- startup security guard -------------------------------------------
+    # Refuse to expose an *unauthenticated* API on a non-loopback interface.
+    host = settings.host
+    is_loopback = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    if not settings.auth_enabled and not settings.server_insecure:
+        if not is_loopback:
+            raise RuntimeError(
+                "Refusing to start: authentication is disabled (auth.enabled: false) "
+                f"but the server is bound to a non-loopback host ({host}). Either "
+                "enable auth, bind to 127.0.0.1, or pass `jiro serve --insecure` in a "
+                "trusted sandbox."
+            )
+        log.warning(
+            "authentication is DISABLED — the API is open to anyone who can reach "
+            f"{host}:{settings.port}. Enable auth (auth.enabled: true) before sharing "
+            "this instance. See https://github.com/DevAnimecx/jiro#security."
+        )
+
+    # --- anti-tamper check -------------------------------------------------
+    try:
+        from jiro.integrity import ensure_integrity
+        ensure_integrity()
+        log.info("package integrity verified")
+    except Exception as exc:
+        log.error("anti-tamper check failed: %s", exc)
+        raise RuntimeError(f"Package integrity verification failed: {exc}") from exc
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # -- resources ------------------------------------------------------
+        db = Database(settings.db_path)
+        await db.connect()
+        redis_cache = None
+        if settings.cache_type == "redis":
+            from jiro.redis_cache import RedisCache
+            redis_cache = RedisCache(
+                settings.get("cache.url", "redis://localhost:6379/0"),
+                ttl=settings.cache_ttl,
+            )
+        cache = CacheManager(
+            db if settings.cache_type == "sqlite" else None,
+            memory=settings.cache_type == "memory",
+            redis=redis_cache,
+            ttl=settings.cache_ttl,
+        )
+        scraper_client = ScrapingClient(settings)
+        auth = AuthManager(settings, db)
+        try:
+            auth.validate_security_config()
+        except Exception as exc:  # ConfigError → hard fail before serving
+            log.error("security configuration invalid", extra={"error": str(exc)})
+            raise
+        from jiro.semantic import SemanticCache
+
+        semantic = SemanticCache(settings, db, cache=cache)
+        orchestrator = SearchOrchestrator(settings, scraper_client, cache,
+                                          semantic=semantic)
+        llm = LLM(settings)
+        agent = Agent(settings, orchestrator, _scrape_for_agent(scraper_client), llm)
+        compliance = ComplianceManager(settings, db)
+        compliance_audit = ComplianceLogger(settings)
+
+        app.state.db = db
+        app.state.cache = cache
+        app.state.scraper_client = scraper_client
+        app.state.auth = auth
+        app.state.orchestrator = orchestrator
+        app.state.llm = llm
+        app.state.agent = agent
+        from jiro.graph.service import GraphService
+
+        app.state.graph_service = GraphService(settings, orchestrator, scraper_client, cache)
+        app.state.compliance_manager = compliance
+        app.state.audit_logger = compliance_audit
+        app.state.settings = settings
+
+        from jiro.captcha import CaptchaSolver
+        from jiro.jobs import JobManager
+
+        app.state.captcha = CaptchaSolver(settings)
+        app.state.jobs = JobManager(db)
+
+        # --- cognitive memory (v0.4.0 Phase 2) ------------------------------
+        # Built before the runtime so terminal tasks can record episodes, and
+        # stopped before the database closes so an in-flight drain can commit.
+        from jiro.memory.app import (
+            build_memory_service,
+            episode_hook,
+            register_memory_handlers,
+        )
+
+        memory_service = await build_memory_service(settings, db)
+        app.state.memory = memory_service.service if memory_service else None
+        app.state.memory_outbox = memory_service.outbox if memory_service else None
+        app.state.memory_bridge = memory_service.bridge if memory_service else None
+
+        # --- durable task runtime -------------------------------------------
+        # Started after the collaborators the built-in handlers need exist, and
+        # stopped before the database closes so in-flight attempts can still
+        # record their outcome.
+        from jiro.runtime import HandlerRegistry, TaskRuntime
+        from jiro.runtime.builtin import register_builtin_handlers
+        from jiro.runtime.metrics import make_metrics_sink
+
+        task_registry = HandlerRegistry()
+        register_builtin_handlers(task_registry, services=app.state)
+        register_memory_handlers(
+            task_registry, service=memory_service.service if memory_service else None)
+        runtime = await TaskRuntime.create(
+            settings, db, task_registry, metrics=make_metrics_sink(),
+            on_terminal=episode_hook(memory_service.bridge
+                                     if memory_service else None))
+        recovery = await runtime.start()
+        app.state.runtime = runtime
+        app.state.task_registry = task_registry
+        # Task handlers reach the memory service through `ctx.runtime`; attaching
+        # it here keeps that lookup from reaching into app state.
+        runtime.memory_service = memory_service.service if memory_service else None
+        # The legacy /jobs facade now executes through the same runtime.
+        app.state.jobs.bind(runtime)
+        log.info("durable task runtime ready", extra={
+            "instance_id": runtime.instance_id,
+            "workers": runtime.config.max_concurrency,
+            "recovered": recovery.total_changed,
+            "task_types": task_registry.type_names(),
+        })
+        if memory_service is not None:
+            await memory_service.outbox.start()
+            log.info("memory system ready", extra={
+                "enabled": memory_service.service.config.enabled,
+                "embedding": memory_service.service.stats()["embedding"]["enabled"],
+            })
+
+        # MCP over HTTP: shared protocol engine + session store
+        mcp_server = JiroMCPServer(settings)
+        await mcp_server.start()
+        app.state.mcp_server = mcp_server
+        app.state.mcp_sessions = SessionStore()
+        cleanup_task = asyncio.create_task(
+            mcp_session_cleanup_loop(app.state.mcp_sessions))
+
+        log.info("jiro ready", extra={
+            "host": settings.host, "port": settings.port,
+            "engines": settings.engines, "cache": settings.cache_type,
+            "auth_enabled": settings.auth_enabled,
+        })
+
+        # --- datacenter scraping caveat ------------------------------------
+        if settings.default_engine == "google" and not settings.proxy.get("enabled"):
+            log.warning(
+                "default engine is 'google' but no proxy is configured; from datacenter "
+                "IPs Google serves CAPTCHAs and Jiro will fall back to other engines. "
+                "Add a BYOK residential proxy (scraping.proxy) for reliable Google access."
+            )
+        try:
+            yield
+        finally:
+            # Stop the runtime first: its workers still need a live database to
+            # record the outcome of anything they are finishing, and the memory
+            # outbox still needs to drain what those outcomes queued.
+            await runtime.stop()
+            if memory_service is not None:
+                await memory_service.outbox.stop()
+            cleanup_task.cancel()
+            await mcp_server.stop()
+            await scraper_client.close()
+            await db.close()
+
+    app = FastAPI(
+        title="Jiro Search API",
+        description=(
+            "# Jiro — The Search Intelligence Platform\n\n"
+            "Local-first, AI-native web search & scraping API with **9 search engines**, "
+            "**12 social platforms**, and **MCP integration**. A self-hosted, drop-in "
+            "alternative to SerpAPI, ScraperAPI, and Bright Data.\n\n"
+            "## Quick Start\n"
+            "```bash\n"
+            "pip install jirosearch\n"
+            "jiro serve\n"
+            "```\n\n"
+            "## Key Endpoints\n"
+            "| Endpoint | Description |\n"
+            "|----------|-------------|\n"
+            "| `GET /search` | Web search across 9 engines |\n"
+            "| `POST /scrape` | Scrape any URL to markdown |\n"
+            "| `POST /social` | Scrape 12 social platforms |\n"
+            "| `POST /ai/search` | AI-powered research (Enterprise) |\n"
+            "| `POST /v1/smart` | Intent-aware smart routing |\n"
+            "| `GET /health` | Health check |\n"
+            "| `GET /metrics` | Prometheus metrics |\n\n"
+            "## Authentication\n"
+            "Free tier: API key via `Authorization: Bearer <key>` header.\n"
+            "Enterprise: License token via `Authorization: License <token>` header.\n\n"
+            "## Rate Limits\n"
+            "- **Free**: 100 RPM, 10,000 RPD\n"
+            "- **Enterprise**: 1,000 RPM, 1,000,000 RPD"
+        ),
+        version=__version__,
+        lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+        contact={
+            "name": "Jiro Support",
+            "url": "https://github.com/DevAnimecx/jiro",
+            "email": "webcrafterreal@gmail.com",
+        },
+        license_info={"name": "MIT", "url": "https://opensource.org/licenses/MIT"},
+        openapi_tags=[
+            {"name": "search", "description": "Web search across 9 engines"},
+            {"name": "scrape", "description": "URL scraping to markdown/text/html/json"},
+            {"name": "social", "description": "Social media scraping (12 platforms)"},
+            {"name": "ai", "description": "AI-powered research and extraction (Enterprise)"},
+            {"name": "smart", "description": "Intent-aware smart search routing"},
+            {"name": "pro", "description": "API key management and usage tracking"},
+            {"name": "enterprise", "description": "Enterprise admin: tenants, SLA, compliance, webhooks"},
+            {"name": "analytics", "description": "Usage analytics and insights"},
+            {"name": "admin", "description": "Admin operations (API keys, usage)"},
+            {"name": "ops", "description": "Operations: health, metrics, engine status"},
+            {"name": "plugins", "description": "Plugin management and discovery"},
+            {"name": "compliance", "description": "GDPR, audit logging, data export"},
+            {"name": "system", "description": "System info and health checks"},
+        ],
+    )
+
+    _add_middleware(app, settings)
+    _add_error_handlers(app)
+    _add_favicon(app)
+    _mount_routers(app)
+    return app
+
+
+def _scrape_for_agent(client: ScrapingClient):
+    """Adapter so the Agent can scrape pages through the shared HTTP client."""
+
+    async def _scrape(url: str) -> dict:
+        from jiro.extract import scrape_url
+        return await scrape_url(url, client, fmt="markdown", include_metadata=False)
+
+    return _scrape
+
+
+def _add_middleware(app: FastAPI, settings: Settings) -> None:
+    # CORS middleware
+    if settings.cors_enabled:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=settings.cors_allow_credentials,
+            allow_methods=settings.cors.get("allow_methods", ["*"]),
+            allow_headers=settings.cors.get("allow_headers", ["*"]),
+        )
+
+    # Audit logging middleware
+    request_audit = AuditLogger(max_entries=10000)
+    app.state.request_audit = request_audit
+    app.state._audit_logger = request_audit  # legacy alias used by analytics router
+    app.add_middleware(AuditMiddleware, audit_logger=request_audit)
+
+    @app.middleware("http")
+    async def license_verification_middleware(request: Request, call_next: Any):
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("license "):
+            license_token = auth_header[8:].strip()
+            try:
+                from jiro.licensing import validate_license
+                info = validate_license(license_token)
+                request.state.license_info = info
+            except Exception as exc:
+                log.warning("license verification failed: %s", exc)
+        response = await call_next(request)
+        return response
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next: Any):
+        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
+        request.state.request_id = request_id
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except JiroError as exc:
+            response = JSONResponse(status_code=exc.status_code,
+                                    content=exc.to_dict())
+        except Exception:  # pragma: no cover - safety net
+            log.exception("unhandled error", extra={"request_id": request_id})
+            response = JSONResponse(status_code=500, content={
+                "error": "internal server error", "error_code": "internal_error",
+            })
+        latency = (time.perf_counter() - started)
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Jiro-Version"] = __version__
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if not request.url.path.startswith("/docs") and request.url.path != "/openapi.json":
+            response.headers["Content-Security-Policy"] = "default-src 'self'"
+
+        # Record Prometheus metrics
+        try:
+            from jiro.telemetry import get_metrics
+            metrics = get_metrics()
+            path = request.url.path
+            method = request.method
+            status = str(response.status_code)
+
+            metrics.counter("jiro_http_requests_total", "Total HTTP requests",
+                           ["method", "path", "status"]).inc(
+                method=method, path=path, status=status)
+            metrics.histogram("jiro_http_request_duration_seconds", "Request latency",
+                             ["method", "path"]).observe(
+                latency, method=method, path=path)
+        except Exception:
+            pass
+
+        auth_ctx = getattr(request.state, "auth", None)
+        log_extra = {
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "latency_ms": round(latency, 1),
+        }
+        if auth_ctx is not None and getattr(auth_ctx, "is_authenticated", False):
+            log_extra["key_id"] = auth_ctx.key_id
+            log_extra["role"] = auth_ctx.role
+        eng = request.query_params.get("engine")
+        if eng:
+            log_extra["engine"] = eng
+        log.info("request", extra=log_extra)
+        return response
+
+
+def _add_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(JiroError)
+    async def jiro_error_handler(request: Request, exc: JiroError):
+        return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
+
+def _add_favicon(app: FastAPI) -> None:
+    """Add favicon.ico route using the Jiro logo."""
+    from pathlib import Path
+    from starlette.responses import Response
+
+    favicon_path = Path(__file__).parent.parent / "favicon.ico"
+    if favicon_path.exists():
+        favicon_bytes = favicon_path.read_bytes()
+
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def favicon():
+            return Response(content=favicon_bytes, media_type="image/x-icon")
+    else:
+        # Fallback: serve an empty response so browsers don't 404
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def favicon():
+            return Response(content=b"", media_type="image/x-icon")
+
+
+def _mount_routers(app: FastAPI) -> None:
+    from jiro.server.routers import admin, ai, analytics, compliance, graph, jobs, ops, params, plugins, scrape, search, smart, social, stream, system, tasks
+    from jiro.server.routers import enterprise
+    from jiro.server.routers import analytics_v2
+
+    app.include_router(system.router)
+    app.include_router(search.router)
+    app.include_router(graph.router)
+    app.include_router(params.router)
+    app.include_router(scrape.router)
+    app.include_router(ai.router)
+    app.include_router(smart.router)
+    app.include_router(social.router)
+    app.include_router(stream.router)
+    app.include_router(admin.router)
+    app.include_router(jobs.router)
+    app.include_router(tasks.router)
+    app.include_router(ops.router)
+    app.include_router(analytics.router)
+    app.include_router(compliance.router)
+    app.include_router(plugins.router)
+    app.include_router(enterprise.router)
+    app.include_router(analytics_v2.router)
+    # MCP remote transports (Streamable HTTP + legacy SSE)
+    app.include_router(create_mcp_router())
