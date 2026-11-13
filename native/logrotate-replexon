@@ -1,0 +1,13 @@
+# Installed by native/install.sh, which fills in SERVICE_USER.
+/opt/replexon/data/logs/plex-backup.log
+/opt/replexon/data/logs/plex-backup-tracking.log
+{
+    su SERVICE_USER SERVICE_USER
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

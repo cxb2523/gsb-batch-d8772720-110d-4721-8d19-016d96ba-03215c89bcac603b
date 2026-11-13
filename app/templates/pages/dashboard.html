@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - RePlexOn{% endblock %}
+{% block head %}
+<script src="/static/js/chart.min.js?v=2" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Dashboard</h2>
+    <div class="flex items-center gap-1">
+        <div class="next-backup" id="next-backup-indicator">
+            {% if next_backup %}
+            <span class="next-backup-countdown" id="countdown" data-target="{{ next_backup | iso_utc }}"
+                  title="Next backup: {{ next_backup | datetime }} ({{ tz_name() }})"></span>
+            <span class="next-backup-sep">|</span>
+            {% endif %}
+            <span class="pulse"></span>
+            <span>System active</span>
+        </div>
+        <div class="time-filters" style="margin-left: 1rem;">
+            <a href="/dashboard?days=7" class="time-filter-btn {{ 'active' if selected_days == 7 }}">7d</a>
+            <a href="/dashboard?days=30" class="time-filter-btn {{ 'active' if selected_days == 30 }}">30d</a>
+            <a href="/dashboard?days=90" class="time-filter-btn {{ 'active' if selected_days == 90 }}">90d</a>
+            <a href="/dashboard?days=365" class="time-filter-btn {{ 'active' if selected_days == 365 }}">All</a>
+        </div>
+    </div>
+</div>
+
+{% if backup_destination or plex_data_path or nas_status %}
+<div class="info-bar">
+    {% if plex_data_path %}
+    <div class="info-bar-item">
+        <span class="info-bar-label">Source</span>
+        <span class="info-bar-value">{{ plex_data_path }}</span>
+    </div>
+    {% endif %}
+    {% if backup_destination %}
+    <div class="info-bar-item">
+        <span class="info-bar-label">Destination</span>
+        <span class="info-bar-value">{{ backup_destination }}</span>
+    </div>
+    {% endif %}
+    {% if nas_status %}
+    <div class="info-bar-item" style="margin-left: auto;">
+        <span class="info-bar-label">NAS</span>
+        <span class="nas-status-badge nas-{{ nas_status.status }}">{{ nas_status.status | upper }}</span>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Live Backup Progress (HTMX polled) -->
+<div id="backup-progress"
+     hx-get="/api/backup-status"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+</div>
+
+<!-- Failure Alerts -->
+{% if failure_clusters %}
+<div class="failure-alerts">
+    {% for cluster in failure_clusters %}
+    <div class="alert alert-{{ 'error' if cluster.type == 'streak' else 'warning' }}" style="margin-bottom: 0.5rem;">
+        {% if cluster.type == 'streak' %}
+        <strong>Failure streak:</strong> {{ cluster.message }}
+        {% else %}
+        {{ cluster.message }}
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Stat Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-info">
+            <div class="stat-label">Last Backup</div>
+            {% if stats.last_backup %}
+            <div class="stat-value">
+                {% if stats.last_backup.status == 'success' %}
+                <span class="text-success">OK</span>
+                {% elif stats.last_backup.status == 'failure' %}
+                <span class="text-danger">FAIL</span>
+                {% else %}
+                <span class="text-warning">RUN</span>
+                {% endif %}
+            </div>
+            <div class="stat-sub">{{ stats.last_backup.started_at | datetime }}</div>
+            {% if stats.last_backup.db_safe is not none %}
+            <div class="db-safety-badge {{ 'db-safe' if stats.last_backup.db_safe else 'db-live' }}">
+                {{ 'DB Safe' if stats.last_backup.db_safe else 'DB FAILED' }}
+            </div>
+            {% endif %}
+            {% else %}
+            <div class="stat-value text-muted">--</div>
+            <div class="stat-sub">No backups yet</div>
+            {% endif %}
+        </div>
+        <div class="stat-chart">
+            <canvas id="lastBackupChart" width="52" height="52"></canvas>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-info">
+            <div class="stat-label">Total Size</div>
+            {% if stats.latest_size_bytes %}
+            <div class="stat-value">{{ (stats.latest_size_bytes / 1073741824) | round(1) }} <span class="text-xs text-muted">GB</span></div>
+            {% else %}
+            <div class="stat-value text-muted">--</div>
+            {% endif %}
+            <div class="stat-sub">Latest backup</div>
+        </div>
+        <div class="stat-chart">
+            <canvas id="sizeChart" width="52" height="52"></canvas>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-info">
+            <div class="stat-label">Success Rate</div>
+            <div class="stat-value">{{ stats.success_rate }}<span class="text-xs text-muted">%</span></div>
+            <div class="stat-sub {{ 'success' if stats.success_rate >= 95 else ('warning' if stats.success_rate >= 80 else 'danger') }}">
+                {{ stats.failure_count }} failure{{ 's' if stats.failure_count != 1 }} in period
+            </div>
+        </div>
+        <div class="stat-chart">
+            <canvas id="successChart" width="52" height="52"></canvas>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-info">
+            <div class="stat-label">Backups Run</div>
+            <div class="stat-value">{{ stats.total_backups }}</div>
+            <div class="stat-sub">Last {{ selected_days }} days</div>
+        </div>
+        <div class="stat-chart">
+            <canvas id="totalChart" width="52" height="52"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row: Size + Duration -->
+<div class="charts-row">
+    <div class="chart-card">
+        <h3>Backup Size Over Time</h3>
+        <div class="chart-container bar-chart">
+            <canvas id="sizeBarChart"></canvas>
+        </div>
+    </div>
+    <div class="chart-card">
+        <h3>Duration Trend</h3>
+        <div class="chart-container bar-chart">
+            <canvas id="durationChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Backup Calendar Heatmap -->
+<div class="card">
+    <h3 style="margin-bottom: 1rem;">Backup History</h3>
+    <div class="calendar-heatmap">
+        {% for month in calendar_data %}
+        <div class="calendar-month">
+            <div class="calendar-label">{{ month.label }}</div>
+            <div class="calendar-days">
+                {% for day in range(1, month.days_in_month + 1) %}
+                {% set status = month.statuses.get(day) %}
+                <div class="calendar-day {{ status if status else 'none' }}"
+                     title="{{ month.label.split(' ')[0] }} {{ day }}: {{ status if status else 'no backup' }}"></div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="calendar-legend">
+        <span class="calendar-legend-item"><span class="calendar-day success" style="display:inline-block;"></span> Success</span>
+        <span class="calendar-legend-item"><span class="calendar-day failure" style="display:inline-block;"></span> Failure</span>
+        <span class="calendar-legend-item"><span class="calendar-day none" style="display:inline-block;"></span> No backup</span>
+    </div>
+</div>
+
+<!-- Recent Backups Table -->
+<div class="card">
+    <div class="flex justify-between items-center" style="margin-bottom: 1rem;">
+        <h3 style="margin-bottom: 0;">Recent Backups</h3>
+        <a href="/logs" class="btn btn-secondary btn-sm">View All</a>
+    </div>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Started</th>
+                    <th>Size</th>
+                    <th>Duration</th>
+                    <th>Trigger</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for backup in recent_backups %}
+                <tr style="cursor: pointer;" onclick="window.location='/logs/{{ backup.id }}'">
+                    <td><span class="badge badge-{{ backup.backup_type }}">{{ backup.backup_type | replace('_', ' ') }}</span></td>
+                    <td><span class="badge badge-{{ backup.status }}">{{ backup.status }}</span></td>
+                    <td>{{ backup.started_at | datetime }}</td>
+                    <td>{{ backup.size_display }}</td>
+                    <td>{{ backup.duration_display }}</td>
+                    <td class="text-xs text-muted">{{ backup.triggered_by }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="empty-state" style="padding: 2rem;">
+                        <h3>No backups recorded yet</h3>
+                        <p>Backups will appear here once the log parser runs.</p>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<div id="dashboard-data" hidden
+     data-type-counts="{{ type_counts_json }}"
+     data-daily-sizes="{{ daily_sizes_json }}"
+     data-daily-durations="{{ daily_durations_json }}"
+     data-success-rate="{{ stats.success_rate }}"
+     data-total-backups="{{ stats.total_backups }}"></div>
+<script src="/static/js/dashboard.js?v=5" defer></script>
+{% endblock %}

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Sign In - RePlexOn{% endblock %}
+
+{% block body %}
+<div class="ticket-page">
+    <div class="ticket">
+        <img class="logo" src="/static/logo/replexon-sign.svg" alt="RePlexOn - Backup Line">
+        <p class="sub">"Previously on your Plex server..."</p>
+
+        {% if error %}
+        <div class="alert alert-error" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" action="/login">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <label class="form-label" for="username">Username</label>
+                <input type="text" id="username" name="username" class="form-input"
+                       value="{{ username | default('', true) }}" required autofocus autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">Password</label>
+                <input type="password" id="password" name="password" class="form-input" required autocomplete="current-password">
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
+                Sign In
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

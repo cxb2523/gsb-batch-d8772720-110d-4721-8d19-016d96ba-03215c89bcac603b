@@ -1,0 +1,30 @@
+[Unit]
+Description=RePlexOn - Plex backup and monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=plex
+Group=plex
+WorkingDirectory=/opt/replexon
+Environment=PATH=/opt/replexon/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/replexon/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 9847
+Restart=always
+RestartSec=5
+
+# Hardening. The app runs the backup scripts itself, so they inherit this sandbox:
+# the Plex folder is readable, only data/ is writable. For a local or mounted backup
+# folder, add it with `sudo systemctl edit replexon`:
+#   [Service]
+#   ReadWritePaths=/path/to/backups
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/opt/replexon/data
+
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
