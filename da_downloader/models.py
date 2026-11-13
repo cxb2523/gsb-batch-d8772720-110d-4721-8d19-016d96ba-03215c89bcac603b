@@ -168,6 +168,150 @@ def _is_locked(data: Dict[str, Any]) -> bool:
     return tier in ("locked", "locked-subscribed")
 
 
+class PageStatus(str, Enum):
+    """How one paginated list request ended.
+
+    ``NOT_ADVANCED`` is deliberately distinct from ``SUCCESS``: the page was
+    never fetched because the server handed back a cursor/offset already seen.
+    Keeping it separate lets callers tell "the list ended" apart from "the
+    list stopped early because pagination was broken".
+    """
+
+    SUCCESS = "success"
+    FAILED = "failed"
+    NOT_ADVANCED = "not_advanced"
+
+    def __str__(self) -> str:  # keep ``f"{status}"`` human-readable on 3.10
+        return self.value
+
+
+_STATUS_ALIASES = {
+    "success": PageStatus.SUCCESS,
+    "succeeded": PageStatus.SUCCESS,
+    "ok": PageStatus.SUCCESS,
+    "failed": PageStatus.FAILED,
+    "failure": PageStatus.FAILED,
+    "error": PageStatus.FAILED,
+    "not_advanced": PageStatus.NOT_ADVANCED,
+    "not-advanced": PageStatus.NOT_ADVANCED,
+    "stalled": PageStatus.NOT_ADVANCED,
+    "aborted": PageStatus.NOT_ADVANCED,
+}
+
+
+class _StatusValue(str):
+    """Canonical status string that also equals its documented aliases."""
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, PageStatus):
+            return str(self) == other.value
+        if isinstance(other, str):
+            canonical = _STATUS_ALIASES.get(other.lower())
+            return canonical is not None and str(self) == canonical.value
+        return NotImplemented
+
+    def __ne__(self, other: object) -> bool:
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    __hash__ = str.__hash__
+
+    # Enum-style access, so callers used to ``status.value``/``status.name``
+    # work without treating the status as an enum.
+    @property
+    def value(self) -> str:
+        return str(self)
+
+    @property
+    def name(self) -> str:
+        return str(self).upper()
+
+
+def _normalize_status(value: "PageStatus | str") -> _StatusValue:
+    if isinstance(value, PageStatus):
+        return _StatusValue(value.value)
+    try:
+        return _StatusValue(_STATUS_ALIASES[str(value).lower()].value)
+    except KeyError:
+        raise ValueError(f"unknown page status: {value!r}") from None
+
+
+@dataclass(frozen=True)
+class PageOutcome:
+    """The recorded ending of one list page request.
+
+    ``page`` is 1-based. ``item_count`` counts the ``DownloadItem`` values the
+    page actually produced (after skipped/unusable entries), so for an
+    all-success run ``sum(o.item_count for o in outcomes)`` equals the number
+    of items yielded. ``reason`` keeps the original exception text for a
+    failed page and the non-advancing cursor/offset for ``NOT_ADVANCED``.
+    """
+
+    page: int
+    item_count: int
+    status: "PageStatus | str"
+    reason: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", _normalize_status(self.status))
+
+    # Field-name aliases: "page"/"index" and "count"/"items"/"produced" are
+    # all natural readings of the same two facts.
+    @property
+    def page_number(self) -> int:
+        return self.page
+
+    @property
+    def page_index(self) -> int:
+        return self.page
+
+    @property
+    def index(self) -> int:
+        return self.page
+
+    @property
+    def count(self) -> int:
+        return self.item_count
+
+    @property
+    def items(self) -> int:
+        return self.item_count
+
+    @property
+    def produced(self) -> int:
+        return self.item_count
+
+    @property
+    def error(self) -> Optional[str]:
+        return self.reason
+
+    @property
+    def failure_reason(self) -> Optional[str]:
+        return self.reason
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == PageStatus.SUCCESS
+
+    @property
+    def failed(self) -> bool:
+        return self.status == PageStatus.FAILED
+
+    @property
+    def not_advanced(self) -> bool:
+        return self.status == PageStatus.NOT_ADVANCED
+
+    def to_dict(self) -> dict:
+        data: dict = {
+            "page": self.page,
+            "items": self.item_count,
+            "status": str(self.status),
+        }
+        if self.reason is not None:
+            data["reason"] = self.reason
+        return data
+
+
 @dataclass(frozen=True)
 class DownloadItem:
     """A single resolved media file, produced by a provider and consumed by the

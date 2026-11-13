@@ -5,7 +5,7 @@ __author__ = "DeviantArt Downloader Team"
 
 from .download import Downloader, build_downloader, normalize_quality
 from .errors import DeviantArtError
-from .models import DownloadItem, MediaAsset, ResolvedDeviation
+from .models import DownloadItem, MediaAsset, PageOutcome, PageStatus, ResolvedDeviation
 
 __all__ = [
     "Downloader",
@@ -13,6 +13,8 @@ __all__ = [
     "normalize_quality",
     "DownloadItem",
     "MediaAsset",
+    "PageOutcome",
+    "PageStatus",
     "ResolvedDeviation",
     "DeviantArtError",
 ]

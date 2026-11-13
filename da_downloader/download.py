@@ -15,7 +15,7 @@ from .api import DeviantArtAPI
 from .archive import DownloadArchive
 from .http import HttpDownloader
 from .manager import DownloadManager, DownloadOutcome
-from .models import ResolvedDeviation, make_media_asset
+from .models import PageOutcome, ResolvedDeviation, make_media_asset
 from .oauth import OAuthSession
 from .official_api import OfficialApiClient
 from .path import PathFormatter
@@ -51,43 +51,60 @@ class Downloader:
     def __init__(self, provider: DeviantArtProvider, manager: DownloadManager) -> None:
         self.provider = provider
         self.manager = manager
+        # Page endings recorded by the last download()/resolve() call. The
+        # return types stay unchanged; this is the observable per-page trail.
+        self.page_outcomes: list[PageOutcome] = []
 
     def download(self, target: str | DownloadTarget) -> list[DownloadOutcome]:
         parsed = TargetParser.parse(target) if isinstance(target, str) else target
-        return [self.manager.run(item) for item in self.provider.resolve(parsed)]
+        self.page_outcomes = []
+        # Consume the provider lazily but keep every outcome: a page failure
+        # ends the stream, yet items already produced are downloaded and
+        # returned instead of being discarded with the exception.
+        outcomes: list[DownloadOutcome] = []
+        try:
+            for item in self.provider.resolve(parsed):
+                outcomes.append(self.manager.run(item))
+        finally:
+            self._sync_page_outcomes()
+        return outcomes
 
     def resolve(self, target: str | DownloadTarget) -> list[ResolvedDeviation]:
         """Resolve a target to DeviantArt works and media assets (no download)."""
         parsed = TargetParser.parse(target) if isinstance(target, str) else target
+        self.page_outcomes = []
         groups: dict[str, dict] = {}
         order: list[str] = []
-        for item in self.provider.resolve(parsed):
-            extra = item.metadata.get("index") if item.metadata else None
-            base = str(item.artwork_id)
-            if extra is not None:
-                suffix = f"-{extra}"
-                if base.endswith(suffix):
-                    base = base[: -len(suffix)]
-            if base not in groups:
-                groups[base] = {
-                    "title": item.title,
-                    "author": item.author,
-                    "mature": item.mature,
-                    "url": item.url,
-                    "assets": [],
-                }
-                order.append(base)
-            index = int(extra) if extra is not None else len(groups[base]["assets"])
-            groups[base]["assets"].append(
-                make_media_asset(
-                    base,
-                    index,
-                    item.media_url,
-                    extension=item.extension,
-                    mature=item.mature,
-                    representation=item.metadata.get("representation"),
+        try:
+            for item in self.provider.resolve(parsed):
+                extra = item.metadata.get("index") if item.metadata else None
+                base = str(item.artwork_id)
+                if extra is not None:
+                    suffix = f"-{extra}"
+                    if base.endswith(suffix):
+                        base = base[: -len(suffix)]
+                if base not in groups:
+                    groups[base] = {
+                        "title": item.title,
+                        "author": item.author,
+                        "mature": item.mature,
+                        "url": item.url,
+                        "assets": [],
+                    }
+                    order.append(base)
+                index = int(extra) if extra is not None else len(groups[base]["assets"])
+                groups[base]["assets"].append(
+                    make_media_asset(
+                        base,
+                        index,
+                        item.media_url,
+                        extension=item.extension,
+                        mature=item.mature,
+                        representation=item.metadata.get("representation"),
+                    )
                 )
-            )
+        finally:
+            self._sync_page_outcomes()
         return [
             ResolvedDeviation(
                 id=key,
@@ -99,6 +116,16 @@ class Downloader:
             )
             for key in order
         ]
+
+    def _sync_page_outcomes(self) -> None:
+        outcomes = getattr(self.provider, "page_outcomes", None)
+        if outcomes is not None:
+            self.page_outcomes = list(outcomes)
+
+    @property
+    def last_page_outcomes(self) -> list[PageOutcome]:
+        """Alias for ``page_outcomes`` (the last call's per-page trail)."""
+        return self.page_outcomes
 
 
 

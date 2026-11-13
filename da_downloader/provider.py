@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterator, Optional, Protocol
 from .api import ActionType, DeviantArtAPI
 from .errors import MediaUnavailableError, ParseError
 from .errors import AuthenticationError, NetworkError
-from .models import Deviation, DownloadItem, literature_text
+from .models import Deviation, DownloadItem, PageOutcome, PageStatus, literature_text
 from .wix_media import bounded_fullview_url
 from .official_api import (
     OfficialApiClient,
@@ -50,8 +50,12 @@ class WebProvider:
         self.api = api
         self.quality = quality
         self.limit = limit
+        # Ending of each list page from the most recent resolve() call, in
+        # request order. Reset per resolve so callers never read stale pages.
+        self.page_outcomes: list[PageOutcome] = []
 
     def resolve(self, target: DownloadTarget) -> Iterator[DownloadItem]:
+        self.page_outcomes = []
         kind = target.kind
         if kind == TargetKind.ARTWORK:
             raise MediaUnavailableError(
@@ -98,23 +102,53 @@ class WebProvider:
         offset = 0
         cursor = ""
         seen_pages: set[tuple[int, str]] = set()
+        page = 0
         while True:
             page_key = (offset, cursor)
+            page += 1
             if page_key in seen_pages:
-                raise ParseError(
-                    f"pagination did not advance (offset={offset}, cursor={cursor!r})"
+                reason = f"pagination did not advance (offset={offset}, cursor={cursor!r})"
+                # 独立结局：分页未推进必须终止采集，但不伪装成普通成功页。
+                self.page_outcomes.append(
+                    PageOutcome(page, 0, PageStatus.NOT_ADVANCED, reason)
                 )
+                logger.warning("stopping list at page %s: %s", page, reason)
+                return
             seen_pages.add(page_key)
 
-            deviations, has_more, offset, cursor = self.api.fetch_deviations(
-                url, offset, cursor
+            try:
+                deviations, has_more, offset, cursor = self.api.fetch_deviations(
+                    url, offset, cursor
+                )
+            except Exception as exc:
+                # 失败页记录原始异常文本；已经产出的作品由调用方保留，
+                # 采集就此结束而不静默跳过该页继续翻页。
+                self.page_outcomes.append(
+                    PageOutcome(page, 0, PageStatus.FAILED, str(exc))
+                )
+                logger.warning("list page %s failed: %s", page, exc)
+                return
+
+            produced = 0
+            try:
+                for deviation in deviations:
+                    item = self._to_item(deviation)
+                    if item is not None:
+                        produced += 1
+                        yield item
+            except Exception as exc:
+                # 单件解析/取链失败同样视为本页失败：保留已产出的条目与
+                # 计数，记录原始异常文本后结束采集，不再静默继续翻页。
+                self.page_outcomes.append(
+                    PageOutcome(page, produced, PageStatus.FAILED, str(exc))
+                )
+                logger.warning("list page %s failed after %s items: %s", page, produced, exc)
+                return
+            self.page_outcomes.append(
+                PageOutcome(page, produced, PageStatus.SUCCESS)
             )
-            for deviation in deviations:
-                item = self._to_item(deviation)
-                if item is not None:
-                    yield item
             if not has_more:
-                break
+                return
 
     def _to_item(self, deviation: Deviation) -> Optional[DownloadItem]:
         if deviation.deviation_type == "literature":
@@ -188,8 +222,11 @@ class OfficialProvider:
         self.client = client
         self.quality = quality
         self.limit = limit
+        # Ending of each list page from the most recent resolve() call.
+        self.page_outcomes: list[PageOutcome] = []
 
     def resolve(self, target: DownloadTarget) -> Iterator[DownloadItem]:
+        self.page_outcomes = []
         kind = target.kind
         if kind == TargetKind.ARTWORK:
             yield from self._artwork_items(target)
@@ -280,17 +317,51 @@ class OfficialProvider:
     def _paginate(self, fetch: Callable[[int], dict]) -> Iterator[DownloadItem]:
         offset = 0
         seen: set[int] = set()
+        page = 0
         while True:
+            page += 1
             if offset in seen:
-                raise ParseError("pagination did not advance")
+                reason = f"pagination did not advance (offset={offset})"
+                self.page_outcomes.append(
+                    PageOutcome(page, 0, PageStatus.NOT_ADVANCED, reason)
+                )
+                logger.warning("stopping list at page %s: %s", page, reason)
+                return
             seen.add(offset)
-            data = fetch(offset)
+
+            try:
+                data = fetch(offset)
+            except Exception as exc:
+                # 失败页保留原始异常文本；此前已产出的 DownloadItem 照常交付，
+                # 采集在此结束而不是静默跳到下一页。
+                self.page_outcomes.append(
+                    PageOutcome(page, 0, PageStatus.FAILED, str(exc))
+                )
+                logger.warning("list page %s failed: %s", page, exc)
+                return
+
             results = data.get("results") or []
-            for deviation in results:
-                if isinstance(deviation, dict):
-                    yield self._item(deviation)
+            produced_items: list[DownloadItem] = []
+            try:
+                for deviation in results:
+                    if isinstance(deviation, dict):
+                        produced_items.append(self._item(deviation))
+            except Exception as exc:
+                # 单件转换失败按本页失败处理：已产出的条目照常交付并计数，
+                # 原始异常文本保留，采集结束。
+                self.page_outcomes.append(
+                    PageOutcome(page, len(produced_items), PageStatus.FAILED, str(exc))
+                )
+                logger.warning("list page %s failed: %s", page, exc)
+                yield from produced_items
+                return
+            # Record before yielding so an early consumer stop keeps the trail.
+            self.page_outcomes.append(
+                PageOutcome(page, len(produced_items), PageStatus.SUCCESS)
+            )
+            yield from produced_items
             if not data.get("has_more"):
-                break
+                return
             offset = data.get("next_offset") or (offset + len(results))
 
     def _item(self, deviation: dict) -> DownloadItem:
@@ -405,8 +476,11 @@ class CompositeProvider:
             raise ValueError("at least one provider is required")
         self.official = official
         self.web = web
+        # Page endings of the provider that actually served the last target.
+        self.page_outcomes: list[PageOutcome] = []
 
     def resolve(self, target: DownloadTarget) -> Iterator[DownloadItem]:
+        self.page_outcomes = []
         kind = target.kind
         if kind == TargetKind.SEARCH:
             if self.web is None:
@@ -414,7 +488,7 @@ class CompositeProvider:
                     "search requires a web/cookie session "
                     "(`devart-dl login browser`/`interactive` or --cookies)"
                 )
-            yield from self.web.resolve(target)
+            yield from self._serve(self.web, target)
             return
         if kind in (TargetKind.ARTWORK, TargetKind.TAG):
             if self.official is None:
@@ -422,20 +496,53 @@ class CompositeProvider:
                     "this target requires the official API "
                     "(`devart-dl login oauth`)"
                 )
-            yield from self.official.resolve(target)
+            yield from self._serve(self.official, target)
             return
         if self.official is not None:
             try:
-                yield from self.official.resolve(target)
+                yield from self._serve(self.official, target)
             except (MediaUnavailableError, NetworkError, AuthenticationError):
                 if self.web is not None:
-                    yield from self.web.resolve(target)
+                    yield from self._serve(self.web, target)
                     return
                 raise
+            # Page failures no longer raise; if the official session produced
+            # nothing at all (first page failed), keep the old fallback policy
+            # and try the web session instead.
+            if self._produced_nothing(self.official) and self.web is not None:
+                self.page_outcomes = []
+                yield from self._serve(self.web, target)
         elif self.web is not None:
-            yield from self.web.resolve(target)
+            yield from self._serve(self.web, target)
         else:
             raise MediaUnavailableError("no provider can resolve this target")
 
+    def _serve(
+        self, provider: DeviantArtProvider, target: DownloadTarget
+    ) -> Iterator[DownloadItem]:
+        """Delegate to one provider, collecting its pages even if the
+        consumer stops early (the generator is closed at the yield point)."""
+        try:
+            yield from provider.resolve(target)
+        finally:
+            self._collect(provider)
 
-__all__ = ["CompositeProvider", "DeviantArtProvider", "OfficialProvider", "WebProvider"]
+    @staticmethod
+    def _produced_nothing(provider: DeviantArtProvider) -> bool:
+        outcomes = getattr(provider, "page_outcomes", None)
+        return bool(outcomes) and outcomes[0].failed and outcomes[0].item_count == 0
+
+    def _collect(self, provider: DeviantArtProvider) -> None:
+        outcomes = getattr(provider, "page_outcomes", None)
+        if outcomes is not None:
+            self.page_outcomes = list(outcomes)
+
+
+__all__ = [
+    "CompositeProvider",
+    "DeviantArtProvider",
+    "OfficialProvider",
+    "PageOutcome",
+    "PageStatus",
+    "WebProvider",
+]

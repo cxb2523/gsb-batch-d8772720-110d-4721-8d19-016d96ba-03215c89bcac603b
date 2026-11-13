@@ -164,7 +164,28 @@ def _execute(
                 print(f"  - {outcome.item_id} ({outcome.reason})")
             elif outcome.status == "failed":
                 print(f"  ! {outcome.item_id}: {outcome.reason}", file=sys.stderr)
-    return 0 if failed == 0 else 1
+        pages = getattr(downloader, "page_outcomes", [])
+        for page in pages:
+            if page.failed:
+                print(
+                    f"  ! page {page.page} failed after {page.item_count} items: "
+                    f"{page.reason}",
+                    file=sys.stderr,
+                )
+                print(
+                    "    partial results above were kept; pagination stopped here",
+                    file=sys.stderr,
+                )
+            elif page.not_advanced:
+                print(
+                    f"  ! pagination stopped at page {page.page}: {page.reason}",
+                    file=sys.stderr,
+                )
+    incomplete = any(
+        page.failed or page.not_advanced
+        for page in getattr(downloader, "page_outcomes", [])
+    )
+    return 0 if failed == 0 and not incomplete else 1
 
 
 def _run_download(arguments: Sequence[str]) -> int:

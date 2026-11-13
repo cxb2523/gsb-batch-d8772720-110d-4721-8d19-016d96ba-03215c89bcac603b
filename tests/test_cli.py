@@ -123,3 +123,51 @@ def test_resolve_command_outputs_single_work_json(monkeypatch, capsys) -> None:
     assert '"work"' in out
     assert '"media"' in out
     assert "deviantart:u1:p0" in out
+
+
+def test_run_download_reports_failed_page_and_keeps_partial_results(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    from da_downloader.manager import DownloadOutcome
+    from da_downloader.models import PageOutcome
+
+    class FakeDownloader:
+        page_outcomes = [PageOutcome(1, 1, "success"), PageOutcome(2, 0, "failed", "boom")]
+
+        def download(self, target):
+            return [DownloadOutcome("1", "downloaded", path=tmp_path / "x.jpg", size=4)]
+
+    monkeypatch.setattr(cli, "build_downloader", lambda **kw: FakeDownloader())
+    monkeypatch.setattr(cli, "_load_cookies", lambda p: "")
+
+    rc = cli._run_download(["https://www.deviantart.com/alice/gallery", "--dest", str(tmp_path)])
+
+    assert rc == 1  # incomplete collection is visible to scripts
+    out = capsys.readouterr()
+    assert "downloaded: 1, skipped: 0, failed: 0" in out.out
+    assert "page 2 failed after 0 items: boom" in out.err
+    assert "partial results above were kept" in out.err
+
+
+def test_run_download_reports_non_advancing_pagination(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    from da_downloader.manager import DownloadOutcome
+    from da_downloader.models import PageOutcome
+
+    class FakeDownloader:
+        page_outcomes = [
+            PageOutcome(1, 1, "success"),
+            PageOutcome(2, 0, "not_advanced", "pagination did not advance"),
+        ]
+
+        def download(self, target):
+            return [DownloadOutcome("1", "downloaded", path=tmp_path / "x.jpg", size=4)]
+
+    monkeypatch.setattr(cli, "build_downloader", lambda **kw: FakeDownloader())
+    monkeypatch.setattr(cli, "_load_cookies", lambda p: "")
+
+    rc = cli._run_download(["https://www.deviantart.com/alice/gallery", "--dest", str(tmp_path)])
+
+    assert rc == 1
+    assert "pagination stopped at page 2" in capsys.readouterr().err

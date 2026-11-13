@@ -28,3 +28,10 @@
 ## 2026-11-01 codex/sync-docsite-template
 
 上游 docsite #16 已合并；更新固定 SHA 并运行 docsite update。旧 pin 附带的下载页生成器 showAssetTable 选项默认保持原输出。npm ci、docs:build、无 .git 的 check/navcheck 通过；应用测试未在本地重跑，远程 CI 和 Dependabot 最新 SHA 待验收。
+
+### 2026-11-14 run-A（分页逐页结局）
+
+- 本会话改动：`models.py` 新增 `PageOutcome` / `PageStatus`（success / failed / not_advanced）；`WebProvider._resolve_list` 与 `OfficialProvider._paginate` 逐页记录结局，单页请求失败时保留已产出 `DownloadItem` 并结束采集（不再抛异常抹掉结果），分页 offset/cursor 未推进仍终止但记为 `not_advanced`；`CompositeProvider` / `Downloader` 暴露 `page_outcomes`（`download`/`resolve` 返回类型不变，`finally` 同步，异常路径也保留）；CLI 输出失败页/未推进页并以非零码标示采集不完整。
+- 验证情况：`pytest` 166 passed、`ruff check` 全通过。新增测试覆盖：Web/Official 正常翻页（页数=请求数、作品数之和=条目数）、中间页失败保留已取作品、分页未推进、保留原始异常文本、Composite 回退转发页结局、Downloader 暴露结局、CLI 提示。
+- 未提交内容与风险：全部改动尚未提交；未做真实 API 采集验收（沿用 L-03 的验证边界）。Web 路径在 offset/cursor 重复时按「下一次请求即终止」处理，重复页不会再发出请求。
+- 下一步入口：真实画廊/收藏夹分页冒烟；如需在 `resolve` CLI JSON 中暴露页结局可再扩展。

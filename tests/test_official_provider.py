@@ -378,3 +378,113 @@ def test_gallery_literature_is_inline_text() -> None:
     assert items[0].content == "Text"
     assert items[0].media_url == ""
     assert items[0].extension == "txt"
+
+
+# --- per-page outcomes -------------------------------------------------------
+
+
+class FailingClient(FakeClient):
+    """FakeClient whose gallery pages may raise per offset."""
+
+    def __init__(self, failures=None) -> None:
+        super().__init__()
+        self.failures = dict(failures or {})
+
+    def gallery_all(self, username, offset=0, limit=24):
+        if offset in self.failures:
+            raise self.failures[offset]
+        return super().gallery_all(username, offset, limit)
+
+
+def test_official_pages_record_success_outcomes_that_sum_to_items() -> None:
+    client = FakeClient()
+    client.pages[("gallery_all", "alice", 0)] = {
+        "results": [make_deviation("uuid-1"), make_deviation("uuid-2", title="B")],
+        "has_more": True,
+        "next_offset": 24,
+    }
+    client.pages[("gallery_all", "alice", 24)] = {
+        "results": [make_deviation("uuid-3", title="C")],
+        "has_more": False,
+    }
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/gallery")))
+
+    assert [i.artwork_id for i in items] == ["uuid-1", "uuid-2", "uuid-3"]
+    assert [(o.page, o.item_count, o.status) for o in provider.page_outcomes] == [
+        (1, 2, "success"),
+        (2, 1, "success"),
+    ]
+    assert sum(o.item_count for o in provider.page_outcomes) == len(items)
+
+
+def test_official_failed_page_keeps_earlier_items_and_ends_collection() -> None:
+    from da_downloader.errors import NetworkError
+
+    client = FailingClient(failures={24: NetworkError("official page 2 down")})
+    client.pages[("gallery_all", "alice", 0)] = {
+        "results": [make_deviation("uuid-1"), make_deviation("uuid-2", title="B")],
+        "has_more": True,
+        "next_offset": 24,
+    }
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/gallery")))
+
+    assert [i.artwork_id for i in items] == ["uuid-1", "uuid-2"]
+    assert [(o.page, o.item_count, o.status) for o in provider.page_outcomes] == [
+        (1, 2, "success"),
+        (2, 0, "failed"),
+    ]
+    assert provider.page_outcomes[1].reason == "official page 2 down"
+    assert sum(o.item_count for o in provider.page_outcomes) == len(items)
+
+
+def test_official_non_advancing_offset_is_its_own_status() -> None:
+    client = FakeClient()
+    # 第 2 页 has_more=True 但 next_offset 仍指回本页，翻页没有推进。
+    client.pages[("gallery_all", "alice", 0)] = {
+        "results": [make_deviation("uuid-1")],
+        "has_more": True,
+        "next_offset": 24,
+    }
+    client.pages[("gallery_all", "alice", 24)] = {
+        "results": [make_deviation("uuid-2", title="B")],
+        "has_more": True,
+        "next_offset": 24,
+    }
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/gallery")))
+
+    assert [i.artwork_id for i in items] == ["uuid-1", "uuid-2"]
+    assert [(o.page, o.item_count, o.status) for o in provider.page_outcomes] == [
+        (1, 1, "success"),
+        (2, 1, "success"),
+        (3, 0, "not_advanced"),
+    ]
+    assert "did not advance" in provider.page_outcomes[-1].reason
+
+
+def test_official_page_outcomes_reach_downloader() -> None:
+    from da_downloader.download import Downloader
+    from da_downloader.errors import NetworkError
+
+    client = FailingClient(failures={24: NetworkError("page two exploded")})
+    client.pages[("gallery_all", "alice", 0)] = {
+        "results": [make_deviation("uuid-1")],
+        "has_more": True,
+        "next_offset": 24,
+    }
+    provider = OfficialProvider(client, quality="f")
+    downloader = Downloader(provider, manager=None)
+
+    works = downloader.resolve("https://www.deviantart.com/alice/gallery")
+
+    assert len(works) == 1
+    assert [(o.page, o.item_count, o.status) for o in downloader.page_outcomes] == [
+        (1, 1, "success"),
+        (2, 0, "failed"),
+    ]
+    assert downloader.page_outcomes[1].reason == "page two exploded"
