@@ -18,6 +18,12 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs-extra');
 const { spawn } = require('child_process');
+const {
+    ENGINES,
+    runScrapePipeline,
+    validateCrawl4AIPayload,
+    mergeDeepResearchResults,
+} = require('./scrapeOrchestrator');
 
 // --- STEALTH: Rotating User-Agents ---
 const USER_AGENTS = [
@@ -158,11 +164,96 @@ async function crawlWithCrawl4AI(url, options = {}) {
     });
 }
 
-async function smartBrowse(url, options = {}) {
-    const { 
-        action = 'markdown', 
-        timeout = 25000, 
+/**
+ * Run the tiered scraping pipeline with per-tier attempt recording.
+ *
+ * The three engines are the existing Crawl4AI / Playwright / Jina
+ * implementations, wrapped as injectable descriptors so the orchestration
+ * (degradation order, short-content rule, attempts bookkeeping) lives in
+ * the dependency-free scrapeOrchestrator module and can be unit-tested
+ * without a browser or network.
+ *
+ * @param {string} url
+ * @param {object} options Normalized smartBrowse options.
+ * @param {object} [overrides] Optional injected engine runners
+ *   ({ crawl4ai, playwright, jina }) used by tests.
+ * @returns {Promise<object>} Result payload including an `attempts` array.
+ */
+async function runSmartBrowsePipeline(url, options, overrides = {}) {
+    const {
+        action = 'markdown',
         maxChars = 15000,
+        takeScreenshot = false,
+        viewportType = 'desktop',
+        pushToCanvas = false,
+    } = options;
+
+    const runCrawl4AI = overrides.crawl4ai || crawlWithCrawl4AI;
+    const runPlaywrightEngine = overrides.playwright || (() => playwrightBrowse(url, options));
+    const runJinaEngine = overrides.jina || (() => jinaFetch(url, maxChars));
+
+    // Build the engine list in actual attempt order. Crawl4AI is only a
+    // candidate for markdown/text requests without a screenshot request.
+    const engines = [];
+    if ((action === 'markdown' || action === 'text') && !takeScreenshot) {
+        engines.push({
+            name: ENGINES.CRAWL4AI,
+            run: () => runCrawl4AI(url, options),
+        });
+    }
+    engines.push({ name: ENGINES.PLAYWRIGHT, run: runPlaywrightEngine });
+    engines.push({ name: ENGINES.JINA, run: runJinaEngine });
+
+    // Only Tier 1 enforces the short-content rule; Playwright and Jina
+    // results are accepted exactly as before.
+    const validate = (engineName, payload) => {
+        if (engineName === ENGINES.CRAWL4AI) {
+            return validateCrawl4AIPayload(payload);
+        }
+        return payload;
+    };
+
+    const result = await runScrapePipeline(engines, { url, validate });
+
+    // All engines failed: nothing to push, return the legacy failure shape
+    // (its markdown wording is unchanged) with the full attempts trail.
+    if (result.method === 'all-failed') {
+        return result;
+    }
+
+    // Preserve the previous text-action behaviour of Crawl4AI, whose
+    // runner only returns markdown. Playwright already sets text itself.
+    if (action === 'text' && result.method === 'crawl4ai') {
+        result.text = result.markdown;
+    }
+
+    // Canvas summarization. The previous implementation pushed from inside
+    // each engine; here the same calls fire once after the winning engine is
+    // known, with identical arguments and fallback flagging.
+    //   - Crawl4AI pushed on every action when requested.
+    //   - Playwright pushed only for markdown actions.
+    //   - Jina pushed whenever requested (flagged as a fallback).
+    if (pushToCanvas && !options.silent) {
+        if (result.method === 'jina-fallback') {
+            summarizeAndPushToCanvas(result.title, result.markdown, true, '', options.model);
+        } else if (result.method === 'crawl4ai' || action === 'markdown') {
+            // Crawl4AI pushed on every action when requested; Playwright
+            // only pushed for markdown actions.
+            summarizeAndPushToCanvas(
+                result.title || url,
+                result.markdown,
+                false,
+                result.screenshotPath || '',
+                options.model
+            );
+        }
+    }
+    return result;
+}
+
+async function smartBrowse(url, options = {}) {
+    const {
+        action = 'markdown',
         takeScreenshot = false,
         viewportType = 'desktop',
         pushToCanvas = false
@@ -170,28 +261,39 @@ async function smartBrowse(url, options = {}) {
 
     console.log(`[SmartScraper] Browsing: ${url} (Action: ${action}, Screenshot: ${takeScreenshot}, Viewport: ${viewportType}, PushToCanvas: ${pushToCanvas})`);
 
-    // ⚡ TIER 1 (PRIMARY): Crawl4AI - Ultra-fast, LLM-optimized crawler
-    if ((action === 'markdown' || action === 'text') && !takeScreenshot) {
-        try {
-            console.log(`[SmartScraper] 🚀 Crawling via Crawl4AI (Primary Engine): ${url}`);
-            const crawlResult = await crawlWithCrawl4AI(url, options);
-            if (crawlResult && crawlResult.markdown && crawlResult.markdown.trim().length > 30) {
-                console.log(`[SmartScraper] ✅ Crawl4AI Success: ${crawlResult.charCount} chars in ${url}`);
-                if (pushToCanvas && !options.silent) {
-                    summarizeAndPushToCanvas(crawlResult.title || url, crawlResult.markdown, false, '', options.model);
-                }
-                if (action === 'text') {
-                    crawlResult.text = crawlResult.markdown;
-                }
-                return crawlResult;
+    const result = await runSmartBrowsePipeline(url, options);
+
+    if (Array.isArray(result.attempts)) {
+        const winner = result.attempts.find(a => a.status === 'success');
+        result.attempts.forEach(a => {
+            if (a.status === 'failed') {
+                console.warn(`[SmartScraper] ${a.engine} attempt failed after ${a.durationMs}ms: ${a.error}`);
+            } else {
+                console.log(`[SmartScraper] ${a.engine} attempt succeeded in ${a.durationMs}ms`);
             }
-            console.warn(`[SmartScraper] Crawl4AI returned sparse content. Falling back to Playwright.`);
-        } catch (crawlErr) {
-            console.warn(`[SmartScraper] Crawl4AI failed (${crawlErr.message}). Seamlessly falling back to Playwright...`);
+        });
+        if (result.method === 'all-failed' || !winner) {
+            console.error(`[SmartScraper] All scraping engines failed for ${url}`);
+        } else {
+            console.log(`[SmartScraper] Final engine for ${url}: ${winner.engine}`);
         }
     }
 
-    // 🛡️ TIER 2 (FALLBACK): Playwright-Extra + Readability + Turndown
+    return result;
+}
+
+// 🛡️ TIER 2 (FALLBACK): Playwright-Extra + Readability + Turndown
+// Extracted from smartBrowse so it can be driven as one pipeline engine.
+// Throws on failure so the orchestrator can degrade to Jina.
+async function playwrightBrowse(url, options = {}) {
+    const {
+        action = 'markdown',
+        timeout = 25000,
+        maxChars = 15000,
+        takeScreenshot = false,
+        viewportType = 'desktop',
+    } = options;
+
     let browser;
     try {
         browser = await chromium.launch({
@@ -341,10 +443,8 @@ async function smartBrowse(url, options = {}) {
             result.screenshotPath = screenshotPath; // Inject screenshot path
         }
 
-        // [UI] Push to Canvas only if explicitly requested
-        if (pushToCanvas && action === 'markdown' && result.markdown && !options.silent) {
-            summarizeAndPushToCanvas(result.title || url, result.markdown, false, result.screenshotPath, options.model);
-        }
+        // [UI] Canvas pushes are handled centrally in runSmartBrowsePipeline
+        // once the winning engine is known, so nothing is pushed here.
 
         await browser.close();
         return result;
@@ -353,9 +453,9 @@ async function smartBrowse(url, options = {}) {
         console.error(`[SmartScraper] Playwright failed for ${url}: ${e.message}`);
         if (browser) await browser.close().catch(() => {});
 
-        // FALLBACK: Use Jina.ai Reader API (Free, no key needed)
-        console.log(`[SmartScraper] Falling back to Jina.ai reader...`);
-        return await jinaFallback(url, options.maxChars || 15000, pushToCanvas, options.model);
+        // Throw so the orchestrator records this attempt's failure reason
+        // and degrades to the Jina tier.
+        throw e;
     }
 }
 
@@ -422,30 +522,39 @@ function extractMarkdown(html, url, title, maxChars = 15000) {
 }
 
 
-// --- Jina.ai Reader Fallback (100% Free, No API Key) ---
+// --- Jina.ai Reader Tier 3 (100% Free, No API Key) ---
+// Pipeline engine variant: returns the result on success and THROWS on
+// failure so the orchestrator can record the reason and produce the
+// all-failed result with a complete attempts trail.
+async function jinaFetch(url, maxChars = 15000) {
+    const jinaUrl = `https://r.jina.ai/${url}`;
+    const response = await axios.get(jinaUrl, {
+        headers: {
+            'Accept': 'text/plain',
+            'User-Agent': getRandomUA(),
+        },
+        timeout: 20000,
+    });
+
+    let markdown = response.data || '';
+    if (markdown.length > maxChars) {
+        markdown = markdown.substring(0, maxChars) + '\n\n...[Content truncated]';
+    }
+
+    return {
+        title: 'Jina Reader Result',
+        markdown: markdown,
+        url: url,
+        charCount: markdown.length,
+        method: 'jina-fallback'
+    };
+}
+
+// --- Jina.ai Reader Fallback (standalone /api/web/jina endpoint) ---
+// Keeps the original never-throwing contract and canvas push behaviour.
 async function jinaFallback(url, maxChars = 15000, pushToCanvas = false, modelOverride = null) {
     try {
-        const jinaUrl = `https://r.jina.ai/${url}`;
-        const response = await axios.get(jinaUrl, {
-            headers: {
-                'Accept': 'text/plain',
-                'User-Agent': getRandomUA(),
-            },
-            timeout: 20000,
-        });
-
-        let markdown = response.data || '';
-        if (markdown.length > maxChars) {
-            markdown = markdown.substring(0, maxChars) + '\n\n...[Content truncated]';
-        }
-
-        const result = {
-            title: 'Jina Reader Result',
-            markdown: markdown,
-            url: url,
-            charCount: markdown.length,
-            method: 'jina-fallback'
-        };
+        const result = await jinaFetch(url, maxChars);
 
         // [UI] Push to Canvas only if explicitly requested
         if (pushToCanvas) {
@@ -512,8 +621,8 @@ async function deepResearch(query, options = {}) {
 
         // Step 3: Crawl all links in parallel (Smart Markdown)
         const crawlTasks = urls.map(u =>
-            smartBrowse(u.url, { 
-                action: 'markdown', 
+            smartBrowse(u.url, {
+                action: 'markdown',
                 maxChars: maxCharsPerPage,
                 takeScreenshot,
                 viewportType
@@ -523,44 +632,29 @@ async function deepResearch(query, options = {}) {
                     title: u.title,
                     markdown: `Failed to crawl: ${e.message}`,
                     url: u.url,
-                    method: 'error'
+                    method: 'error',
+                    attempts: []
                 }))
         );
 
         const crawlResults = await Promise.allSettled(crawlTasks);
 
-        // Step 4: Merge into one structured research document
-        let mergedReport = `# Deep Research: ${query}\n\n`;
-        const sources = [];
-        let totalChars = 0;
-
-        crawlResults.forEach((result, i) => {
-            const data = result.status === 'fulfilled' ? result.value : {
+        // Step 4: Normalize results (each source keeps its own attempts
+        // trail) then merge into one structured research document. The
+        // report text format is produced by the shared pure merger and is
+        // unchanged from the previous implementation.
+        const items = crawlResults.map((result, i) =>
+            result.status === 'fulfilled' ? result.value : {
                 title: urls[i]?.title || 'Unknown',
+                searchTitle: urls[i]?.title,
                 markdown: 'Crawl failed.',
                 url: urls[i]?.url || '',
-                method: 'error'
-            };
-
-            sources.push({
-                title: data.searchTitle || data.title || 'Source',
-                url: data.url,
-                method: data.method,
-                charCount: data.charCount || 0,
-                screenshotPath: data.screenshotPath || ''
-            });
-
-            mergedReport += `---\n\n## Source ${i + 1}: ${data.searchTitle || data.title}\n`;
-            mergedReport += `> URL: ${data.url}\n`;
-            mergedReport += `> Extraction method: ${data.method}\n\n`;
-            
-            if (data.screenshotPath) {
-                mergedReport += `![Screenshot of ${data.title}](${data.screenshotPath})\n\n---\n\n`;
+                method: 'error',
+                attempts: []
             }
+        );
 
-            mergedReport += data.markdown + '\n\n';
-            totalChars += (data.charCount || data.markdown?.length || 0);
-        });
+        const { report: mergedReport, sources, totalChars } = mergeDeepResearchResults(query, items);
 
         console.log(`[DeepResearch] Complete. ${sources.length} sources, ${totalChars} total chars.`);
 
@@ -599,8 +693,12 @@ async function deepResearch(query, options = {}) {
 
 module.exports = {
     smartBrowse,
+    runSmartBrowsePipeline,
     extractMarkdown,
     jinaFallback,
+    jinaFetch,
+    crawlWithCrawl4AI,
+    playwrightBrowse,
     deepResearch,
     getRandomUA
 };
