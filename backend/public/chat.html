@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liya Secure Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: linear-gradient(135deg, #0a0a0f 0%, #0d0d1a 30%, #1a1a2e 70%, #16213e 100%);
+            color: #e0e0e0; height: 100vh; overflow: hidden;
+        }
+        /* Ambient orbs */
+        .orb1 { position: fixed; top: -20%; right: -10%; width: 400px; height: 400px; background: radial-gradient(circle, rgba(0,243,255,0.06) 0%, transparent 70%); border-radius: 50%; pointer-events: none; }
+        .orb2 { position: fixed; bottom: -15%; left: -10%; width: 350px; height: 350px; background: radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 70%); border-radius: 50%; pointer-events: none; }
+
+        /* Login Screen */
+        #loginScreen {
+            display: flex; align-items: center; justify-content: center; height: 100vh; position: relative; z-index: 1;
+        }
+        .login-card {
+            background: rgba(255,255,255,0.03); backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.06); border-radius: 20px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+            padding: 40px; width: 400px; max-width: 90vw;
+            animation: fadeInUp 0.6s ease;
+        }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        .login-card h1 {
+            text-align: center; font-size: 24px; font-weight: 800;
+            background: linear-gradient(135deg, #00f3ff, #8b5cf6); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .login-card .subtitle { text-align: center; font-size: 13px; color: #666; margin-top: 6px; }
+        .logo-icon {
+            width: 64px; height: 64px; border-radius: 18px; margin: 0 auto 16px;
+            background: linear-gradient(135deg, #00f3ff, #8b5cf6);
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 0 30px rgba(0,243,255,0.3); font-size: 28px;
+        }
+        .form-group { margin-top: 16px; }
+        .form-group label { font-size: 11px; color: #888; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 6px; }
+        .form-group input {
+            width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px; padding: 14px 16px; color: #fff; font-size: 14px; outline: none;
+            transition: border-color 0.3s; font-family: inherit;
+        }
+        .form-group input:focus { border-color: rgba(0,243,255,0.4); }
+        .primary-btn {
+            width: 100%; margin-top: 20px; background: linear-gradient(135deg, #00f3ff, #8b5cf6);
+            color: #fff; border: none; border-radius: 12px; padding: 14px; font-weight: 700;
+            cursor: pointer; font-size: 14px; letter-spacing: 0.5px; transition: all 0.3s;
+            font-family: inherit;
+        }
+        .primary-btn:hover { box-shadow: 0 0 25px rgba(0,243,255,0.3); transform: scale(1.02); }
+        .primary-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+        .toggle-btn { background: none; border: none; color: #00f3ff; cursor: pointer; font-size: 13px; margin-top: 16px; display: block; width: 100%; text-align: center; font-family: inherit; }
+        .error-msg { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); border-radius: 10px; padding: 10px 14px; font-size: 13px; color: #f87171; margin-top: 12px; display: none; }
+        .connection-status { text-align: center; font-size: 12px; margin-bottom: 20px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+        .dot-online { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+        .dot-offline { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+
+        /* Chat Screen */
+        #chatScreen { display: none; height: 100vh; position: relative; z-index: 1; }
+        .chat-layout { display: flex; height: 100%; }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px; min-width: 300px; border-right: 1px solid rgba(255,255,255,0.05);
+            display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+        }
+        .sidebar-header { padding: 20px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .sidebar-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 800; background: linear-gradient(135deg, #00f3ff, #8b5cf6); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .my-profile { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: rgba(0,243,255,0.05); border-radius: 12px; border: 1px solid rgba(0,243,255,0.1); margin-top: 12px; }
+        .my-avatar { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #00f3ff, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #fff; }
+        .my-name { font-size: 13px; font-weight: 700; color: #e2e8f0; }
+        .my-status { font-size: 10px; color: #22c55e; }
+        .user-list { flex: 1; overflow-y: auto; padding: 12px; }
+        .user-list-title { font-size: 10px; font-weight: 700; color: #666; text-transform: uppercase; letter-spacing: 1px; padding: 4px 4px 10px; }
+        .user-item {
+            display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px;
+            background: transparent; border: 1px solid transparent; border-radius: 12px;
+            cursor: pointer; text-align: left; transition: all 0.2s; font-family: inherit; color: inherit;
+        }
+        .user-item:hover { background: rgba(255,255,255,0.06); transform: translateX(4px); }
+        .user-item.active { background: rgba(0,243,255,0.08); border-color: rgba(0,243,255,0.15); }
+        .user-avatar { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, #1e293b, #334155); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; color: #94a3b8; position: relative; }
+        .status-dot { position: absolute; bottom: -1px; right: -1px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #0d0d1a; }
+        .status-online { background: #22c55e; }
+        .status-offline { background: #555; }
+        .user-name { font-size: 14px; font-weight: 600; color: #e2e8f0; }
+        .user-status-text { font-size: 11px; }
+        .no-users { padding: 20px; text-align: center; font-size: 13px; color: #444; }
+        .logout-btn { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.15); border-radius: 8px; padding: 6px 12px; cursor: pointer; color: #f87171; font-size: 12px; font-family: inherit; transition: all 0.2s; }
+        .logout-btn:hover { background: rgba(239,68,68,0.2); }
+
+        /* Chat Panel */
+        .chat-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+        .chat-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+        .chat-empty-icon { width: 80px; height: 80px; border-radius: 24px; background: rgba(0,243,255,0.05); display: flex; align-items: center; justify-content: center; border: 1px solid rgba(0,243,255,0.1); font-size: 36px; opacity: 0.4; animation: pulse 3s infinite; }
+        @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.3; } 50% { transform: scale(1.05); opacity: 0.5; } }
+        .chat-empty h3 { font-size: 18px; font-weight: 700; color: #555; }
+        .chat-empty p { font-size: 13px; color: #444; }
+        .chat-header { padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 12px; background: rgba(0,0,0,0.2); backdrop-filter: blur(10px); }
+        .chat-header-name { font-size: 15px; font-weight: 700; color: #e2e8f0; }
+        .chat-header-secure { font-size: 11px; color: #22c55e; display: flex; align-items: center; gap: 4px; }
+        .messages-area { flex: 1; overflow-y: auto; padding: 16px 0; }
+        .messages-empty { text-align: center; padding: 40px; color: #444; font-size: 13px; line-height: 1.8; }
+
+        /* Message Bubbles */
+        .msg { display: flex; margin-bottom: 8px; padding: 0 16px; animation: msgIn 0.3s ease; }
+        @keyframes msgIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .msg.mine { justify-content: flex-end; }
+        .msg.theirs { justify-content: flex-start; }
+        .msg-bubble {
+            max-width: 70%; padding: 12px 16px; backdrop-filter: blur(10px);
+        }
+        .msg.mine .msg-bubble {
+            border-radius: 18px 18px 4px 18px;
+            background: linear-gradient(135deg, rgba(139,92,246,0.4), rgba(0,243,255,0.2));
+            border: 1px solid rgba(139,92,246,0.2);
+        }
+        .msg.theirs .msg-bubble {
+            border-radius: 18px 18px 18px 4px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .msg-sender { font-size: 11px; font-weight: 700; color: #00f3ff; margin-bottom: 4px; letter-spacing: 0.5px; }
+        .msg-text { font-size: 14px; line-height: 1.5; color: #e8e8e8; word-break: break-word; }
+        .msg-time { font-size: 10px; color: #555; margin-top: 4px; text-align: right; }
+
+        /* Typing indicator */
+        .typing-indicator { padding: 4px 20px; font-size: 12px; color: #888; display: flex; align-items: center; gap: 8px; }
+        .typing-dots { display: flex; gap: 3px; }
+        .typing-dot { width: 5px; height: 5px; border-radius: 50%; background: #00f3ff; animation: bounce 0.6s infinite; }
+        .typing-dot:nth-child(2) { animation-delay: 0.15s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+
+        /* Input bar */
+        .input-bar { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; gap: 10px; background: rgba(0,0,0,0.15); }
+        .input-bar input {
+            flex: 1; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px; padding: 14px 16px; color: #fff; font-size: 14px; outline: none;
+            transition: border-color 0.3s; font-family: inherit;
+        }
+        .input-bar input:focus { border-color: rgba(0,243,255,0.3); }
+        .send-btn {
+            width: 48px; height: 48px; border-radius: 14px; border: none; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; transition: all 0.3s; font-size: 18px;
+        }
+        .send-btn.active { background: linear-gradient(135deg, #00f3ff, #8b5cf6); color: #fff; }
+        .send-btn.inactive { background: rgba(255,255,255,0.05); color: #444; cursor: default; }
+
+        /* Responsive - Mobile */
+        .mobile-toggle { display: none; }
+        .back-btn { display: none; }
+        .sidebar-overlay { display: none; }
+
+        @media (max-width: 768px) {
+            .sidebar { width: 280px; min-width: 280px; }
+            .login-card { padding: 28px; width: 360px; }
+            .msg-bubble { max-width: 85%; }
+        }
+        @media (max-width: 600px) {
+            .sidebar {
+                position: fixed; top: 0; left: 0; bottom: 0; width: 85vw; max-width: 320px;
+                z-index: 100; transform: translateX(-100%); transition: transform 0.3s ease;
+                background: linear-gradient(135deg, #0a0a0f, #1a1a2e);
+            }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar-overlay {
+                display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+                z-index: 99; backdrop-filter: blur(4px);
+            }
+            .sidebar-overlay.open { display: block; }
+            .mobile-toggle {
+                display: flex; align-items: center; justify-content: center;
+                width: 40px; height: 40px; border-radius: 12px;
+                background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+                color: #00f3ff; font-size: 20px; cursor: pointer;
+            }
+            .back-btn {
+                display: flex; align-items: center; justify-content: center;
+                width: 36px; height: 36px; border-radius: 10px;
+                background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+                color: #aaa; font-size: 18px; cursor: pointer;
+            }
+            .chat-header { padding: 12px 14px; }
+            .input-bar { padding: 10px 12px; }
+            .input-bar input { padding: 12px 14px; font-size: 16px; }
+            .send-btn { width: 44px; height: 44px; }
+            .login-card { padding: 24px; width: 92vw; border-radius: 16px; }
+            .logo-icon { width: 52px; height: 52px; font-size: 22px; }
+            .login-card h1 { font-size: 20px; }
+            .msg-bubble { max-width: 85%; }
+            .chat-empty-icon { width: 60px; height: 60px; font-size: 28px; }
+            .chat-empty h3 { font-size: 16px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="orb1"></div>
+    <div class="orb2"></div>
+
+    <!-- LOGIN SCREEN -->
+    <div id="loginScreen">
+        <div class="login-card">
+            <div class="logo-icon">🛡️</div>
+            <h1>Secure Chat</h1>
+            <p class="subtitle">End-to-End Encrypted • AES-256-GCM</p>
+
+            <div class="connection-status" id="connStatus">
+                <div class="dot-offline" id="connDot"></div>
+                <span id="connText">Connecting...</span>
+            </div>
+
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="inputUsername" placeholder="Enter your username" maxlength="20">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="inputPassword" placeholder="Enter password">
+            </div>
+
+            <div class="error-msg" id="errorMsg"></div>
+
+            <button class="primary-btn" id="submitBtn" onclick="handleSubmit()">🚀 Register & Join</button>
+            <button class="toggle-btn" id="toggleBtn" onclick="toggleMode()">Already have an account? Login</button>
+        </div>
+    </div>
+
+    <!-- CHAT SCREEN -->
+    <div id="chatScreen">
+        <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+        <div class="chat-layout">
+            <!-- Sidebar -->
+            <div class="sidebar" id="sidebar">
+                <div class="sidebar-header">
+                    <div style="display:flex;align-items:center;justify-content:space-between;">
+                        <div class="sidebar-title">🛡️ Secure Chat</div>
+                        <button class="logout-btn" onclick="doLogout()">Logout</button>
+                    </div>
+                    <div class="my-profile">
+                        <div class="my-avatar" id="myAvatar">?</div>
+                        <div>
+                            <div class="my-name" id="myName">-</div>
+                            <div class="my-status">● Online</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="user-list" id="userList">
+                    <div class="user-list-title">👥 Users</div>
+                    <div class="no-users" id="noUsers">No other users online yet. Share the link to invite friends!</div>
+                </div>
+            </div>
+
+            <!-- Chat Panel -->
+            <div class="chat-panel">
+                <div class="chat-empty" id="chatEmpty">
+                    <button class="mobile-toggle" onclick="toggleSidebar()" title="Open user list">☰</button>
+                    <div class="chat-empty-icon">💬</div>
+                    <h3>Select a conversation</h3>
+                    <p>Click on a user to start chatting</p>
+                </div>
+
+                <div id="chatActive" style="display:none;flex:1;flex-direction:column;">
+                    <div class="chat-header">
+                        <button class="back-btn" onclick="goBackToUsers()" title="Back">←</button>
+                        <button class="mobile-toggle" onclick="toggleSidebar()" title="Users">☰</button>
+                        <span style="color:#22c55e;">🔒</span>
+                        <div style="flex:1;min-width:0;">
+                            <div class="chat-header-name" id="chatRoomName">-</div>
+                            <div class="chat-header-secure">🛡️ End-to-End Encrypted</div>
+                        </div>
+                    </div>
+                    <div class="messages-area" id="messagesArea">
+                        <div class="messages-empty" id="msgEmpty">🔐 Messages are end-to-end encrypted.<br>Send the first message!</div>
+                    </div>
+                    <div class="typing-indicator" id="typingIndicator" style="display:none;">
+                        <div class="typing-dots"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>
+                        <span id="typingText">Someone is typing...</span>
+                    </div>
+                    <form class="input-bar" onsubmit="handleSend(event)">
+                        <input type="text" id="msgInput" placeholder="Type an encrypted message..." oninput="handleTyping()" autocomplete="off">
+                        <button type="submit" class="send-btn inactive" id="sendBtn">➤</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ─── State ───────────────────────────────────────────────
+        let isRegisterMode = true;
+        let currentUser = null;
+        let onlineUsers = {};
+        let activeRoom = null;
+        let messages = [];
+        let typingTimeouts = {};
+        const ROOM_KEY = 'liya-secure-chat-default-key';
+
+        // ─── Socket ──────────────────────────────────────────────
+        const socket = io('/chat', {
+            transports: ['polling', 'websocket'],
+            reconnectionAttempts: 10,
+            reconnectionDelay: 2000,
+            timeout: 20000
+        });
+
+        socket.on('connect', () => {
+            document.getElementById('connDot').className = 'dot-online';
+            document.getElementById('connText').textContent = 'Connected';
+            document.getElementById('connText').style.color = '#22c55e';
+            document.getElementById('submitBtn').disabled = false;
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('connDot').className = 'dot-offline';
+            document.getElementById('connText').textContent = 'Disconnected';
+            document.getElementById('connText').style.color = '#ef4444';
+        });
+
+        socket.on('chat:users', (users) => {
+            onlineUsers = users;
+            renderUsers();
+        });
+
+        socket.on('chat:message', async (msg) => {
+            let plaintext = msg.content;
+            if (msg.iv && msg.salt) {
+                plaintext = await decryptMessage(msg.content, msg.iv, msg.salt, ROOM_KEY);
+            }
+            msg.plaintext = plaintext;
+            // Avoid duplicates
+            if (!messages.find(m => m.id === msg.id)) {
+                messages.push(msg);
+                if (msg.to === activeRoom) renderMessages();
+            }
+        });
+
+        socket.on('chat:typing', (data) => {
+            if (data.room === activeRoom && data.userId !== currentUser?.id) {
+                document.getElementById('typingIndicator').style.display = 'flex';
+                document.getElementById('typingText').textContent = data.username + ' is typing...';
+                if (typingTimeouts[data.userId]) clearTimeout(typingTimeouts[data.userId]);
+                typingTimeouts[data.userId] = setTimeout(() => {
+                    document.getElementById('typingIndicator').style.display = 'none';
+                }, 3000);
+            }
+        });
+
+        // ─── Crypto (AES-256-GCM) ────────────────────────────────
+        async function deriveKey(password, salt) {
+            const enc = new TextEncoder();
+            const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+            return crypto.subtle.deriveKey(
+                { name: 'PBKDF2', salt: enc.encode(salt), iterations: 100000, hash: 'SHA-256' },
+                keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+            );
+        }
+
+        async function encryptMessage(text, roomKey) {
+            const enc = new TextEncoder();
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const salt = crypto.getRandomValues(new Uint8Array(16));
+            const saltStr = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('');
+            const key = await deriveKey(roomKey, saltStr);
+            const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(text));
+            return {
+                content: Array.from(new Uint8Array(encrypted)).map(b => b.toString(16).padStart(2, '0')).join(''),
+                iv: Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join(''),
+                salt: saltStr
+            };
+        }
+
+        async function decryptMessage(contentHex, ivHex, saltStr, roomKey) {
+            try {
+                const key = await deriveKey(roomKey, saltStr);
+                const iv = new Uint8Array(ivHex.match(/.{2}/g).map(b => parseInt(b, 16)));
+                const data = new Uint8Array(contentHex.match(/.{2}/g).map(b => parseInt(b, 16)));
+                const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+                return new TextDecoder().decode(decrypted);
+            } catch { return '[🔒 Cannot decrypt]'; }
+        }
+
+        // ─── Auth ────────────────────────────────────────────────
+        function toggleMode() {
+            isRegisterMode = !isRegisterMode;
+            document.getElementById('submitBtn').textContent = isRegisterMode ? '🚀 Register & Join' : '🔓 Login';
+            document.getElementById('toggleBtn').textContent = isRegisterMode ? 'Already have an account? Login' : "Don't have an account? Register";
+            hideError();
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('errorMsg');
+            el.textContent = msg; el.style.display = 'block';
+        }
+        function hideError() { document.getElementById('errorMsg').style.display = 'none'; }
+
+        function handleSubmit() {
+            const username = document.getElementById('inputUsername').value.trim();
+            const password = document.getElementById('inputPassword').value.trim();
+            if (!username || !password) return showError('Username and password required');
+            hideError();
+            document.getElementById('submitBtn').disabled = true;
+
+            const event = isRegisterMode ? 'chat:register' : 'chat:login';
+            socket.emit(event, { username, password }, (res) => {
+                document.getElementById('submitBtn').disabled = false;
+                if (res.success) {
+                    currentUser = res.user;
+                    showChatScreen();
+                } else {
+                    showError(res.error);
+                }
+            });
+        }
+
+        // Enter key on password field
+        document.getElementById('inputPassword').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') handleSubmit();
+        });
+
+        function doLogout() {
+            currentUser = null; activeRoom = null; messages = [];
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('chatScreen').style.display = 'none';
+        }
+
+        // ─── Chat UI ─────────────────────────────────────────────
+        function showChatScreen() {
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('chatScreen').style.display = 'block';
+            document.getElementById('myAvatar').textContent = currentUser.username[0].toUpperCase();
+            document.getElementById('myName').textContent = currentUser.username;
+            renderUsers();
+        }
+
+        function renderUsers() {
+            if (!currentUser) return;
+            const list = document.getElementById('userList');
+            const others = Object.values(onlineUsers).filter(u => u.id !== currentUser.id);
+
+            list.innerHTML = '<div class="user-list-title">👥 Users (' + others.length + ')</div>';
+            if (others.length === 0) {
+                list.innerHTML += '<div class="no-users">No other users online yet. Share the link!</div>';
+            } else {
+                others.forEach(u => {
+                    const div = document.createElement('button');
+                    div.className = 'user-item';
+                    div.innerHTML = `
+                        <div class="user-avatar">${u.username[0].toUpperCase()}<div class="status-dot ${u.status === 'online' ? 'status-online' : 'status-offline'}"></div></div>
+                        <div style="flex:1;min-width:0;">
+                            <div class="user-name">${u.username}</div>
+                            <div class="user-status-text" style="color:${u.status === 'online' ? '#22c55e' : '#666'}">${u.status === 'online' ? 'Online' : 'Offline'}</div>
+                        </div>
+                    `;
+                    div.onclick = () => selectUser(u.id, u.username);
+                    list.appendChild(div);
+                });
+            }
+        }
+
+        function selectUser(userId, username) {
+            socket.emit('chat:join-room', { targetUserId: userId, type: 'p2p' }, async (res) => {
+                if (res.success) {
+                    activeRoom = res.room;
+                    messages = [];
+                    // Decrypt history
+                    for (const msg of (res.messages || [])) {
+                        let plaintext = msg.content;
+                        if (msg.iv && msg.salt) plaintext = await decryptMessage(msg.content, msg.iv, msg.salt, ROOM_KEY);
+                        msg.plaintext = plaintext;
+                        messages.push(msg);
+                    }
+                    document.getElementById('chatEmpty').style.display = 'none';
+                    document.getElementById('chatActive').style.display = 'flex';
+                    document.getElementById('chatRoomName').textContent = 'Chat with ' + username;
+                    renderMessages();
+                    document.getElementById('msgInput').focus();
+                }
+            });
+        }
+
+        function renderMessages() {
+            const area = document.getElementById('messagesArea');
+            const roomMsgs = messages.filter(m => m.to === activeRoom);
+            if (roomMsgs.length === 0) {
+                area.innerHTML = '<div class="messages-empty">🔐 Messages are end-to-end encrypted.<br>Send the first message!</div>';
+                return;
+            }
+            area.innerHTML = '';
+            roomMsgs.forEach(msg => {
+                const isMine = msg.from === currentUser.id;
+                const div = document.createElement('div');
+                div.className = 'msg ' + (isMine ? 'mine' : 'theirs');
+                div.innerHTML = `<div class="msg-bubble">
+                    ${!isMine ? '<div class="msg-sender">' + msg.fromUsername + '</div>' : ''}
+                    <div class="msg-text">${escapeHtml(msg.plaintext || msg.content)}</div>
+                    <div class="msg-time">${new Date(msg.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>
+                </div>`;
+                area.appendChild(div);
+            });
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        async function handleSend(e) {
+            e.preventDefault();
+            const input = document.getElementById('msgInput');
+            const text = input.value.trim();
+            if (!text || !activeRoom) return;
+            const encrypted = await encryptMessage(text, ROOM_KEY);
+            socket.emit('chat:message', { to: activeRoom, content: encrypted.content, iv: encrypted.iv, salt: encrypted.salt });
+            input.value = '';
+            updateSendBtn();
+        }
+
+        let typingTimer = null;
+        function handleTyping() {
+            updateSendBtn();
+            if (!typingTimer && activeRoom) {
+                socket.emit('chat:typing', { room: activeRoom });
+                typingTimer = setTimeout(() => { typingTimer = null; }, 2000);
+            }
+        }
+
+        function updateSendBtn() {
+            const btn = document.getElementById('sendBtn');
+            const val = document.getElementById('msgInput').value.trim();
+            btn.className = 'send-btn ' + (val ? 'active' : 'inactive');
+        }
+
+        // ─── Mobile Sidebar ──────────────────────────────────────
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('open');
+        }
+
+        function goBackToUsers() {
+            // On mobile, hide chat and show empty state so user can pick another user
+            activeRoom = null;
+            messages = [];
+            document.getElementById('chatActive').style.display = 'none';
+            document.getElementById('chatEmpty').style.display = 'flex';
+            toggleSidebar(); // open sidebar to show users
+        }
+
+        // Close sidebar when a user is selected (on mobile)
+        const origSelectUser = selectUser;
+        selectUser = function(userId, username) {
+            // Close sidebar on mobile
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('sidebarOverlay').classList.remove('open');
+            origSelectUser(userId, username);
+        };
+    </script>
+</body>
+</html>

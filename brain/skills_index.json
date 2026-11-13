@@ -1,0 +1,202 @@
+{
+  "skills": [
+    {
+      "id": "multi_agent_orchestrator",
+      "name": "Archon_Core",
+      "description": "Multi-agent task distribution and autonomous supervision.",
+      "path": "skills/multi_agent_orchestrator.md"
+    },
+    {
+      "id": "academic_research_expert",
+      "name": "Scholar_Link",
+      "description": "Deep academic research and paper synthesis.",
+      "path": "skills/academic_research_expert.md"
+    },
+    {
+      "id": "academic_tutor",
+      "name": "Edu_Guide",
+      "description": "Personalized learning paths and subject tutoring.",
+      "path": "skills/academic_tutor.md"
+    },
+    {
+      "id": "agent_security_guard",
+      "name": "Iron_Watch",
+      "description": "Agent-level safety constraints and guardrails.",
+      "path": "skills/agent_security_guard.md"
+    },
+    {
+      "id": "ai_prompt_engineer",
+      "name": "Prompt_Forge",
+      "description": "Meta-prompt development and LLM instruction optimization.",
+      "path": "skills/ai_prompt_engineer.md"
+    },
+    {
+      "id": "autonomous_problem_solver",
+      "name": "Logic_Flow",
+      "description": "Step-by-step reasoning for complex technical challenges.",
+      "path": "skills/autonomous_problem_solver.md"
+    },
+    {
+      "id": "business_strategist",
+      "name": "Market_Sync",
+      "description": "Business analysis, SWOT, and growth strategy planning.",
+      "path": "skills/business_strategist.md"
+    },
+    {
+      "id": "code_expert",
+      "name": "Code_Architect",
+      "description": "Advanced software development and bug debugging.",
+      "path": "skills/code_expert.md"
+    },
+    {
+      "id": "content_writer",
+      "name": "Ink_Flow",
+      "description": "Creative writing, blogging, and copy optimization.",
+      "path": "skills/content_writer.md"
+    },
+    {
+      "id": "cybersecurity_expert",
+      "name": "Shield_Guard",
+      "description": "Vulnerability assessment and security protocols.",
+      "path": "skills/cybersecurity_expert.md"
+    },
+    {
+      "id": "data_analyst",
+      "name": "Data_Pulse",
+      "description": "Statistical analysis and predictive data modeling.",
+      "path": "skills/data_analyst.md"
+    },
+    {
+      "id": "deep_ai_researcher",
+      "name": "Neural_Seek",
+      "description": "Advanced AI model research and capability testing.",
+      "path": "skills/deep_ai_researcher.md"
+    },
+    {
+      "id": "deep_researcher",
+      "name": "Omni_Search",
+      "description": "High-latency deep web searches and data extraction.",
+      "path": "skills/deep_researcher.md"
+    },
+    {
+      "id": "finance_advisor",
+      "name": "Wealth_Wire",
+      "description": "Financial planning and investment analysis.",
+      "path": "skills/finance_advisor.md"
+    },
+    {
+      "id": "health_wellness",
+      "name": "Bio_Sync",
+      "description": "Health tracking and wellness optimization.",
+      "path": "skills/health_wellness.md"
+    },
+    {
+      "id": "interview_coach",
+      "name": "Talent_Talk",
+      "description": "Mock interviews and professional career guidance.",
+      "path": "skills/interview_coach.md"
+    },
+    {
+      "id": "language_tutor",
+      "name": "PolyGlot_Link",
+      "description": "Multilingual fluency and translation mastery.",
+      "path": "skills/language_tutor.md"
+    },
+    {
+      "id": "legal_advisor",
+      "name": "Law_Logic",
+      "description": "Legal document analysis and compliance checking.",
+      "path": "skills/legal_advisor.md"
+    },
+    {
+      "id": "life_coach",
+      "name": "Zen_Path",
+      "description": "Habit building and personal growth coaching.",
+      "path": "skills/life_coach.md"
+    },
+    {
+      "id": "mental_health_support",
+      "name": "Soul_Care",
+      "description": "Empathetic support and psychological well-being.",
+      "path": "skills/mental_health_support.md"
+    },
+    {
+      "id": "nutrition_diet",
+      "name": "Fuel_Plan",
+      "description": "Personalized meal planning and dietary science.",
+      "path": "skills/nutrition_diet.md"
+    },
+    {
+      "id": "premium_ui_ux",
+      "name": "Design_Grid",
+      "description": "Modern UI/UX design patterns and aesthetic optimization.",
+      "path": "skills/premium_ui_ux.md"
+    },
+    {
+      "id": "security_and_infra",
+      "name": "Node_Sentry",
+      "description": "Infrastructure monitoring and system hardening.",
+      "path": "skills/security_and_infra.md"
+    },
+    {
+      "id": "social_media_expert",
+      "name": "Social_Reach",
+      "description": "Content strategy and engagement analytics.",
+      "path": "skills/social_media_expert.md"
+    },
+    {
+      "id": "smart_planner",
+      "name": "Path_Finder",
+      "description": "Intelligent scheduling and resource management.",
+      "path": "skills/smart_planner.md"
+    },
+    {
+      "id": "business_and_strategy",
+      "name": "Venture_Sync",
+      "description": "Startup consulting and market positioning.",
+      "path": "skills/business_and_strategy.md"
+    },
+    {
+      "id": "example_skill",
+      "name": "Test_Core",
+      "description": "Internal protocol for skill testing and validation.",
+      "path": "skills/example_skill.md"
+    },
+    {
+      "id": "terminal_nexus",
+      "name": "Terminal_Nexus",
+      "description": "Direct shell execution for system and file management.",
+      "path": "skills/terminal_nexus.md"
+    },
+    {
+      "id": "web_navigator",
+      "name": "Web_Navigator",
+      "description": "Proactive browser automation using Playwright.",
+      "path": "skills/web_navigator.md"
+    },
+    {
+      "id": "news_agent",
+      "name": "Intelligence_Hub",
+      "description": "Real-time news discovery via Reddit, RSS, and AI search.",
+      "path": "skills/news_agent.md"
+    },
+    {
+      "id": "savage_roaster",
+      "name": "Savage_Core",
+      "description": "High-intensity humor, sarcasm, and witty Indian roasts.",
+      "path": "skills/savage_roaster.md"
+    },
+    {
+      "id": "liya_soul",
+      "name": "Liya_Soul",
+      "description": "Deep emotional intelligence and conversational warmth.",
+      "path": "skills/liya_soul.md"
+    },
+    {
+      "id": "exam_master",
+      "name": "Exam_Prep",
+      "description": "Specialized study plans and academic test preparation.",
+      "path": "skills/exam_master.md"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# LIYA Personal Brain & Session Data
+brain/api_keys.json
+brain/telegram_messages.json
+brain/whatsapp_session/
+brain/screenshot_gallery.json
+brain/automated_jobs.json
+brain/memories.json
+scratch/
+# Large Model Files (GitHub limit is 100MB)
+*.onnx
+*.zip
+face_swap_models_backup/
+__pycache__/
+*.pyc
+public/swapped/*
+!public/swapped/.gitkeep
+
+

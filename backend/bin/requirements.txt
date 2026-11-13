@@ -1,0 +1,10 @@
+# Python requirements for LIYA Local Face Swap Module
+opencv-python
+onnxruntime
+insightface
+numpy
+gdown
+
+# Web Crawling & Extraction (Tier-1 AI Scraper)
+crawl4ai>=0.4.0
+playwright>=1.40.0
