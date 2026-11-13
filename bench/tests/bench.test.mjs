@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { fillRate, fingerprint, rowsOf } from "../lib/rows.mjs";
-import { estimate, planRuns, resultLine } from "../run.mjs";
+import { estimate, planRuns, resultLine, runBatch, runSummary } from "../run.mjs";
 import { markdown, median, summarise } from "../report.mjs";
 import { runValendata } from "../tools/valendata.mjs";
 import { runApify } from "../tools/apify.mjs";
@@ -164,4 +164,104 @@ test("an actor that returns one object holding the rows is read from that field"
   const out = await runApify({ task, config: { actor: "x", input: {}, rows_from: "latestPosts" }, keys: { apify: "t" }, fetchImpl, now, sleep });
   assert.equal(out.output.length, 2);
   assert.equal(out.output[0].url, "p1");
+});
+
+test("a thrown tool fails its own line and the rest of the plan still runs", async () => {
+  const { planned } = planRuns([task], { taskIds: [], toolIds: ["valendata", "browser_use"], runs: 2 }, ready);
+  const written = [];
+  const tools = {
+    valendata: async () => { throw new Error("boom"); },
+    browser_use: async () => ({ ok: true, status: "done", seconds: 5, usd: 0.03, output: [{ headline: "A", link: "u" }] }),
+  };
+  const lines = await runBatch(planned, { keys: {}, pricing, tools, write: (line) => written.push(line) });
+  assert.equal(lines.length, planned.length, "one line per planned run, whatever happened");
+  assert.equal(written.length, planned.length, "every line was written");
+  const [first, second, third, fourth] = lines;
+  assert.equal(first.ok, false);
+  assert.equal(first.status, "error");
+  assert.equal(first.tool, "valendata");
+  assert.equal(first.attempt, 1);
+  assert.match(first.error, /boom/);
+  assert.equal(first.usd, 0, "a thrown run records what it was charged: nothing");
+  assert.equal(second.ok, true, "the next planned item still ran");
+  assert.equal(third.status, "error");
+  assert.equal(fourth.ok, true);
+});
+
+test("a Valendata run that never finishes is a timeout that keeps its run id as ref", async () => {
+  const { now, sleep } = clock();
+  const fetchImpl = async (url, init) => new Response(JSON.stringify(
+    init.method === "POST" ? { run_id: "r9", status: "running" } : { status: "running" }), { status: 200 });
+  const keys = { valendata: { apiKey: "k", apiUrl: "https://api.test" } };
+  const out = await runValendata({ task, config: task.tools.valendata, keys, pricing, fetchImpl, now, sleep, maxWaitMs: 5000 });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "timeout");
+  assert.equal(out.ref, "r9");
+  assert.match(out.error, /wait limit/);
+});
+
+test("an Apify run that never finishes is a timeout that keeps the actor run id as ref", async () => {
+  const { now, sleep } = clock();
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/runs")) return new Response(JSON.stringify({ data: { id: "a9", status: "RUNNING" } }));
+    return new Response(JSON.stringify({ data: { id: "a9", status: "RUNNING" } }));
+  };
+  const out = await runApify({ task, config: { actor: "x", input: {} }, keys: { apify: "t" }, fetchImpl, now, sleep, maxWaitMs: 6000 });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "timeout");
+  assert.equal(out.ref, "a9");
+  assert.match(out.error, /wait limit/);
+});
+
+test("empty rows are their own failure kind, not an error, and fake no fill or correct", () => {
+  const truthTask = { ...task, truth: { field: "headline" } };
+  const page = "<html><body>some page</body></html>";
+  const empty = resultLine({ task: truthTask, tool: "valendata", attempt: 1 },
+    { ok: true, status: "success", seconds: 2, usd: 0.02, output: [] }, "t", page);
+  assert.equal(empty.ok, false);
+  assert.equal(empty.status, "empty");
+  assert.equal(empty.fill, null, "no rows: fill is unknown, not 0");
+  assert.equal(empty.correct, null, "no rows: correct is unknown, not 0");
+  assert.match(empty.error, /no rows/);
+  const thrown = resultLine({ task: truthTask, tool: "valendata", attempt: 2 },
+    { ok: false, status: "error", seconds: 0, usd: 0, output: [], error: "boom" }, "t", page);
+  assert.equal(thrown.status, "error");
+  assert.notEqual(empty.status, thrown.status, "empty and thrown are different kinds of failure");
+  assert.notEqual(empty.error, thrown.error);
+});
+
+test("when the truth page cannot be read, correct is unknown, never 0", async () => {
+  const truthTask = { ...task, truth: { field: "headline" } };
+  const outcome = { ok: true, status: "done", seconds: 1, usd: 0, output: [{ headline: "A headline long enough to check", link: "u" }] };
+  assert.equal(resultLine({ task: truthTask, tool: "browser_use", attempt: 1 }, outcome, "t", null).correct, null);
+  assert.equal(resultLine({ task: truthTask, tool: "browser_use", attempt: 1 }, outcome, "t", "").correct, null);
+  const { planned } = planRuns([truthTask], { taskIds: [], toolIds: ["browser_use"], runs: 1 }, ready);
+  const lines = await runBatch(planned, {
+    keys: {}, pricing,
+    tools: { browser_use: async () => outcome },
+    fetchPageImpl: async () => { throw new Error("offline"); },
+  });
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].ok, true, "the run itself worked");
+  assert.equal(lines[0].correct, null, "but the truth check never happened");
+});
+
+test("the end-of-run tally counts exactly the lines written, by tool", async () => {
+  const { planned } = planRuns([task], { taskIds: [], toolIds: ["valendata", "browser_use"], runs: 2 }, ready);
+  let valendataCalls = 0;
+  const tools = {
+    valendata: async () => (++valendataCalls === 1
+      ? { ok: false, status: "timeout", seconds: 600, usd: 0.01, spent: { credits: 1 }, output: [], ref: "r1", error: "wait limit reached" }
+      : { ok: true, status: "success", seconds: 3, usd: 0.02, output: [] }),
+    browser_use: async () => ({ ok: true, status: "done", seconds: 5, usd: 0.03, output: [{ headline: "A", link: "u" }] }),
+  };
+  const written = [];
+  const lines = await runBatch(planned, { keys: {}, pricing, tools, write: (line) => written.push(line) });
+  assert.equal(written.length, planned.length);
+  const summary = runSummary(written);
+  assert.deepEqual(summary.valendata, { planned: 2, ok: 0, failed: 2, timeouts: 1, empty: 1 });
+  assert.deepEqual(summary.browser_use, { planned: 2, ok: 2, failed: 0, timeouts: 0, empty: 0 });
+  const total = Object.values(summary).reduce((n, t) => n + t.planned, 0);
+  assert.equal(total, lines.length, "the tally covers every line the batch wrote");
 });

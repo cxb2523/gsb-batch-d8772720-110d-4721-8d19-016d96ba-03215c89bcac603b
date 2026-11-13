@@ -19,14 +19,16 @@ export async function requireValidated(settings, slug, fetchImpl = fetch) {
   }
 }
 
-export async function runValendata({ task, config, keys, pricing, fetchImpl = fetch, sleep, now = Date.now }) {
+export async function runValendata({ task, config, keys, pricing, fetchImpl = fetch, sleep, now = Date.now, maxWaitMs = 10 * 60 * 1000 }) {
   const settings = keys.valendata;
   const started = now();
   const run = await request(settings, "POST", `/v1/skills/${encodeURIComponent(config.slug)}/runs`, {
     body: { inputs: config.inputs || {}, max_results: task.limit }, idempotent: true, fetchImpl,
   });
   const read = () => request(settings, "GET", `/v1/runs/${encodeURIComponent(run.run_id)}`, { fetchImpl });
-  const { state, done } = await pollUntilDone(read, { everyMs: 1000, maxMs: 10 * 60 * 1000, sleep, now });
+  // Poll until the run ends or the wait ceiling is hit; past the ceiling the line is a timeout,
+  // not a success, and the run id is kept as ref so `valendata runs <id>` reads it later.
+  const { state, done } = await pollUntilDone(read, { everyMs: 1000, maxMs: maxWaitMs, sleep, now });
   const seconds = (now() - started) / 1000;
   const credits = Number(state.credits_charged ?? 0);
   return {
@@ -41,6 +43,8 @@ export async function runValendata({ task, config, keys, pricing, fetchImpl = fe
     tokens: state.tokens ?? state.ai_tokens ?? null,
     ai_used: usedAi(state),
     ref: run.run_id,
-    error: state.error || state.needs_user?.message || null,
+    error: done
+      ? state.error || state.needs_user?.message || null
+      : `still ${state.status || "running"} when the ${Math.round(maxWaitMs / 60000)} min wait limit was reached`,
   };
 }

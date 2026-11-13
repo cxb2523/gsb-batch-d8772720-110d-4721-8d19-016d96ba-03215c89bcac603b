@@ -67,26 +67,79 @@ export function inTaskFields(rows, fieldsMap) {
 
 export function resultLine({ task, tool, attempt, config }, outcome, at, page = null) {
   const rows = inTaskFields(rowsOf(outcome.output), config?.fields_map);
-  const correct = task.truth && page !== null ? Math.round(correctShare(rows, task.truth.field, pageText(page)) * 100) / 100 : null;
+  // A run the tool calls successful that returns no rows is its own kind of failure ("empty"),
+  // never the same "error" a thrown exception gets.
+  const empty = Boolean(outcome.ok) && rows.length === 0;
+  // An unreadable page (fetch failed or answered empty) is no page: correct stays unknown.
+  const truth = page || null;
   return {
     at, task: task.id, tool, attempt,
     ok: Boolean(outcome.ok) && rows.length > 0,
-    status: outcome.status,
+    status: empty ? "empty" : outcome.status,
     seconds: Math.round(outcome.seconds * 100) / 100,
     usd: Math.round((outcome.usd || 0) * 10000) / 10000,
     usd_is_estimate: Boolean(outcome.usd_is_estimate),
     tokens: outcome.tokens ?? null,
     ai_used: outcome.ai_used ?? (outcome.tokens ? true : null),
     rows: rows.length,
-    fill: Math.round(fillRate(rows, task.fields) * 100) / 100,
-    correct,
-    page_version: page ? pageVersion(page) : null,
+    // No rows means nothing to measure: fill and correct stay unknown (null), never a made-up 0.
+    fill: rows.length ? Math.round(fillRate(rows, task.fields) * 100) / 100 : null,
+    correct: task.truth && truth && rows.length ? Math.round(correctShare(rows, task.truth.field, pageText(truth)) * 100) / 100 : null,
+    page_version: truth ? pageVersion(truth) : null,
     answer: fingerprint(rows, task.fields),
     spent: outcome.spent || {},
     ref: outcome.ref || null,
-    error: outcome.error || null,
+    error: outcome.error || (empty ? "tool returned no rows" : null),
     sample: rows.slice(0, 3),
   };
+}
+
+/**
+ * Run every planned item, in order. Whatever one item does — throws, answers empty, times out —
+ * it becomes exactly one result line and the rest of the plan still runs, so the number of lines
+ * a batch writes always equals the number of runs planned. `write` is called per line as it lands.
+ */
+export async function runBatch(planned, { keys, pricing, tools = TOOLS, fetchPageImpl = fetchPage, now = Date.now, write = null } = {}) {
+  const lines = [];
+  for (const item of planned) {
+    const at = new Date().toISOString();
+    const started = now();
+    let outcome;
+    try {
+      outcome = await tools[item.tool]({ task: item.task, config: item.config, keys, pricing });
+    } catch (error) {
+      // One run's exception is that run's own failure line, never the end of the batch.
+      outcome = { ok: false, status: "error", seconds: (now() - started) / 1000, output: [], usd: 0, spent: {}, error: String(error?.message || error) };
+    }
+    // The truth is read the moment the run ends, so every tool is checked against the page it saw.
+    const page = item.task.truth ? await fetchPageImpl(item.task.url).catch(() => null) : null;
+    const line = resultLine(item, outcome, at, page);
+    if (write) await write(line);
+    lines.push(line);
+  }
+  return lines;
+}
+
+/** Per-tool tally of the lines one batch actually wrote (skipped plan items were never lines). */
+export function runSummary(lines) {
+  const byTool = {};
+  for (const line of lines) {
+    const t = (byTool[line.tool] ||= { planned: 0, ok: 0, failed: 0, timeouts: 0, empty: 0 });
+    t.planned += 1;
+    if (line.ok) t.ok += 1;
+    else {
+      t.failed += 1;
+      if (line.status === "timeout") t.timeouts += 1;
+      if (line.status === "empty") t.empty += 1;
+    }
+  }
+  return byTool;
+}
+
+function logLine(line) {
+  return `${line.ok ? "ok  " : "FAIL"} ${line.task} × ${line.tool} #${line.attempt}: ${line.seconds}s, ` +
+    `${line.rows} rows${line.fill === null ? "" : `, fill ${line.fill}`}${line.correct === null ? "" : `, correct ${line.correct}`}` +
+    `, $${line.usd}${line.error ? `, ${line.error}` : ""}`;
 }
 
 async function main(argv) {
@@ -132,22 +185,20 @@ async function main(argv) {
   }
   const day = new Date().toISOString().slice(0, 10);
   const out = values.out || join(HERE, "results", `${day}.jsonl`);
-  for (const item of planned) {
-    const at = new Date().toISOString();
-    let outcome;
-    try {
-      outcome = await TOOLS[item.tool]({ task: item.task, config: item.config, keys, pricing });
-    } catch (error) {
-      outcome = { ok: false, status: "error", seconds: 0, output: [], error: String(error.message || error) };
-    }
-    // The truth is read the moment the run ends, so every tool is checked against the page it saw.
-    const page = item.task.truth ? await fetchPage(item.task.url).catch(() => null) : null;
-    const line = resultLine(item, outcome, at, page);
-    await appendFile(out, JSON.stringify(line) + "\n");
-    console.log(`${line.ok ? "ok  " : "FAIL"} ${line.task} × ${line.tool} #${line.attempt}: ${line.seconds}s, ` +
-      `${line.rows} rows, fill ${line.fill}${line.correct === null ? "" : `, correct ${line.correct}`}, $${line.usd}${line.error ? `, ${line.error}` : ""}`);
+  const lines = await runBatch(planned, {
+    keys,
+    pricing,
+    write: async (line) => {
+      await appendFile(out, JSON.stringify(line) + "\n");
+      console.log(logLine(line));
+    },
+  });
+  const summary = runSummary(lines);
+  console.log("\nThis run, by tool:");
+  for (const [tool, t] of Object.entries(summary)) {
+    console.log(`  ${tool}: ${t.planned} planned, ${t.ok} ok, ${t.failed} failed (${t.timeouts} timeout, ${t.empty} empty)`);
   }
-  console.log(`\nSaved to ${out}. Summarise with: node bench/report.mjs ${out}`);
+  console.log(`\n${lines.length} result lines written to ${out}. Summarise with: node bench/report.mjs ${out}`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
