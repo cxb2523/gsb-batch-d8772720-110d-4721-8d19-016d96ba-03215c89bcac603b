@@ -45,6 +45,7 @@ from xhamster_api.modules.errors import (NetworkError, UnknownNetworkError, NotF
                                          DownloadFailed, LoginFailed)
 from xhamster_api.modules.consts import (build_page_url, headers, REGEX_AVATAR, REGEX_M3U8, extractor_videos,
                                         REGEX_THUMBNAIL, extractor_shorts)
+from xhamster_api.modules.pagination import PageOutcome, PageStatus, iter_page_outcomes
 
 
 logger = get_logger(__name__)
@@ -222,6 +223,30 @@ class Something(BaseMedia):
             iterator_config=iterator_config,
         )
 
+    def videos_page_results(
+        self,
+        pages: int = 2,
+        iterator_config: IteratorConfig | None = None,
+    ) -> AsyncGenerator[PageOutcome[Video], None]:
+        """Stream one observable :class:`PageOutcome` per scraped video page.
+
+        Unlike :meth:`videos`, which only yields successfully parsed items,
+        every requested page produces an outcome: successful pages carry their
+        ``Video`` objects, empty pages are reported separately as
+        :attr:`PageStatus.EMPTY`, and fetch failures become
+        :attr:`PageStatus.FAILED` with a readable ``reason`` without stopping
+        the remaining pages.  The number of pages stays controlled by
+        ``pages`` and the call signature mirrors :meth:`videos`.
+        """
+        page_urls = [build_page_url(url=self.resolved_url or self.url, is_search=False, idx=page) for page in range(1, pages + 1)]
+        return iter_page_outcomes(
+            core=self.core,
+            constructor=Video,
+            page_urls=page_urls,
+            item_extractor=partial(extractor_videos, base_url=self.resolved_url or self.url),
+            iterator_config=iterator_config,
+        )
+
     def get_shorts(
             self,
             pages: int = 2,
@@ -238,8 +263,31 @@ class Something(BaseMedia):
             iterator_config=iterator_config,
         )
 
+    def shorts_page_results(
+        self,
+        pages: int = 2,
+        iterator_config: IteratorConfig | None = None,
+    ) -> AsyncGenerator[PageOutcome[Short], None]:
+        """Stream one observable :class:`PageOutcome` per scraped shorts page.
+
+        Mirrors :meth:`get_shorts` but reports every page's ending: success
+        (with parsed ``Short`` objects), an empty reachable page, or a fetch
+        failure with a readable reason, without aborting later pages.
+        """
+        base_url = profile_base_url(self.resolved_url or self.url, depth=2)
+        shorts_url = append_url_path(base_url, "shorts")
+        page_urls = [build_page_url(shorts_url, is_search=False, idx=page) for page in range(1, pages + 1)]
+        return iter_page_outcomes(
+            core=self.core,
+            constructor=Short,
+            page_urls=page_urls,
+            item_extractor=partial(extractor_shorts, base_url=shorts_url),
+            iterator_config=iterator_config,
+        )
+
     shorts = get_shorts
     get_videos = videos
+    get_videos_page_results = videos_page_results
 
 
 class Channel(Something):
@@ -895,22 +943,23 @@ class Client:
 
     get_user = get_creator
 
-    def search_videos(self, query: str,
-        minimum_quality: Literal["720p", "1080p", "2160p"] = "720p",
-        sort_by: Literal["views", "newest", "best", "longest"] | None = None, # Empty string sorts by relevance
-
+    def _build_search_page_urls(
+        self,
+        query: str,
+        *,
+        minimum_quality: Literal["720p", "1080p", "2160p"],
+        sort_by: Literal["views", "newest", "best", "longest"] | None,
         category: Literal["german", "amateur", "18-year-old", "granny", "anal", "old-young", "mature",
         "mom", "milf", "big-tits", "big-natural-tits", "lesbian", "teen", "cum-in-mouth", "bdsm",
-        "porn-for-women", "russian", "vintage", "hairy", "brutal-sex"] | list[str] | None = None ,
-        vr: bool = False,
-        full_length_only: bool = False,
-        min_duration: Literal["2", "5", "10", "30", "40"] | None = None,
-        date: Literal["latest", "weekly", "monthly", "yearly"] | None = None,
-        production: Literal["studios", "creators"] | None = None,
-        fps: Literal["30", "60"] | None = None,
-        pages: int = 2,
-        iterator_config: IteratorConfig | None = None,
-                            ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        "porn-for-women", "russian", "vintage", "hairy", "brutal-sex"] | list[str] | None,
+        vr: bool,
+        full_length_only: bool,
+        min_duration: Literal["2", "5", "10", "30", "40"] | None,
+        date: Literal["latest", "weekly", "monthly", "yearly"] | None,
+        production: Literal["studios", "creators"] | None,
+        fps: Literal["30", "60"] | None,
+        pages: int,
+    ) -> list[str]:
         path = quote(str(query), safe="")  # e.g. "4k cats & dogs" -> "4k%20cats%20%26%20dogs"
         base = "https://xhamster.com/search/"
         url = base + path if path else "https://xhamster.com/search"
@@ -946,7 +995,37 @@ class Client:
 
         query_string = urlencode(params, doseq=True)
         final_url = f"{url}?{query_string}" if query_string else url
-        page_urls = [build_page_url(url=final_url, is_search=True, idx=page) for page in range(1, pages + 1)]
+        return [build_page_url(url=final_url, is_search=True, idx=page) for page in range(1, pages + 1)]
+
+    def search_videos(self, query: str,
+        minimum_quality: Literal["720p", "1080p", "2160p"] = "720p",
+        sort_by: Literal["views", "newest", "best", "longest"] | None = None, # Empty string sorts by relevance
+
+        category: Literal["german", "amateur", "18-year-old", "granny", "anal", "old-young", "mature",
+        "mom", "milf", "big-tits", "big-natural-tits", "lesbian", "teen", "cum-in-mouth", "bdsm",
+        "porn-for-women", "russian", "vintage", "hairy", "brutal-sex"] | list[str] | None = None ,
+        vr: bool = False,
+        full_length_only: bool = False,
+        min_duration: Literal["2", "5", "10", "30", "40"] | None = None,
+        date: Literal["latest", "weekly", "monthly", "yearly"] | None = None,
+        production: Literal["studios", "creators"] | None = None,
+        fps: Literal["30", "60"] | None = None,
+        pages: int = 2,
+        iterator_config: IteratorConfig | None = None,
+                            ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        page_urls = self._build_search_page_urls(
+            query,
+            minimum_quality=minimum_quality,
+            sort_by=sort_by,
+            category=category,
+            vr=vr,
+            full_length_only=full_length_only,
+            min_duration=min_duration,
+            date=date,
+            production=production,
+            fps=fps,
+            pages=pages,
+        )
 
         if iterator_config is None:
             iterator_config = make_iterator_config()
@@ -955,6 +1034,56 @@ class Client:
             core=self.core,
             constructor=Video,
             target_page_urls=page_urls,
+            item_extractor=extractor_videos,
+            iterator_config=iterator_config,
+        )
+
+    def search_videos_page_results(self, query: str,
+        minimum_quality: Literal["720p", "1080p", "2160p"] = "720p",
+        sort_by: Literal["views", "newest", "best", "longest"] | None = None,
+
+        category: Literal["german", "amateur", "18-year-old", "granny", "anal", "old-young", "mature",
+        "mom", "milf", "big-tits", "big-natural-tits", "lesbian", "teen", "cum-in-mouth", "bdsm",
+        "porn-for-women", "russian", "vintage", "hairy", "brutal-sex"] | list[str] | None = None,
+        vr: bool = False,
+        full_length_only: bool = False,
+        min_duration: Literal["2", "5", "10", "30", "40"] | None = None,
+        date: Literal["latest", "weekly", "monthly", "yearly"] | None = None,
+        production: Literal["studios", "creators"] | None = None,
+        fps: Literal["30", "60"] | None = None,
+        pages: int = 2,
+        iterator_config: IteratorConfig | None = None,
+                            ) -> AsyncGenerator[PageOutcome[Video], None]:
+        """Stream one observable :class:`PageOutcome` per search result page.
+
+        Mirrors :meth:`search_videos` (same arguments and ``pages`` behaviour)
+        but yields a per-page ending instead of only parsed items: successful
+        pages carry their ``Video`` objects, reachable pages without results
+        are reported as :attr:`PageStatus.EMPTY`, and fetch failures become
+        :attr:`PageStatus.FAILED` with a readable ``reason`` while later pages
+        keep being processed.
+        """
+        page_urls = self._build_search_page_urls(
+            query,
+            minimum_quality=minimum_quality,
+            sort_by=sort_by,
+            category=category,
+            vr=vr,
+            full_length_only=full_length_only,
+            min_duration=min_duration,
+            date=date,
+            production=production,
+            fps=fps,
+            pages=pages,
+        )
+
+        if iterator_config is None:
+            iterator_config = make_iterator_config()
+
+        return iter_page_outcomes(
+            core=self.core,
+            constructor=Video,
+            page_urls=page_urls,
             item_extractor=extractor_videos,
             iterator_config=iterator_config,
         )
