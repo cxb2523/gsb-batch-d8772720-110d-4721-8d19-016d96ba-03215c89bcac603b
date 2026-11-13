@@ -1,0 +1,136 @@
+Metadata-Version: 2.4
+Name: social-auth-core
+Version: 7.2.0
+Summary: Python social authentication made simple.
+Author-email: Matias Aguirre <matiasaguirre@gmail.com>, Michal Čihař <michal@weblate.org>
+License-Expression: BSD-3-Clause
+Project-URL: Changelog, https://github.com/python-social-auth/social-core/blob/master/CHANGELOG.md
+Project-URL: Funding, https://opencollective.com/python-social-auth
+Project-URL: Homepage, https://github.com/python-social-auth/social-core
+Keywords: oauth,openid,saml,social auth
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Environment :: Web Environment
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: 3.15
+Classifier: Topic :: Internet
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: cryptography>=46.0.7
+Requires-Dist: defusedxml>=0.7.1
+Requires-Dist: oauthlib>=4.0.1
+Requires-Dist: PyJWT[crypto]>=2.13.0
+Requires-Dist: python3-openid>=3.2.0
+Requires-Dist: requests-oauthlib>=2.0.0
+Requires-Dist: requests>=2.34.0
+Provides-Extra: all
+Requires-Dist: social-auth-core[azuread]; extra == "all"
+Requires-Dist: social-auth-core[google-onetap]; extra == "all"
+Requires-Dist: social-auth-core[saml]; extra == "all"
+Requires-Dist: social-auth-core[shopify]; extra == "all"
+Provides-Extra: allpy3
+Requires-Dist: social-auth-core[all]; extra == "allpy3"
+Provides-Extra: dev
+Requires-Dist: coverage==7.17.2; extra == "dev"
+Requires-Dist: flake8==7.5.0; extra == "dev"
+Requires-Dist: mypy==2.4.1; extra == "dev"
+Requires-Dist: pyright==1.1.414; extra == "dev"
+Requires-Dist: pytest-cov==7.1.0; extra == "dev"
+Requires-Dist: pytest-github-actions-annotate-failures==0.4.2; extra == "dev"
+Requires-Dist: pytest-profiling==1.8.1; extra == "dev"
+Requires-Dist: pytest-xdist==3.8.0; extra == "dev"
+Requires-Dist: pytest==9.2.0; extra == "dev"
+Requires-Dist: responses==0.26.3; extra == "dev"
+Requires-Dist: ty==0.0.101; extra == "dev"
+Requires-Dist: types-defusedxml==0.7.0.20260504; extra == "dev"
+Requires-Dist: types-lxml==2026.2.16; extra == "dev"
+Requires-Dist: types-oauthlib==4.0.0.20261107; extra == "dev"
+Requires-Dist: types-requests-oauthlib==2.0.0.20261006; extra == "dev"
+Requires-Dist: types-requests==2.33.0.20261030; extra == "dev"
+Provides-Extra: google-onetap
+Requires-Dist: google-auth<2.63,>=2.40.0; extra == "google-onetap"
+Requires-Dist: pyasn1>=0.6.5; extra == "google-onetap"
+Provides-Extra: saml
+Requires-Dist: python3-saml>=1.16.0; extra == "saml"
+Provides-Extra: shopify
+Requires-Dist: ShopifyAPI; extra == "shopify"
+Dynamic: license-file
+
+# Python Social Auth - Core
+
+Python Social Auth is an easy to setup social authentication/registration
+mechanism with support for several frameworks and auth providers.
+
+## Description
+
+This is the core component of the python-social-auth ecosystem, it
+implements the common interface to define new authentication backends
+to third parties services, implement integrations with web frameworks
+and storage solutions.
+
+## Documentation
+
+Project documentation is available at <https://python-social-auth.readthedocs.io/>.
+
+## Security
+
+See the [current threat model](https://github.com/python-social-auth/social-core/blob/master/THREAT_MODEL.md)
+for the supported security boundaries and the
+[security policy](https://github.com/python-social-auth/social-core/security/policy)
+for private vulnerability reporting. When a release includes a threat model,
+the copy in its source distribution or repository tag records the boundaries
+applicable to that release.
+
+## Setup
+
+```shell
+pip install social-auth-core
+```
+
+## Contributing
+
+Contributions are welcome!
+
+Only the core and Django modules are currently in development. All others are in maintenance only mode, and maintainers are especially welcome there.
+
+See the [CONTRIBUTING.md](https://github.com/python-social-auth/.github/blob/main/CONTRIBUTING.md) document for details.
+
+## Versioning
+
+This project follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
+
+## Releasing
+
+Update the package version and add a matching version section to `CHANGELOG.md`,
+then push the version tag. CI builds and checks the distributions, publishes to
+PyPI, and creates the GitHub release with its release notes and assets. Do not
+publish an empty GitHub release before CI runs.
+
+GitHub releases are created as drafts and published only after all assets are
+uploaded. Existing releases, including drafts, cause the GitHub release job to
+fail rather than overwrite assets. Inspect and remove an incomplete draft before
+retrying. Asset corrections to a published immutable release require a new version.
+
+## License
+
+This project follows the BSD license. See the [LICENSE](LICENSE) for details.
+
+## Supporters
+
+Development and maintenance of Python Social Auth are supported by organizations that rely on the project or invest in the sustainability and security of open source.
+
+Current supporters include:
+
+- [Weblate](https://weblate.org/) — funding ongoing development and maintenance
+- [GitHub Secure Open Source Fund](https://github.com/open-source/github-secure-open-source-fund) — funding and security education for maintainers
+
+If your organization depends on Python Social Auth, consider joining this effort and helping sustain its development:
+
+- [GitHub Sponsors](https://github.com/sponsors/python-social-auth/)
+- [Open Collective](https://opencollective.com/python-social-auth)

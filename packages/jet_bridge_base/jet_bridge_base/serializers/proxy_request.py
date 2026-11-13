@@ -17,11 +17,19 @@ from jet_bridge_base.utils.compress import compress_data, decompress_data
 
 
 class ProxyRequestSerializer(Serializer):
+    RETRYABLE_STATUS_CODES = (429, 502, 503, 504)
+    RETRYABLE_EXCEPTIONS = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout
+    )
+
     method = fields.CharField(required=False, default='GET')
     url = fields.CharField()
     query_params = fields.JSONField(required=False, default=dict)
     headers = fields.JSONField(required=False, default=dict)
     body = fields.RawField(required=False)
+    retry = fields.IntegerField(required=False, default=0)
+    retry_delay = fields.FloatField(required=False, default=0)
 
     project = fields.CharField(required=False)
     environment = fields.CharField(required=False)
@@ -157,6 +165,12 @@ class ProxyRequestSerializer(Serializer):
             if 'project' not in attrs:
                 raise ValidationError('"project" is required when specifying "resource"')
 
+        if attrs.get('retry') is not None and attrs['retry'] < 0:
+            raise ValidationError('"retry" must be a non-negative integer')
+
+        if attrs.get('retry_delay') is not None and attrs['retry_delay'] < 0:
+            raise ValidationError('"retry_delay" must be a non-negative number')
+
         if 'secret_tokens' in attrs and len(attrs['secret_tokens']):
             if 'resource' not in attrs:
                 raise ValidationError('"resource" is required when specifying "secret_tokens"')
@@ -197,12 +211,39 @@ class ProxyRequestSerializer(Serializer):
 
         return url, headers, query_params, body
 
+    def filter_response_headers(self, response_headers):
+        remove_headers = [
+            'Access-Control-Allow-Origin',
+            'Access-Control-Allow-Methods',
+            'Access-Control-Allow-Headers',
+            'Access-Control-Expose-Headers',
+            'Access-Control-Allow-Credentials',
+            'Connection',
+            'Content-Encoding',
+            'Content-Length',
+            'Keep-Alive',
+            'Proxy-Authenticate',
+            'Proxy-Authorization',
+            'TE',
+            'Trailers',
+            'Transfer-Encoding',
+            'Upgrade'
+        ]
+
+        for header in remove_headers:
+            if header in response_headers:
+                del response_headers[header]
+
+        return response_headers
+
     def submit(self):
         method = self.validated_data['method']
         url = self.validated_data['url']
         headers = self.validated_data['headers'] or []
         query_params = self.validated_data['query_params'] or []
         body = self.validated_data.get('body')
+        retry = self.validated_data.get('retry') or 0
+        retry_delay = self.validated_data.get('retry_delay') or 0
 
         if isinstance(headers, dict):
             headers = self.params_dict_to_list(headers)
@@ -210,6 +251,8 @@ class ProxyRequestSerializer(Serializer):
         if isinstance(query_params, dict):
             query_params = self.params_dict_to_list(query_params)
 
+        # Placeholder interpolation happens exactly once, before the first
+        # attempt; retries reuse the resolved url/headers/query_params/body
         if 'secret_tokens' in self.validated_data:
             url, headers, query_params, body = self.interpolate(url, headers, query_params, body, '{-%s-}', self.validated_data['secret_tokens'])
 
@@ -222,34 +265,47 @@ class ProxyRequestSerializer(Serializer):
         headers = dict(map(lambda x: (x['name'], x['value']), headers))
         query_params = list(map(lambda x: (x['name'], x['value']), query_params))
 
-        try:
-            r = requests.request(method, url, headers=headers, params=query_params, data=body)
-            response_headers = r.headers
+        max_attempts = retry + 1
+        attempts = []
 
-            remove_headers = [
-                'Access-Control-Allow-Origin',
-                'Access-Control-Allow-Methods',
-                'Access-Control-Allow-Headers',
-                'Access-Control-Expose-Headers',
-                'Access-Control-Allow-Credentials',
-                'Connection',
-                'Content-Encoding',
-                'Content-Length',
-                'Keep-Alive',
-                'Proxy-Authenticate',
-                'Proxy-Authorization',
-                'TE',
-                'Trailers',
-                'Transfer-Encoding',
-                'Upgrade'
-            ]
+        for attempt_number in range(1, max_attempts + 1):
+            if attempt_number > 1 and retry_delay:
+                time.sleep(retry_delay)
 
-            for header in remove_headers:
-                if header in response_headers:
-                    del response_headers[header]
+            try:
+                r = requests.request(method, url, headers=headers, params=query_params, data=body)
+            except self.RETRYABLE_EXCEPTIONS as e:
+                attempts.append({
+                    'attempt': attempt_number,
+                    'success': False,
+                    'error': str(e)
+                })
 
+                if attempt_number < max_attempts:
+                    continue
+
+                raise ValidationError('Request failed after {} attempt(s): {}'.format(attempt_number, e))
+            except Exception as e:
+                attempts.append({
+                    'attempt': attempt_number,
+                    'success': False,
+                    'error': str(e)
+                })
+                raise ValidationError('Request failed after {} attempt(s): {}'.format(attempt_number, e))
+
+            retryable_status = r.status_code in self.RETRYABLE_STATUS_CODES
+
+            attempts.append({
+                'attempt': attempt_number,
+                'success': not retryable_status,
+                'status_code': r.status_code
+            })
+
+            if retryable_status and attempt_number < max_attempts:
+                continue
+
+            response_headers = self.filter_response_headers(r.headers)
             response = Response(data=r.content, status=r.status_code, headers=response_headers)
+            response.attempts = attempts
 
             return response
-        except Exception as e:
-            raise ValidationError(e)
