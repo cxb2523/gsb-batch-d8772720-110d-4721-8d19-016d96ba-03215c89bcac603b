@@ -16,9 +16,10 @@ import sys
 import urllib.request
 
 from app.config import settings
-from app.database import LOCK_INGEST, advisory_lock, get_session
+from app.database import get_session
 from app.ingestion import INGESTERS
-from app.scheduler import run_ingestion
+from app.ingestion.batch import CompanyOutcome
+from app.scheduler import run_ingestion_locked
 
 
 def _abort_if_server_live(*, force: bool) -> None:
@@ -46,12 +47,31 @@ async def main() -> None:
 
     if len(args) == 1 and args[0] == "--all":
         # batch_size=0 overrides the scheduler's per-tick cap for a full seed pass. The
-        # lock keeps this from overlapping a deployed instance crawling the same rows.
-        with advisory_lock(LOCK_INGEST) as acquired:
-            if not acquired:
-                print("Another ingestion run holds the lock. Wait for it to finish.")
-                sys.exit(1)
-            await run_ingestion(batch_size=0)
+        # lock keeps this from overlapping a deployed instance crawling the same rows;
+        # a locked-out run exits non-zero with a distinct status instead of doing nothing.
+        summary = await run_ingestion_locked(0)
+        if summary.lock_unavailable:
+            print("Another ingestion run holds the lock. Wait for it to finish.")
+            sys.exit(1)
+        print(
+            f"Batch status: {summary.status.value}  "
+            f"targets={summary.total_targets}  succeeded={summary.succeeded}  "
+            f"failed={summary.failed}  skipped={summary.skipped}"
+        )
+        print(
+            f"Totals: new={summary.new_jobs} updated={summary.updated_jobs} "
+            f"deactivated={summary.deactivated_jobs}"
+        )
+        if summary.failure_reasons:
+            print(f"Failures by reason: {summary.failure_reasons}")
+        for record in summary.records:
+            if record.outcome is CompanyOutcome.FAILED:
+                print(
+                    f"  FAIL {record.slug} [{record.ats_type}]: "
+                    f"{record.failure_reason.value if record.failure_reason else '?'}"
+                )
+        if summary.failed:
+            sys.exit(1)
         return
 
     if len(args) == 2:
@@ -62,8 +82,14 @@ async def main() -> None:
             sys.exit(1)
 
         print(f"Ingesting {slug} from {ats}...")
-        with get_session() as db:
-            result = await ingester.ingest(slug, db)
+        try:
+            with get_session() as db:
+                result = await ingester.ingest(slug, db)
+        except Exception as exc:
+            # Transport errors now propagate after crawl_error is persisted; give the
+            # operator a readable message instead of a traceback.
+            print(f"Failed: {type(exc).__name__}: {exc}")
+            sys.exit(1)
         print(
             f"Done: fetched={result.total_fetched} new={result.new_jobs} "
             f"updated={result.updated_jobs} deactivated={result.deactivated_jobs}"

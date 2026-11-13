@@ -42,6 +42,15 @@ _TIME_TYPE_MAP: dict[str, str] = {
 }
 
 
+class SlugParseError(ValueError):
+    """Raised when a Workday composite slug cannot be split into tenant/board parts.
+
+    Subclasses ValueError so existing ``except ValueError`` handling keeps working;
+    the batch runner matches this type explicitly to classify it as a slug error
+    rather than a transport failure.
+    """
+
+
 class WorkdayIngester(BaseIngester):
     ats_type = "workday"
 
@@ -242,7 +251,7 @@ def _parse_slug(slug: str) -> tuple[str, str, str]:
             return tenant, wd, board
     if len(parts) == 1 and parts[0]:
         return parts[0], "wd1", "External"
-    raise ValueError(f"Workday slug must be 'tenant:wdN:board', got '{slug}'")
+    raise SlugParseError(f"Workday slug must be 'tenant:wdN:board', got '{slug}'")
 
 
 def _clean_location(raw: str) -> str:

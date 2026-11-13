@@ -269,22 +269,35 @@ class FailingIngester(FakeIngester):
     ],
     ids=["http_error", "network_error"],
 )
-async def test_failed_crawl_still_advances_last_crawled_at(db, exc):
-    """A dead board must leave the queue head, or it is retried on every tick forever."""
+async def test_failed_crawl_keeps_last_crawled_at_and_raises(db, exc):
+    """A failed board keeps its old timestamp so the next tick retries it first.
+
+    The error is still persisted on the company row (so the UI can show an unhealthy
+    board), but ingest() re-raises for the batch runner to classify instead of
+    advancing the rotating queue past the failure.
+    """
     company = make_company(db)
     stale = datetime.now(UTC) - timedelta(days=30)
     company.last_crawled_at = stale
     db.commit()
 
-    result = await FailingIngester(exc).ingest("acme", db)
+    with pytest.raises((httpx.HTTPStatusError, httpx.RequestError)):
+        await FailingIngester(exc).ingest("acme", db)
 
-    assert result.errors
     assert company.crawl_error
-    # SQLite hands the timestamp back naive, so normalize it the way _seen_since does.
     crawled = company.last_crawled_at
     if crawled.tzinfo is None:
         crawled = crawled.replace(tzinfo=UTC)
-    assert crawled > stale
+    assert crawled == stale
+
+    # The crawl_error commit must survive the exception leaving the context manager.
+    db.expire_all()
+    reloaded = db.query(Company).filter(Company.slug == "acme").one()
+    assert reloaded.crawl_error
+    reloaded_at = reloaded.last_crawled_at
+    if reloaded_at.tzinfo is None:
+        reloaded_at = reloaded_at.replace(tzinfo=UTC)
+    assert reloaded_at == stale
 
 
 @pytest.mark.anyio

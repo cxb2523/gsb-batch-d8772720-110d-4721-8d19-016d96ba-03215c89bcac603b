@@ -223,10 +223,13 @@ class BaseIngester(ABC):
             logger.error(msg)
             result.errors.append(msg)
             company.crawl_error = msg
-            # Without this a dead board keeps its old timestamp and jams the queue head.
-            company.last_crawled_at = datetime.now(tz=UTC)
+            # Persist the error, but deliberately leave last_crawled_at untouched so a
+            # dead board stays at the head of the rotating queue and is retried on the
+            # next tick rather than waiting out a full rotation. The exception is
+            # re-raised so the batch runner records the categorized failure; this
+            # commit cannot therefore advance the timestamp.
             db.commit()
-            return result
+            raise
 
         result.total_fetched = len(raw_jobs)
         logger.info(f"[{self.ats_type}] '{slug}' -> {len(raw_jobs)} raw jobs")

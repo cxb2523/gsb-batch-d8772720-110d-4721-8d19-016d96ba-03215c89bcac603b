@@ -15,53 +15,64 @@ from app.database import (
 )
 from app.enrichment import enrich_company
 from app.ingestion import INGESTERS
+from app.ingestion.batch import (
+    BatchStatus,
+    IngestionBatchSummary,
+    run_ingestion_batch,
+)
 from app.models import Company
 
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
-async def run_ingestion(batch_size: int | None = None) -> None:
-    """Crawl the least recently crawled batch of active companies.
+async def run_ingestion(batch_size: int | None = None) -> IngestionBatchSummary:
+    """Crawl the least recently crawled batch of active companies and report every outcome.
 
     Ordering by last_crawled_at makes the company table a rotating queue, so a bounded
-    batch per tick still reaches every company. A tick that dies part way through only
-    loses its own slice; untouched companies keep their old last_crawled_at and are
-    picked up first next time. Pass batch_size=0 for a full pass, as the seed scripts do.
+    batch per tick still reaches every company. Companies that fail keep their old
+    last_crawled_at (the ingester never reaches the success-path timestamp update), so
+    they are picked up first next time; successful companies advance as usual. Pass
+    batch_size=0 for a full pass, as the seed scripts do.
     """
     limit = settings.INGEST_BATCH_SIZE if batch_size is None else batch_size
-    logger.info(f"[scheduler] ingestion run started (batch={limit or 'all'})")
-    total_new = 0
-    total_updated = 0
-    errors = 0
-
-    with get_session() as db:
-        query = (
-            db.query(Company)
-            .filter(Company.is_active.is_(True), Company.ats_type.isnot(None))
-            .order_by(Company.last_crawled_at.asc().nullsfirst())
-        )
-        if limit:
-            query = query.limit(limit)
-        targets = [(company.ats_type, company.ats_slug, company.slug) for company in query.all()]
-
-    for ats_type, ats_slug, slug in targets:
-        ingester = INGESTERS.get(ats_type)
-        if not ingester:
-            continue
-        try:
-            with get_session() as db:
-                result = await ingester.ingest(ats_slug, db)
-            total_new += result.new_jobs
-            total_updated += result.updated_jobs
-        except Exception as exc:
-            logger.warning(f"[scheduler] ingest failed for {slug}: {exc}")
-            errors += 1
-        await asyncio.sleep(settings.CRAWL_DELAY)
-
-    logger.info(
-        f"[scheduler] ingestion complete: companies={len(targets)} new={total_new} "
-        f"updated={total_updated} errors={errors}"
+    return await run_ingestion_batch(
+        batch_size=limit,
+        session_factory=get_session,
+        ingesters=INGESTERS,
     )
+
+
+async def run_ingestion_tick() -> IngestionBatchSummary:
+    """Scheduler entry point: skip cleanly when another replica holds the advisory lock.
+
+    A lock-skipped tick returns a summary with status ``lock_unavailable`` and no
+    records, which callers can distinguish from a run where individual companies
+    failed. No company timestamp is touched in that case.
+    """
+    with advisory_lock(LOCK_INGEST) as acquired:
+        if not acquired:
+            logger.info("[scheduler] ingest already running elsewhere; skipping tick")
+            return IngestionBatchSummary(
+                status=BatchStatus.LOCK_UNAVAILABLE,
+                batch_size=settings.INGEST_BATCH_SIZE,
+            )
+        return await run_ingestion()
+
+
+async def run_ingestion_locked(batch_size: int) -> IngestionBatchSummary:
+    """Run an ingestion batch under the advisory lock, for one-off scripted runs.
+
+    Same lock semantics as the scheduled tick (a held lock yields a ``lock_unavailable``
+    summary instead of waiting), but lets callers such as the seed script override the
+    per-tick batch cap -- notably batch_size=0 for a full pass.
+    """
+    with advisory_lock(LOCK_INGEST) as acquired:
+        if not acquired:
+            return IngestionBatchSummary(
+                status=BatchStatus.LOCK_UNAVAILABLE,
+                batch_size=batch_size,
+            )
+        return await run_ingestion(batch_size=batch_size)
 
 
 async def run_enrichment() -> None:
@@ -158,10 +169,9 @@ async def _run_locked(name: str, key: int, job) -> None:
 def start() -> None:
     """Register scheduled jobs and start the background scheduler."""
     scheduler.add_job(
-        _run_locked,
+        run_ingestion_tick,
         "interval",
         minutes=settings.INGEST_INTERVAL_MINUTES,
-        args=["ingest", LOCK_INGEST, run_ingestion],
         id="ingest_all",
         max_instances=1,
     )
