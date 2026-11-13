@@ -1,43 +1,96 @@
 import type { Request, Response } from "express";
-import { runAllScrapers } from "../services/ingestion.service.ts";
-import { getCronSecret } from "../../../shared/constants/constants.ts";
+import {
+  runAllScrapers,
+  startBackgroundScraperRun,
+  RunInProgressError,
+} from "../services/ingestion.service.ts";
+import { getLatestRun, getRun } from "../services/runRegistry.ts";
 
-let isCronJobRunning = false;
-
+/**
+ * POST /refresh — run every scraper synchronously and return the full,
+ * auditable run summary. HTTP 200 is returned even when individual
+ * platforms failed; failures are reported honestly in the summary. A 409 is
+ * only returned when another run is already in progress.
+ */
 export const refreshHackathons = async (req: Request, res: Response) => {
-  const secret = req.headers["x-cron-secret"];
-  if (secret !== getCronSecret()) {
-    return res.status(401).json({ error: "Unauthorized" });
+  let summary;
+  try {
+    summary = await runAllScrapers();
+  } catch (error) {
+    if (error instanceof RunInProgressError) {
+      return res.status(409).json({
+        success: false,
+        message: "已在运行 / A scraper run is already in progress",
+        runId: error.runId,
+      });
+    }
+    throw error;
   }
-
-  await runAllScrapers();
-  return res.status(200).json({ message: "Hackathons refreshed successfully" });
-};
-
-export const triggerScraperCron = async (req: Request, res: Response) => {
-  const secret = req.headers["x-cron-secret"];
-  if (secret !== getCronSecret()) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  if (isCronJobRunning) {
-    return res.status(200).json({
-      message: "Cron job already running",
-      timestamp: new Date(),
-    });
-  }
-
-  isCronJobRunning = true;
-  void runAllScrapers()
-    .catch((error) => {
-      console.error("[CRON] Trigger route background run failed:", error);
-    })
-    .finally(() => {
-      isCronJobRunning = false;
-    });
 
   return res.status(200).json({
+    success: summary.failed === 0,
+    message:
+      summary.failed === 0
+        ? "Hackathons refreshed successfully"
+        : `Refresh finished with ${summary.failed} failed platform(s)`,
+    data: summary,
+  });
+};
+
+/**
+ * POST /cron/trigger — accept the request immediately and run the scrapers
+ * in the background. The returned run id can be polled via the status
+ * endpoint. Only one background run is allowed at a time; a duplicate
+ * trigger is answered with "already running" (carrying the active run id)
+ * and never starts a second run.
+ */
+export const triggerScraperCron = async (req: Request, res: Response) => {
+  let runId: string;
+  try {
+    runId = startBackgroundScraperRun();
+  } catch (error) {
+    if (error instanceof RunInProgressError) {
+      return res.status(200).json({
+        success: false,
+        message: "已在运行 / A scraper run is already in progress",
+        runId: error.runId,
+        status: "running",
+      });
+    }
+    throw error;
+  }
+
+  return res.status(200).json({
+    success: true,
     message: "Cron job accepted and started",
-    timestamp: new Date(),
+    runId,
+    status: "running",
+  });
+};
+
+/**
+ * GET /runs/latest and GET /runs/:runId — query the status (running /
+ * completed) and full summary of the latest or a specific run. Unknown run
+ * ids respond with 404.
+ */
+export const getScraperRunStatus = async (req: Request, res: Response) => {
+  const requestedId = req.params.runId;
+  const run =
+    requestedId === undefined || requestedId === "latest"
+      ? getLatestRun()
+      : getRun(requestedId);
+
+  if (run === null) {
+    return res.status(404).json({
+      success: false,
+      message: requestedId
+        ? `No scraper run found for id '${requestedId}'`
+        : "No scraper runs recorded yet",
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    data: run,
   });
 };

@@ -4,7 +4,12 @@ import { scrapeUnstop } from "../adapters/unstop.adapter.ts";
 import { scrapeDevpost } from "../adapters/devpost.adapter.ts";
 import { scrapeMLH } from "../adapters/mlh.adapter.ts";
 import { scrapeHack2Skill } from "../adapters/hack2skill.adapter.ts";
-import { refreshHackathons, triggerScraperCron } from "../controllers/ingestion.controller.ts";
+import {
+  getScraperRunStatus,
+  refreshHackathons,
+  triggerScraperCron,
+} from "../controllers/ingestion.controller.ts";
+import { requireCronSecret } from "../middlewares/cronAuth.middleware.ts";
 import { scraperRateLimiter } from "../../../shared/middlewares/rateLimiter.ts";
 
 const router = Router();
@@ -15,7 +20,18 @@ router.route("/devpost_scrape").get(scraperRateLimiter, scrapeDevpost);
 router.route("/mlh_scrape").get(scraperRateLimiter, scrapeMLH);
 router.route("/hack2skill_scrape").get(scraperRateLimiter, scrapeHack2Skill);
 
-router.route("/refresh").post(scraperRateLimiter, refreshHackathons);
-router.route("/cron/trigger").post(scraperRateLimiter, triggerScraperCron);
+router
+  .route("/refresh")
+  .post(scraperRateLimiter, requireCronSecret, refreshHackathons);
+router
+  .route("/cron/trigger")
+  .post(scraperRateLimiter, requireCronSecret, triggerScraperCron);
+
+router
+  .route("/runs/latest")
+  .get(scraperRateLimiter, requireCronSecret, getScraperRunStatus);
+router
+  .route("/runs/:runId")
+  .get(scraperRateLimiter, requireCronSecret, getScraperRunStatus);
 
 export default router;

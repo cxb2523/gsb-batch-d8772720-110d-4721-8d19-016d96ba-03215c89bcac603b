@@ -86,6 +86,10 @@ Protected routes require a valid JWT and use the existing authentication middlew
 
 ## Scrapers
 
+All scraper orchestration endpoints below are protected: requests must carry
+the `x-cron-secret` header matching the configured cron secret. A missing or
+wrong secret returns `401`.
+
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/scrape/devfolio_scrape` | Run the Devfolio scraper |
@@ -93,8 +97,28 @@ Protected routes require a valid JWT and use the existing authentication middlew
 | `GET` | `/scrape/devpost_scrape` | Run the Devpost scraper |
 | `GET` | `/scrape/mlh_scrape` | Run the MLH scraper |
 | `GET` | `/scrape/hack2skill_scrape` | Run the Hack2Skill scraper |
-| `POST` | `/scrape/refresh` | Run all scrapers sequentially |
-| `POST` | `/scrape/cron/trigger` | Trigger the refresh job with the cron secret |
+| `POST` | `/scrape/refresh` | Run all five scrapers synchronously and return the run summary (HTTP 200 even when some platforms failed) |
+| `POST` | `/scrape/cron/trigger` | Accept immediately (`200`) and run the scrapers in the background; returns the run id; duplicate triggers while a run is active return "already running" without starting a second run |
+| `GET` | `/scrape/runs/latest` | Status and summary of the most recent run |
+| `GET` | `/scrape/runs/:runId` | Status and summary of a specific run; unknown ids return `404` |
+
+### Run summary shape
+
+Every run (synchronous refresh or background trigger) is registered with a
+unique `runId` and produces the same auditable summary:
+
+| Field | Meaning |
+| --- | --- |
+| `runId` | Unique identifier of this run, used by the status endpoints |
+| `status` | `running` or `completed` |
+| `startedAt` / `finishedAt` | ISO timestamps; `finishedAt` is `null` while running |
+| `total` | Number of platforms attempted (always 5) |
+| `successful` / `failed` | Platform counts |
+| `cacheInvalidated` | `true` only when at least one platform succeeded; an all-failed run never clears the cache |
+| `results` | Per-platform entries in fixed order (Devfolio, Unstop, Devpost, MLH, Hack2Skill), each with `name`, `status` (`success`/`failed`) and `error` when failed |
+
+All five platforms are always attempted; a single platform throwing an error
+never interrupts the others.
 
 ## Notes for Contributors
 
