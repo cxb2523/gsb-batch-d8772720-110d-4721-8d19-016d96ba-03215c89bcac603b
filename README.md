@@ -1,0 +1,172 @@
+<picture align="left">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/SCAI-BIO/syndat/refs/heads/main/docs/logo/syndat_white.svg">
+  <img alt="Syndat Logo" src="https://raw.githubusercontent.com/SCAI-BIO/syndat/refs/heads/main/docs/logo/syndat.svg">
+</picture>
+
+<a href="https://doi.org/10.5281/zenodo.15791976"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.15791976-blue.svg" alt="DOI"></a>&nbsp;<a href="https://github.com/SCAI-BIO/syndat/actions/workflows/tests.yaml"><img src="https://github.com/SCAI-BIO/syndat/actions/workflows/tests.yaml/badge.svg" alt="tests"></a>&nbsp;<a href="https://codecov.io/gh/SCAI-BIO/syndat"><img src="https://codecov.io/gh/SCAI-BIO/syndat/branch/main/graph/badge.svg" alt="codecov"></a>&nbsp;<a href="https://syndat.readthedocs.io"><img src="https://img.shields.io/readthedocs/syndat?label=docs" alt="docs"></a>&nbsp;<a href="https://pypi.org/project/syndat/"><img src="https://img.shields.io/pypi/v/syndat" alt="version"></a>&nbsp;<a href="https://pepy.tech/projects/syndat"><img src="https://static.pepy.tech/personalized-badge/syndat?period=total&units=INTERNATIONAL_SYSTEM&left_color=GREY&right_color=BLUE&left_text=downloads" alt="PyPI Downloads"></a>
+
+<a href="https://www.nfdi4health.de"><img src="https://img.shields.io/badge/Developed_in-NFDI4Health-1E88E5" alt="NFDI4Health"></a>&nbsp;<a href="https://www.ihi-synthia.eu"><img src="https://img.shields.io/badge/Extended_in-SYNTHIA-8E24AA" alt="SYNTHIA"></a>
+
+# About
+
+Syndat is a Python library to evaluate and visualize the quality of synthetic patient and clinical trial data. It computes synthetic data quality metrics for tabular datasets and aggregates them into three normalized scores (distribution, correlation and discrimination). Beyond metrics, Syndat visualizes how close synthetic data is to the real data: feature distributions, correlation structures, summary statistics and SHAP-based discrimination plots. It also allows users to generate stratified and interpretable visualisations, including raincloud plots, GOF plots, and trajectory comparisons, offering deeper insights into the quality of synthetic clinical data across different subgroups.
+
+For a browser-based workflow, the [SYNDAT Dashboard](https://syndat.scai.fraunhofer.de](https://github.com/nfdi4health/syndat-dashboard)) wraps Syndat in a web application that adds privacy risk estimates (via [anonymeter](https://github.com/statice/anonymeter)) alongside the quality scores. Use it if you need a privacy assessment; the `syndat` package itself covers quality only.
+
+# Installation
+
+Install via pip:
+
+```bash
+pip install syndat
+```
+
+# Usage
+
+## Fidelity metrics
+
+### Jenson-Shannon Distance
+
+The Jenson-Shannon distance is a measure of similarity between two probability distributions. In our case, we compute
+probability distributions for each feature in the datasets and can thus compare the statistic feature 
+similarity of two dataframes. 
+
+It is bounded between 0 and 1, with 0 indicating identical distributions. 
+
+### (Normalized) Correlation Difference
+
+In addition to statistical similarity between the same features, we also want to make sure to preserve the correlations
+across different features. The normalized correlation difference measures the similarity of the correlation matrix of 
+two dataframes.
+
+A low correlation difference near zero indicates that the correlation structure of the synthetic data is similar to the 
+real data.
+
+### Discriminator AUC
+
+A classifier is trained to discriminate between real and synthetic data. Based on the Receiver Operating Characteristic 
+(ROC) curve, we compute the area under the curve (AUC) as a measure of how well the classifier can distinguish between 
+the two datasets. 
+
+An AUC of 0.5 indicates that the classifier is unable to distinguish between the two datasets, while an AUC of 1.0 
+indicates perfect discrimination.
+
+Exemplary usage:
+
+```python
+import pandas as pd
+from syndat.metrics import (
+    jensen_shannon_distance,
+    normalized_correlation_difference,
+    discriminator_auc
+)
+
+real = pd.DataFrame({
+    'feature1': [1, 2, 3, 4, 5],
+    'feature2': ['A', 'B', 'A', 'B', 'C']
+})
+
+synthetic = pd.DataFrame({
+    'feature1': [1, 2, 2, 3, 3],
+    'feature2': ['A', 'B', 'A', 'C', 'C']
+})
+
+print(jensen_shannon_distance(real, synthetic))
+>> {'feature1': 0.4990215421876156, 'feature2': 0.22141025172133794}
+
+print(normalized_correlation_difference(real, synthetic))
+>> 0.24571345029108108
+
+print(discriminator_auc(real, synthetic))
+>> 0.6
+```
+
+### Scoring Functions
+
+For convenience and easier interpretation, a normalized score can be computed for each of the 
+metrics instead:
+
+```python
+# JSD score is being aggregated over all features
+distribution_similarity_score = syndat.scores.distribution(real, synthetic)
+discrimination_score = syndat.scores.discrimination(real, synthetic)
+correlation_score = syndat.scores.correlation(real, synthetic)
+```
+
+Scores are defined in a range of 0-100, with a higher score corresponding to better data fidelity.
+
+## Visualization
+
+Visualize real vs. synthetic data distributions, summary statistics and discriminating features:
+
+```python
+import pandas as pd
+import syndat
+
+real = pd.read_csv("real.csv")
+synthetic = pd.read_csv("synthetic.csv")
+
+# plot *all* feature distribution and store image files
+syndat.visualization.plot_distributions(real, synthetic, store_destination="results/plots")
+syndat.visualization.plot_correlations(real, synthetic, store_destination="results/plots")
+
+# plot and display specific feature distribution plot
+syndat.visualization.plot_numerical_feature("feature_xy", real, synthetic)
+syndat.visualization.plot_numerical_feature("feature_xy", real, synthetic)
+
+# plot a shap plot of differentiating feature for real and synthetic data
+syndat.visualization.plot_shap_discrimination(real, synthetic)
+```
+
+
+## Postprocessing
+
+Postprocess synthetic data to improve data fidelity:
+
+```python
+import pandas as pd
+import syndat
+
+real = pd.read_csv("real.csv")
+synthetic = pd.read_csv("synthetic.csv")
+
+# postprocess synthetic data
+synthetic_post = syndat.postprocessing.assert_minmax(real, synthetic)
+synthetic_post = syndat.postprocessing.normalize_float_precision(real, synthetic)
+```
+
+## Evaluation and Visualization of Synthetic Clinical Trial Data
+
+An example demonstrating how to compute distribution, discrimination, and correlation scores, as well as how to generate stratified visualizations (gof, raincloud and other plots), is available in `examples/rct_example.py`.
+
+# Documentation
+
+Full API documentation and a quickstart guide are available at [syndat.readthedocs.io](https://syndat.readthedocs.io), including an overview of the [synthetic data quality metrics](https://syndat.readthedocs.io/en/latest/metrics.html) and how to interpret them.
+
+# Acknowledgements
+
+Syndat is developed at the [Fraunhofer Institute for Algorithms and Scientific Computing (SCAI)](https://www.scai.fraunhofer.de) and is used within the [NFDI4Health](https://www.nfdi4health.de) Consortium for the assessment of synthetic health data.
+
+It is currently also being extended as part of the [SYNTHIA](https://www.ihi-synthia.eu/) collaboration, which develops synthetic data methodology for clinical trials and health research.
+
+
+# Citation
+
+Syndat is aimed at researchers and data scientists working with sensitive health data who need to check whether a synthetic dataset preserves statistical properties before using it for analysis or model development.
+
+If you use **Syndat** in your research, please cite as:
+
+```bibtex
+@article{Adams_On_the_fidelity_2025,
+  author  = {Adams, Tim and Birkenbihl, Colin and Otte, Karen and
+             Ng, Hwei Geok and Rieling, Jonas Adrian and
+             Näher, Anatol-Fiete and Sax, Ulrich and
+             Prasser, Fabian and Fröhlich, Holger},
+  title   = {On the fidelity versus privacy and utility trade-off of synthetic patient data},
+  journal = {iScience},
+  volume  = {28},
+  year    = {2025},
+  doi     = {10.1016/j.isci.2025.112382}
+}
+```
+

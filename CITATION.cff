@@ -1,0 +1,99 @@
+cff-version: 1.2.0
+title: syndat
+type: software
+message: If you use this software, please cite the following article.
+license: Apache-2.0
+language: en
+
+authors:
+  - given-names: Tim
+    family-names: Adams
+    affiliation: Fraunhofer Institute for Algorithms and Scientific Computing SCAI
+    email: tim.adams@scai.fraunhofer.de
+    orcid: https://orcid.org/0000-0002-2823-0102
+
+contributors:
+  - given-names: Diego
+    family-names: Valderrama
+    affiliation: Fraunhofer Institute for Algorithms and Scientific Computing SCAI
+    email: diego.felipe.valderrama.nino@scai.fraunhofer.de
+    orcid: https://orcid.org/0000-0002-3450-0359
+
+  - given-names: Manuel
+    family-names: Lentzen
+    affiliation: Fraunhofer Institute for Algorithms and Scientific Computing SCAI
+    email: manuel.lentzen@scai.fraunhofer.de
+    orcid: https://orcid.org/0000-0002-1344-4132
+
+repository-code: https://github.com/SCAI-BIO/syndat
+repository-artifact: https://pypi.org/project/syndat/
+abstract: >
+  Syndat is a Python library to evaluate and visualize the quality of synthetic
+  patient and clinical trial data. It computes distribution, correlation and
+  discrimination metrics and aggregates them into normalized quality scores.
+
+keywords:
+  - synthetic data
+  - synthetic patient data
+  - clinical data
+  - synthetic data evaluation
+  - data fidelity
+  - data quality
+  - health informatics
+  - data visualization
+
+preferred-citation:
+  type: article
+  title: On the fidelity versus privacy and utility trade-off of synthetic patient data
+  authors:
+    - family-names: Adams
+      given-names: Tim
+    - family-names: Birkenbihl
+      given-names: Colin
+    - family-names: Otte
+      given-names: Karen
+    - family-names: Ng
+      given-names: Hwei Geok
+    - family-names: Rieling
+      given-names: Jonas Adrian
+    - family-names: Näher
+      given-names: Anatol-Fiete
+    - family-names: Sax
+      given-names: Ulrich
+    - family-names: Prasser
+      given-names: Fabian
+    - family-names: Fröhlich
+      given-names: Holger
+  journal: iScience
+  volume: 28
+  number: 5
+  pages: 112382
+  year: 2025
+  doi: 10.1016/j.isci.2025.112382
+
+references:
+  - type: conference-paper
+    title: NFDI4Health workflow and service for synthetic data generation, assessment and risk management
+    authors:
+      - family-names: Moazemi
+        given-names: Sobhan
+      - family-names: Adams
+        given-names: Tim
+      - family-names: Ng
+        given-names: Hwei Geok
+      - family-names: Kühnel
+        given-names: Lisa
+      - family-names: Schneider
+        given-names: Julian
+      - family-names: Näher
+        given-names: Anatol-Fiete
+      - family-names: Fluck
+        given-names: Juliane
+      - family-names: Fröhlich
+        given-names: Holger
+    collection-title: Studies in Health Technology and Informatics
+    year: 2024
+    doi: 10.3233/SHTI240834
+  - type: website
+    title: Syndat Web Dashboard
+    url: https://syndat.scai.fraunhofer.de/
