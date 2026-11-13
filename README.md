@@ -1,0 +1,376 @@
+![pg_statviz](src/pg_statviz/libs/pg_statviz_readme.png)
+
+# pg_statviz
+
+`pg_statviz` is a minimalist extension and utility pair for time series analysis and visualization
+of PostgreSQL internal statistics.
+
+Created for capturing PostgreSQL's cumulative and dynamic statistics, `pg_statviz` enables deeper
+time series analysis than the standard PostgreSQL statistics views. The included utility generates
+visualizations for selected time ranges from the stored statistic snapshots, helping users track
+PostgreSQL performance over time and potentially aiding in performance tuning and troubleshooting.
+
+Optionally, an [AI analysis](#ai-analysis-optional) mode can produce per-module HTML reports
+with chart commentary from a cloud LLM (Claude, Gemini, or OpenAI), any OpenAI-compatible
+endpoint, or a local model via Ollama.
+
+[![Wait events](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_wait.png)](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_wait.png)
+
+## Design Philosophy
+
+Designed with the [K.I.S.S.](https://en.wikipedia.org/wiki/KISS_principle) and
+[UNIX](https://en.wikipedia.org/wiki/Unix_philosophy) philosophies in mind, `pg_statviz` aims to be
+a modular, minimal and unobtrusive tool that does only what it's meant for: create snapshots
+of PostgreSQL statistics for visualization and analysis. To this end, a utility is provided for
+retrieving and creating simple visualizations with the stored snapshots, by using
+[pandas](https://pandas.pydata.org/) and [Matplotlib](https://github.com/matplotlib/matplotlib).
+
+## Installing the extension
+
+### Debian (12+) / Ubuntu (22.04+)
+
+1. Configure the PostgreSQL Deb repository for your Linux distribution, as
+[explained here for Debian](https://www.postgresql.org/download/linux/debian/) and
+[here for Ubuntu](https://www.postgresql.org/download/linux/ubuntu/).
+2. Use `apt` to install the extension for your PostgreSQL version:
+
+        sudo apt install postgresql-<pg_version>-statviz        
+
+### Red Hat Enterprise Linux (v8.0+) / Fedora (37+)
+
+1. Configure the PostgreSQL Yum repository for your Linux distribution, as
+[explained here](https://www.postgresql.org/download/linux/redhat).
+2. Use `dnf` or `yum` to install the extension for your PostgreSQL version:
+
+        sudo dnf install pg_statviz_extension-<pg_version>
+        OR
+        sudo yum install pg_statviz_extension-<pg_version>
+
+### PGXN (PostgreSQL Extension Network)
+
+The extension is available on [PGXN](https://pgxn.org/dist/pg_statviz/).
+
+To install from PGXN, either download the zip file and install manually or use the
+[PGXN Client](https://pgxn.github.io/pgxnclient/) to install:
+
+    pgxn install pg_statviz
+
+### Manual installation
+
+To install manually, clone this repository locally:
+
+    git clone https://github.com/vyruss/pg_statviz.git
+
+This will install the extension in the appropriate location for your system (`$SHAREDIR/extension`):
+
+    cd pg_statviz
+    sudo make install
+
+### Enabling the extension
+
+The extension can now be enabled inside the appropriate database like this, e.g. from `psql`:
+
+    \c mydatabase
+    CREATE EXTENSION pg_statviz;
+
+This will create the needed tables and functions under schema `pgstatviz` (note the lack of
+underscore in the schema name).
+
+## Installing the utility
+
+The visualization utility can be installed from [PyPi](https://pypi.org/project/pg_statviz/):
+
+    pip install pg_statviz
+
+The utility is also available in the [Debian](https://www.postgresql.org/download/linux/debian/) and
+[Ubuntu](https://www.postgresql.org/download/linux/ubuntu/) PostgreSQL Deb Repositories, and can be installed
+using `apt`:
+
+    sudo apt install pg-statviz
+
+Finally, it can be found in the
+[PostgreSQL Yum Repository](https://www.postgresql.org/download/linux/redhat/) and can be installed
+using `dnf` or `yum`:
+
+    sudo dnf install pg_statviz
+    OR
+    sudo yum install pg_statviz
+
+### Requirements
+
+Python 3.11+ is required for the visualization utility.
+Any recent PostgreSQL version up to and including 19 is supported.
+
+## Usage
+
+The extension can be used by superusers or any user that has `pg_monitor` role privileges. To take
+a snapshot, e.g. from `psql`:
+
+    SELECT pgstatviz.snapshot();
+
+[comment]::
+
+    NOTICE:  created pg_statviz snapshot
+               snapshot
+    -------------------------------
+     2026-01-01 11:04:58.055453+00
+    (1 row)
+
+Older snapshots and their associated data can be removed using any time expression. For example, to
+remove data more than 90 days old:
+
+    DELETE FROM pgstatviz.snapshots
+    WHERE snapshot_tstamp < CURRENT_DATE - 90;
+
+Or all snapshots can be removed like this:
+
+    SELECT pgstatviz.delete_snapshots();
+
+[comment]::
+
+    NOTICE:  truncating table "snapshots"
+    NOTICE:  truncate cascades to table "buf"
+    NOTICE:  truncate cascades to table "conf"
+    NOTICE:  truncate cascades to table "conn"
+    NOTICE:  truncate cascades to table "lock"
+    NOTICE:  truncate cascades to table "blocking"
+    NOTICE:  truncate cascades to table "repl"
+    NOTICE:  truncate cascades to table "slru"
+    NOTICE:  truncate cascades to table "wait"
+    NOTICE:  truncate cascades to table "wal"
+    NOTICE:  truncate cascades to table "db"
+    NOTICE:  truncate cascades to table "io"
+     delete_snapshots
+    ------------------
+
+    (1 row)
+
+The `pg_monitor` role can be assigned to any user:
+
+    GRANT pg_monitor TO myuser;
+
+## Scheduling
+
+Periodic snapshots can be set up with any job scheduler. For example with `cron`:
+
+    crontab -e -u postgres
+
+Inside the `postgres` user's crontab, add this line to take a snapshot every 15 minutes:
+
+    */15 * * * * psql -c -d mydatabase "SELECT pgstatviz.snapshot()" >/dev/null 2>&1
+
+## Visualization
+
+Potentially very large numbers of data points can be visualized with the aid of pandas resampling,
+displaying the mean value over 100 plot points as a default.
+
+The visualization utility can be called like a PostgreSQL command line tool:
+
+    pg_statviz --help
+
+[comment]::
+
+    usage: pg_statviz [-?] [--version] [-d DBNAME] [-h HOSTNAME] [-p PORT] [-U USERNAME] [-W]
+                      [-D FROM TO] [-O OUTPUTDIR] [--ai [PROVIDER]]
+                      {analyze,blocking,buf,cache,checkp,checksum,conf,conn,io,lock,repl,slru,tuple,wait,wal,xact} ...
+
+    run all analysis modules
+
+    positional arguments:
+      {analyze,blocking,buf,cache,checkp,checksum,conf,conn,io,lock,repl,slru,tuple,wait,wal,xact}
+        analyze             run all analysis modules
+        blocking            run blocking locks analysis module
+        buf                 run buffers written analysis module
+        cache               run cache hit ratio analysis module
+        checkp              run checkpoint analysis module
+        checksum            run checksum failure analysis module
+        conf                run configuration changes analysis module
+        conn                run connection count analysis module
+        io                  run I/O analysis module
+        lock                run locks analysis module
+        repl                run replication analysis module
+        slru                run SLRU analysis module
+        tuple               run tuple count analysis module
+        wait                run wait events analysis module
+        wal                 run WAL generation analysis module
+        xact                run transaction count analysis module
+
+    options:
+      -?, --help            show this help, then exit
+      --version             show program's version number and exit
+      -d, --dbname DBNAME   database name to analyze (default: 'myuser')
+      -h, --host HOSTNAME   database server host or socket directory (default: '/var/run/postgresql')
+      -p, --port PORT       database server port (default: '5432')
+      -U, --username USERNAME
+                            database user name (default: 'myuser')
+      -W, --password        force password prompt (should happen automatically) (default: -)
+      -D, --daterange FROM TO
+                            date range to be analyzed in ISO 8601 format e.g. 2026-01-01T00:00
+                            2026-01-01T23:59 (default: [])
+      -O, --outputdir OUTPUTDIR
+                            output directory (default: -)
+      --ai [PROVIDER]       enable AI analysis (default provider: claude). Choices: claude
+                            (Anthropic), gemini (Google), openai (OpenAI/compatible), local (Ollama).
+                            (default: -)
+
+### Specific module usage
+
+    pg_statviz conn --help
+
+[comment]::
+
+    usage: pg_statviz conn [-d DBNAME] [-h HOSTNAME] [-p PORT] [-U USERNAME] [-W] [-D FROM TO]
+                           [-O OUTPUTDIR] [--ai [PROVIDER]] [-u [USERS ...]] [-?]
+
+    run connection count analysis module
+
+    options:
+      -d, --dbname DBNAME   database name to analyze (default: 'myuser')
+      -h, --host HOSTNAME   database server host or socket directory (default: '/var/run/postgresql')
+      -p, --port PORT       database server port (default: '5432')
+      -U, --username USERNAME
+                            database user name (default: 'myuser')
+      -W, --password        force password prompt (should happen automatically) (default: -)
+      -D, --daterange FROM TO
+                            date range to be analyzed in ISO 8601 format e.g. 2026-01-01T00:00
+                            2026-01-01T23:59 (default: [])
+      -O, --outputdir OUTPUTDIR
+                            output directory (default: -)
+      --ai [PROVIDER]       enable AI analysis (default provider: claude). Choices: claude
+                            (Anthropic), gemini (Google), openai (OpenAI/compatible), local (Ollama).
+                            (default: -)
+      -u, --users [USERS ...]
+                            user name(s) to plot in analysis (default: [])
+      -?, --help            show this help, then exit
+
+### Example:
+
+    pg_statviz buf --host srv.example.com -d postgres -U postgres -D 2025-06-01T00:00 2025-12-31T23:59
+
+### Produces:
+[![buf output sample](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_buf.png)](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_buf.png)
+
+[comment]::
+
+[![buf output sample (rate)](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_buf_rate.png)](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_buf_rate.png)
+
+### Configuration changes:
+[![conf output sample](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_conf.png)](src/pg_statviz/libs/pg_statviz_srv.example.com_5432_conf.png)
+
+## AI Analysis (optional)
+
+`pg_statviz` can optionally generate AI-powered analysis of each chart, producing
+per-module HTML reports with embedded chart images and LLM commentary. The AI acts
+as a Senior PostgreSQL DBA, reviewing each chart and providing a **[HEALTHY]**,
+**[WARNING]**, or **[CRITICAL]** verdict with a brief interpretation, and a
+concrete remediation step for any [WARNING] or [CRITICAL] finding.
+
+### Enabling AI analysis
+
+Add `--ai` to any command:
+
+    pg_statviz analyze -d mydb --ai
+
+This uses Claude by default. Four providers are available:
+
+Provider | Flag | Requires
+--- | --- | ---
+[Claude](https://www.anthropic.com/) (Anthropic) | `--ai claude` or `--ai` | `ANTHROPIC_API_KEY`
+[Gemini](https://aistudio.google.com/) (Google AI Studio) | `--ai gemini` | `GOOGLE_API_KEY`
+[OpenAI](https://platform.openai.com/) or compatible | `--ai openai` | `OPENAI_API_KEY`
+Local ([Ollama](https://ollama.com/)) | `--ai local` | Ollama running with `gemma4:e4b`
+
+Whichever provider you pick, the model has to be vision-capable: the charts are
+sent as PNGs alongside the numbers.
+
+For a compatible endpoint (vLLM, LM Studio, llama.cpp, OpenRouter, Groq), set
+`OPENAI_BASE_URL` and `OPENAI_MODEL`:
+
+    export OPENAI_BASE_URL=http://localhost:8000/v1
+    export OPENAI_API_KEY=unused
+    export OPENAI_MODEL=Qwen/Qwen3-VL-8B-Instruct
+    pg_statviz analyze -d mydb --ai openai
+
+### Installing AI dependencies
+
+The AI libraries are **not** required for normal operation. Install them only if
+you want to use `--ai`:
+
+    pip install pg_statviz[ai]
+
+For the local provider, install and start Ollama, then pull the model:
+
+    ollama pull gemma4:e4b
+
+### Output
+
+When `--ai` is enabled, each module produces an HTML report alongside the chart
+PNGs (e.g. `pg_statviz_localhost_5432_buf.html`). The report embeds the chart
+images and renders the AI analysis as styled HTML.
+
+When the `analyze` subcommand is invoked with `--ai`, an additional top-level
+`pg_statviz_<host>_<port>_index.html` report is generated. It synthesises the
+per-module verdicts into a single cross-cutting summary, correlating patterns
+across charts and suggesting the single most important next action.
+
+[![AI report sample](src/pg_statviz/libs/pg_statviz_ai_report_sample.png)](src/pg_statviz/libs/pg_statviz_ai_report_sample.png)
+
+### How the analysis is grounded
+
+The AI doesn't just look at the chart data in isolation. Each prompt also
+includes:
+
+- The captured PostgreSQL version and role (primary/standby) and the hostname,
+  so suggestions can be tailored to your actual server.
+- The relevant `pg_settings` snapshot for the chart in question (e.g.
+  `shared_buffers` and `bgwriter_*` for buffer charts, `checkpoint_*` and
+  `max_wal_size` for checkpoint charts), so the advice is grounded in your
+  configuration rather than generic folklore.
+- Per-chart deterministic rule findings computed from the actual numeric data
+  before the LLM call (for example: cache hit ratio below 95%, session age
+  over one hour, any non-zero checksum failure). These are injected into the
+  prompt and a **severity floor** ensures the LLM's final verdict can never
+  be downgraded below the worst rule finding.
+
+User-supplied data (config values, role names, slot names, etc.) is wrapped in
+`<user_data>...</user_data>` envelopes and the system prompt instructs the
+model never to treat that content as instructions.
+
+## Schema
+
+The `pg_statviz` extension stores its data in the following tables:
+
+Table | Description
+--- | ---
+`pgstatviz.snapshots` | Timestamped snapshots
+`pgstatviz.blocking` | Blocking locks data
+`pgstatviz.buf` | Buffer, checkpointer and background writer data
+`pgstatviz.conf` | PostgreSQL server configuration data
+`pgstatviz.conn` | Connection data
+`pgstatviz.db` | PostgreSQL server and database statistics
+`pgstatviz.io` | I/O stats data
+`pgstatviz.lock` | Locks data
+`pgstatviz.repl` | Replication stats data
+`pgstatviz.slru` | SLRU cache stats data
+`pgstatviz.wait` | Wait events data
+`pgstatviz.wal` | WAL generation data
+
+## Export data
+
+To dump the captured data, e.g. for analysis on a different machine, run:
+
+    pg_dump -d <dbname> -a -O -t pgstatviz.* > pg_statviz_data.dump
+
+Load it like this on the target database (which should have `pg_statviz` installed) :
+
+    psql -d <other_dbname> -f pg_statviz_data.dump
+
+Alternatively, `pg_statviz` internal tables can also be exported to a tab separated values (TSV) file
+for use by other tools:
+
+    psql -d <dbname> -c "COPY pgstatviz.conn TO STDOUT CSV HEADER DELIMITER E'\t'" > conn.tsv
+
+These can then be loaded into another database like this, provided the tables exist (installing the extension will create them):
+
+    psql -d <other_dbname> -c "COPY pgstatviz.conn FROM STDIN CSV HEADER DELIMITER E'\t'" < conn.tsv
+

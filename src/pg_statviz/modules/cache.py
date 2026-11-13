@@ -1,0 +1,148 @@
+"""
+pg_statviz - stats visualization and time series analysis
+"""
+
+__author__ = "Jimmy Angelakos"
+__copyright__ = "Copyright (c) 2026 Jimmy Angelakos"
+__license__ = "PostgreSQL License"
+
+import argparse
+import getpass
+import logging
+from argh.decorators import arg
+from dateutil.parser import isoparse
+from matplotlib.pyplot import close as mpclose
+from pg_statviz.libs import plot
+from pg_statviz.libs.ai import (AI_HELP, AI_PROVIDERS,
+                                DEFAULT_AI_PROVIDER,
+                                run_chart_analysis)
+from pg_statviz.libs.dbconn import dbconn
+from pg_statviz.libs.html_report import finalize_module_report
+from pg_statviz.libs.info import getinfo, get_settings
+
+from pandas import DataFrame
+
+
+@arg('-d', '--dbname', help="database name to analyze")
+@arg('-h', '--host', metavar="HOSTNAME",
+     help="database server host or socket directory")
+@arg('-p', '--port', help="database server port")
+@arg('-U', '--username', help="database user name")
+@arg('-W', '--password', action='store_true',
+     help="force password prompt (should happen automatically)")
+@arg('-D', '--daterange', nargs=2, metavar=('FROM', 'TO'), type=str,
+     help="date range to be analyzed in ISO 8601 format e.g. 2026-01-01T00:00 "
+          + "2026-01-01T23:59")
+@arg('-O', '--outputdir', help="output directory")
+@arg('--ai', nargs='?', const=DEFAULT_AI_PROVIDER, default=None,
+     choices=AI_PROVIDERS, metavar='PROVIDER',
+     help=AI_HELP)
+@arg('--info', help=argparse.SUPPRESS)
+@arg('--conn', help=argparse.SUPPRESS)
+def cache(*, dbname=getpass.getuser(), host="/var/run/postgresql", port="5432",
+          username=getpass.getuser(), password=None, daterange=[],
+          outputdir=None, ai=None, info=None, conn=None):
+    "run cache hit ratio analysis module"
+
+    logging.basicConfig()
+    _logger = logging.getLogger(__name__)
+    _logger.setLevel(logging.INFO)
+
+    if not conn:
+        conn_details = {'dbname': dbname, 'user': username,
+                        'password': getpass.getpass("Password: ") if password
+                        else password, 'host': host, 'port': port}
+        conn = dbconn(**conn_details)
+    if not info:
+        info = getinfo(conn)
+
+    _logger.info("Running cache hit ratio analysis")
+
+    if daterange:
+        daterange = [isoparse(d) for d in daterange]
+        if daterange[0] > daterange[1]:
+            daterange = [daterange[1], daterange[0]]
+    else:
+        daterange = ['-infinity', 'now()']
+
+    cur = conn.cursor()
+    cur.execute("""SELECT blks_hit, blks_read, snapshot_tstamp
+                   FROM pgstatviz.db
+                   WHERE snapshot_tstamp BETWEEN %s AND %s
+                   ORDER BY snapshot_tstamp""",
+                (daterange[0], daterange[1]))
+    data = cur.fetchall()
+    if not data:
+        raise SystemExit("No pg_statviz snapshots found in this database")
+
+    tstamps = [t['snapshot_tstamp'] for t in data]
+    ratio = calc_ratio(data)
+    settings = get_settings(conn, ['shared_buffers'])
+    findings = []
+    nz = [r for r in ratio if r > 0]
+    mean_hit = sum(nz) / len(nz) if nz else 100.0
+    if mean_hit < 90.0:
+        findings.append({
+            'severity': 'CRITICAL',
+            'message': f'mean cache hit ratio {mean_hit:.1f}% < 90%',
+        })
+    elif mean_hit < 95.0:
+        findings.append({
+            'severity': 'WARNING',
+            'message': f'mean cache hit ratio {mean_hit:.1f}% < 95%',
+        })
+
+    # Downsample if needed
+    ratio_frame = DataFrame(data=ratio, index=tstamps, copy=False)
+    if len(tstamps) > plot.MAX_POINTS:
+        q = str(round(
+            (tstamps[-1] - tstamps[0]).total_seconds() / plot.MAX_POINTS, 2))
+        r = ratio_frame.resample(q + "s").mean()
+    else:
+        r = ratio_frame
+
+    report_sections = []
+
+    # Plot cache hit ratio
+    plt, fig = plot.setup()
+    plt.suptitle(f"pg_statviz · {info['hostname']}:{port}",
+                 fontweight='semibold')
+    plt.title("Cache hit ratio")
+
+    plt.plot(r.index, r, label="hit ratio")
+
+    plt.xlabel("Timestamp", fontweight='semibold')
+    plt.ylabel("Cache hit %", fontweight='semibold')
+    fig.axes[0].set_ylim(top=100)
+    fig.legend()
+    fig.tight_layout()
+    outfile = f"""{
+        outputdir.rstrip("/") + "/" if outputdir
+        else ''}pg_statviz_{info['hostname']
+                            .replace("/", "-")}_{port}_cache.png"""
+    _logger.info(f"Saving {outfile}")
+    plt.savefig(outfile)
+    run_chart_analysis(
+        report_sections, ai, r, "Cache Hit Ratio",
+        metric_description="Buffer cache hit ratio. Should be >99% for OLTP "
+                           "workloads. <95% indicates shared_buffers too "
+                           "small or working set exceeds RAM. Each cache miss "
+                           "= disk I/O latency added to query.",
+        outfile=outfile,
+        info=info,
+        settings=settings,
+        findings=findings,
+    )
+
+    finalize_module_report(outputdir, info, port, 'cache',
+                           report_sections)
+    mpclose('all')
+
+
+# Calculate cache hit ratio
+def calc_ratio(data):
+    return [round((int(d['blks_hit'])
+                   / (int(d['blks_read']) + int(d['blks_hit']))) * 100, 2)
+            if (int(d['blks_read']) + int(d['blks_hit'])) > 0
+            else 0.0
+            for d in data]
