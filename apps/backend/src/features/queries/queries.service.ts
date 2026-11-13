@@ -4,12 +4,14 @@ import { Model } from 'mongoose';
 import { Query, QueryDocument } from './queries.schema';
 import type { ScrapingPlan, RedditReport } from '../llm/llm.types';
 import type { RedditPost } from '../decodo/decodo.types';
+import type { CollectionOutcome } from '../tracker/collection-outcome.types';
 
 export interface CreateQueryDto {
   prompt: string;
   plan: ScrapingPlan;
   posts: RedditPost[];
   report: RedditReport;
+  collectionOutcome: CollectionOutcome;
 }
 
 @Injectable()

@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { ScrapingPlan, AnalyzeResult, TimeRange } from '../tracker.types';
+import type { ScrapingPlan, AnalyzeResult, CollectionOutcome, TimeRange } from '../tracker.types';
 
 interface GeneratePlanInput {
   prompt: string;
@@ -43,6 +43,7 @@ type SseEvent =
       plan: AnalyzeResult['plan'];
       posts: AnalyzeResult['posts'];
       report: AnalyzeResult['report'];
+      collectionOutcome: CollectionOutcome;
     }
   | { type: 'error'; message: string };
 
@@ -103,7 +104,13 @@ async function analyzePlanStream(
       if (event.type === 'error') throw new Error(event.message);
 
       if (event.type === 'complete') {
-        return { id: event.id, plan: event.plan, posts: event.posts, report: event.report };
+        return {
+          id: event.id,
+          plan: event.plan,
+          posts: event.posts,
+          report: event.report,
+          collectionOutcome: event.collectionOutcome,
+        };
       }
 
       onProgress(event);

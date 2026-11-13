@@ -61,6 +61,7 @@ function HistoryDetailPage() {
           <ReportView
             prompt={query.prompt}
             report={query.report}
+            collectionOutcome={query.collectionOutcome}
             onExportMarkdown={() => exportAsMarkdown(query.prompt, query.report)}
             onExportJson={() => exportAsJson(query)}
           />

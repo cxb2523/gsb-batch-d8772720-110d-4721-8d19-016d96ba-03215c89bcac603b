@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { ReportView } from './ReportView';
-import type { RedditReport } from '../tracker.types';
+import type { RedditReport, CollectionOutcome } from '../tracker.types';
 
 const mockReport: RedditReport = {
   executiveSummary: 'Developers have mixed feelings about AI tools.',
@@ -173,5 +173,54 @@ describe('ReportView', () => {
     );
 
     expect(screen.getByText('negative')).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Collection outcome panel
+  // -------------------------------------------------------------------------
+
+  const outcomeWithFailures: CollectionOutcome = {
+    queryOutcomes: [
+      { query: 'ok query', success: true, postCount: 4 },
+      { query: 'failing query', success: false, postCount: 0, error: '502 Bad Gateway' },
+    ],
+    totalQueries: 2,
+    successfulQueries: 1,
+    failedQueries: 1,
+    selectedPostCount: 4,
+  };
+
+  const outcomeAllSuccess: CollectionOutcome = {
+    queryOutcomes: [
+      { query: 'ok query', success: true, postCount: 4 },
+      { query: 'another ok query', success: true, postCount: 2 },
+    ],
+    totalQueries: 2,
+    successfulQueries: 2,
+    failedQueries: 0,
+    selectedPostCount: 6,
+  };
+
+  it('renders the partial-failure panel when the outcome contains failed queries', () => {
+    render(<ReportView {...defaultProps} collectionOutcome={outcomeWithFailures} />);
+
+    expect(screen.getByText('部分查询失败')).toBeInTheDocument();
+    expect(screen.getByText('"failing query"')).toBeInTheDocument();
+    expect(screen.getByText('502 Bad Gateway')).toBeInTheDocument();
+    expect(screen.getByText(/失败 1/)).toBeInTheDocument();
+  });
+
+  it('renders the success summary when every query succeeded', () => {
+    render(<ReportView {...defaultProps} collectionOutcome={outcomeAllSuccess} />);
+
+    expect(screen.getByText('全部查询采集成功')).toBeInTheDocument();
+    expect(screen.queryByText('部分查询失败')).not.toBeInTheDocument();
+    expect(screen.getByText(/2 个查询全部成功/)).toBeInTheDocument();
+  });
+
+  it('does not render any collection panel when no outcome is provided (legacy records)', () => {
+    render(<ReportView {...defaultProps} />);
+
+    expect(screen.queryByTestId('collection-outcome-panel')).not.toBeInTheDocument();
   });
 });

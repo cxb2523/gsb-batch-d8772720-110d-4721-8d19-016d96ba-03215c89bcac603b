@@ -7,6 +7,7 @@ import type { ScrapingPlan, RedditReport } from '../llm/llm.types';
 import type { RedditPost, RedditPostWithComments } from '../decodo/decodo.types';
 import type { GeneratePlanDto } from './dto/generate-plan.dto';
 import type { AnalyzePlanDto } from './dto/analyze-plan.dto';
+import type { CollectionOutcome, QueryOutcome } from './collection-outcome.types';
 
 const MAX_POSTS_TOTAL = 30;
 const MAX_POSTS_DEEP_DIVE = 8;
@@ -16,6 +17,32 @@ const SCRAPE_CONCURRENCY = 4; // max simultaneous Decodo requests to avoid 429s
 // downstream URLs and `subreddit:` search clauses don't end up malformed.
 function normalizeSubreddit(name: string): string {
   return name.trim().replace(/^\/?r\//i, '');
+}
+
+// Extracts a human-readable explanation from a thrown scraping error so it can
+// be recorded on the collection outcome. HttpExceptions carry their own
+// message; anything else falls back to the plain Error message.
+function describeError(err: unknown): string {
+  if (err instanceof HttpException) {
+    const response = err.getResponse();
+    if (typeof response === 'string' && response.length > 0) return response;
+    if (
+      response !== null &&
+      typeof response === 'object' &&
+      typeof (response as { message?: unknown }).message === 'string'
+    ) {
+      return (response as { message: string }).message;
+    }
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return String(err);
+}
+
+// Deduplicates the plan's queries: trimmed, non-empty strings only, with
+// repeated query text counted a single time. Returns the execution list in
+// first-seen order.
+function deduplicateQueries(queries: string[]): string[] {
+  return [...new Set(queries.map((q) => q.trim()).filter(Boolean))];
 }
 
 // Small stop-word filter for tokenization. Keep it minimal — we want to drop
@@ -258,6 +285,7 @@ export class TrackerService {
     plan: AnalyzePlanDto;
     posts: RedditPost[];
     report: RedditReport;
+    collectionOutcome: CollectionOutcome;
   }> {
     const tTotal = Date.now();
     this.logger.log(
@@ -269,7 +297,11 @@ export class TrackerService {
       `[Analyze] Step 1/4 — Scraping ${dto.queries.length} search queries (max ${SCRAPE_CONCURRENCY} concurrent)...`,
     );
     const t1 = Date.now();
-    const { posts, searchPostIds, failures } = await this.scrapeAll(dto, onProgress, signal);
+    const { posts, searchPostIds, failures, queryOutcomes } = await this.scrapeAll(
+      dto,
+      onProgress,
+      signal,
+    );
     this.logger.log(
       `[Analyze] Step 1/4 ✓ — ${posts.length} posts collected in ${Date.now() - t1}ms`,
     );
@@ -317,6 +349,25 @@ export class TrackerService {
 
     if (signal?.aborted) throw new Error('Request was cancelled');
 
+    // Attach the per-post comment deep-dive outcome. A failed comment scrape
+    // never removes a post from the selection, but it must be visible rather
+    // than silently swallowed. Posts outside the deep-dive set stay untouched.
+    const commentStatusById = new Map(
+      postsWithComments.map((p) => [p.id, p.commentCollectionStatus]),
+    );
+    const postsWithStatus: RedditPost[] = posts.map((post) => {
+      const status = commentStatusById.get(post.id);
+      return status ? { ...post, commentCollectionStatus: status } : post;
+    });
+
+    const collectionOutcome: CollectionOutcome = {
+      queryOutcomes,
+      totalQueries: queryOutcomes.length,
+      successfulQueries: queryOutcomes.filter((q) => q.success).length,
+      failedQueries: queryOutcomes.filter((q) => !q.success).length,
+      selectedPostCount: postsWithStatus.length,
+    };
+
     // Step 3: LLM summarization
     this.logger.log(
       `[Analyze] Step 3/4 — Sending ${posts.length} posts to LLM for summarization...`,
@@ -340,14 +391,21 @@ export class TrackerService {
         timeRange: dto.timeRange,
         rationale: '',
       },
-      posts,
+      posts: postsWithStatus,
       report,
+      collectionOutcome,
     });
     this.logger.log(`[Analyze] Step 4/4 ✓ — Saved as query ID: ${String(saved._id)}`);
 
     this.logger.log(`[Analyze] ✓ Complete in ${Date.now() - tTotal}ms`);
 
-    return { id: String(saved._id), plan: dto, posts, report };
+    return {
+      id: String(saved._id),
+      plan: dto,
+      posts: postsWithStatus,
+      report,
+      collectionOutcome,
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -362,12 +420,16 @@ export class TrackerService {
     posts: RedditPost[];
     searchPostIds: Set<string>;
     failures: Error[];
+    queryOutcomes: QueryOutcome[];
   }> {
-    const allQueries = [...new Set(dto.queries.map((q) => q.trim()).filter(Boolean))];
+    // Repeated query text is only executed once; empty/whitespace queries are
+    // dropped entirely and do not count toward the plan total.
+    const allQueries = deduplicateQueries(dto.queries);
 
     const totalTasks = allQueries.length;
     let completedTasks = 0;
     const failures: Error[] = [];
+    const queryOutcomes: QueryOutcome[] = new Array(totalTasks);
 
     onProgress?.({
       type: 'started',
@@ -382,10 +444,20 @@ export class TrackerService {
         const timeRange = index === 0 ? 'year' : dto.timeRange;
         const result = await this.decodoService
           .searchReddit({ query, timeRange }, signal)
+          .then((posts) => {
+            queryOutcomes[index] = { query, success: true, postCount: posts.length };
+            return posts;
+          })
           .catch((err: unknown) => {
             if ((err as Error)?.name === 'AbortError') throw err;
             this.logger.warn(`Search query failed for "${query}": ${String(err)}`);
             failures.push(err as Error);
+            queryOutcomes[index] = {
+              query,
+              success: false,
+              postCount: 0,
+              error: describeError(err),
+            };
             return [] as RedditPost[];
           });
         onProgress?.({
@@ -413,7 +485,7 @@ export class TrackerService {
         ` (top: "${ranked[0]?.title?.slice(0, 60) ?? 'none'}")`,
     );
 
-    return { posts: ranked, searchPostIds, failures };
+    return { posts: ranked, searchPostIds, failures, queryOutcomes };
   }
 
   // Runs tasks with at most `concurrency` in-flight at a time to avoid 429s
@@ -443,10 +515,26 @@ export class TrackerService {
     const tasks = posts.map((post) =>
       this.decodoService
         .scrapePost({ subreddit: post.subreddit, postId: post.id }, signal)
+        .then(
+          (withComments): RedditPostWithComments => ({
+            ...withComments,
+            commentCollectionStatus: { commentsFetched: true },
+          }),
+        )
         .catch((err: unknown) => {
           if ((err as Error)?.name === 'AbortError') throw err;
           this.logger.warn(`Comment scrape failed for post ${post.id}: ${String(err)}`);
-          return { ...post, comments: [] };
+          // The post stays selected with whatever data the search returned; the
+          // failed comment fetch is recorded on its outcome instead of being
+          // silently swallowed.
+          return {
+            ...post,
+            comments: [],
+            commentCollectionStatus: {
+              commentsFetched: false,
+              error: describeError(err),
+            },
+          };
         }),
     );
 

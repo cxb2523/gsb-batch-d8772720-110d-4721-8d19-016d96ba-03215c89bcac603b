@@ -244,6 +244,7 @@ function TrackerPage() {
               <ReportView
                 prompt={step.prompt}
                 report={step.result.report}
+                collectionOutcome={step.result.collectionOutcome}
                 onExportMarkdown={() => exportAsMarkdown(step.prompt, step.result.report)}
                 onExportJson={() => exportAsJson(step.result)}
               />

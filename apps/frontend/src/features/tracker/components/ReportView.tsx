@@ -3,7 +3,8 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Download, ExternalLink, FileJson, FileText } from 'lucide-react';
-import type { RedditReport } from '../tracker.types';
+import type { RedditReport, CollectionOutcome } from '../tracker.types';
+import { CollectionOutcomePanel } from './CollectionOutcomePanel';
 
 const sentimentColor: Record<string, string> = {
   positive: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
@@ -17,9 +18,17 @@ interface ReportViewProps {
   report: RedditReport;
   onExportMarkdown: () => void;
   onExportJson: () => void;
+  /** Collection outcome for the run. Absent for history records created before this feature. */
+  collectionOutcome?: CollectionOutcome;
 }
 
-export const ReportView = ({ prompt, report, onExportMarkdown, onExportJson }: ReportViewProps) => {
+export const ReportView = ({
+  prompt,
+  report,
+  onExportMarkdown,
+  onExportJson,
+  collectionOutcome,
+}: ReportViewProps) => {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -44,6 +53,10 @@ export const ReportView = ({ prompt, report, onExportMarkdown, onExportJson }: R
       </div>
 
       <Separator />
+
+      {/* Collection outcome — surfaces partial-query failures so an incomplete
+          report can never be read as a complete one. */}
+      {collectionOutcome && <CollectionOutcomePanel outcome={collectionOutcome} />}
 
       {/* Executive Summary */}
       <Card>

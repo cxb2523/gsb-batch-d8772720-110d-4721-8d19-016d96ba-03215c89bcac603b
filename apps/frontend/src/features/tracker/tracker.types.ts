@@ -18,6 +18,30 @@ export interface RedditPost {
   permalink: string;
   selftext: string;
   createdAt: number;
+  commentCollectionStatus?: CommentCollectionStatus;
+}
+
+/** Outcome of a single (deduplicated) search query during collection. */
+export interface QueryOutcome {
+  query: string;
+  success: boolean;
+  postCount: number;
+  error?: string;
+}
+
+/** Per-post outcome of the comment deep-dive step. */
+export interface CommentCollectionStatus {
+  commentsFetched: boolean;
+  error?: string;
+}
+
+/** Roll-up of an analysis run's collection phase, mirroring the backend type. */
+export interface CollectionOutcome {
+  queryOutcomes: QueryOutcome[];
+  totalQueries: number;
+  successfulQueries: number;
+  failedQueries: number;
+  selectedPostCount: number;
 }
 
 export interface RedditReport {
@@ -47,6 +71,7 @@ export interface AnalyzeResult {
   };
   posts: RedditPost[];
   report: RedditReport;
+  collectionOutcome: CollectionOutcome;
 }
 
 export interface StoredQuery {
@@ -55,5 +80,6 @@ export interface StoredQuery {
   plan: ScrapingPlan;
   posts?: RedditPost[];
   report: RedditReport;
+  collectionOutcome?: CollectionOutcome;
   createdAt: string;
 }

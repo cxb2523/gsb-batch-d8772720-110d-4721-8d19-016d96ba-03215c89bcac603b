@@ -5,10 +5,19 @@ import { QueriesService } from './queries.service';
 import { Query } from './queries.schema';
 import type { ScrapingPlan, RedditReport } from '../llm/llm.types';
 import type { RedditPost } from '../decodo/decodo.types';
+import type { CollectionOutcome } from '../tracker/collection-outcome.types';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
+
+const mockCollectionOutcome: CollectionOutcome = {
+  queryOutcomes: [{ query: 'test query', success: true, postCount: 0 }],
+  totalQueries: 1,
+  successfulQueries: 1,
+  failedQueries: 0,
+  selectedPostCount: 0,
+};
 
 const mockDoc = {
   _id: 'doc-123',
@@ -16,6 +25,7 @@ const mockDoc = {
   plan: {} as ScrapingPlan,
   posts: [] as RedditPost[],
   report: {} as RedditReport,
+  collectionOutcome: mockCollectionOutcome,
   createdAt: new Date(),
 };
 
@@ -35,6 +45,7 @@ const mockCreateDto = {
     notableQuotes: [],
     topPosts: [],
   },
+  collectionOutcome: mockCollectionOutcome,
 };
 
 // ---------------------------------------------------------------------------

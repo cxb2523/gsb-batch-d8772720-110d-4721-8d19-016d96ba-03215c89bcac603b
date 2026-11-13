@@ -455,6 +455,90 @@ describe('TrackerService', () => {
       await expect(service.analyzePlan(baseDto)).rejects.toMatchObject({ status: 404 });
     });
 
+    it('records per-query failure outcomes with HttpException messages on total failure', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+
+      const rateLimitErr = new HttpException('Decodo API error: 429 Too Many Requests', 429);
+      const dto: AnalyzePlanDto = { ...baseDto, queries: ['q1', 'q2'] };
+      decodoService.searchReddit.mockRejectedValue(rateLimitErr);
+
+      await expect(service.analyzePlan(dto)).rejects.toMatchObject({ status: 429 });
+
+      // Both queries were attempted and both failed — no history is saved when
+      // nothing was collected, so the outcome only exists via the thrown rule.
+      expect(decodoService.searchReddit).toHaveBeenCalledTimes(2);
+      expect(queriesService.create).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates repeated queries and ignores empty strings when counting plan totals', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+
+      const dto: AnalyzePlanDto = {
+        ...baseDto,
+        // "react performance tips" appears twice (one with surrounding whitespace),
+        // plus an empty and a whitespace-only entry that must not count at all.
+        queries: [
+          'react performance tips',
+          '  react performance tips  ',
+          '',
+          '   ',
+          'react hooks guide',
+        ],
+      };
+
+      decodoService.searchReddit
+        .mockResolvedValueOnce([makePost('s1', 10, 'reactjs', onTopicTitle)])
+        .mockResolvedValueOnce([makePost('h1', 10, 'reactjs', 'react hooks guide deep dive')]);
+      decodoService.scrapePost.mockResolvedValue({
+        ...makePost('s1', 10, 'reactjs', onTopicTitle),
+        comments: [],
+      });
+
+      const result = await service.analyzePlan(dto);
+
+      // Only the two unique, non-empty queries were executed...
+      expect(decodoService.searchReddit).toHaveBeenCalledTimes(2);
+      const searchedQueries = decodoService.searchReddit.mock.calls.map((call) => call[0].query);
+      expect(searchedQueries).toEqual(['react performance tips', 'react hooks guide']);
+
+      // ...and the outcome totals exclude the duplicate and the empty entries.
+      expect(result.collectionOutcome.totalQueries).toBe(2);
+      expect(result.collectionOutcome.successfulQueries).toBe(2);
+      expect(result.collectionOutcome.failedQueries).toBe(0);
+      expect(result.collectionOutcome.queryOutcomes.map((q) => q.query)).toEqual([
+        'react performance tips',
+        'react hooks guide',
+      ]);
+    });
+
+    it('counts postCount per query before cross-query deduplication and ranking', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+
+      const shared = makePost('shared', 50, 'reactjs', onTopicTitle);
+      const extra = makePost('extra', 20, 'reactjs', 'react performance tools roundup');
+
+      // Both queries return the shared post; the first also returns an extra one.
+      decodoService.searchReddit
+        .mockResolvedValueOnce([shared, extra])
+        .mockResolvedValueOnce([shared]);
+      decodoService.scrapePost.mockResolvedValue({ ...shared, comments: [] });
+
+      const dto: AnalyzePlanDto = {
+        ...baseDto,
+        queries: ['react performance tips', 'react performance tools'],
+      };
+
+      const result = await service.analyzePlan(dto);
+
+      expect(result.collectionOutcome.queryOutcomes).toEqual([
+        { query: 'react performance tips', success: true, postCount: 2 },
+        { query: 'react performance tools', success: true, postCount: 1 },
+      ]);
+      // The selected-post roll-up reflects the deduplicated, ranked final set.
+      expect(result.collectionOutcome.selectedPostCount).toBe(result.posts.length);
+      expect(new Set(result.posts.map((p) => p.id)).size).toBe(result.posts.length);
+    });
+
     it('handles individual scraping errors gracefully and continues with partial results', async () => {
       llmService.parseJsonResponse.mockReturnValue(mockReport);
 
@@ -476,7 +560,93 @@ describe('TrackerService', () => {
       });
 
       // Should not throw
-      await expect(service.analyzePlan(dtoMultiQuery)).resolves.toBeDefined();
+      const result = await service.analyzePlan(dtoMultiQuery);
+      expect(result).toBeDefined();
+
+      // The collection outcome must explain exactly which query failed and why,
+      // while recording post counts for the successful ones.
+      expect(result.collectionOutcome.totalQueries).toBe(3);
+      expect(result.collectionOutcome.successfulQueries).toBe(2);
+      expect(result.collectionOutcome.failedQueries).toBe(1);
+      expect(result.collectionOutcome.selectedPostCount).toBe(result.posts.length);
+      expect(result.collectionOutcome.queryOutcomes).toEqual([
+        { query: 'react ok', success: true, postCount: 1 },
+        { query: 'query-fail', success: false, postCount: 0, error: 'Network error' },
+        { query: 'react ok 2', success: true, postCount: 1 },
+      ]);
+    });
+
+    it('returns a collection outcome with all queries successful on a clean run', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+      decodoService.searchReddit
+        .mockResolvedValueOnce([makePost('s1', 10, 'reactjs', onTopicTitle)])
+        .mockResolvedValueOnce([makePost('s2', 20, 'reactjs', 'react performance tips guide')]);
+      decodoService.scrapePost.mockResolvedValue({
+        ...makePost('s1', 10, 'reactjs', onTopicTitle),
+        comments: [],
+      });
+
+      const dto: AnalyzePlanDto = {
+        ...baseDto,
+        queries: ['react performance tips', 'react performance tips guide'],
+      };
+
+      const result = await service.analyzePlan(dto);
+
+      expect(result.collectionOutcome.failedQueries).toBe(0);
+      expect(result.collectionOutcome.successfulQueries).toBe(2);
+      expect(result.collectionOutcome.totalQueries).toBe(2);
+      expect(result.collectionOutcome.queryOutcomes.every((q) => q.success)).toBe(true);
+      expect(result.collectionOutcome.queryOutcomes.every((q) => q.error === undefined)).toBe(true);
+      expect(result.collectionOutcome.selectedPostCount).toBe(result.posts.length);
+    });
+
+    it('persists the collection outcome via QueriesService.create', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+      decodoService.searchReddit.mockResolvedValue([makePost('s1', 10, 'reactjs', onTopicTitle)]);
+
+      const result = await service.analyzePlan(baseDto);
+
+      expect(queriesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          collectionOutcome: result.collectionOutcome,
+        }),
+      );
+    });
+
+    it('records a failed comment deep-dive on the post without dropping it', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+      const post = makePost('s1', 10, 'reactjs', onTopicTitle);
+      decodoService.searchReddit.mockResolvedValue([post]);
+      decodoService.scrapePost.mockRejectedValue(new Error('Comments unavailable'));
+
+      const result = await service.analyzePlan(baseDto);
+
+      // Post stays selected...
+      expect(result.posts).toHaveLength(1);
+      expect(result.posts[0].id).toBe('s1');
+      // ...but the failed comment fetch is visible on its outcome, not swallowed.
+      expect(result.posts[0].commentCollectionStatus).toEqual({
+        commentsFetched: false,
+        error: 'Comments unavailable',
+      });
+      // The persisted copy carries the status too.
+      const persistedPosts = queriesService.create.mock.calls[0][0].posts;
+      expect(persistedPosts[0].commentCollectionStatus).toEqual({
+        commentsFetched: false,
+        error: 'Comments unavailable',
+      });
+    });
+
+    it('marks comment deep-dive as fetched when the comment scrape succeeds', async () => {
+      llmService.parseJsonResponse.mockReturnValue(mockReport);
+      const post = makePost('s1', 10, 'reactjs', onTopicTitle);
+      decodoService.searchReddit.mockResolvedValue([post]);
+      decodoService.scrapePost.mockResolvedValue({ ...post, comments: [] });
+
+      const result = await service.analyzePlan(baseDto);
+
+      expect(result.posts[0].commentCollectionStatus).toEqual({ commentsFetched: true });
     });
   });
 

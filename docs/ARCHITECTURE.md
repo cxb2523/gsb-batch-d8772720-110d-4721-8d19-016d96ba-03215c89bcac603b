@@ -51,12 +51,13 @@ External APIs:
 ### POST /tracker/analyze
 1. `TrackerController` receives confirmed plan `{ prompt, subreddits[], queries[], timeRange }`
 2. `TrackerService.analyzePlan()`:
-   a. **Parallel search** — site-wide Reddit search queries via `universal` target (no subreddit hot-feed scraping)
+   a. **Parallel search** — site-wide Reddit search queries via `universal` target (no subreddit hot-feed scraping). Repeated query text is executed once and empty strings are discarded.
    b. **Dedup & rank** — keep only on-topic posts (topic terms from queries + proper nouns), sort by relevance × upvotes, cap at 30
-   c. **Deep dive** — fetch full comment threads for top 8 posts via Reddit `.json` endpoints with the `universal` target (concurrent)
+   c. **Deep dive** — fetch full comment threads for top 8 posts via Reddit `.json` endpoints with the `universal` target (concurrent). A failed comment scrape never drops the post; its `commentCollectionStatus` records the failure.
    d. **LLM summarization** — send all content to LLM with `SUMMARIZATION_PROMPT`
-   e. **Persist** — save full result to MongoDB via `QueriesService`
-3. Response: `{ id, plan, posts[], report }`
+   e. **Persist** — save full result to MongoDB via `QueriesService`, including the `collectionOutcome`
+3. Response: `{ id, plan, posts[], report, collectionOutcome }`
+4. **Collection outcome** — per-query records (`query`, `success`, `postCount`, `error?`) plus roll-up totals (`totalQueries`, `successfulQueries`, `failedQueries`, `selectedPostCount`). Single-query failures don't abort the run; all-failure still throws 429 (rate limit) or 502 (unavailable); all-success-with-zero-posts still throws 404. The same outcome is persisted with history and rendered by `CollectionOutcomePanel` on the report and history detail pages.
 
 ---
 
