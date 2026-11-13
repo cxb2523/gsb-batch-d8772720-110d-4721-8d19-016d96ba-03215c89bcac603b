@@ -3,6 +3,8 @@ no key. Run: python3 tests/test_rss.py (or pytest tests/test_rss.py)."""
 import os
 import sys
 
+import requests
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
@@ -43,6 +45,44 @@ def test_new_video_ids_all_known_returns_empty(monkeypatch):
     fresh = rss.new_video_ids("UCabc0000000000000000001",
                               known_ids={"vidOLD000000", "vidNEW111111", "vidNEW222222"})
     assert fresh == []
+
+
+# --------------------------------------- strict parsing / error classification
+
+def test_parse_feed_strict_parses_valid_feed_same_as_lenient_parser():
+    xml_text = _read_fixture()
+    assert rss.parse_feed_strict(xml_text) == rss.parse_feed(xml_text)
+
+
+def test_parse_feed_strict_raises_on_empty_and_malformed_bodies():
+    for bad in ("", "   ", "not xml at all", "<feed><entry><yt:videoId>broken"):
+        try:
+            rss.parse_feed_strict(bad)
+        except rss.FeedParseError:
+            pass
+        else:
+            raise AssertionError(f"FeedParseError expected for {bad!r}")
+
+
+def test_parse_feed_strict_accepts_well_formed_feed_without_entries():
+    # a valid empty feed is a legitimate result, not a parse failure
+    assert rss.parse_feed_strict(
+        '<feed xmlns="http://www.w3.org/2005/Atom"></feed>') == []
+
+
+def test_classify_error_distinguishes_network_from_xml_parse():
+    assert rss.classify_error(rss.FeedParseError("malformed XML: boom")) == "xml_parse"
+    assert rss.classify_error(requests.exceptions.ConnectionError("dns")) == "network"
+    assert rss.classify_error(requests.exceptions.HTTPError("503")) == "network"
+    assert rss.classify_error(requests.exceptions.Timeout("slow")) == "network"
+    assert rss.classify_error(RuntimeError("something else")) == "unknown"
+
+
+def test_error_summary_is_one_limited_line():
+    s = rss.error_summary(requests.exceptions.HTTPError("503 Server Error"))
+    assert s == "HTTPError: 503 Server Error"
+    assert rss.error_summary(RuntimeError("")) == "RuntimeError"
+    assert len(rss.error_summary(RuntimeError("x" * 500), limit=10)) <= 30
 
 
 def _run_all():

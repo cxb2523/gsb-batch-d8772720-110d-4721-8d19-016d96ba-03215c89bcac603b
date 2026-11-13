@@ -399,8 +399,32 @@ def collect_channel(api_key: str, channel_ref: str, max_videos: int = 100,
 
 # --------------------------------------------- discover_new_videos_via_rss
 
+# Per-channel outcomes. Stored as plain strings (not an enum) so result
+# dicts serialize to JSON for the worker log / API without a custom encoder.
+RSS_OUTCOME_NO_NEW = "no_new_videos"
+RSS_OUTCOME_NEW = "new_videos"
+RSS_OUTCOME_FAILED = "failed"
+RSS_OUTCOME_SKIPPED = "skipped_limit"
+
+
+def _rss_result(channel_id: str, outcome: str, new_count: int = 0,
+                error_type: str = None, error: str = None) -> dict:
+    """One row of the per-channel breakdown returned by
+    discover_new_videos_via_rss(). Kept small and flat on purpose: the worker
+    logs these dicts and operators re-run failures off `channel_id`."""
+    row = {
+        "channel_id": channel_id,
+        "outcome": outcome,
+        "new_videos": new_count,
+        "error_type": error_type,
+        "error": error,
+    }
+    return row
+
+
 def discover_new_videos_via_rss(api_key: str, channel_ids=None, max_new_per_channel: int = 15,
-                                max_total: int = 300, embed: bool = False) -> dict:
+                                max_total: int = 300, embed: bool = False,
+                                retry_channel_ids=None) -> dict:
     """Cheapest possible way to notice a tracked channel's new upload.
 
     YouTube's per-channel RSS feed (rss.fetch_channel_feed) costs no API key
@@ -413,39 +437,98 @@ def discover_new_videos_via_rss(api_key: str, channel_ids=None, max_new_per_chan
     last check will have some new videos missed here -- that's an accepted
     trade-off; collect_channel's full playlist walk remains the way to
     backfill a channel from scratch or catch up after a long gap.
+
+    Targeting:
+      * retry_channel_ids empty/None and channel_ids unset -> every ACTIVE
+        tracked channel, the original behaviour (an empty retry list is
+        deliberately treated as "nothing to retry": full scan);
+      * retry_channel_ids=[...] -> ONLY those channels are checked, even
+        inactive/untracked ones, and the tracked-channel scan is skipped.
+        Pass the channel ids whose previous outcome was "failed" to re-run
+        just them;
+      * an explicit channel_ids list keeps working as before (explicit list
+        wins when no non-empty retry list is given).
+
+    Every inspected channel gets its own row in `channel_results` with one of
+    four outcomes: new_videos / no_new_videos / failed / skipped_limit. A
+    failure of one channel (network/HTTP vs XML parse are distinguished in
+    error_type) never interrupts the round. When max_total is reached, every
+    channel not yet inspected is marked skipped_limit -- never failed -- and
+    the ids already discovered are still stored in one videos.list batch.
+    `new_videos` in a row counts the ids actually queued for storage after
+    both per-channel and total caps, so sum(row.new_videos) always equals
+    new_videos_found.
     """
     import infrastructure.youtube.rss as rss
 
     conn = db.get_conn()
-    if channel_ids:
+    if retry_channel_ids:
+        ids = list(dict.fromkeys(retry_channel_ids))
+        retry_only = True
+    elif channel_ids:
         ids = list(dict.fromkeys(channel_ids))
+        retry_only = False
     else:
         ids = [r["channel_id"] for r in conn.execute(
             "SELECT DISTINCT channel_id FROM tracked_channels WHERE active=1").fetchall()]
+        retry_only = False
 
-    channels_checked, channels_failed = 0, 0
+    channels_failed = 0
+    channels_skipped = 0
     all_new_ids = []
     per_channel_new = {}
+    channel_results = []
     for channel_id in ids:
+        # Hard cap: everything past it is skipped, not failed, so a rerun of
+        # the skipped ids (or a bigger max_total) can pick them up later.
+        if len(all_new_ids) >= max_total:
+            channels_skipped += 1
+            channel_results.append(_rss_result(channel_id, RSS_OUTCOME_SKIPPED))
+            continue
+
         known = {r["video_id"] for r in conn.execute(
             "SELECT video_id FROM videos WHERE channel_id=?", (channel_id,)).fetchall()}
         try:
-            fresh = rss.new_video_ids(channel_id, known)
-        except Exception:
+            xml_text = rss.fetch_channel_feed(channel_id)
+            entries = rss.parse_feed_strict(xml_text)
+        except Exception as e:
+            # One channel's feed being down or malformed must not abort the
+            # whole round; network/HTTP and XML parse get distinct tags so
+            # the caller can decide what is worth an immediate retry.
             channels_failed += 1
+            channel_results.append(_rss_result(
+                channel_id, RSS_OUTCOME_FAILED,
+                error_type=rss.classify_error(e), error=rss.error_summary(e)))
             continue
-        channels_checked += 1
+
+        fresh = list(reversed(
+            [e["videoId"] for e in entries if e["videoId"] not in known]))
+        # Respect both caps: per-channel window and the round total.
+        room = max_total - len(all_new_ids)
         fresh = fresh[:max_new_per_channel]
+        if room < len(fresh):
+            fresh = fresh[:max(0, room)]
         if fresh:
             per_channel_new[channel_id] = fresh
             all_new_ids.extend(fresh)
-        if len(all_new_ids) >= max_total:
-            break
+            channel_results.append(_rss_result(channel_id, RSS_OUTCOME_NEW, len(fresh)))
+        else:
+            channel_results.append(_rss_result(channel_id, RSS_OUTCOME_NO_NEW, 0))
     conn.close()
 
     all_new_ids = all_new_ids[:max_total]
+    channels_checked = sum(
+        1 for r in channel_results if r["outcome"] in (RSS_OUTCOME_NEW, RSS_OUTCOME_NO_NEW))
+    summary_tail = {
+        "channels_checked": channels_checked,
+        "channels_failed": channels_failed,
+        "channels_skipped": channels_skipped,
+        "channels_with_new_videos": len(per_channel_new),
+        "channel_results": channel_results,
+        "retry_only": retry_only,
+    }
     if not all_new_ids:
-        return {"channels_checked": channels_checked, "channels_failed": channels_failed,
+        return {**summary_tail,
                 "new_videos_found": 0, "videos_stored": 0,
                 "quota": {"units_from_shared_pool": 0, "search_calls": 0}}
 
@@ -456,8 +539,7 @@ def discover_new_videos_via_rss(api_key: str, channel_ids=None, max_new_per_chan
     conn.commit()
     conn.close()
     return {
-        "channels_checked": channels_checked, "channels_failed": channels_failed,
-        "channels_with_new_videos": len(per_channel_new),
+        **summary_tail,
         "new_videos_found": len(all_new_ids), "videos_stored": stored,
         "quota": {"units_from_shared_pool": (len(all_new_ids) + 49) // 50, "search_calls": 0},
         "note": "RSS itself is free; the units above are only the videos.list "

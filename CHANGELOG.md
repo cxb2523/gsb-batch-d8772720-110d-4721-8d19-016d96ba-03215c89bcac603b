@@ -61,6 +61,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **RSS novelty probing reports a per-channel outcome.**
+  `collecting.discover_new_videos_via_rss` now returns `channel_results`, one
+  row per inspected channel with `channel_id`, `outcome`
+  (`new_videos` / `no_new_videos` / `failed` / `skipped_limit`),
+  `new_videos`, and -- on failure -- `error_type` plus a one-line `error`
+  summary. `error_type` distinguishes `network` (DNS, timeout, connection and
+  HTTP errors) from `xml_parse` (empty or malformed Atom), via the new
+  `infrastructure.youtube.rss.FeedParseError`, `parse_feed_strict`,
+  `classify_error` and `error_summary`; the lenient `parse_feed` keeps its
+  old contract. A new `retry_channel_ids` argument restricts a round to the
+  given channels (an empty list keeps the full active-tracked-channel scan),
+  so failed channels can be re-run alone. When `max_total` is reached the
+  unprocessed channels are marked `skipped_limit`, never failed; ids already
+  discovered still go into the single `videos.list` batch. One channel's
+  exception never aborts the round. The previous summary fields
+  (`channels_checked`, `channels_failed`, `new_videos_found`,
+  `videos_stored`, `quota`, ...) are unchanged; `channels_skipped` and
+  `retry_only` are added.
+
 - **The digest goes out at `DIGEST_HOUR` of each recipient's own time**
   (P2-03), once per local day: the mark in `meta` is now the UTC moment of
   the last send, counted for its local date in the zone in force, so
