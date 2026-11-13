@@ -17,6 +17,7 @@ Complete reference for the `glens` package (PyPI: `chrome-lens-search`). For con
 - [`status()`](#status)
 - [`LensResult`](#lensresult)
 - [`Match`](#match)
+- [`Provenance`](#provenance)
 - [`glens.driver.build_driver()`](#glensdriverbuild_driver)
 - [`glens.driver.wait_for_document_ready()`](#glensdriverwait_for_document_ready)
 - [Environment variables](#environment-variables)
@@ -38,10 +39,11 @@ glens.warmup        # mint/refresh the session jar (needs [browser])
 glens.status        # health check: is the fast path ready?
 glens.LensResult    # result dataclass
 glens.Match         # one result link
+glens.Provenance    # where a result came from (req / browser / cache)
 glens.__version__   # str, e.g. "0.1.0"
 ```
 
-`__all__` is `["search", "search_many", "warmup", "status", "LensResult", "Match"]`.
+`__all__` is `["search", "search_many", "warmup", "status", "LensResult", "Match", "Provenance"]`.
 
 Importing `glens` requires only `requests`; it does **not** import `selenium`/`undetected-chromedriver`.
 
@@ -245,6 +247,7 @@ class LensResult:
     matches: list[Match]
     raw_anchors: list[dict] = field(default_factory=list)
     results_url: str | None = None
+    provenance: Provenance | None = None
 ```
 
 The outcome of one Lens pass.
@@ -258,6 +261,7 @@ The outcome of one Lens pass.
 | `matches` | `list[Match]` | External merchant/result links, deduped by `(domain, title)`, external-only, in Google's order. Capped at `max_matches`. |
 | `raw_anchors` | `list[dict]` | Every harvested anchor, unfiltered: each is `{"href": str, "text": str}`. |
 | `results_url` | `str \| None` | The internal Google results URL the anchors came from (has `udm=26`). **Session-bound** — it carries a `vsrid`/`gsessionid` tied to the browser-minted session, so it only renders for a client replaying that session's cookies and is **not** reopenable in an ordinary browser. Use it for logging/telemetry, not sharing. |
+| `provenance` | `Provenance \| None` | Where this result came from (see [`Provenance`](#provenance)). Always set on results returned by `search()`; `None` only on a `LensResult` you constructed yourself. A failed lookup returns `None` instead of a result, so it carries no provenance. |
 
 ### Methods
 
@@ -265,7 +269,7 @@ The outcome of one Lens pass.
 
 **`__str__(self) -> str`** — a short human summary: the top title plus up to the first 5 matches, with an "… and N more" line. Used by `print(result)`.
 
-**`to_dict(self, *, raw_anchors: bool = False) -> dict`** — a JSON-ready dict of built-in types. Excludes `raw_anchors` by default (it's large); pass `raw_anchors=True` to include it. Nested `Match` objects become dicts.
+**`to_dict(self, *, raw_anchors: bool = False) -> dict`** — a JSON-ready dict of built-in types. Excludes `raw_anchors` by default (it's large); pass `raw_anchors=True` to include it. Nested `Match` and `Provenance` objects become dicts.
 
 ```python
 r = glens.search("s.jpg")
@@ -296,6 +300,32 @@ One external product/result link harvested from the Lens page.
 | `title` | `str` | Cleaned link text / product name (marketplace prefixes, ratings, and UI cruft stripped; truncated to 200 chars). |
 | `url` | `str` | The external URL (Google redirect wrappers unwrapped). |
 | `domain` | `str` | Netloc, lowercased, `www.` stripped. |
+
+---
+
+## `Provenance`
+
+```python
+@dataclass
+class Provenance:
+    source: str
+    browser_fallback: bool = False
+    fallback_reason: str | None = None
+    external_anchors: int = 0
+    rendered: bool = False
+```
+
+Where one `LensResult` came from, so a caller can judge how much to trust it. Attached to every result `search()` returns as `result.provenance`; a failed lookup (`None`) carries no provenance.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | `str` | `"req"` (harvested over plain HTTP), `"browser"` (a real Chrome pass rendered the page), or `"cache"` (a local result-cache hit — no network or browser was involved, and the anchors may be up to `GLENS_CACHE_TTL` old). |
+| `browser_fallback` | `bool` | `True` when an `"auto"` lookup had to leave the req fast path for the browser. An explicit `backend="browser"` run is **not** a fallback. |
+| `fallback_reason` | `str \| None` | Why the req path came back empty, when `browser_fallback` is set: `"no_cookie_jar"`, `"no_results_url"`, `"js_gate"`, `"degraded_page"`, `"http_error"`, or `"transport_error"`. |
+| `external_anchors` | `int` | How many harvested anchors leave Google (the merchant/result links). |
+| `rendered` | `bool` | Whether the harvest met the "fully rendered page" threshold (10 anchors). Below it, the page was likely a degraded shell or gated response. |
+
+All fields are JSON-safe built-in types, so `to_dict()` and the CLI's `--json` serialize provenance as-is.
 
 ---
 

@@ -130,13 +130,27 @@ class LensResult:
     matches: list[Match]       # external merchant/result links
     raw_anchors: list[dict]    # every anchor harvested, unfiltered
     results_url: str | None    # internal, session-bound Google URL (logging only; not browser-openable)
+    provenance: Provenance | None  # where this result came from (see below)
 
 @dataclass
 class Match:
     title: str
     url: str
     domain: str
+
+@dataclass
+class Provenance:
+    source: str                 # "req" (plain HTTP) | "browser" (Chrome) | "cache" (local cache hit)
+    browser_fallback: bool      # an "auto" lookup had to leave the req fast path for the browser
+    fallback_reason: str | None # "no_cookie_jar" | "no_results_url" | "js_gate" | "degraded_page" | "http_error" | "transport_error"
+    external_anchors: int       # harvested anchors that leave Google (the merchant links)
+    rendered: bool              # harvest met the 10-anchor "fully rendered page" threshold
 ```
+
+`provenance` tells you how much to trust a result: a `cache` hit never touched the
+network (anchors may be up to `GLENS_CACHE_TTL` old), a `browser_fallback` means the
+fast path failed and Chrome had to step in, and `rendered=False` means the page
+looked like a degraded shell. A failed lookup (`None`) carries no provenance.
 
 `titles` are frequency-ranked: the *exact* product repeats across tiles, so it rises to the top on its own.
 

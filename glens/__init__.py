@@ -16,7 +16,8 @@ The README covers how the two backends (fast ``req``, self-healing ``browser``)
 fit together.
 """
 
-from .lens import LensResult, Match, search, search_many, status, warmup
+from .lens import LensResult, Match, Provenance, search, search_many, status, warmup
 
-__all__ = ["search", "search_many", "warmup", "status", "LensResult", "Match"]
+__all__ = ["search", "search_many", "warmup", "status", "LensResult", "Match",
+           "Provenance"]
 __version__ = "0.1.0"

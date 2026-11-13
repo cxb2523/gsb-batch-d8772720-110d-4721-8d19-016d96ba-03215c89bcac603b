@@ -4,6 +4,7 @@ Notable changes to chrome-lens-search.
 
 ## Unreleased
 
+- Added: every successful `search()` result now carries a `provenance` record (`LensResult.provenance`, a new exported `Provenance` dataclass) so callers can judge how much to trust it: `source` distinguishes `req` (plain HTTP), `browser` (a real Chrome pass) and `cache` (a local cache hit — no network or browser involved); `browser_fallback`/`fallback_reason` record whether an `auto` lookup had to leave the req fast path for the browser and why (`no_cookie_jar`, `no_results_url`, `js_gate`, `degraded_page`, `http_error`, `transport_error`); `external_anchors` counts the harvested anchors that leave Google and `rendered` marks whether the harvest met the existing 10-anchor "rendered page" threshold. `to_dict()` and the CLI's `--json` serialize it as JSON-safe built-in types; `--raw` behaviour is unchanged, and a failed lookup (`None`) carries no provenance.
 - Fixed: HTML anchor parsing preserves apostrophes, quotes and `>` inside labels, supports unquoted attributes and image-alt fallbacks, and ignores links inside comments or scripts. Merchant URLs are read from `href` rather than similarly named attributes such as `data-href`.
 - Fixed: malformed result-cache entries are treated as misses instead of crashing a lookup or returning invalid result fields. Non-finite cache timestamps no longer bypass expiry checks.
 - Fixed: malformed cookie jars are rejected before constructing an HTTP session, so health checks no longer report unusable jars as ready and searches can fall back to the browser.

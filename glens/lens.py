@@ -167,6 +167,38 @@ class Match:
 
 
 @dataclass
+class Provenance:
+    """Where one ``LensResult`` came from, so a caller can judge how much to
+    trust it instead of guessing from a bare result.
+
+    ``source`` is one of:
+
+      req      harvested from the server-rendered HTML over plain HTTP;
+      browser  a real Chrome pass rendered the page (slower, and it also
+               re-minted the cookie jar);
+      cache    a local result-cache hit -- no network or browser was involved
+               at all, so the anchors may be up to ``GLENS_CACHE_TTL`` old.
+
+    ``browser_fallback`` is True when an ``auto`` lookup had to leave the req
+    fast path for the browser, with ``fallback_reason`` saying why:
+    "no_cookie_jar", "no_results_url", "js_gate", "degraded_page",
+    "http_error" or "transport_error". An explicit ``backend="browser"`` run
+    is not a fallback.
+
+    ``external_anchors`` counts the harvested anchors that leave Google (the
+    merchant/result links), and ``rendered`` marks whether the harvest met the
+    existing "rendered page" threshold (``_MIN_RENDERED_ANCHORS`` anchors).
+    Below it the page was likely a degraded shell or a gated response, so the
+    result deserves extra suspicion downstream.
+    """
+    source: str
+    browser_fallback: bool = False
+    fallback_reason: str | None = None
+    external_anchors: int = 0
+    rendered: bool = False
+
+
+@dataclass
 class LensResult:
     """The outcome of one Lens pass.
 
@@ -177,13 +209,17 @@ class LensResult:
     Google results URL the anchors came from; it's tied to the browser-minted
     session (it carries a ``vsrid``/``gsessionid``), so it only renders for a
     client replaying that session's cookies. You can't reopen it in a normal
-    browser, so keep it for logging, not for sharing.
+    browser, so keep it for logging, not for sharing. ``provenance`` records
+    which path produced this result (req / browser / cache), whether a browser
+    fallback happened and why, and whether the anchor harvest looked like a
+    fully rendered page.
     """
     top_title: str | None
     titles: list[str]
     matches: list[Match]
     raw_anchors: list[dict] = field(default_factory=list)
     results_url: str | None = None
+    provenance: Provenance | None = None
 
     def __bool__(self) -> bool:
         return bool(self.matches or self.titles)
@@ -789,6 +825,31 @@ def _parse_anchors_from_html(html: str) -> list[dict]:
     return parser.items
 
 
+# Why the req fast path came back empty (Provenance.fallback_reason values).
+_REQ_FAIL_NO_JAR = "no_cookie_jar"
+_REQ_FAIL_NO_RESULTS_URL = "no_results_url"
+_REQ_FAIL_JS_GATE = "js_gate"
+_REQ_FAIL_DEGRADED = "degraded_page"
+_REQ_FAIL_HTTP_ERROR = "http_error"
+_REQ_FAIL_TRANSPORT = "transport_error"
+
+
+class _ReqOutcome(tuple):
+    """``(items, results_url)`` from the req backend, plus *why* it came back empty.
+
+    Unpacks exactly like the plain 2-tuple the req backend always returned, so
+    existing callers (and monkeypatched fakes) are unaffected; the fallback
+    reason rides along as an attribute for search()'s provenance reporting.
+    """
+
+    def __new__(cls, items, results_url, reason: str | None = None):
+        return super().__new__(cls, (items, results_url))
+
+    def __init__(self, items, results_url, reason: str | None = None):
+        super().__init__()
+        self.reason = reason
+
+
 def _search_via_requests(
     frame_bytes: bytes, cookie_file: Path,
     lang: str | None = None,
@@ -799,11 +860,13 @@ def _search_via_requests(
     when the caller should fall back to the browser (no jar, upload failed, or
     Google served the JS-gate shell, i.e. the jar went stale and a browser run has
     to re-mint it). Transient transport errors get one retry before we give up.
+    The return is a ``_ReqOutcome``, so the failure reason is available via
+    ``.reason`` without changing the 2-tuple unpacking contract.
     """
     jar = _load_cookie_jar(cookie_file)
     if jar is None:
         logger.info("glens req backend: no cookie jar yet; using the browser to mint one.")
-        return None, None
+        return _ReqOutcome(None, None, _REQ_FAIL_NO_JAR)
     session = _req_session(jar, lang=lang)
     last_exc: Exception | None = None
     # Bound before the loop: the HTTPError handler reports it, and the upload
@@ -825,7 +888,7 @@ def _search_via_requests(
             if not _looks_like_results_url(results_url):
                 logger.info("glens req upload didn't yield a results URL (%s); falling back.",
                             results_url[:120])
-                return None, None
+                return _ReqOutcome(None, None, _REQ_FAIL_NO_RESULTS_URL)
             html = resp.text
             items = _parse_anchors_from_html(html)
             external = [i for i in items if _is_external(i["href"])]
@@ -843,28 +906,30 @@ def _search_via_requests(
                 # external anchors means a gated/degraded page, so fall back and
                 # let the browser re-mint the jar.
                 if _JS_GATE_MARKER in html:
+                    reason = _REQ_FAIL_JS_GATE
                     logger.info("glens req backend: JS-gate shell served (stale/weak "
                                 "jar); falling back to the browser to re-mint it.")
                 else:
+                    reason = _REQ_FAIL_DEGRADED
                     logger.info("glens req backend: only %d external anchor(s); "
                                 "falling back.", len(external))
-                return None, results_url
+                return _ReqOutcome(None, results_url, reason)
             logger.info("glens req backend: harvested %d anchor(s) without a browser.",
                         len(items))
-            return items, results_url
+            return _ReqOutcome(items, results_url)
         except requests.HTTPError as exc:
             # A hard status (403/429/...) is deterministic, not transient: retrying
             # re-uploads the image to an endpoint that just refused it. Fall back
             # now so the browser can re-mint the jar.
             logger.info("glens req backend: HTTP error (%s); falling back to the browser.", exc)
-            return None, results_url
+            return _ReqOutcome(None, results_url, _REQ_FAIL_HTTP_ERROR)
         except requests.RequestException as exc:
             last_exc = exc
             logger.info("glens req backend attempt %d/%d failed (%s).",
                         attempt, _REQ_ATTEMPTS, exc)
     logger.info("glens req backend gave up after %d attempts (%s); falling back to the browser.",
                 _REQ_ATTEMPTS, last_exc)
-    return None, None
+    return _ReqOutcome(None, None, _REQ_FAIL_TRANSPORT)
 
 
 def _dismiss_consent(driver) -> None:
@@ -1220,7 +1285,10 @@ def search(
 
     Returns a ``LensResult`` or ``None`` when the lookup fails. Never raises for
     ordinary network/parse failures; an unknown ``backend`` raises ``ValueError``
-    (that's a config bug, not a lookup failure).
+    (that's a config bug, not a lookup failure). A successful result carries a
+    ``provenance`` record (source req/browser/cache, browser-fallback flag and
+    reason, external-anchor count, rendered-page flag); a ``None`` result has
+    no provenance attached.
     """
     backend = (backend or "").strip().lower() or DEFAULT_BACKEND
     if backend not in _VALID_BACKENDS:
@@ -1253,6 +1321,9 @@ def search(
 
     items: list[dict] | None = None
     results_url: str | None = None
+    source: str | None = None
+    browser_fallback = False
+    fallback_reason: str | None = None
     cache_key = _cache_key(frame_bytes, lang) if use_cache else None
     if cache_key and backend != "browser":
         # An explicit browser run is also how the cookie jar gets re-minted;
@@ -1260,14 +1331,28 @@ def search(
         cached = _cache_read(cache_key, DEFAULT_CACHE_TTL)
         if cached is not None:
             items, results_url = cached
+            source = "cache"
 
     if items is None:
         with _lens_lock:
             if backend in ("auto", "req"):
-                items, results_url = _search_via_requests(frame_bytes, cookie_path, lang)
+                req_outcome = _search_via_requests(frame_bytes, cookie_path, lang)
+                items, results_url = req_outcome
+                if items is not None:
+                    source = "req"
+                else:
+                    # A monkeypatched req backend returns a plain tuple with no
+                    # reason attached; the real one always sets it on failure.
+                    fallback_reason = getattr(req_outcome, "reason", None)
             if items is None and backend in ("auto", "browser"):
                 items, results_url = _search_via_browser(frame_bytes, cookie_path, timeout,
                                                          driver_factory)
+                if items is not None:
+                    source = "browser"
+                    # Reaching the browser from "auto" means the req fast path
+                    # already failed: that's the fallback callers want flagged.
+                    # An explicit backend="browser" run is not a fallback.
+                    browser_fallback = backend == "auto"
         if items:
             # Before caching: the cache must hold real merchant URLs, never the
             # short-lived encrypted wrappers they arrived as.
@@ -1283,13 +1368,23 @@ def search(
     if not matches and not titles:
         return None
 
-    logger.info("glens: %d title(s), %d match(es)", len(titles), len(matches))
+    provenance = Provenance(
+        source=source or "req",  # items exist, so one of the paths above set it
+        browser_fallback=browser_fallback,
+        fallback_reason=fallback_reason if browser_fallback else None,
+        external_anchors=sum(1 for i in items if _is_external(i.get("href", ""))),
+        rendered=_looks_rendered(items),
+    )
+    logger.info("glens: %d title(s), %d match(es) [%s%s]", len(titles), len(matches),
+                provenance.source,
+                f", fallback: {fallback_reason}" if browser_fallback else "")
     return LensResult(
         top_title=titles[0] if titles else None,
         titles=titles,
         matches=matches,
         raw_anchors=items,
         results_url=results_url,
+        provenance=provenance,
     )
 
 
