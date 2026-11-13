@@ -1,0 +1,265 @@
+<?xml version="1.1" encoding="UTF-8"?>
+
+<!--
+ * See the NOTICE file distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this software; if not, write to the Free
+ * Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA, or see the FSF site: http://www.fsf.org.
+-->
+
+<xwikidoc version="1.6" reference="XWiki.InteractiveLinkVisualizer.WebHome" locale="">
+  <web>XWiki.InteractiveLinkVisualizer</web>
+  <name>WebHome</name>
+  <language/>
+  <defaultLanguage/>
+  <translation>0</translation>
+  <creator>xwiki:XWiki.Admin</creator>
+  <parent>XWiki.WebHome</parent>
+  <author>xwiki:XWiki.Admin</author>
+  <contentAuthor>xwiki:XWiki.Admin</contentAuthor>
+  <version>1.1</version>
+  <title>Interactive Link Visualizer</title>
+  <comment/>
+  <minorEdit>false</minorEdit>
+  <syntaxId>xwiki/2.1</syntaxId>
+  <hidden>true</hidden>
+  <content>{{velocity output="false"}}
+#set ($discard = $xwiki.ssx.use('XWiki.InteractiveLinkVisualizer.Code.MainVisualisation'))
+#set ($discard = $xwiki.jsx.use('XWiki.InteractiveLinkVisualizer.Code.MainVisualisation'))
+{{/velocity}}
+
+{{include reference="Main.SolrSearchConfig" /}}
+
+{{include reference="Main.SolrSearchMacros" /}}
+
+{{velocity output="false"}}
+## XXX this is a literal copy of the Panels.Navigation code.
+## It might be better to include the code from that page instead, but the "include" macro does not support including object content
+#macro(exclusionsLikeNavigationPanel)
+  #set ($config = $xwiki.getDocument('PanelsCode.NavigationConfiguration'))
+  #set ($exclusions = $collectiontool.set)
+  #set ($defaultDocumentName = $services.model.getEntityReference('DOCUMENT', 'default').name)
+  ## Exclude top level extension pages.
+  #if ($config.getValue('excludeTopLevelExtensionPages') == 1)
+    #set ($query = $services.query.hql('select space.name from XWikiSpace space where space.parent is null'))
+    #set ($discard = $query.addFilter('hidden/space'))
+    #foreach ($result in $query.execute())
+      #set ($documentReference = $services.model.createDocumentReference($NULL, $result, $defaultDocumentName))
+      #set ($installedExtensions = $services.extension.xar.getInstalledExtensions($documentReference))
+      #if ($installedExtensions &amp;&amp; $installedExtensions.size() &gt; 0
+          &amp;&amp; !$services.extension.xar.isEditAllowed($documentReference))
+        #set ($discard = $exclusions.add("$services.model.escape($result, 'SPACE')"))
+      #end
+    #end
+  #end
+  ## Exclude top level application pages.
+  #if ($config.getValue('excludeTopLevelApplicationPages') == 1)
+    #set ($statement = 'select space.name '
+      + 'from XWikiSpace as space, Document as doc, doc.object(AppWithinMinutes.LiveTableClass) as app '
+      + 'where space.parent is null and doc.space = space.reference')
+    #set ($query = $services.query.xwql($statement).addFilter('hidden/space'))
+    #foreach ($result in $query.execute())
+      #set ($discard = $exclusions.add("$services.model.escape($result, 'SPACE')"))
+    #end
+  #end
+  ## Inclusions are treated as exceptions to the dynamic exclusion filters.
+  #if ($config.getValue('excludeTopLevelExtensionPages') == 1 || $config.getValue('excludeTopLevelApplicationPages') == 1)
+    ## FIXME: This panel is cached and the cache is not invalidated by default when an extension is installed or
+    ## uninstalled and neither when an application is created, deleted or renamed. Ideally we should invalidate the cache
+    ## whenever a top level page is created or modified but we can't do this ATM so the next best thing is to invalidate
+    ## the cache whenever a page (anywhere in the page hierarchy) is modified.
+    #set ($discard = $services.async.useEntity("wiki:$xcontext.database"))
+    #foreach ($inclusion in $config.getValue('inclusions'))
+      #set ($documentReference = $services.model.resolveDocument($inclusion))
+      ## Dynamic exclusion filters target only top level pages and thus inclusions, which are treated as exceptions to
+      ## those filters, should target also top level pages.
+      #set ($discard = $exclusions.remove("$services.model.serialize($documentReference.lastSpaceReference,
+        'local')"))
+    #end
+  #end
+  ## Other page exclusions.
+  #foreach ($exclusion in $config.getValue('exclusions'))
+    #set ($exclusionReference = $services.model.resolveDocument($exclusion))
+    #if ($exclusionReference.name == $defaultDocumentName)
+      #set ($exclusionReference = $exclusionReference.lastSpaceReference)
+    #end
+    #set ($discard = $exclusions.add($services.model.serialize($exclusionReference, 'local')))
+  #end
+#end
+## end literal copy of the Panels.Navigation code
+#set ($discard = $solrConfig.facetFields.remove('type'))
+#set ($discard = $solrConfig.filterQuery.add('type:DOCUMENT'))
+#set ($discard = $solrConfig.put('facetEnabled', false))
+#if (!$services.user.getProperties().displayHiddenDocuments())
+  #set ($discard = $solrConfig.filterQuery.add('hidden:false'))
+#end
+#if (! $xcontext.isMainWiki())
+  #set ($discard = $solrConfig.filterQuery.add("wiki:(${escapetool.Q}${services.wiki.getCurrentWikiId()}${escapetool.Q})"))
+#end
+#set ($allPagesEnabled = ("$!request.getParameter('allPages')" == 'true'))
+#if (!$allPagesEnabled)
+  #exclusionsLikeNavigationPanel
+  #foreach($exclusion in $exclusions)
+    ## XXX: here assume that we always have top level spaces, like 0:Sandbox.
+    #set ($spaceName = $exclusion)
+    #set ($solrFacet = "-space_facet:(${escapetool.getQ()}0/${spaceName}.${escapetool.getQ()})")
+    #set ($discard = $solrConfig.filterQuery.add($solrFacet))
+  #end
+#end
+## To return visualisation as search results
+#macro (displaySearchResults)
+{{html}}
+&lt;div id="top-bar"&gt;
+   &lt;div id="search"&gt;
+      &lt;i class="fa fa-search"&gt;&lt;/i&gt;
+      &lt;input
+         type="search"
+         id="search-input"
+         list="suggestions"
+         placeholder="$services.localization.render('intlv.topbar.search.placeholder')"
+         title="$services.localization.render('intlv.topbar.search.title')"&gt;
+      &lt;/input&gt;
+      &lt;datalist id="suggestions"&gt;&lt;/datalist&gt;
+   &lt;/div&gt;
+   &lt;div title="$services.localization.render('intlv.topbar.graphinfo.hint')" id="graph-info"&gt;
+      &lt;span id="node-count"&gt;&lt;/span&gt;
+      &lt;span id="edge-count"&gt;&lt;/span&gt;
+   &lt;/div&gt;
+&lt;/div&gt;
+&lt;div id="sigma-container" data-results="$escapetool.xml($jsontool.serialize($searchResponse.results))"&gt;
+&lt;div class="buttonwrapper" id="graph-buttons"&gt;
+   &lt;button class="icon-button" title="$services.localization.render('intlv.sigmacontainer.buttons.title.zoomin')
+" id="zoom-in"&gt;$services.icon.renderHTML('search-plus')&lt;/button&gt;
+   &lt;button class="icon-button" title="$services.localization.render('intlv.sigmacontainer.buttons.title.zoomout')
+" id="zoom-out"&gt;$services.icon.renderHTML('search-minus')&lt;/button&gt;
+   &lt;button class="icon-button" title="$services.localization.render('intlv.sigmacontainer.buttons.title.iterations')
+" id="iteration-button"&gt;$services.icon.renderHTML('refresh')&lt;/button&gt;
+   &lt;button class="icon-button" title="$services.localization.render('intlv.sigmacontainer.buttons.title.zoomdefault')
+" id="zoom-reset"&gt;$services.icon.renderHTML('world')&lt;/button&gt;
+   &lt;button class="icon-button" title="$services.localization.render('intlv.sigmacontainer.buttons.title.fullscreen')
+" id="view-fullscreen"&gt;$services.icon.renderHTML('arrows')&lt;/button&gt;
+   &lt;button class="icon-button hidden" title="$services.localization.render('intlv.sigmacontainer.buttons.title.killgraph')" id="kill-graph-button"&gt;$services.icon.renderHTML('delete')&lt;/button&gt;
+  &lt;/div&gt;
+&lt;/div&gt;
+{{/html}}
+#end
+
+## To get only the relevant field list (ridiculous performance improvement)
+#macro(setHighlightQuery $query)
+  #set ($discard = $query.bindValue('fl', 'title_, reference, links, wiki, name, spaces'))
+#end
+## For number of results input &amp; rows override
+
+#macro (displaySearchForm)
+ ## Override default no. of rows
+  #set ($rows = $numbertool.toNumber($request.rows).intValue())
+  #if ("$!rows" == '')
+    #set ($rows = 1000)
+  #end
+  ##
+  #set($void = $services.progress.startStep('#displaySearchForm'))
+  {{html clean="false"}}
+  &lt;form class="search-form row" action="$doc.getURL()" role="search"&gt;
+    &lt;div class="hidden"&gt;
+      &lt;input type="hidden" name="sort" value="$!escapetool.xml($sort)"/&gt;
+      &lt;input type="hidden" name="sortOrder" value="$!escapetool.xml($sortOrder)"/&gt;
+      &lt;input type="hidden" name="highlight" value="$highlightEnabled"/&gt;
+      &lt;input type="hidden" name="facet" value="$facetEnabled"/&gt;
+      ## The parameter used to determine if the request has been redirected with default search filters.
+      &lt;input type="hidden" name="r" value="$!escapetool.xml($request.r)"/&gt;
+      #if ("$!request.debug" != '')
+        &lt;input type="hidden" name="debug" value="$escapetool.xml($request.debug)"/&gt;
+      #end
+      ## Preserve the current facet values when submitting a new search query.
+      #foreach ($entry in $request.parameterMap.entrySet())
+        #if ($entry.key.startsWith('f_') || $entry.key.startsWith('l_'))
+          #foreach ($value in $entry.value)
+            &lt;input type="hidden" name="$escapetool.xml($entry.key)" value="$escapetool.xml($value)"/&gt;
+          #end
+        #end
+      #end
+&lt;/div&gt;
+&lt;div class="col-xs-12 col-sm-6"&gt;
+   &lt;div class="input-group"&gt;
+      &lt;input type="search" name="text" class="form-control withTip useTitleAsTip"
+       title="$services.localization.render('search.page.bar.query.title')" value="$escapetool.xml($text)"/&gt;
+      &lt;span class="input-group-btn"&gt;
+      &lt;button type="submit" class="btn btn-primary"&gt;
+      $services.icon.renderHTML('search')
+      &lt;span class="sr-only"&gt;$services.localization.render('search.page.bar.submit')&lt;/span&gt;
+      &lt;/button&gt;
+      &lt;/span&gt;
+   &lt;/div&gt;
+   &lt;div&gt;
+      &lt;label for="rows" style="margin-right: 2%;"&gt;$services.localization.render('intlv.sigmacontainer.form.label.documentfilter')
+&lt;/label&gt;
+      &lt;input id="rows" type="number" name="rows" title="$services.localization.render('intlv.sigmacontainer.form.title.documentfilter')"
+         placeholder="1000" value="$!escapetool.xml($request.rows)"/&gt;
+      &lt;span&gt;
+      &lt;button type="submit" id="refresh-button" class="btn btn-primary"&gt;
+      $services.icon.renderHTML('refresh')
+      &lt;/button&gt;
+      &lt;/span&gt;
+   &lt;/div&gt;
+&lt;/div&gt;
+&lt;/form&gt;
+
+  {{/html}}
+  #if ($text == '')
+    #set ($text = "*")
+  #end
+#end
+
+## To disable Highlighting Search Option
+## and also include an "all pages" toggle
+#macro (displaySearchResultsSort)
+  #set ($defaultSortOrder = $solrConfig.sortFields.get($type))
+  #if (!$defaultSortOrder)
+    #set ($defaultSortOrder = {'score': 'desc'})
+  #end
+  #set ($sortOrderSymbol = {
+    'asc': $services.icon.render('caret-up'),
+    'desc': $services.icon.render('caret-down')
+  })
+  (% class="search-options" %)
+  * {{translation key="solr.options"/}}
+  #if($facetEnabled)#extendQueryString($url {'facet': [false]})#else#extendQueryString($url {'facet': [true]})#end
+  * [[{{translation key="solr.options.facet"/}}&gt;&gt;path:${url}||class="options-item#if($facetEnabled) active#end" title="$services.localization.render('solr.options.facet.title')"]]
+  #if($allPagesEnabled)#extendQueryString($url {'allPages': [false]})#else#extendQueryString($url {'allPages': [true]})#end
+  * [[{{translation key="intlv.topbar.search.options.allPages"/}}&gt;&gt;path:${url}||class="options-item#if($allPagesEnabled) active#end" title="$services.localization.render('intlv.topbar.search.options.allPages.title')"]]
+
+  (% class="search-results-sort" %)
+  * {{translation key="solr.sortBy"/}}
+  #foreach ($entry in $defaultSortOrder.entrySet())
+    #set ($class = 'sort-item')
+    #set ($sortOrderIndicator = $NULL)
+    #set ($targetSortOrder = $entry.value)
+    #if ($sort == $entry.key)
+      #set ($class = "$class active")
+      #set ($sortOrderHint = $services.localization.render("solr.sortOrder.$sortOrder"))
+      #set ($sortOrderIndicator = "(% class=""sort-item-order"" title=""$sortOrderHint"" %)$sortOrderSymbol.get($sortOrder)(%%)")
+      #set ($targetSortOrder = "#if ($sortOrder == 'asc')desc#{else}asc#end")
+    #end
+    #extendQueryString($url {'sort': [$entry.key], 'sortOrder': [$targetSortOrder]})
+    * [[{{translation key="solr.sortBy.$entry.key"/}}$!sortOrderIndicator&gt;&gt;path:${url}||class="$class"]]
+  #end
+#end
+{{/velocity}}
+
+{{velocity}}
+#handleSolrSearchRequest
+{{/velocity}}</content>
+</xwikidoc>

@@ -1,0 +1,24 @@
+{
+  "name": "link-visualizer-api-webjar",
+  "version": "1.0",
+  "description": "The Webjar for the Link Visualizer Application's API responsible for the core visualization code",
+  "scripts": {
+    "exec": "node dist/visualisationAPI.js",
+    "build": "npx webpack --mode=production",
+    "build-maven": "node node/node_modules/npm/bin/npx-cli.js webpack --mode=production"
+  },
+  "author": "Rajat Khanduri",
+  "license": "ISC",
+  "dependencies": {
+    "graphology": "0.25.1",
+    "graphology-layout-forceatlas2": "0.10.1",
+    "sigma": "2.4.0"
+  },
+  "devDependencies": {
+    "kotatsu": "0.23.1",
+    "ts-loader": "9.4.4",
+    "typescript": "5.1.6",
+    "webpack": "^5.99.9",
+    "webpack-cli": "5.1.4"
+  }
+}
