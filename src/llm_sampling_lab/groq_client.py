@@ -4,6 +4,10 @@ import os
 from groq import Groq
 
 
+class EmptyResponseError(ValueError):
+    """Raised when a provider returns empty or whitespace-only text."""
+
+
 def create_groq_client() -> Groq:
     """Create a Groq client using the environment API key."""
 
@@ -48,8 +52,8 @@ def generate_response(
 
     content = response.choices[0].message.content
 
-    if not content:
-        raise ValueError(
+    if not content or not content.strip():
+        raise EmptyResponseError(
             "Groq returned an empty response."
         )
 

@@ -1,11 +1,13 @@
 
 import argparse
+import json
 import os
 import sys
 import tomllib
 
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any, Literal
 
 from groq import (
@@ -41,6 +43,8 @@ from llm_sampling_lab.groq_client import (
 from llm_sampling_lab.movie_reviews import (
     DEFAULT_MOVIE,
     DEFAULT_SCENARIOS,
+    MovieReviewResult,
+    STATUS_SUCCESS,
     run_movie_review_experiment,
 )
 
@@ -54,6 +58,7 @@ from llm_sampling_lab.providers.factory import (
 from llm_sampling_lab.results import (
     ExperimentRecorder,
     MovieReviewRecorder,
+    find_latest_movie_review_report,
 )
 
 from llm_sampling_lab.services.experiment_service import (
@@ -360,36 +365,62 @@ def run_top_p_cli(
     print(f"\nJSON Report: {recorder.file_path}")
 
 
-def run_movie_reviews_cli(
-    settings: dict[str, Any],
-) -> None:
-    """Run the existing Groq movie-review experiment."""
+def _is_resumable_movie_report(
+    path: Path | None,
+    model: str,
+    scenarios: Sequence[tuple[float, int]],
+    seed: int,
+) -> bool:
+    """Check that an existing report matches the current configuration."""
 
-    model = settings["groq"]["model"]
-
-    recorder = MovieReviewRecorder(
-        model=model,
-        movie=DEFAULT_MOVIE,
-        scenarios=DEFAULT_SCENARIOS,
-        seed=42,
-    )
+    if path is None:
+        return False
 
     try:
-        with create_groq_client() as client:
-            results = run_movie_review_experiment(
-                client=client,
-                model=model,
-                movie=DEFAULT_MOVIE,
-                scenarios=DEFAULT_SCENARIOS,
-                seed=42,
-                on_result=recorder.record,
-            )
+        with open(path, "r", encoding="utf-8") as stream:
+            report = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
 
-        recorder.complete()
+    if not isinstance(report, dict):
+        return False
 
-    except Exception as exc:
-        recorder.fail(exc)
-        raise
+    if report.get("experiment_type") != "movie_reviews":
+        return False
+
+    if report.get("model") != model:
+        return False
+
+    if report.get("movie") != {
+        "title": DEFAULT_MOVIE.title,
+        "genre": DEFAULT_MOVIE.genre,
+        "description": DEFAULT_MOVIE.description,
+    }:
+        return False
+
+    parameters = report.get("parameters")
+
+    if not isinstance(parameters, dict):
+        return False
+
+    if parameters.get("seed") != seed:
+        return False
+
+    expected_scenarios = [
+        {
+            "temperature": temperature,
+            "local_top_k": top_k,
+        }
+        for temperature, top_k in scenarios
+    ]
+
+    return parameters.get("scenarios") == expected_scenarios
+
+
+def _display_movie_results(
+    results: Sequence[MovieReviewResult],
+) -> None:
+    """Print each scenario outcome, including failed ones."""
 
     for result in results:
         print("\n" + "=" * 60)
@@ -397,7 +428,16 @@ def run_movie_reviews_cli(
         print(f"Temperature: {result.temperature}")
         print(f"Local Top-k: {result.local_top_k}")
         print(f"Review Style: {result.review_style}")
+        print(f"Attempts: {result.attempts}")
+        print(f"Status: {result.status}")
         print("=" * 60)
+
+        if result.status != STATUS_SUCCESS:
+            print(
+                "Error: "
+                f"{result.error_type}: {result.error_message}"
+            )
+            continue
 
         print(result.review)
 
@@ -410,6 +450,100 @@ def run_movie_reviews_cli(
             print(
                 "\nValidation: Passed structural checks"
             )
+
+
+def run_movie_reviews_cli(
+    settings: dict[str, Any],
+) -> None:
+    """Run the resumable Groq movie-review experiment."""
+
+    model = settings["groq"]["model"]
+
+    # Resume the newest report when it belongs to the same model/movie
+    # configuration; otherwise start a fresh report.
+    resume_path = find_latest_movie_review_report()
+
+    recorder = MovieReviewRecorder(
+        model=model,
+        movie=DEFAULT_MOVIE,
+        scenarios=DEFAULT_SCENARIOS,
+        seed=42,
+        resume_path=(
+            resume_path
+            if _is_resumable_movie_report(
+                resume_path,
+                model=model,
+                scenarios=DEFAULT_SCENARIOS,
+                seed=42,
+            )
+            else None
+        ),
+    )
+
+    previous_results = recorder.resume_results()
+    pending = recorder.pending_scenarios()
+
+    if previous_results and not pending:
+        print(
+            "All scenarios already completed; "
+            "no API requests will be sent."
+        )
+        recorder.complete()
+        _display_movie_results(recorder.results)
+        print(f"\nJSON Report: {recorder.file_path}")
+        return
+
+    if previous_results:
+        reused_count = sum(
+            1
+            for item in previous_results
+            if item.status == STATUS_SUCCESS
+        )
+
+        print(f"Resuming report: {recorder.file_path}")
+        print(
+            f"Reusing {reused_count} successful scenario(s); "
+            f"retrying {len(pending)} pending scenario(s)."
+        )
+
+    try:
+        with create_groq_client() as client:
+            results = run_movie_review_experiment(
+                client=client,
+                model=model,
+                movie=DEFAULT_MOVIE,
+                scenarios=DEFAULT_SCENARIOS,
+                seed=42,
+                previous_results=previous_results,
+                on_result=recorder.record,
+            )
+
+        recorder.complete()
+
+    except Exception as exc:
+        recorder.fail(exc)
+        raise
+
+    _display_movie_results(results)
+
+    failed = [
+        item
+        for item in results
+        if item.status != STATUS_SUCCESS
+    ]
+
+    if failed:
+        print(
+            "\nFailed scenarios: "
+            + ", ".join(
+                str(item.scenario)
+                for item in failed
+            )
+        )
+        print(
+            "Rerun the same command to retry only "
+            "the failed scenarios."
+        )
 
     print(f"\nJSON Report: {recorder.file_path}")
 

@@ -11,6 +11,9 @@ from collections.abc import Sequence
 from llm_sampling_lab.movie_reviews import (
     Movie,
     MovieReviewResult,
+    STATUS_FAILED,
+    STATUS_SUCCESS,
+    successful_results_by_scenario,
 )
 from llm_sampling_lab.experiments import SamplingResult
 
@@ -218,7 +221,12 @@ class ExperimentRecorder:
 
 
 class MovieReviewRecorder:
-    """Persist movie-review experiment results incrementally."""
+    """Persist movie-review experiment results incrementally.
+
+    A recorder can resume an existing report: previously successful
+    scenarios are loaded from disk and merged with newly attempted ones so
+    that a rerun never discards completed work.
+    """
 
     def __init__(
         self,
@@ -227,6 +235,7 @@ class MovieReviewRecorder:
         scenarios: Sequence[tuple[float, int]],
         seed: int,
         output_dir: str | Path = "results",
+        resume_path: str | Path | None = None,
     ) -> None:
 
         self.results: list[MovieReviewResult] = []
@@ -240,10 +249,6 @@ class MovieReviewRecorder:
         directory = Path(output_dir) / "movie_reviews"
         directory.mkdir(parents=True, exist_ok=True)
 
-        self.file_path = directory / (
-            f"{timestamp}_{experiment_id[:8]}.json"
-        )
-
         scenario_config = [
             {
                 "temperature": temperature,
@@ -251,6 +256,13 @@ class MovieReviewRecorder:
             }
             for temperature, top_k in scenarios
         ]
+
+        self.file_path = self._resolve_file_path(
+            directory=directory,
+            timestamp=timestamp,
+            experiment_id=experiment_id,
+            resume_path=resume_path,
+        )
 
         self.report = {
             "schema_version": 1,
@@ -272,43 +284,166 @@ class MovieReviewRecorder:
             "summary": {
                 "total_scenarios": len(scenario_config),
                 "completed_scenarios": 0,
+                "failed_scenarios": 0,
                 "validation_warning_count": 0,
             },
         }
 
+        if self.resumed:
+            self._restore_previous_results()
+
         self._save()
 
+    @staticmethod
+    def _resolve_file_path(
+        directory: Path,
+        timestamp: str,
+        experiment_id: str,
+        resume_path: str | Path | None,
+    ) -> Path:
+        """Reuse the resumed report path, otherwise create a new one."""
+
+        if resume_path is not None:
+            path = Path(resume_path)
+
+            if path.is_file():
+                return path
+
+        return directory / (
+            f"{timestamp}_{experiment_id[:8]}.json"
+        )
+
+    @property
+    def resumed(self) -> bool:
+        """Whether this recorder writes into a pre-existing report."""
+
+        return self.file_path.is_file()
+
+    def _restore_previous_results(self) -> None:
+        """Merge finished scenario entries from the resumed report.
+
+        Successful scenarios are kept as-is. Failed entries stay in the
+        report too but are replaced when they are retried, so no earlier
+        attempt data is silently dropped mid-run.
+        """
+
+        try:
+            with self.file_path.open(
+                "r",
+                encoding="utf-8",
+            ) as stream:
+                previous_report = json.load(stream)
+
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return
+
+        if not isinstance(previous_report, dict):
+            return
+
+        previous_results = previous_report.get("results")
+
+        if not isinstance(previous_results, list):
+            return
+
+        restored: list[MovieReviewResult] = []
+
+        for entry in previous_results:
+            result = _movie_review_result_from_dict(entry)
+
+            if result is not None:
+                restored.append(result)
+
+        self.results = restored
+
+        if previous_report.get("experiment_id"):
+            # Keep the original identity: the report file is being extended.
+            self.report["experiment_id"] = previous_report[
+                "experiment_id"
+            ]
+
+        if previous_report.get("started_at_utc"):
+            self.report["started_at_utc"] = previous_report[
+                "started_at_utc"
+            ]
+
+        self._refresh_results()
+
+    def resume_results(self) -> list[MovieReviewResult]:
+        """Return restored results, for reuse by the experiment runner."""
+
+        return list(self.results)
+
+    def pending_scenarios(self) -> list[int]:
+        """Scenario numbers still missing a successful result."""
+
+        successful = successful_results_by_scenario(self.results)
+
+        return [
+            index
+            for index in range(
+                1,
+                self.report["summary"]["total_scenarios"] + 1,
+            )
+            if index not in successful
+        ]
+
     def record(self, result: MovieReviewResult) -> None:
-        """Persist a completed scenario immediately."""
+        """Persist one scenario outcome immediately.
+
+        Failures are recorded too: the run continues with the remaining
+        scenarios and the report still reflects every attempt.
+        """
 
         if self.report["status"] != "running":
             raise RuntimeError(
                 "Cannot record results after experiment completion."
             )
 
-        expected_scenario = len(self.results) + 1
-
-        if result.scenario != expected_scenario:
+        if not 1 <= result.scenario <= (
+            self.report["summary"]["total_scenarios"]
+        ):
             raise ValueError(
-                "Movie review scenario sequence mismatch."
+                "Movie review scenario number is out of range."
             )
 
+        # Replace a stale entry for the same scenario, if any.
+        self.results = [
+            existing
+            for existing in self.results
+            if existing.scenario != result.scenario
+        ]
+
         self.results.append(result)
+        self.results.sort(key=lambda item: item.scenario)
+
+        self._refresh_results()
+
+        self._save()
+
+    def _refresh_results(self) -> None:
+        """Rebuild report results and summary from in-memory entries."""
 
         self.report["results"] = [
             asdict(item) for item in self.results
         ]
 
-        self.report["summary"]["completed_scenarios"] = (
-            len(self.results)
+        successful = [
+            item
+            for item in self.results
+            if item.status == STATUS_SUCCESS
+        ]
+
+        self.report["summary"]["completed_scenarios"] = len(successful)
+
+        self.report["summary"]["failed_scenarios"] = sum(
+            item.status == STATUS_FAILED
+            for item in self.results
         )
 
         self.report["summary"]["validation_warning_count"] = sum(
             bool(item.validation_issues)
-            for item in self.results
+            for item in successful
         )
-
-        self._save()
 
     def complete(self) -> None:
         """Mark a successful experiment as completed."""
@@ -333,3 +468,76 @@ class MovieReviewRecorder:
     def _save(self) -> None:
         """Write the JSON report using atomic replacement."""
         _write_json_atomically(self.file_path, self.report)
+
+
+def _movie_review_result_from_dict(
+    entry: object,
+) -> MovieReviewResult | None:
+    """Rebuild a result from a saved report entry."""
+
+    if not isinstance(entry, dict):
+        return None
+
+    try:
+        validation_issues = tuple(
+            str(issue)
+            for issue in entry.get("validation_issues") or ()
+        )
+
+        review = entry.get("review")
+
+        if not isinstance(review, str) or not review.strip():
+            review = None
+
+        status = entry.get("status")
+
+        if status not in (STATUS_SUCCESS, STATUS_FAILED):
+            status = STATUS_SUCCESS if review else STATUS_FAILED
+
+        if status == STATUS_SUCCESS and review is None:
+            return None
+
+        return MovieReviewResult(
+            scenario=int(entry["scenario"]),
+            temperature=float(entry["temperature"]),
+            local_top_k=int(entry["local_top_k"]),
+            review_style=str(entry["review_style"]),
+            review=review,
+            validation_issues=validation_issues,
+            attempts=int(entry.get("attempts") or 1),
+            status=status,
+            error_type=entry.get("error_type"),
+            error_message=entry.get("error_message"),
+        )
+
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def find_latest_movie_review_report(
+    output_dir: str | Path = "results",
+) -> Path | None:
+    """Return the newest movie-review report, or None when absent."""
+
+    directory = Path(output_dir) / "movie_reviews"
+
+    if not directory.is_dir():
+        return None
+
+    reports = [
+        path
+        for path in directory.glob("*.json")
+        if path.is_file()
+    ]
+
+    if not reports:
+        return None
+
+    return max(
+        reports,
+        key=lambda path: (
+            path.stat().st_mtime,
+            path.name,
+        ),
+    )
+

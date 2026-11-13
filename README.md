@@ -168,6 +168,8 @@ The experiment uses the fictional film **Son İstasyon**. Local Temperature and 
 
 Basic checks verify the film title and an 80–100-word length. These structural checks do **not** establish factual accuracy, fluency, or semantic adherence.
 
+Each scenario runs independently. Rate-limit and connection errors are retried with increasing backoff; once retries are exhausted, that scenario is recorded as failed and the remaining scenarios still run, so the final JSON report is always written. Empty or whitespace-only responses count as failures and never store a blank review. Rerunning the same command reuses the newest matching report, skips already successful scenarios without sending requests, and retries only failed or missing ones.
+
 ### Model and capability commands
 
 ~~~bash

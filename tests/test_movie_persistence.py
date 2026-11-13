@@ -76,7 +76,7 @@ def test_movie_reviews_partial_failure(
     tmp_path,
     mock_movie_client,
 ):
-    """An API failure must preserve earlier successful results."""
+    """A failed scenario is recorded while the run keeps going."""
 
     monkeypatch.chdir(tmp_path)
 
@@ -84,6 +84,8 @@ def test_movie_reviews_partial_failure(
         side_effect=[
             VALID_REVIEW,
             RuntimeError("Simulated API failure"),
+            VALID_REVIEW,
+            VALID_REVIEW,
         ]
     )
 
@@ -93,10 +95,9 @@ def test_movie_reviews_partial_failure(
         mock_generate,
     )
 
-    with pytest.raises(RuntimeError):
-        cli.run_movie_reviews_cli(
-            settings={"groq": {"model": "test-model"}},
-        )
+    cli.run_movie_reviews_cli(
+        settings={"groq": {"model": "test-model"}},
+    )
 
     reports = list(
         (tmp_path / "results" / "movie_reviews").glob(
@@ -110,10 +111,22 @@ def test_movie_reviews_partial_failure(
         reports[0].read_text(encoding="utf-8")
     )
 
-    assert data["status"] == "failed"
-    assert data["error_type"] == "RuntimeError"
-    assert len(data["results"]) == 1
-    assert data["summary"]["completed_scenarios"] == 1
+    # Every scenario was attempted, and the report was finalized.
+    assert mock_generate.call_count == 4
+    assert data["status"] == "completed"
+    assert data["error_type"] is None
+    assert len(data["results"]) == 4
+    assert data["summary"]["completed_scenarios"] == 3
+    assert data["summary"]["failed_scenarios"] == 1
+
+    failed = data["results"][1]
+
+    assert failed["scenario"] == 2
+    assert failed["status"] == "failed"
+    assert failed["error_type"] == "RuntimeError"
+    assert failed["error_message"] == "Simulated API failure"
+    assert failed["review"] is None
+    assert failed["attempts"] == 1
 
 
 def test_movie_reviews_cli_routing(monkeypatch, capsys):

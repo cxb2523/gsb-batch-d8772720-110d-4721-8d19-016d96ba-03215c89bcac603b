@@ -1,10 +1,19 @@
 
+import time
+
 from dataclasses import dataclass
 from typing import Sequence
 from collections.abc import Callable
-from groq import Groq
+from groq import (
+    APIConnectionError as GroqConnectionError,
+    Groq,
+    RateLimitError as GroqRateLimitError,
+)
 
-from llm_sampling_lab.groq_client import generate_response
+from llm_sampling_lab.groq_client import (
+    EmptyResponseError,
+    generate_response,
+)
 from llm_sampling_lab.sampling import (
     apply_temperature,
     apply_top_k,
@@ -28,6 +37,19 @@ DEFAULT_SCENARIOS = (
     (1.0, 3),
 )
 
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+
+STATUS_SUCCESS = "success"
+STATUS_FAILED = "failed"
+
+# Only transient provider failures are retried. Authentication errors,
+# invalid requests and empty responses fail the scenario immediately.
+RETRYABLE_ERROR_TYPES = (
+    GroqRateLimitError,
+    GroqConnectionError,
+)
+
 
 @dataclass(frozen=True)
 class Movie:
@@ -42,8 +64,12 @@ class MovieReviewResult:
     temperature: float
     local_top_k: int
     review_style: str
-    review: str
+    review: str | None
     validation_issues: tuple[str, ...]
+    attempts: int = 1
+    status: str = STATUS_SUCCESS
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 DEFAULT_MOVIE = Movie(
@@ -147,60 +173,212 @@ def validate_review(
     return tuple(issues)
 
 
+def is_retryable_error(error: BaseException) -> bool:
+    """Return True for transient rate-limit or connection errors."""
 
-def run_movie_review_experiment(
+    return isinstance(error, RETRYABLE_ERROR_TYPES)
+
+
+def retry_delay_seconds(
+    retry_number: int,
+    backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
+) -> float:
+    """Return an increasing (exponential) wait before the next attempt."""
+
+    if retry_number < 1:
+        raise ValueError("retry_number must be positive.")
+
+    return backoff_seconds * (2 ** (retry_number - 1))
+
+
+def _failure_result(
+    scenario: int,
+    temperature: float,
+    top_k: int,
+    style: str,
+    attempts: int,
+    error: BaseException,
+) -> MovieReviewResult:
+    """Build a failed scenario entry; it never carries review text."""
+
+    return MovieReviewResult(
+        scenario=scenario,
+        temperature=temperature,
+        local_top_k=top_k,
+        review_style=style,
+        review=None,
+        validation_issues=(),
+        attempts=attempts,
+        status=STATUS_FAILED,
+        error_type=type(error).__name__,
+        error_message=str(error),
+    )
+
+
+def run_movie_review_scenario(
     client: Groq,
     model: str,
-    movie: Movie = DEFAULT_MOVIE,
-    scenarios: Sequence[tuple[float, int]] = DEFAULT_SCENARIOS,
-    seed: int = 42,
-    on_result: Callable[[MovieReviewResult], None] | None = None,
-) -> list[MovieReviewResult]:
-    """Run movie-review scenarios using local sampling and Groq."""
+    movie: Movie,
+    scenario: int,
+    temperature: float,
+    top_k: int,
+    seed: int,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
+) -> MovieReviewResult:
+    """Run one scenario, retrying transient failures with backoff.
 
-    results: list[MovieReviewResult] = []
+    Provider errors never escape: they are captured in the returned result
+    so that later scenarios can still run.
+    """
 
-    for index, (temperature, top_k) in enumerate(
-        scenarios,
-        start=1,
-    ):
-        style = select_review_style(
-            temperature=temperature,
-            top_k=top_k,
-            seed=seed + index - 1,
-        )
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be a positive integer.")
 
-        prompt = build_review_prompt(
-            movie=movie,
-            review_style=style,
-        )
+    if retry_backoff_seconds < 0:
+        raise ValueError("retry_backoff_seconds cannot be negative.")
 
-        review = generate_response(
-            client=client,
-            model=model,
-            prompt=prompt,
-            temperature=temperature,
-            top_p=1.0,
-        )
+    style = select_review_style(
+        temperature=temperature,
+        top_k=top_k,
+        seed=seed,
+    )
+
+    prompt = build_review_prompt(
+        movie=movie,
+        review_style=style,
+    )
+
+    attempts = 0
+
+    while True:
+        attempts += 1
+
+        try:
+            review = generate_response(
+                client=client,
+                model=model,
+                prompt=prompt,
+                temperature=temperature,
+                top_p=1.0,
+            )
+
+            # Guard against providers or fakes that bypass the shared
+            # empty-response check: never persist a blank body.
+            if not isinstance(review, str) or not review.strip():
+                raise EmptyResponseError(
+                    "Groq returned an empty response."
+                )
+
+        except Exception as error:
+            if is_retryable_error(error) and attempts < max_attempts:
+                time.sleep(
+                    retry_delay_seconds(
+                        retry_number=attempts,
+                        backoff_seconds=retry_backoff_seconds,
+                    )
+                )
+                continue
+
+            return _failure_result(
+                scenario=scenario,
+                temperature=temperature,
+                top_k=top_k,
+                style=style,
+                attempts=attempts,
+                error=error,
+            )
 
         issues = validate_review(
             review=review,
             movie=movie,
         )
 
-        result = MovieReviewResult(
-            scenario=index,
+        return MovieReviewResult(
+            scenario=scenario,
             temperature=temperature,
             local_top_k=top_k,
             review_style=style,
             review=review,
             validation_issues=issues,
+            attempts=attempts,
+            status=STATUS_SUCCESS,
         )
 
-        results.append(result)
 
-        # Save each successful response immediately.
+def successful_results_by_scenario(
+    results: Sequence[MovieReviewResult],
+) -> dict[int, MovieReviewResult]:
+    """Index previously successful scenarios for resumable runs."""
+
+    return {
+        result.scenario: result
+        for result in results
+        if result.status == STATUS_SUCCESS
+        and bool(result.review and result.review.strip())
+    }
+
+
+def run_movie_review_experiment(
+    client: Groq | None,
+    model: str,
+    movie: Movie = DEFAULT_MOVIE,
+    scenarios: Sequence[tuple[float, int]] = DEFAULT_SCENARIOS,
+    seed: int = 42,
+    on_result: Callable[[MovieReviewResult], None] | None = None,
+    previous_results: Sequence[MovieReviewResult] | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS,
+) -> list[MovieReviewResult]:
+    """Run movie-review scenarios independently and resumably.
+
+    Successful entries in ``previous_results`` are reused without issuing a
+    request. Failed or missing scenarios are attempted again. Every newly
+    attempted result, success or failure, is passed to ``on_result``
+    immediately.
+    """
+
+    if seed < 0:
+        raise ValueError("seed must be non-negative.")
+
+    reused = successful_results_by_scenario(previous_results or ())
+
+    results_by_scenario: dict[int, MovieReviewResult] = {}
+
+    for index, (temperature, top_k) in enumerate(
+        scenarios,
+        start=1,
+    ):
+        previous = reused.get(index)
+
+        if previous is not None:
+            results_by_scenario[index] = previous
+            continue
+
+        if client is None:
+            raise ValueError(
+                "A Groq client is required to run pending scenarios."
+            )
+
+        result = run_movie_review_scenario(
+            client=client,
+            model=model,
+            movie=movie,
+            scenario=index,
+            temperature=temperature,
+            top_k=top_k,
+            seed=seed + index - 1,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+
+        results_by_scenario[index] = result
+
+        # Save each result immediately, including failed scenarios.
         if on_result is not None:
             on_result(result)
 
-    return results
+    return [
+        results_by_scenario[index]
+        for index in sorted(results_by_scenario)
+    ]

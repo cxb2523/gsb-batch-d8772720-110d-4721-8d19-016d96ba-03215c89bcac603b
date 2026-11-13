@@ -538,7 +538,8 @@ Execute:
 docker compose run --rm sampling-lab --experiment movie-reviews
 ```
 
-The application sends four real requests to Groq.
+Every scenario runs independently. The application sends at most four
+successful requests, plus retries for transient errors.
 
 For each scenario, the terminal displays:
 
@@ -546,10 +547,25 @@ For each scenario, the terminal displays:
 - Temperature
 - Local Top-k
 - Selected review style
-- Generated movie review
+- Attempt count and final status
+- Generated movie review, or the error type and message if it failed
 - Validation warnings, if any
 
 The Movie Review Experiment uses four predefined scenarios and does not support the `--repetitions` option.
+
+**Retries:** Rate-limit and connection errors are retried with an increasing
+(exponential) wait. After the retry budget is exhausted, that scenario is
+marked `failed` and the remaining scenarios still run. The final report is
+always written.
+
+**Empty responses:** An empty or whitespace-only response is treated as a
+failure. No blank review body is ever stored.
+
+**Resuming:** Running the same command again reads the most recent report
+for the same model, movie, and scenario configuration. Scenarios that already
+succeeded are reused without a new request; only failed or missing scenarios
+are retried, and the merged report updates the summary counts. Delete the
+old report if you want a completely fresh experiment.
 
 ### 6.6. Understanding the Results
 
@@ -629,11 +645,26 @@ The report includes:
 | `movie`             | Movie information                              |
 | `parameters`        | Sampling parameters and scenarios              |
 | `status`            | Experiment execution status                    |
-| `results`           | Generated reviews and their metadata           |
-| `validation_issues` | Structural validation warnings for each result |
-| `summary`           | Total and completed scenario counts            |
+| `results`           | Per-scenario outcomes and their metadata       |
+| `summary`           | Total, completed, and failed scenario counts   |
 
-The report also contains UTC timestamps.
+Each entry in `results` contains:
+
+| Field               | Meaning                                                     |
+| ------------------- | ----------------------------------------------------------- |
+| `scenario`          | Scenario number (1–4)                                       |
+| `temperature`       | Temperature used for this scenario                          |
+| `local_top_k`       | Local Top-k used for review-style selection                 |
+| `review_style`      | Selected review style                                       |
+| `review`            | Review text, or `null` when the scenario failed             |
+| `validation_issues` | Structural validation warnings (successful entries only)    |
+| `attempts`          | Number of provider requests made for this scenario          |
+| `status`            | `success` or `failed`                                       |
+| `error_type`        | Exception class name for failed scenarios, otherwise `null` |
+| `error_message`     | Error text for failed scenarios, otherwise `null`           |
+
+The report also contains UTC timestamps. The summary reports
+`completed_scenarios`, `failed_scenarios`, and `validation_warning_count`.
 
 ### 6.9. Inspect the JSON Report in PowerShell
 
@@ -658,6 +689,7 @@ Display the experiment summary:
 Write-Host "Experiment: $($data.experiment_type)"
 Write-Host "Status: $($data.status)"
 Write-Host "Completed Scenarios: $($data.summary.completed_scenarios)"
+Write-Host "Failed Scenarios: $($data.summary.failed_scenarios)"
 Write-Host "Validation Warnings: $($data.summary.validation_warning_count)"
 ```
 
@@ -665,7 +697,17 @@ Compare the scenarios:
 
 ```powershell
 $data.results |
-    Select-Object scenario, temperature, local_top_k, review_style |
+    Select-Object scenario, temperature, local_top_k,
+        review_style, attempts, status |
+    Format-Table -AutoSize
+```
+
+Inspect failed scenarios:
+
+```powershell
+$data.results |
+    Where-Object { $_.status -eq "failed" } |
+    Select-Object scenario, attempts, error_type, error_message |
     Format-Table -AutoSize
 ```
 
