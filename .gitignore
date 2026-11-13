@@ -1,0 +1,74 @@
+# ======================
+# Node & TypeScript
+# ======================
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+# Only ignore compiled TS output, NOT source JS files (e.g., vite.config.js, etc.)
+# Scoped to dist/build output folders above — don't add bare *.js here
+
+# ======================
+# Environment files
+# ======================
+.env
+.env.local
+.env.production
+.env.development.local
+.env.test.local
+.env.production.local
+.env.production
+
+# ======================
+# Logs
+# ======================
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ======================
+# OS files
+# ======================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ======================
+# IDEs / Editors
+# ======================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ======================
+# React / Frontend
+# ======================
+*.lock
+.cache/
+.vite/
+coverage/
+*.eslintcache
+*.prettiercache
+
+# ======================
+# Mongo / Database
+# ======================
+dump/
+*.mongo
+*.bson
+
+# ======================
+# Misc / Temporary
+# ======================
+*.log
+*.tmp
+*.bak
+*.old
+
+# ======================
+# Secret Docs
+# ======================
+/docs/plan.md

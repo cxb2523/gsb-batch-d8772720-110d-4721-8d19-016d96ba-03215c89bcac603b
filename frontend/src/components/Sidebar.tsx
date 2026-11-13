@@ -1,0 +1,270 @@
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation, useNavigate, Link } from 'react-router-dom'
+import { BarChart3, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Trophy, Users, X, Settings, Crosshair, Info } from 'lucide-react'
+import TabGuideModal, { getTabGuideKeyFromPath } from './TabGuideModal'
+import { usePageChrome } from '../context/pageChrome'
+import { useAuth, useCache } from '../context'
+
+const navItems = [
+    { name: 'Hackathons', path: '/hackathons', icon: Trophy },
+    { name: 'Teams', path: '/teams', icon: Users },
+    { name: 'Tracker', path: '/tracker', icon: Crosshair },
+    { name: 'Dashboard', path: '/dashboard', icon: BarChart3 },
+    { name: 'Settings', path: '/settings', icon: Settings },
+]
+
+const Sidebar = () => {
+    const navigate = useNavigate()
+    const location = useLocation()
+    const { sidebarExpanded, closeSidebar, toggleSidebar, pageActions } = usePageChrome()
+    const [isMobile, setIsMobile] = useState(() => {
+        if (typeof window === 'undefined') {
+            return false
+        }
+
+        return window.innerWidth < 1024
+    })
+    const { user, isAuthenticated, logout } = useAuth()
+    const logoDestination = isAuthenticated ? '/dashboard' : '/hackathons'
+    const { clearCache } = useCache()
+    const [isGuideOpen, setIsGuideOpen] = useState(false)
+    // const [isDark, setIsDark] = useState(false)
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return
+        }
+
+        const updateViewportMode = () => setIsMobile(window.innerWidth < 1024)
+
+        updateViewportMode()
+        window.addEventListener('resize', updateViewportMode)
+
+        return () => window.removeEventListener('resize', updateViewportMode)
+    }, [])
+
+    // useEffect(() => {
+    //     if (typeof window === 'undefined') {
+    //         return
+    //     }
+    //     const initialDark = window.localStorage.getItem('theme') === 'dark'
+    //     setIsDark(initialDark)
+    //     document.documentElement.classList.toggle('dark', initialDark)
+    //     const onThemeSync = (event: Event) => {
+    //         const detail = (event as CustomEvent<'light' | 'dark'>).detail
+    //         setIsDark(detail === 'dark')
+    //     }
+    //     window.addEventListener('hackdekh-theme-change', onThemeSync)
+    //     return () => window.removeEventListener('hackdekh-theme-change', onThemeSync)
+    // }, [])
+
+    // const toggleTheme = () => {
+    //     const nextIsDark = !isDark
+    //     setIsDark(nextIsDark)
+    //     document.documentElement.classList.toggle('dark', nextIsDark)
+    //     window.localStorage.setItem('theme', nextIsDark ? 'dark' : 'light')
+    //     window.dispatchEvent(new CustomEvent('hackdekh-theme-change', { detail: nextIsDark ? 'dark' : 'light' }))
+    // }
+
+    const handleLogout = async () => {
+        try {
+            await logout()
+        } catch {
+            // fallback
+        } finally {
+            clearCache()
+            sessionStorage.removeItem("dismissedSignupFunnel")
+            navigate('/login')
+            closeSidebar()
+        }
+    }
+
+    const sidebarWidthClass = sidebarExpanded ? 'lg:w-60' : 'lg:w-18'
+    const mobileVisibilityClass = isMobile ? (sidebarExpanded ? 'translate-x-0' : '-translate-x-full') : 'translate-x-0'
+
+    return (
+        <>
+            {/* Mobile logo header - fixed at top, visible on mobile */}
+            <div className="fixed inset-x-0 top-0 z-90 flex items-center justify-between border-b border-zinc-200 bg-white/95 px-4 py-4 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/95 lg:hidden">
+                <Link to={logoDestination} className="flex items-center gap-2.5">
+                    <img src="/BrandImages/HackDekh.png" alt="HackDekh Logo" className="h-10 w-10 sm:h-11 sm:w-11 rounded-full object-contain shrink-0 drop-shadow-md" />
+                    <span className="text-lg font-extrabold tracking-tight font-logo flex items-center">
+                        <span className="text-zinc-900 dark:text-white">Hack</span>
+                        <span className="bg-gradient-to-r from-blue-500 to-indigo-500 dark:from-blue-400 dark:via-sky-400 dark:to-indigo-400 bg-clip-text text-transparent">Dekh</span>
+                    </span>
+                </Link>
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setIsGuideOpen(true)}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-xs transition hover:border-blue-400 hover:text-blue-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 cursor-pointer"
+                        aria-label="User Guide"
+                        title="User Guide"
+                    >
+                        <Info className="h-4 w-4" />
+                    </button>
+                    {/* Theme button commented out */}
+                    {/* <button
+                        type="button"
+                        onClick={toggleTheme}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                    >
+                        {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                    </button> */}
+                    <button
+                        type="button"
+                        onClick={toggleSidebar}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-sm transition hover:border-blue-400 hover:text-blue-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                        aria-label={sidebarExpanded ? 'Close sidebar' : 'Open sidebar'}
+                    >
+                        {sidebarExpanded ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+                    </button>
+                </div>
+            </div>
+
+            {/* Desktop logo header - fixed at top, always visible */}
+            <div className="hidden fixed inset-x-0 top-0 z-40 items-center gap-4 border-b border-zinc-200 bg-white/95 px-4 py-4 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/95 lg:flex lg:h-16">
+                <Link to={logoDestination} className="flex shrink-0 items-center gap-2.5">
+                    <img src="/BrandImages/HackDekh.png" alt="HackDekh Logo" className="h-10 w-10 sm:h-11 sm:w-11 rounded-full object-contain shrink-0 drop-shadow-md" />
+                    <div>
+                        <div className="text-base font-extrabold tracking-tight font-logo flex items-center">
+                            <span className="text-zinc-900 dark:text-white">Hack</span>
+                            <span className="bg-gradient-to-r from-blue-500 to-indigo-500 dark:from-blue-400 dark:via-sky-400 dark:to-indigo-400 bg-clip-text text-transparent">Dekh</span>
+                        </div>
+                        <p className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium">Hackathon OS</p>
+                    </div>
+                </Link>
+
+                <div className="flex shrink-0 items-center gap-2">
+                    {/* Theme button commented out */}
+                    {/* <button
+                        type="button"
+                        onClick={toggleTheme}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                    >
+                        {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                    </button> */}
+                    <button
+                        type="button"
+                        onClick={toggleSidebar}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-400 hover:text-blue-700 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                        aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+                    >
+                        {sidebarExpanded ? <PanelLeftClose className="h-4.5 w-4.5" /> : <PanelLeftOpen className="h-4.5 w-4.5" />}
+                    </button>
+                </div>
+
+                <div className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-2.5 overflow-visible">
+                    {pageActions}
+                    <button
+                        type="button"
+                        onClick={() => setIsGuideOpen(true)}
+                        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 shadow-xs transition hover:border-blue-400 hover:text-blue-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                        aria-label="User Guide"
+                        title="User Guide"
+                    >
+                        <Info className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Sidebar - starts below logo header */}
+            <aside
+                className={`fixed left-0 top-20 z-80 flex w-full flex-col border-r border-zinc-200 bg-white/95 shadow-xl backdrop-blur-xl sidebar-transition max-h-[calc(100vh-80px)] lg:sticky lg:top-16 lg:z-30 lg:max-h-[calc(100vh-64px)] lg:shadow-none dark:border-zinc-800 dark:bg-zinc-950/95 ${sidebarWidthClass} ${mobileVisibilityClass}`}
+                aria-label="Primary navigation"
+            >
+                <nav className="flex flex-1 flex-col gap-1 px-3 py-4 sm:px-4">
+                    {navItems.map((item) => {
+                        const Icon = item.icon
+                        const active = location.pathname === item.path
+
+                        return (
+                            <NavLink
+                                key={item.name}
+                                to={item.path}
+                                className={() =>
+                                    `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                                        active
+                                            ? 'bg-blue-600 text-white shadow-sm dark:bg-blue-500'
+                                            : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-900 dark:hover:text-white'
+                                    }`
+                                }
+                                onClick={() => {
+                                    if (isMobile) {
+                                        closeSidebar()
+                                    }
+                                }}
+                            >
+                                {() => (
+                                    <>
+                                        <Icon className={`h-4 w-4 shrink-0 ${active ? 'text-white stroke-white fill-none' : ''}`} />
+                                        {sidebarExpanded && (
+                                            <span className={active ? 'text-white' : ''}>
+                                                {item.name}
+                                            </span>
+                                        )}
+                                    </>
+                                )}
+                            </NavLink>
+                        )
+                    })}
+                </nav>
+
+                <div className="space-y-2 border-t border-zinc-200 p-3 sm:p-2.5 dark:border-zinc-800">
+                    {isAuthenticated && user && (
+                        <div className="flex items-center gap-3 px-3 py-2 mb-2 rounded-lg bg-zinc-50 dark:bg-zinc-900/50">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 font-bold text-white text-xs dark:bg-blue-500 uppercase font-logo">
+                                {user.fullName.slice(0, 2)}
+                            </div>
+                            {sidebarExpanded && (
+                                <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">{user.fullName}</p>
+                                    <p className="text-[0.65rem] text-zinc-500 dark:text-zinc-400 truncate">@{user.username}</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {isAuthenticated ? (
+                        <button
+                            type="button"
+                            onClick={handleLogout}
+                            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-500/10"
+                        >
+                            <LogOut className="h-4 w-4 shrink-0" />
+                            {sidebarExpanded && <span>Logout</span>}
+                        </button>
+                    ) : (
+                        <div className="space-y-2">
+                            <NavLink
+                                to="/login"
+                                className="block rounded-lg border border-zinc-200 px-3 py-3 text-center text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                            >
+                                {sidebarExpanded ? 'Login' : 'In'}
+                            </NavLink>
+                            <NavLink
+                                to="/signup"
+                                className="block rounded-lg border border-blue-500/35 bg-blue-600 px-3 py-3 text-center text-sm font-semibold text-white transition hover:bg-blue-500 dark:bg-blue-500 dark:hover:bg-blue-400"
+                            >
+                                {sidebarExpanded ? 'Sign Up' : 'Up'}
+                            </NavLink>
+                        </div>
+                    )}
+                </div>
+            </aside>
+
+            {isMobile && sidebarExpanded && (
+                <div className="fixed inset-0 z-70 bg-black/20 backdrop-blur-[1px] lg:hidden" onClick={closeSidebar} aria-hidden="true" />
+            )}
+
+            <TabGuideModal
+                isOpen={isGuideOpen}
+                onClose={() => setIsGuideOpen(false)}
+                tabKey={getTabGuideKeyFromPath(location.pathname)}
+            />
+        </>
+    )
+}
+
+export default Sidebar

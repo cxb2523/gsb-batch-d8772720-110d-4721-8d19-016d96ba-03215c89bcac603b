@@ -1,0 +1,94 @@
+import dotenv from "dotenv";
+dotenv.config();
+
+import { connectDB } from "./infrastructure/index.ts";
+import { User } from "./modules/identity/index.ts";
+import { Team, TeamHackathon } from "./modules/team/index.ts";
+import { Hackathon } from "./modules/catalog/index.ts";
+import { Stage } from "./modules/tracking/index.ts";
+
+async function seedDatabase() {
+  try {
+    console.log("[Seed] Connecting to Database...");
+    await connectDB();
+
+    console.log("[Seed] Seeding sample data...");
+
+    let demoUser = await User.findOne({ email: "demo@hackdekh.com" });
+    if (!demoUser) {
+      demoUser = await User.create({
+        username: "demodev",
+        fullName: "Demo Developer",
+        email: "demo@hackdekh.com",
+        password: "Password123!",
+      });
+      console.log("[Seed] Created Demo User:", demoUser.email);
+    }
+
+    let demoHackathon = await Hackathon.findOne({ slug: "hackdekh-buildathon-2026" });
+    if (!demoHackathon) {
+      demoHackathon = await Hackathon.create({
+        title: "HackDekh Global Buildathon 2026",
+        slug: "hackdekh-buildathon-2026",
+        platform: "HackDekh",
+        mode: "Online",
+        applyLink: "https://hackdekh.com",
+        organization: "HackDekh Open Source",
+        description: "The premier global hackathon for building scalable developer products.",
+        tags: ["Web3", "AI", "Fullstack"],
+        prize: "$10,000 USD",
+        location: "Online",
+        scrapedFromURL: "https://hackdekh.com",
+      });
+      console.log("[Seed] Created Demo Hackathon:", demoHackathon.title);
+    }
+
+    let demoTeam = await Team.findOne({ name: "Alpha Builders", owner: demoUser._id });
+    if (!demoTeam) {
+      demoTeam = await Team.create({
+        name: "Alpha Builders",
+        owner: demoUser._id,
+        members: [demoUser._id],
+        code: "ALPHA26",
+      });
+      console.log("[Seed] Created Demo Team:", (demoTeam as any).name);
+    }
+
+    let demoParticipation = await TeamHackathon.findOne({
+      team: demoTeam._id,
+      hackathon: demoHackathon._id,
+    });
+    if (!demoParticipation) {
+      demoParticipation = await TeamHackathon.create({
+        team: demoTeam._id,
+        hackathon: demoHackathon._id,
+        status: "active",
+      });
+
+      await Stage.create({
+        name: "Initial Proposal Submission",
+        teamHackathon: demoParticipation._id,
+        deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        result: "qualified",
+        notes: "Submitted architecture PDF and initial pitch deck.",
+      });
+
+      await Stage.create({
+        name: "MVP Prototype Demo",
+        teamHackathon: demoParticipation._id,
+        deadline: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        result: "pending",
+        notes: "Building core MVP endpoints and UI walkthrough.",
+      });
+      console.log("[Seed] Linked Team to Hackathon and seeded stages.");
+    }
+
+    console.log("[Seed] Seeding completed.");
+    process.exit(0);
+  } catch (error) {
+    console.error("[Seed] Seeding failed:", error);
+    process.exit(1);
+  }
+}
+
+seedDatabase();

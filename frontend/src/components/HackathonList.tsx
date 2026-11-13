@@ -1,0 +1,750 @@
+import { RefreshCw, ArrowRight, AlertTriangle, X } from 'lucide-react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { AnimatePresence, motion } from 'framer-motion'
+import HackathonCard from './HackathonCard'
+import axiosInstance from '../utils/axiosInstance'
+import SearchBar from './SearchBar'
+import FilterPanel from './FilterPanel'
+import LoadingProgress from './LoadingProgress'
+import AppDropdown from './AppDropdown'
+import { usePageChrome } from '../context/pageChrome'
+import { useAuth, useCache, useToast } from '../context'
+import { teamApi } from '../services'
+
+type Hackathon = {
+    _id: string
+    title: string
+    platform: string
+    coverImage?: string
+    startDate?: string
+    deadline?: string
+    mode?: string
+    prize?: string
+    location?: string
+}
+
+type SortBy = '' | 'deadline-asc' | 'deadline-desc' | 'prize-desc' | 'prize-asc'
+
+
+
+const DESKTOP_MEDIA_QUERY = '(min-width: 1024px)'
+
+const HackathonList = () => {
+    const navigate = useNavigate()
+    const { hackathons: cachedHackathons, setHackathons: setCachedHackathons, hackathonsFilters, setHackathonsFilters } = useCache()
+    const isInitialMountRef = useRef(true)
+    const initialCacheRef = useRef(cachedHackathons)
+
+    const [hackathons, setHackathons] = useState<Hackathon[]>(cachedHackathons || [])
+    const [loading, setLoading] = useState(!cachedHackathons)
+    const [isRefreshing, setIsRefreshing] = useState(false)
+    const [refreshNonce, setRefreshNonce] = useState(0)
+    const [hasLoadedFromServer, setHasLoadedFromServer] = useState(!!cachedHackathons)
+    const isStillLoading = loading || !hasLoadedFromServer
+    const [showResults, setShowResults] = useState(!!cachedHackathons)
+    const [search, setSearch] = useState(hackathonsFilters.search)
+    const [platform, setPlatform] = useState(hackathonsFilters.platform)
+    const [mode, setMode] = useState(hackathonsFilters.mode)
+    const [sortBy, setSortBy] = useState<SortBy>(hackathonsFilters.sortBy as SortBy)
+    const [locationFilter, setLocationFilter] = useState(hackathonsFilters.locationFilter)
+    const [showExpired, setShowExpired] = useState(hackathonsFilters.showExpired)
+    const { isAuthenticated } = useAuth()
+    const { showToast } = useToast()
+    const [isDesktopView, setIsDesktopView] = useState<boolean>(() => {
+        if (typeof window === 'undefined') {
+            return false
+        }
+
+        return window.matchMedia(DESKTOP_MEDIA_QUERY).matches
+    })
+    const deferredSearch = useDeferredValue(search)
+    const { sidebarExpanded, closeSidebar, toggleSidebar, setPageActions } = usePageChrome()
+    const [sidebarWasExpanded, setSidebarWasExpanded] = useState(false)
+    const sidebarWasExpandedRef = useRef(false)
+    const toggleSidebarRef = useRef(toggleSidebar)
+
+    useEffect(() => {
+        sidebarWasExpandedRef.current = sidebarWasExpanded
+    }, [sidebarWasExpanded])
+
+    useEffect(() => {
+        toggleSidebarRef.current = toggleSidebar
+    }, [toggleSidebar])
+
+    const hasCollapsedSidebarRef = useRef(false)
+
+    // Reset when loading starts
+    useEffect(() => {
+        if (isStillLoading) {
+            hasCollapsedSidebarRef.current = false
+        }
+    }, [isStillLoading])
+
+    // Collapse sidebar to give full width to hackathons grid after loading finishes
+    useEffect(() => {
+        if (!isStillLoading && !hasCollapsedSidebarRef.current) {
+            hasCollapsedSidebarRef.current = true
+            if (sidebarExpanded) {
+                setSidebarWasExpanded(true)
+                closeSidebar()
+            }
+        }
+    }, [isStillLoading, sidebarExpanded, closeSidebar])
+
+    // Restore sidebar on unmount if it was expanded before this page collapsed it
+    useEffect(() => {
+        return () => {
+            if (sidebarWasExpandedRef.current) {
+                toggleSidebarRef.current()
+            }
+        }
+    }, [])
+
+    const [showFunnelModal, setShowFunnelModal] = useState(false)
+    const [trackedHackathons, setTrackedHackathons] = useState<Record<string, {
+        teamId: string;
+        participationId: string;
+        status: 'tracking' | 'active' | 'eliminated' | 'finalist' | 'won';
+    }>>({})
+    const [teams, setTeams] = useState<any[]>([])
+    const [selectedHackathonToTrack, setSelectedHackathonToTrack] = useState<string | null>(null)
+    const [selectedTeamIdToTrack, setSelectedTeamIdToTrack] = useState<string>('')
+    const [showTrackModal, setShowTrackModal] = useState(false)
+    const [isTrackingSubmitting, setIsTrackingSubmitting] = useState(false)
+    const [showUntrackConfirmModal, setShowUntrackConfirmModal] = useState(false)
+    const [hackathonIdToUntrack, setHackathonIdToUntrack] = useState<string | null>(null)
+    const [isUntrackingSubmitting, setIsUntrackingSubmitting] = useState(false)
+
+    const loadTrackedHackathons = useCallback(async () => {
+        if (!isAuthenticated) return;
+        try {
+            const userTeams = await teamApi.getUserTeams();
+            setTeams(userTeams);
+            const mapping: Record<string, {
+                teamId: string;
+                participationId: string;
+                status: 'tracking' | 'active' | 'eliminated' | 'finalist' | 'won';
+            }> = {};
+            
+            // Fetch all team hackathons in parallel
+            await Promise.all(
+                userTeams.map(async (t) => {
+                    try {
+                        const ths = await teamApi.getTeamHackathons(t._id);
+                        ths.forEach(th => {
+                            mapping[th.hackathon._id] = {
+                                teamId: t._id,
+                                participationId: th._id,
+                                status: th.status as any,
+                            };
+                        });
+                    } catch (err) {
+                        console.error(`Failed to load hackathons for team ${t._id}`, err);
+                    }
+                })
+            );
+            
+            setTrackedHackathons(mapping);
+        } catch (error) {
+            console.error('Failed to load tracking data', error);
+        }
+    }, [isAuthenticated]);
+
+    useEffect(() => {
+        loadTrackedHackathons();
+    }, [loadTrackedHackathons]);
+
+    const handleInitiateTrack = (hackathonId: string) => {
+        if (!isAuthenticated) {
+            setShowFunnelModal(true);
+            return;
+        }
+        setSelectedHackathonToTrack(hackathonId);
+        if (teams.length > 0) {
+            setSelectedTeamIdToTrack(teams[0]._id);
+        }
+        setShowTrackModal(true);
+    };
+
+    const handleConfirmTrack = async () => {
+        if (!selectedHackathonToTrack || !selectedTeamIdToTrack) return;
+        
+        const hackathonId = selectedHackathonToTrack;
+        const teamId = selectedTeamIdToTrack;
+        
+        // 1. Optimistic Update: Add tracking status instantly to the UI
+        const tempId = `optimistic_${Date.now()}`;
+        setTrackedHackathons(prev => ({
+            ...prev,
+            [hackathonId]: {
+                teamId,
+                participationId: tempId,
+                status: 'tracking'
+            }
+        }));
+        
+        // 2. Close modal instantly for seamless UX
+        setShowTrackModal(false);
+        setSelectedHackathonToTrack(null);
+        setIsTrackingSubmitting(false);
+        
+        try {
+            // 3. Fire API in background
+            const response = await teamApi.linkHackathon(teamId, hackathonId);
+            
+            // 4. Update with actual participation ID from server
+            setTrackedHackathons(prev => {
+                if (prev[hackathonId]?.participationId === tempId) {
+                    return {
+                        ...prev,
+                        [hackathonId]: {
+                            teamId,
+                            participationId: response._id,
+                            status: response.status as any
+                        }
+                    };
+                }
+                return prev;
+            });
+            showToast("Hackathon tracked successfully", "success");
+        } catch (error: any) {
+            console.error("Failed to track hackathon in background", error);
+            
+            // 5. Revert optimistic update on failure
+            setTrackedHackathons(prev => {
+                if (prev[hackathonId]?.participationId === tempId) {
+                    const next = { ...prev };
+                    delete next[hackathonId];
+                    return next;
+                }
+                return prev;
+            });
+            showToast(error.response?.data?.message || error.message || "Failed to start tracking", "error");
+        }
+    };
+
+    const handleInitiateUntrack = (hackathonId: string) => {
+        setHackathonIdToUntrack(hackathonId);
+        setShowUntrackConfirmModal(true);
+    };
+
+    const handleConfirmUntrack = async () => {
+        if (!hackathonIdToUntrack) return;
+        const hackathonId = hackathonIdToUntrack;
+        const trackingInfo = trackedHackathons[hackathonId];
+        if (!trackingInfo) return;
+
+        // 1. Save original info in case of rollback
+        const originalInfo = { ...trackingInfo };
+
+        // 2. Optimistically remove from tracking mapping
+        setTrackedHackathons(prev => {
+            const next = { ...prev };
+            delete next[hackathonId];
+            return next;
+        });
+
+        // 3. Close modal instantly
+        setShowUntrackConfirmModal(false);
+        setHackathonIdToUntrack(null);
+        setIsUntrackingSubmitting(false);
+
+        try {
+            // 4. Fire API in background
+            await teamApi.unlinkHackathon(trackingInfo.teamId, hackathonId);
+            showToast("Hackathon untracked successfully", "success");
+        } catch (error: any) {
+            console.error("Failed to untrack in background", error);
+            
+            // 5. Revert optimistic removal on failure
+            setTrackedHackathons(prev => ({
+                ...prev,
+                [hackathonId]: originalInfo
+            }));
+            showToast(error.response?.data?.message || error.message || "Failed to untrack hackathon", "error");
+        }
+    };
+
+
+    const handleDismissFunnel = () => {
+        setShowFunnelModal(false);
+    };
+
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return
+        }
+
+        const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY)
+        const updateViewMode = () => setIsDesktopView(mediaQuery.matches)
+
+        updateViewMode()
+        mediaQuery.addEventListener('change', updateViewMode)
+
+        return () => mediaQuery.removeEventListener('change', updateViewMode)
+    }, [])
+
+    useEffect(() => {
+        if (loading) {
+            setShowResults(false)
+            return
+        }
+
+        const showDelay = window.setTimeout(() => setShowResults(true), 40)
+        return () => window.clearTimeout(showDelay)
+    }, [loading])
+
+    useEffect(() => {
+        setHackathonsFilters({
+            search: deferredSearch,
+            platform,
+            mode,
+            locationFilter,
+            sortBy,
+            showExpired,
+        });
+    }, [deferredSearch, platform, mode, locationFilter, sortBy, showExpired, setHackathonsFilters]);
+
+    useEffect(() => {
+        let isMounted = true
+        let finishTimeout: number | undefined
+        let activeRequestAbort: AbortController | null = null
+
+        const isInitialMount = isInitialMountRef.current;
+        isInitialMountRef.current = false;
+
+        const hadCachedData = initialCacheRef.current;
+        initialCacheRef.current = null;
+        const isSilentRevalidation = isInitialMount && !!hadCachedData;
+
+        if (!isSilentRevalidation) {
+            setLoading(true)
+        }
+
+
+        const fetchHackathons = () => {
+            activeRequestAbort = new AbortController()
+
+            axiosInstance.get('/hackathons', {
+                signal: activeRequestAbort.signal,
+                params: {
+                    search: deferredSearch,
+                    platform,
+                    mode,
+                    location: locationFilter,
+                    sortBy,
+                    showExpired: showExpired ? "true" : "false"
+                },
+            })
+                .then(res => {
+                    if (!isMounted) {
+                        return
+                    }
+
+                    const responseData = Array.isArray(res.data?.data)
+                        ? res.data.data
+                        : Array.isArray(res.data)
+                            ? res.data
+                            : []
+                    setHackathons(responseData)
+                    setCachedHackathons(responseData)
+                    setHasLoadedFromServer(true)
+                    finishTimeout = window.setTimeout(() => {
+                        if (!isMounted) {
+                            return
+                        }
+                        setLoading(false)
+                        setIsRefreshing(false)
+                    }, 280)
+                })
+                .catch((error) => {
+                    if (!isMounted) {
+                        return
+                    }
+
+                    if (error?.name === 'CanceledError' || error?.name === 'AbortError') {
+                        return
+                    }
+
+                    console.error("[Hackathons] Failed to load hackathons:", error?.message || error)
+                    // Release loading spinner gracefully without annoying intrusive error toasts
+                    setLoading(false)
+                    setIsRefreshing(false)
+                })
+        }
+
+        fetchHackathons()
+
+        return () => {
+            isMounted = false
+            activeRequestAbort?.abort()
+            if (finishTimeout) {
+                window.clearTimeout(finishTimeout)
+            }
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [refreshNonce, deferredSearch, platform, mode, locationFilter, sortBy, showExpired, setCachedHackathons])
+
+    // isStillLoading is declared at top
+
+    const handleRefresh = useCallback(() => {
+        if (isStillLoading) {
+            return
+        }
+
+        setIsRefreshing(true)
+        setLoading(true)
+        setHasLoadedFromServer(false)
+        setShowResults(false)
+        setRefreshNonce(previous => previous + 1)
+    }, [isStillLoading])
+
+    const loadingLabel = hasLoadedFromServer
+        ? 'Loading hackathons'
+        : 'Scraping from server for you...'
+
+    const visibleHackathons = hackathons
+
+    const emptyStateMessage = hackathons.length === 0
+        ? 'No hackathons found...'
+        : 'No hackathons found for current filters.'
+
+    const pageActions = useMemo(() => {
+        return (
+            <div className="flex w-auto max-w-full min-w-0 items-center justify-end gap-2 overflow-visible">
+                <button
+                    type="button"
+                    onClick={handleRefresh}
+                    disabled={isStillLoading}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-400 hover:text-blue-700 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                    aria-label="Refresh hackathons"
+                    title="Refresh hackathons"
+                >
+                    <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                </button>
+                <div className="w-72 min-w-48 max-w-[20rem] shrink">
+                    <SearchBar value={search} onChange={setSearch} />
+                </div>
+                <FilterPanel
+                    platform={platform}
+                    setPlatform={setPlatform}
+                    mode={mode}
+                    setMode={setMode}
+                    sortBy={sortBy}
+                    setSortBy={value => setSortBy(value as SortBy)}
+                    locationFilter={locationFilter}
+                    setLocationFilter={setLocationFilter}
+                    showExpired={showExpired}
+                    setShowExpired={setShowExpired}
+                />
+            </div>
+        )
+    }, [
+        search,
+        platform,
+        mode,
+        sortBy,
+        locationFilter,
+        showExpired,
+        handleRefresh,
+        isStillLoading,
+        isRefreshing,
+    ])
+
+    useEffect(() => {
+        setPageActions(pageActions)
+
+        return () => setPageActions(null)
+    }, [pageActions, setPageActions])
+
+
+    return (
+        <div className="space-y-4">
+            <div className="relative z-50 isolate space-y-3 lg:hidden">
+                <div className="relative z-50 isolate overflow-visible rounded-xl border border-zinc-200/90 bg-white/90 p-4 shadow-sm backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-900/78 dark:shadow-md">
+                    <div className="flex items-end gap-3">
+                        <div className="min-w-0 flex-1">
+                            <SearchBar value={search} onChange={setSearch} />
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleRefresh}
+                            disabled={isStillLoading}
+                            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-400 hover:text-blue-700 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-blue-400 dark:hover:text-blue-300"
+                            aria-label="Refresh hackathons"
+                            title="Refresh hackathons"
+                        >
+                            <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                        </button>
+                    </div>
+                </div>
+
+                <div className="relative z-50 isolate overflow-visible rounded-xl border border-zinc-200/90 bg-white/90 p-4 shadow-sm backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-900/78 dark:shadow-md">
+                    <FilterPanel
+                        platform={platform}
+                        setPlatform={setPlatform}
+                        mode={mode}
+                        setMode={setMode}
+                        sortBy={sortBy}
+                        setSortBy={value => setSortBy(value as SortBy)}
+                        locationFilter={locationFilter}
+                        setLocationFilter={setLocationFilter}
+                        showExpired={showExpired}
+                        setShowExpired={setShowExpired}
+                    />
+                </div>
+            </div>
+
+            <div className="relative space-y-4">
+                {isStillLoading && (
+                    <div className="absolute inset-0 z-20 flex justify-center items-center bg-zinc-950/5 dark:bg-black/10 backdrop-blur-[2.5px] p-4 rounded-xl">
+                        <div className="w-full max-w-sm shrink-0">
+                            <LoadingProgress label={loadingLabel} />
+                        </div>
+                    </div>
+                )}
+
+                {isStillLoading ? (
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 opacity-40 select-none pointer-events-none">
+                        {Array.from({ length: isDesktopView ? 8 : 6 }).map((_, index) => (
+                            <div
+                                key={index}
+                                className="h-84 rounded-xl border border-zinc-200/90 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+                            >
+                                <div className="h-full w-full rounded-lg bg-[linear-gradient(110deg,rgba(228,228,231,0.6),rgba(250,250,250,0.95),rgba(228,228,231,0.6))] bg-size-[200%_100%] animate-[shimmer_1.3s_linear_infinite] dark:bg-[linear-gradient(110deg,rgba(39,39,42,0.9),rgba(63,63,70,0.95),rgba(39,39,42,0.9))]" />
+                            </div>
+                        ))}
+                    </div>
+                ) : visibleHackathons.length ? (
+                    <div className={`grid grid-cols-1 gap-4 transition-all duration-300 sm:grid-cols-2 xl:grid-cols-4 ${showResults ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0'}`}>
+                        {visibleHackathons.map((hack, index) => {
+                            const trackingInfo = trackedHackathons[hack._id];
+                            const isTracked = !!trackingInfo;
+                            return (
+                                <HackathonCard
+                                    key={hack._id}
+                                    hackathon={hack}
+                                    displayIndex={index}
+                                    trackingStatus={trackingInfo?.status}
+                                    onUntrack={() => handleInitiateUntrack(hack._id)}
+                                    extraActions={[
+                                        { label: isTracked ? "TRACKED_TRUE" : "TRACKED_FALSE", onClick: () => {} },
+                                        { label: "TRACK_HANDLER", onClick: () => handleInitiateTrack(hack._id) }
+                                    ]}
+                                />
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <div className={`rounded-xl border border-zinc-200/90 bg-white/90 px-6 py-16 text-center text-base text-zinc-600 shadow-sm backdrop-blur-md transition-all duration-300 dark:border-zinc-800 dark:bg-zinc-900/78 dark:text-zinc-400 dark:shadow-md ${showResults ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0'}`}>
+                        {emptyStateMessage}
+                    </div>
+                )}
+            </div>
+
+            {/* Guest funnel signup prompt popup modal */}
+            <AnimatePresence>
+                {showFunnelModal && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={handleDismissFunnel}
+                        className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/70 backdrop-blur-[4px] px-4 py-8"
+                    >
+                        <motion.div
+                            initial={{ y: 24, scale: 0.96, opacity: 0 }}
+                            animate={{ y: 0, scale: 1, opacity: 1 }}
+                            exit={{ y: 20, scale: 0.96, opacity: 0 }}
+                            transition={{ duration: 0.22, ease: "easeOut" }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-zinc-950 relative overflow-hidden"
+                        >
+                            <button
+                                type="button"
+                                onClick={handleDismissFunnel}
+                                className="absolute top-4 right-4 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                                aria-label="Close modal"
+                            >
+                                <X className="h-4 w-4" />
+                            </button>
+
+                            <div className="flex flex-col items-center text-center space-y-4 pt-3">
+
+
+                                <div className="space-y-4 w-full">
+                                    <h3 className="text-xl font-extrabold text-zinc-900 dark:text-zinc-50 tracking-tight leading-snug">
+                                        Ready to Win Your Next Hackathon?
+                                    </h3>
+                                    
+                                    <div className="space-y-3.5 text-left bg-zinc-50 dark:bg-zinc-900/60 p-4 rounded-lg border border-zinc-100 dark:border-zinc-800/80">
+                                        <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-widest mb-1">What you get instantly:</p>
+                                        {[
+                                            { title: 'Advanced Discover Filters', desc: 'Devfolio, Unstop, Devpost & more in one place.' },
+                                            { title: 'Collaborative Team Workspace', desc: 'Manage rosters, invite partners, and build together.' },
+                                            { title: 'Milestone Timeline Tracker', desc: 'Monitor stage deadlines and qualified states.' },
+                                            { title: 'Async Reflection Logs', desc: 'Turn rejections into winning insights and portfolios.' }
+                                        ].map((item, idx) => (
+                                            <div key={idx} className="flex items-start gap-2.5 text-sm">
+                                                <svg className="h-4.5 w-4.5 shrink-0 text-emerald-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                                </svg>
+                                                <div>
+                                                    <span className="font-bold text-zinc-900 dark:text-zinc-100 text-xs leading-normal">{item.title}</span>
+                                                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-normal">{item.desc}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col w-full gap-2.5 pt-2">
+                                    <button
+                                        onClick={() => {
+                                            handleDismissFunnel();
+                                            navigate("/signup?returnTo=/hackathons");
+                                        }}
+                                        className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-500/10 transition hover:bg-blue-500 hover:-translate-y-0.5 cursor-pointer"
+                                    >
+                                        Create Free Account
+                                        <ArrowRight className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            handleDismissFunnel();
+                                            navigate("/login?returnTo=/hackathons");
+                                        }}
+                                        className="w-full text-center rounded-lg border border-zinc-200 bg-white py-3.5 text-sm font-bold text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900 cursor-pointer"
+                                    >
+                                        Log In to Workspace
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+                {showTrackModal && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/70 backdrop-blur-[4px] px-4 py-8"
+                    >
+                        <motion.div
+                            initial={{ y: 24, scale: 0.96, opacity: 0 }}
+                            animate={{ y: 0, scale: 1, opacity: 1 }}
+                            exit={{ y: 20, scale: 0.96, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: "easeOut" }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-zinc-950"
+                        >
+                            <h3 className="text-base font-extrabold text-zinc-900 dark:text-white">Track Hackathon</h3>
+                            <p className="mt-1 text-xs text-zinc-550 dark:text-zinc-400">Select which of your developer teams will compete in this hackathon to start tracking.</p>
+
+                            {teams.length === 0 ? (
+                                <div className="mt-4 text-center py-4 bg-zinc-50 dark:bg-zinc-900/60 rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800">
+                                    <p className="text-xs text-zinc-500 dark:text-zinc-400">You don't have any teams yet.</p>
+                                    <button
+                                        onClick={() => {
+                                            setShowTrackModal(false);
+                                            navigate("/teams");
+                                        }}
+                                        className="mt-3 inline-flex items-center justify-center rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-blue-500 cursor-pointer"
+                                    >
+                                        Create a Team
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="mt-4 space-y-4">
+                                    <div>
+                                        <label className="text-[10px] font-bold text-zinc-450 dark:text-zinc-500 uppercase tracking-widest block mb-1">Select Team</label>
+                                        <AppDropdown
+                                            value={selectedTeamIdToTrack}
+                                            onChange={setSelectedTeamIdToTrack}
+                                            options={teams.map(t => ({ label: t.name, value: t._id }))}
+                                            placeholder="Choose a team…"
+                                            fullWidth
+                                        />
+                                    </div>
+
+                                    <div className="flex gap-2.5 pt-2">
+                                        <button
+                                            onClick={() => setShowTrackModal(false)}
+                                            className="btn btn-secondary flex-1"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            onClick={handleConfirmTrack}
+                                            disabled={isTrackingSubmitting}
+                                            className="btn btn-primary flex-1"
+                                        >
+                                            {isTrackingSubmitting ? "Tracking..." : "Confirm"}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </motion.div>
+                    </motion.div>
+                )}
+                {showUntrackConfirmModal && (() => {
+                    const hackToUntrack = hackathons.find(h => h._id === hackathonIdToUntrack);
+                    const trackingInfo = hackathonIdToUntrack ? trackedHackathons[hackathonIdToUntrack] : null;
+                    const teamToUntrack = trackingInfo ? teams.find(t => t._id === trackingInfo.teamId) : null;
+                    
+                    return (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/70 backdrop-blur-[4px] px-4 py-8"
+                        >
+                            <motion.div
+                                initial={{ y: 24, scale: 0.96, opacity: 0 }}
+                                animate={{ y: 0, scale: 1, opacity: 1 }}
+                                exit={{ y: 20, scale: 0.96, opacity: 0 }}
+                                transition={{ duration: 0.2, ease: "easeOut" }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-6 shadow-2xl dark:border-zinc-800 dark:bg-zinc-950 text-center"
+                            >
+                                <div className="mx-auto h-12 w-12 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-600 dark:text-rose-455 mb-4 shrink-0">
+                                    <AlertTriangle className="h-6 w-6" />
+                                </div>
+                                <h3 className="text-base font-extrabold text-zinc-900 dark:text-white">Untrack Hackathon?</h3>
+                                <p className="mt-2 text-xs text-zinc-550 dark:text-zinc-400 leading-normal">
+                                    Are you sure you want to remove <span className="font-bold text-zinc-800 dark:text-zinc-200">"{hackToUntrack?.title || 'this hackathon'}"</span> from team <span className="font-bold text-zinc-800 dark:text-zinc-200">"{teamToUntrack?.name || 'your team'}"</span>?
+                                </p>
+                                <p className="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500 leading-normal">
+                                    This will permanently delete all timeline stages, logs, and reflections associated with this participation.
+                                </p>
+
+                                <div className="flex gap-2.5 pt-4">
+                                    <button
+                                        onClick={() => {
+                                            setShowUntrackConfirmModal(false);
+                                            setHackathonIdToUntrack(null);
+                                        }}
+                                        className="btn btn-secondary flex-1"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleConfirmUntrack}
+                                        disabled={isUntrackingSubmitting}
+                                        className="btn btn-danger flex-1"
+                                    >
+                                        {isUntrackingSubmitting ? "Untracking..." : "Untrack"}
+                                    </button>
+                                </div>
+                            </motion.div>
+                        </motion.div>
+                    );
+                })()}
+            </AnimatePresence>
+
+        </div>
+    )
+}
+
+export default HackathonList;
