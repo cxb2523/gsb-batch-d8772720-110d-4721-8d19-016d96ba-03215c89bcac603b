@@ -9,3 +9,7 @@ __pycache__/
 .env.*
 .DS_Store
 *.log
+
+# Local review-collection job output (examples and ad-hoc CLI runs)
+examples/output/
+review-job/

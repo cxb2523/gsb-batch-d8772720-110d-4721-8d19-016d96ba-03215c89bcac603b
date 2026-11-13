@@ -33,6 +33,7 @@ https://mcp.hasdata.com/mcp?apis=yelp
 - [How it compares](#how-it-compares)
 - [FAQ](#faq)
 - [HasData links](#hasdata-links)
+- [Resumable review collection](#resumable-review-collection)
 - [Development](#development)
 - [Contributing](#contributing)
 - [License](#license)
@@ -426,6 +427,90 @@ The review tools return personal data. A review carries the author's display nam
 - [Dashboard](https://app.hasdata.com/sign-up?utm_source=github&utm_medium=syndication&utm_campaign=yelp-mcp)
 
 Other HasData MCP servers: [Google Search](https://github.com/HasData/google-search-mcp), [Google Maps](https://github.com/HasData/google-maps-mcp), [Google Trends](https://github.com/HasData/google-trends-mcp), [Google Flights](https://github.com/HasData/google-flights-mcp), [DuckDuckGo](https://github.com/HasData/duckduckgo-mcp), [YouTube](https://github.com/HasData/youtube-mcp), [TikTok](https://github.com/HasData/tiktok-mcp), [Instagram](https://github.com/HasData/instagram-mcp), [Amazon](https://github.com/HasData/amazon-mcp), [Zillow](https://github.com/HasData/zillow-mcp), [Airbnb](https://github.com/HasData/airbnb-mcp), [Booking.com](https://github.com/HasData/booking-mcp), [Indeed](https://github.com/HasData/indeed-mcp).
+
+## Resumable review collection
+
+The stdio launcher hands one tool call at a time to an MCP client. A feed with hundreds of reviews needs many calls, and a process killed on page six loses both the reviews already fetched and the cursor for page seven. The local collection module in `lib/` turns one full feed walk into a durable, auditable **job**. It uses the same JSON-RPC endpoint (`https://mcp.hasdata.com/mcp?apis=yelp`, `x-api-key` header, tool `hasdata_yelp_reviews_getPlaceReviews`) and adds nothing to the wire protocol.
+
+### Job state
+
+A job is one plain, JSON-serialisable object. Every page — successful or failed — gets a record with the page number, the review count on that page, the cumulative count, `hasNextPage`, the cursor that was requested and the cursor returned for the next page. Cursors are opaque tokens: the module stores `nextPageToken` verbatim and sends it back verbatim. It never derives an offset from a page number or a count.
+
+Status is one of:
+
+| Status | Meaning |
+| :--- | :--- |
+| `completed` | Every page succeeded; the last response carried `hasNextPage: false`. |
+| `partial` | At least one page is in the bank, but a later page permanently failed, or a `maxPages` cap stopped the walk early. All collected reviews are kept. |
+| `failed` | The **first** page never succeeded. The review list is empty. |
+| `running` | Transient state between pages; a job is never persisted in this state at a page boundary. |
+
+A failed page record keeps a machine-readable reason (`concurrency_limit`, `network_error`, `http_401`, `jsonrpc_error`, …), the number of attempts spent, and any `Retry-After` the server supplied. On resume the failed record moves into `failureHistory`, so nothing about a past failure is silently overwritten.
+
+### Retries
+
+HTTP 429 and any response carrying `concurrency_limit` are retried with an increasing backoff (default four attempts, 2s base, doubling each time). A `Retry-After` header overrides the computed wait. Transport-level failures (dropped connection, timeout, DNS) are retried the same way, because no answer was ever produced. A 401 or a JSON-RPC parameter error is not retryable and fails the page on the first attempt. When the budget is exhausted the page is recorded as failed and the job settles to `partial` (or `failed` on page one); the reviews already collected are never discarded.
+
+### CLI
+
+```bash
+# First run; job.json and reviews.json are rewritten after every page (atomic rename).
+hasdata-yelp-collect-reviews --place desnudo-coffee-austin --out-dir ./jobs/run1 \
+  --sort dateDesc --rating 1,2 --language en --page-size 49
+
+# Continue after a crash, a rate-limit wall or a Ctrl-C. Successful pages are not re-requested.
+# Without --out-dir, progress is written back into the resumed job's own directory.
+hasdata-yelp-collect-reviews --resume ./jobs/run1/job.json
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--place` | Yelp ID or alias (required for a new run). |
+| `--resume <file>` | Continue a saved job instead of starting one. |
+| `--out-dir <dir>` | Where to write `job.json` and `reviews.json` (default `./review-job`, or the resumed file's directory). |
+| `--domain`, `--sort`, `--rating`, `--language` | Optional feed filters, mapped to the tool's `domain`, `sortBy`, `rating`, `languageCode`. |
+| `--page-size <n>` | `num`, 1–49, default 49. |
+| `--max-pages <n>` | Stop after n pages; the job stays `partial` with the next cursor saved for a resume. |
+| `--endpoint <url>` | Override the JSON-RPC endpoint (used for compatible gateways and offline test doubles). |
+| `--max-attempts <n>`, `--retry-base-ms <ms>` | Retry budget and the base of the doubling backoff (defaults 4 and 2000). |
+
+Exit codes: `0` completed, `3` partial, `4` failed, `1` local setup error such as a missing key, `2` bad arguments. If `HASDATA_API_KEY` is unset the command exits before any network request is made.
+
+### Library API
+
+```js
+import { runReviewJob, resumeReviewJob } from './lib/review-job.mjs';
+import { saveJob, loadJob } from './lib/job-store.mjs';
+
+const job = await runReviewJob({
+  placeId: 'desnudo-coffee-austin', // Yelp ID or alias
+  // domain, sortBy, rating, languageCode, num are optional; num defaults to 49
+  onPage: async (snapshot) => saveJob('./jobs/run1/job.json', snapshot),
+});
+
+const later = await resumeReviewJob({
+  job: await loadJob('./jobs/run1/job.json'),
+  onPage: async (snapshot) => saveJob('./jobs/run1/job.json', snapshot),
+});
+```
+
+### Boundary behaviour
+
+- **Empty feed:** a first page whose `reviews` array is empty with `hasNextPage: false` completes the job with zero reviews and one page record.
+- **`hasNextPage: false` with a token present:** the feed ends; the stray token is not stored and no further request is made.
+- **`hasNextPage: true` without a token:** recorded as a warning and the walk stops rather than looping.
+- **Missing key:** `runReviewJob` and `resumeReviewJob` throw `MissingApiKeyError` before the transport is touched.
+
+### Offline example and tests
+
+No part of the collection module's test coverage needs a key, credits or a network. `examples/offline-demo.mjs` runs the whole lifecycle — normal paging, a two-attempt rate-limit recovery, a resume from a partial job, an empty feed and the missing-key error — against a scripted in-process fake. Its reviews are synthetic and labelled as such; they are not HasData responses.
+
+```bash
+node examples/offline-demo.mjs
+node --test test/jsonrpc.test.mjs test/review-job.test.mjs test/integration.test.mjs test/cli.test.mjs
+```
+
+The transport tests pin the JSON-RPC/SSE envelope handling and the retry classification (429, `concurrency_limit` in a 200 body, 401, network failure). The state-machine tests use a fake that rejects any cursor it did not itself issue, so a future change that recomputes a cursor instead of forwarding it fails the suite. The CLI tests launch the real `bin/collect-reviews.mjs` as a child process against a loopback HTTP server, so they cover argument parsing, file persistence and the exit codes without touching the internet.
 
 ## Development
 
