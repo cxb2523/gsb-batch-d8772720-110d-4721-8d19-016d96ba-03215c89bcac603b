@@ -1,0 +1,49 @@
+[project]
+name = "reader"
+version = "2.0.0"
+description = "Extract clean(er), readable text from web pages via trafilatura"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "tabulate>=0.10.0",
+    "trafilatura>=2.2.0",
+]
+
+[project.scripts]
+reader = "reader:cli"
+
+[build-system]
+requires = ["hatchling>=1.32.4"]
+build-backend = "hatchling.build"
+
+# reader is a single top-level module, not a package directory, so the
+# wheel contents have to be named explicitly
+[tool.hatch.build.targets.wheel]
+include = ["reader.py"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "reader.py",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.pyright]
+include = [
+    "**/*.py",
+]
+exclude = [
+    ".venv",
+    ".git",
+    "**/__pycache__/**",
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.14"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.1",
+    "lxml-stubs>=0.5.1",
+    "ruff>=0.16.9",
+]
