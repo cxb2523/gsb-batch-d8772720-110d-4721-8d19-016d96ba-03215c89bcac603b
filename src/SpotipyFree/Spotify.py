@@ -331,11 +331,12 @@ class Spotify:
             track["external_ids"] = {"isrc": self._getIsrc(track["track_id"])}
         return track
 
-    def audio_features(self, trackIds, *args, **kwargs):
-        if type(trackIds) == str:
-            trackIds = [trackIds]
+    # Throttle between individual track requests so the target site is not
+    # hammered. Kept as a constant so tests can patch it out.
+    AUDIO_FEATURES_THROTTLE_SECONDS = 1
 
-        headers = {
+    def _buildAudioFeaturesHeaders(self):
+        return {
             "authority": "www.chosic.com",
             "method": "GET",
             "path": None,
@@ -358,36 +359,168 @@ class Spotify:
             "x-requested-with": "XMLHttpRequest"
         }
 
-        results = []
+    @staticmethod
+    def _isRetryableStatusCode(statusCode):
+        # Rate limiting and server-side problems may clear up on retry;
+        # other 4xx errors (e.g. 404) are permanent for that track.
+        return statusCode == 429 or statusCode >= 500
+
+    def _fetchSingleAudioFeatures(self, trackId, headers):
+        """
+        Fetch one track's audio features.
+
+        Returns (features, None) on success and (None, errorInfo) on failure.
+        A single failure is isolated here so it can never abort the batch.
+        """
+        session = requests.Session()
+
+        session.cookies.set('pll_language', 'en')
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+        })
+
+        requestHeaders = dict(headers)
+        requestHeaders["path"] = f"/api/tools/audio-features/{trackId}"
+        url = f"https://www.chosic.com/api/tools/audio-features/{trackId}"
+
+        try:
+            response = session.get(url, headers=requestHeaders)
+        except Exception as e:
+            print(f"Could not fetch data from www.chosic.com: {e}")
+            return None, {
+                "message": f"network error: {e}",
+                "retryable": True,
+            }
+
+        if response.status_code != 200:
+            print(
+                "www.chosic.com returned bad status code: "
+                f"{response.status_code}, you might have been blocked"
+            )
+            return None, {
+                "message": f"bad status code: {response.status_code}",
+                "retryable": self._isRetryableStatusCode(response.status_code),
+            }
+
+        try:
+            features = response.json()
+        except Exception as e:
+            print(f"www.chosic.com returned invalid JSON: {e}")
+            return None, {
+                "message": f"invalid JSON response: {e}",
+                "retryable": True,
+            }
+
+        return features, None
+
+    def audio_features(self, trackIds, previousResult=None, *args, **kwargs):
+        """
+        Fetch audio features (BPM, key, etc.) for one track or many.
+
+        trackIds accepts a single ID string or a list of IDs; Spotify URLs
+        (and spotify: URIs) are normalized with urlToId.
+
+        A failure on one track never aborts the batch. Returns:
+        {
+            "items": [
+                {"trackId": ..., "status": "ok", "features": {...}},
+                {"trackId": ..., "status": "error",
+                 "error": "...", "retryable": True/False},
+                ...  # one entry per input, in the original order
+            ],
+            "summary": {
+                "total": n, "success": x, "failed": y, "retryable": z
+            }
+        }
+
+        Pass a previous result object (the dict returned by an earlier call,
+        or its "items" list) as previousResult to rerun only the failed
+        retryable tracks. Already successful tracks are served from the
+        previous result and never requested again; the returned items stay
+        aligned with the current input order.
+        """
+        if type(trackIds) == str:
+            trackIds = [trackIds]
+
+        normalizedIds = []
         for trackId in trackIds:
             if self.isUrl(trackId):
                 trackId = self.urlToId(trackId)
+            normalizedIds.append(trackId)
 
-            session = requests.Session()
+        # Index the previous run by trackId so a rerun can reuse its items.
+        previousItems = {}
+        if previousResult is not None:
+            if isinstance(previousResult, dict) and "items" in previousResult:
+                priorList = previousResult["items"]
+            else:
+                priorList = previousResult
+            for priorItem in priorList:
+                previousItems[priorItem["trackId"]] = priorItem
 
-            session.cookies.set('pll_language', 'en')
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
-            })
-            headers["path"] = f"/api/tools/audio-features/{trackId}"
+        headers = self._buildAudioFeaturesHeaders()
+        items = []
+        successCount = 0
+        failedCount = 0
+        retryableCount = 0
+        requestsMade = 0
 
-            url = f"https://www.chosic.com/api/tools/audio-features/{trackId}"
+        for trackId in normalizedIds:
+            priorItem = previousItems.get(trackId)
 
-            try:
-                response = session.get(url, headers=headers)
-                if response.status_code != 200:
-                    print(f"www.chosic.com returned bad status code: {response.status_code}, you might have been blocked")
-                    results.append(None)
-                    continue
-                results.append(response.json())
-                time.sleep(1)
-            except Exception as e:
-                print(f"Could not fetch data from www.chosic.com: {e}")
-                results.append(None)
+            # Reuse tracks that already succeeded (or failed permanently):
+            # they must not be requested again on a rerun.
+            if priorItem is not None and (
+                priorItem.get("status") == "ok"
+                or not priorItem.get("retryable", False)
+            ):
+                items.append(dict(priorItem))
+                if priorItem.get("status") == "ok":
+                    successCount += 1
+                else:
+                    failedCount += 1
+                    if priorItem.get("retryable", False):
+                        retryableCount += 1
+                continue
 
-        return(results)
+            # New track, or a previously retryable failure: actually fetch it.
+            # Preserve the original inter-request throttle: sleep before every
+            # real request except the first one in this run, and never for
+            # items served from the previous result.
+            if requestsMade > 0:
+                time.sleep(self.AUDIO_FEATURES_THROTTLE_SECONDS)
+            requestsMade += 1
+
+            features, errorInfo = self._fetchSingleAudioFeatures(trackId, headers)
+            if errorInfo is None:
+                items.append({
+                    "trackId": trackId,
+                    "status": "ok",
+                    "features": features,
+                })
+                successCount += 1
+            else:
+                items.append({
+                    "trackId": trackId,
+                    "status": "error",
+                    "error": errorInfo["message"],
+                    "retryable": errorInfo["retryable"],
+                })
+                failedCount += 1
+                if errorInfo["retryable"]:
+                    retryableCount += 1
+
+        return {
+            "items": items,
+            "summary": {
+                "total": len(normalizedIds),
+                "success": successCount,
+                "failed": failedCount,
+                "retryable": retryableCount,
+            },
+        }
 
     def search(self, query, type="track", *args, **kwargs):
         pages = spotapi.Public().song_search(query)

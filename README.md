@@ -27,6 +27,7 @@ Currently implemented:
 *   `playlist_items()`
 *   `artist()`
 *   `artist_albums()`
+*   `audio_features()` - batched BPM/key lookup with per-track status and selective rerun
 *   `album()`
 *   `album_tracks()`
 *   `current_user_recently_played()` - must first run startRecentlyPlayedListener
@@ -68,6 +69,43 @@ track = sp.track("67Hna13dNDkZvBpTXRIaOJ")
 album = sp.album("4m2880jivSbbyEGAKfITCa")
 albumTracks = sp.album_tracks("4m2880jivSbbyEGAKfITCa")
 ```
+
+### Batch audio features (`audio_features`)
+
+`audio_features` accepts a single track ID string or a list of IDs (Spotify
+URLs are normalized automatically). A failure on one track never aborts the
+batch: network errors, non-200 status codes and unparseable JSON responses are
+each recorded against that track, and the rest keep being collected. The
+original one-second throttle between track requests is preserved.
+
+```python
+result = sp.audio_features([
+    "4tyjNEHKos3lZPYAfTiMKH",
+    "https://open.spotify.com/track/67Hna13dNDkZvBpTXRIaOJ",
+])
+
+# result["items"] lines up 1:1 with the input order
+#   {
+#     "items": [
+#       {"trackId": "...", "status": "ok", "features": {...}},
+#       {"trackId": "...", "status": "error",
+#        "error": "bad status code: 429", "retryable": true},
+#     ],
+#     "summary": {"total": 2, "success": 1, "failed": 1, "retryable": 1}
+#   }
+```
+
+`summary.retryable` counts the failures that may succeed on another attempt
+(network errors, HTTP 429/5xx, invalid JSON); other 4xx responses such as 404
+are marked non-retryable. To re-collect only the failed retryable tracks, pass
+the previous result back through the same entry point. Already successful
+tracks are served from the previous result and are never requested again, and
+the returned items stay aligned to the input order:
+
+```python
+retried = sp.audio_features(original_ids, previousResult=result)
+```
+
 
 ## Usage with login
 ```python
