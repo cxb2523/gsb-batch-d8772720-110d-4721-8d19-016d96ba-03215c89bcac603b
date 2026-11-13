@@ -1,0 +1,3 @@
+server/.env
+server/data.json
+server/node_modules

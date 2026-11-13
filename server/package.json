@@ -1,0 +1,24 @@
+{
+  "name": "kindle-display",
+  "version": "1.2.0",
+  "author": "dennisreimann",
+  "license": "MIT",
+  "description": "kindle display server",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:dennisreimann/kindle-display.git"
+  },
+  "homepage": "https://github.com/dennisreimann/kindle-display",
+  "bugs": "https://github.com/dennisreimann/kindle-display/issues",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "data": "node data.mjs",
+    "test": "node --test test/*.test.cjs"
+  },
+  "dependencies": {
+    "dotenv": "18.0.10",
+    "express": "5.3.0",
+    "pug": "3.0.4"
+  }
+}

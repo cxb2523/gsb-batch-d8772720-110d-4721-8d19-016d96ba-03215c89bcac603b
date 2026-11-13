@@ -1,0 +1,17 @@
+mixin displayRate(rate)
+  if rate.rate
+    span.type= currency(rate.code)
+    span.value= Math.round(rate.rate)
+
+mixin displayStat(value, title, detail)
+  if value
+    .stat.value-type
+      .value= value
+      .type
+        = title
+        if detail
+          = ' '
+          if isNaN(detail)
+            span.detail (#{detail})
+          else
+            span.detail (#{detail < 0 ? '-' : (detail === 0 ? '±' : '+')}#{Math.abs(detail)})
