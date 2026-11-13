@@ -1,0 +1,819 @@
+import json
+import logging
+import asyncio
+from abc import ABC, abstractmethod
+from typing import Optional, List, Dict
+
+import extruct
+import newspaper
+import trafilatura
+from bs4 import BeautifulSoup
+from dateutil import parser as _du_parser
+from markdownify import markdownify as _md
+from .schemas import ScrapedArticle
+
+logger = logging.getLogger(__name__)
+
+
+def _find_key(obj, key):
+    """First value for `key` anywhere in a nested structured-data object."""
+    if isinstance(obj, dict):
+        if obj.get(key):
+            return obj[key]
+        for v in obj.values():
+            found = _find_key(v, key)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_key(v, key)
+            if found:
+                return found
+    return None
+
+
+def _og_property(og_items, name):
+    for og in og_items:
+        for k, v in og.get("properties", []):
+            if k == name and v:
+                return v
+    return None
+
+
+def extract_meta_date(html):
+    """Publish datetime from a page's STRUCTURED metadata (OG / JSON-LD /
+    microdata) via extruct, or None. Never the prose extractor's guess: it misses
+    dates and can return a wrong one (a comment/related timestamp) — a null is
+    refillable, a wrong date silently rots the corpus. It's ISO 8601, so dateutil
+    parses it (no dateparser needed)."""
+    if not html:
+        return None
+    try:
+        data = extruct.extract(
+            html, syntaxes=["opengraph", "json-ld", "microdata"], errors="ignore"
+        )
+    except Exception:
+        return None
+    raw = (
+        _og_property(data.get("opengraph", []), "article:published_time")
+        or _find_key(data.get("json-ld", []), "datePublished")
+        or _find_key(data.get("microdata", []), "datePublished")
+    )
+    if not raw:
+        # extruct covers OG/JSON-LD/microdata; a standalone itemprop meta or a
+        # bare <time datetime> is plain DOM — quick soup query for those.
+        soup = BeautifulSoup(html, "html.parser")
+        m = soup.find("meta", attrs={"itemprop": "datePublished"})
+        if m and m.get("content"):
+            raw = m["content"]
+        else:
+            t = soup.find("time", attrs={"datetime": True})
+            raw = t.get("datetime") if t else None
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        return _du_parser.parse(str(raw).strip())
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _author_names(value):
+    """Normalize a JSON-LD/microdata `author` value to a list of name strings.
+    Handles a plain string, a Person dict ({name: ...}), or a list of either."""
+    names = []
+    if isinstance(value, str):
+        if value.strip():
+            names.append(value.strip())
+    elif isinstance(value, dict):
+        n = value.get("name")
+        if isinstance(n, str) and n.strip():
+            names.append(n.strip())
+    elif isinstance(value, list):
+        for v in value:
+            names.extend(_author_names(v))
+    return names
+
+
+def extract_meta_author(html):
+    """Author(s) from a page's structured metadata (JSON-LD / microdata) via
+    extruct, or None. Comma-joined for multiple authors; URL-only values (OG
+    author is often a profile URL) are dropped."""
+    if not html:
+        return None
+    try:
+        data = extruct.extract(html, syntaxes=["json-ld", "microdata"], errors="ignore")
+    except Exception:
+        return None
+    raw = _find_key(data.get("json-ld", []), "author") or _find_key(
+        data.get("microdata", []), "author"
+    )
+    seen, out = set(), []
+    for name in _author_names(raw) if raw else []:
+        if name.startswith("http") or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return ", ".join(out) if out else None
+
+
+def _extract_media(html: Optional[str]):
+    """Walk HTML for <img>/<video>/<iframe> srcs. Returns (images, videos)."""
+    if not html:
+        return [], []
+    soup = BeautifulSoup(html, "lxml")
+    images = [
+        {"src": img["src"], "alt": img.get("alt", "")}
+        for img in soup.find_all("img")
+        if img.get("src")
+    ]
+    videos = [
+        {"src": tag["src"], "type": tag.name}
+        for tag in soup.find_all(["video", "iframe"])
+        if tag.get("src")
+    ]
+    return images, videos
+
+
+def _json_object_at(text, start):
+    """Return the JSON object literal beginning at ``text[start]`` ('{').
+
+    Scans with a brace counter that ignores braces inside strings, so an
+    object containing "};" in a string value is not truncated the way a
+    non-greedy regex would truncate it. Returns None if unbalanced.
+    """
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth, in_string, escaped = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]  # noqa: E203
+    return None
+
+
+def fusion_global_content(html):
+    """Parse the Arc XP ``Fusion.globalContent`` payload out of a page.
+
+    Arc XP ships the article body in this JSON blob and renders it client
+    side, so the body is absent from the served DOM. Returns the decoded dict
+    or None.
+
+    A page may assign the marker more than once: some deployments emit a stub
+    ``Fusion.globalContent={}`` and keep the real content elsewhere, so the
+    first parseable object is not necessarily the useful one. Every occurrence
+    is scanned and the first payload carrying ``content_elements`` wins; absent
+    that, the first parseable object is returned so callers can still inspect
+    metadata such as ``node_type``.
+
+    Known limitation: deployments that embed the payload as an escaped string
+    (``Fusion.globalContent=JSON.parse("...")``) are not decoded; the extractor
+    declines and the next extractor in EXTRACTOR_ORDER takes over.
+    """
+    if not html:
+        return None
+    marker = "Fusion.globalContent"
+    fallback = None
+    idx = html.find(marker)
+    while idx != -1:
+        brace = html.find("{", idx + len(marker))
+        # Only accept a '{' that follows the assignment, not some later object.
+        # This also rejects the sibling marker Fusion.globalContentConfig,
+        # whose 'Config=' text lands in `between`.
+        between = html[idx + len(marker) : brace] if brace != -1 else ""  # noqa: E203
+        if brace != -1 and between.strip().startswith("="):
+            raw = _json_object_at(html, brace)
+            if raw:
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    data = None
+                if isinstance(data, dict):
+                    if data.get("content_elements"):
+                        return data
+                    if fallback is None and data:
+                        fallback = data
+        idx = html.find(marker, idx + 1)
+    return fallback
+
+
+def fusion_body_text(data):
+    """Plain text of an Arc XP payload's ``content_elements`` text blocks."""
+    parts = []
+    for el in (data or {}).get("content_elements") or []:
+        if el.get("type") != "text":
+            continue
+        frag = el.get("content") or ""
+        if not frag:
+            continue
+        # Elements are HTML fragments (<p>, <a>, entities) — let bs4 both strip
+        # the tags and unescape the entities.
+        text = BeautifulSoup(frag, "lxml").get_text(" ", strip=True)
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
+class BaseExtractor(ABC):
+    """Abstract base class for content extractors"""
+
+    @abstractmethod
+    def extract(
+        self, url: str, html: str, title_hint: str = None, include_html: bool = False
+    ) -> Optional[ScrapedArticle]:
+        """
+        Extract content from HTML.
+
+        Args:
+            url: The URL of the page
+            html: The raw HTML content
+            title_hint: Optional title extracted from other sources (e.g. metadata)
+            include_html: Whether to include raw HTML in output (for JSONL exports)
+
+        Returns:
+            ScrapedArticle object or None if extraction fails
+        """
+        pass
+
+
+class NewspaperExtractor(BaseExtractor):
+    """Extractor using newspaper4k"""
+
+    def extract(
+        self, url: str, html: str, title_hint: str = None, include_html: bool = False
+    ) -> Optional[ScrapedArticle]:
+        try:
+            # newspaper4k usually fetches itself, but we can pass html
+            article = newspaper.Article(url)
+            article.download(input_html=html)
+            article.parse()
+
+            # Use hint if newspaper failed to find title
+            title = article.title
+            if not title and title_hint:
+                title = title_hint.strip()
+
+            # Basic validation before creating model
+            if not title or not article.text:
+                text_len = len(article.text) if article.text else 0
+                logger.warning(
+                    f"NewspaperExtractor validation failed: title='{title}', text_len={text_len}"
+                )
+                return None
+
+            clean_html = article.article_html or None
+            # newspaper4k strips <img> from article_html during cleaning, so
+            # _extract_media on clean_html misses them. Merge the URLs newspaper
+            # exposes separately (article.images) and keep alt text when the
+            # clean_html happens to retain a tag.
+            images, videos = _extract_media(clean_html)
+            seen_srcs = {img["src"] for img in images}
+            for src in article.images or []:
+                if src and src not in seen_srcs:
+                    images.append({"src": src, "alt": ""})
+                    seen_srcs.add(src)
+            return ScrapedArticle(
+                url=url,
+                title=title,
+                content=article.text,
+                # author + date come from structured metadata (extruct), NEVER
+                # newspaper's heuristics — those miss values and return wrong
+                # ones. If metadata lacks them, an explicit selector (found by
+                # the agent) supplies them; otherwise null (a null is refillable,
+                # a wrong value silently rots the corpus).
+                author=extract_meta_author(html),
+                published_date=extract_meta_date(html),
+                source="newspaper4k",
+                metadata={
+                    "keywords": article.keywords,
+                    "summary": article.summary,
+                },
+                html=html if include_html else None,
+                clean_html=clean_html,
+                markdown=_md(clean_html, heading_style="ATX") if clean_html else None,
+                top_image=article.top_image or None,
+                images=images,
+                videos=videos,
+            )
+        except Exception as e:
+            logger.debug(f"NewspaperExtractor failed for {url}: {e}")
+            return None
+
+
+class TrafilaturaExtractor(BaseExtractor):
+    """Extractor using trafilatura"""
+
+    def extract(
+        self, url: str, html: str, title_hint: str = None, include_html: bool = False
+    ) -> Optional[ScrapedArticle]:
+        try:
+            # Parse the HTML once and pass the resulting tree to both trafilatura
+            # calls — bare_extraction yields the structured metadata + plain
+            # text, extract(output_format="html") yields the cleaned HTML used
+            # for image/video discovery and markdown conversion. Sharing the
+            # tree avoids parsing the same document twice per page.
+            from trafilatura.utils import load_html
+
+            tree = load_html(html)
+            if tree is None:
+                return None
+
+            extracted = trafilatura.bare_extraction(tree, url=url)
+
+            if not extracted:
+                return None
+
+            # Convert to dict if it's a Document object
+            if hasattr(extracted, "as_dict"):
+                data = extracted.as_dict()
+            elif isinstance(extracted, dict):
+                data = extracted
+            else:
+                return None
+
+            if not data.get("text"):
+                return None
+
+            # Use hint if trafilatura failed to find title
+            title = data.get("title")
+            if not title and title_hint:
+                title = title_hint.strip()
+
+            clean_html = trafilatura.extract(
+                tree,
+                url=url,
+                output_format="html",
+                include_images=True,
+                include_links=True,
+            )
+            images, videos = _extract_media(clean_html)
+            return ScrapedArticle(
+                url=url,
+                title=title or "",
+                content=data.get("text"),
+                # author + date from structured metadata (extruct), never
+                # trafilatura's guess — same reasoning as NewspaperExtractor.
+                author=extract_meta_author(html),
+                published_date=extract_meta_date(html),
+                source="trafilatura",
+                metadata={
+                    "description": data.get("description"),
+                    "sitename": data.get("sitename"),
+                    "categories": data.get("categories"),
+                    "tags": data.get("tags"),
+                    "fingerprint": data.get("fingerprint"),
+                    "license": data.get("license"),
+                },
+                html=html if include_html else None,
+                clean_html=clean_html,
+                markdown=_md(clean_html, heading_style="ATX") if clean_html else None,
+                top_image=data.get("image") or None,
+                images=images,
+                videos=videos,
+            )
+        except Exception as e:
+            logger.debug(f"TrafilaturaExtractor failed for {url}: {e}")
+            return None
+
+
+class FusionExtractor(BaseExtractor):
+    """Extractor for Arc XP pages whose body lives only in Fusion JSON.
+
+    On some Arc XP sites the served DOM carries just the
+    headline and metadata while the article body is delivered inside the
+    ``Fusion.globalContent`` script blob and rendered client side. DOM-based
+    extractors therefore return navigation chrome instead of the article. This
+    reads the body straight out of that payload, so a plain HTTP fetch is
+    enough — no browser rendering.
+
+    Author and published_date still come from structured metadata (extruct),
+    matching NewspaperExtractor/TrafilaturaExtractor.
+    """
+
+    def extract(
+        self, url: str, html: str, title_hint: str = None, include_html: bool = False
+    ) -> Optional[ScrapedArticle]:
+        try:
+            data = fusion_global_content(html)
+            if not data:
+                return None
+
+            content = fusion_body_text(data)
+            title = (data.get("headlines") or {}).get("basic") or title_hint
+            if title:
+                title = title.strip()
+
+            if not title or not content:
+                logger.debug(
+                    f"FusionExtractor found no usable body for {url} "
+                    f"(title={bool(title)}, content_chars={len(content)})"
+                )
+                return None
+
+            return ScrapedArticle(
+                url=url,
+                title=title,
+                content=content,
+                author=extract_meta_author(html),
+                published_date=extract_meta_date(html),
+                source="fusion",
+                metadata={"description": (data.get("description") or {}).get("basic")},
+                html=html if include_html else None,
+            )
+        except Exception as e:
+            logger.debug(f"FusionExtractor failed for {url}: {e}")
+            return None
+
+
+class CustomExtractor(BaseExtractor):
+    """Extractor using custom CSS selectors"""
+
+    def __init__(self, selectors: Dict[str, str]):
+        """
+        Initialize with custom selectors.
+
+        Args:
+            selectors: Dict mapping field names to CSS selectors
+                      e.g., {"title": "h1.title", "content": "div.article"}
+        """
+        self.selectors = selectors
+
+    def extract(
+        self, url: str, html: str, title_hint: str = None, include_html: bool = False
+    ) -> Optional[ScrapedArticle]:
+        """
+        Extract content using custom CSS selectors.
+
+        Standard fields: title, author, content, date
+        Custom fields: anything else goes into metadata
+        """
+        try:
+            soup = BeautifulSoup(html, "lxml")
+
+            # Extract standard fields
+            title = self._extract_text(soup, self.selectors.get("title"))
+            logger.debug(
+                f"Extracted title: '{title}' using selector '{self.selectors.get('title')}'"
+            )
+            if not title and title_hint:
+                title = title_hint.strip()
+                logger.debug(f"Using title hint: '{title}'")
+
+            author = self._extract_text(soup, self.selectors.get("author"))
+            logger.debug(
+                f"Extracted author: '{author}' using selector '{self.selectors.get('author')}'"
+            )
+            # No explicit author selector match -> structured metadata fallback.
+            if not author:
+                author = extract_meta_author(html)
+
+            content = self._extract_text(soup, self.selectors.get("content"))
+            content_len = len(content) if content else 0
+            logger.debug(
+                f"Extracted content: {content_len} chars using selector '{self.selectors.get('content')}'"
+            )
+            if content and content_len < 200:
+                logger.debug(f"Content preview: '{content[:200]}'")
+
+            date_str = self._extract_text(soup, self.selectors.get("date"))
+            logger.debug(
+                f"Extracted date: '{date_str}' using selector '{self.selectors.get('date')}'"
+            )
+
+            # Validation: at minimum need title and content
+            if not title or not content:
+                logger.warning(
+                    f"CustomExtractor validation failed: title='{title}', content_len={content_len}"
+                )
+                return None
+
+            # Parse date if present (explicit selector wins); else fall back to
+            # structured metadata (OG/JSON-LD) so a config without a date
+            # selector still gets the date instead of null.
+            published_date = None
+            if date_str:
+                from dateutil import parser
+
+                try:
+                    published_date = parser.parse(date_str)
+                except Exception:
+                    try:
+                        published_date = parser.parse(date_str, fuzzy=True)
+                    except Exception as e:
+                        logger.debug(f"Failed to parse date '{date_str}': {e}")
+            if published_date is None:
+                published_date = extract_meta_date(html)
+
+            # Extract custom fields into metadata
+            metadata = {}
+            for field_name, selector in self.selectors.items():
+                # Skip standard fields
+                if field_name in ["title", "author", "content", "date"]:
+                    continue
+
+                # Extract custom field
+                value = self._extract_text(soup, selector)
+                if value:
+                    metadata[field_name] = value
+
+            return ScrapedArticle(
+                url=url,
+                title=title,
+                content=content,
+                author=author,
+                published_date=published_date,
+                source="custom",
+                metadata=metadata,
+                html=html if include_html else None,
+            )
+
+        except Exception as e:
+            logger.error(f"CustomExtractor failed for {url}: {e}")
+            return None
+
+    def _extract_text(
+        self, soup: BeautifulSoup, selector: Optional[str]
+    ) -> Optional[str]:
+        """
+        Extract text from HTML using CSS selector.
+
+        Args:
+            soup: BeautifulSoup object
+            selector: CSS selector string
+
+        Returns:
+            Extracted text or None
+        """
+        if not selector:
+            return None
+
+        try:
+            # Find element
+            element = soup.select_one(selector)
+            if not element:
+                logger.debug(f"Selector '{selector}' found no elements")
+                return None
+
+            # Get text and clean it
+            text = element.get_text(separator=" ", strip=True)
+            return text if text else None
+
+        except Exception as e:
+            logger.debug(f"Error extracting with selector '{selector}': {e}")
+            return None
+
+
+class SmartExtractor:
+    """
+    Intelligent extractor that tries multiple strategies in order.
+    Strategies:
+    1. 'custom': Use custom CSS selectors if provided
+    2. 'newspaper': Use newspaper4k on provided HTML
+    3. 'trafilatura': Use trafilatura on provided HTML
+    4. 'playwright': Fetch rendered HTML via browser, then try trafilatura
+    """
+
+    def __init__(
+        self, strategies: List[str] = None, custom_selectors: Dict[str, str] = None
+    ):
+        self.strategies = strategies or ["trafilatura", "newspaper"]
+        self.custom_selectors = custom_selectors
+
+    async def extract(
+        self,
+        url: str,
+        html: str,
+        title_hint: str = None,
+        include_html: bool = False,
+        wait_for_selector: str = None,
+        additional_delay: float = 0,
+        enable_scroll: bool = False,
+        max_scrolls: int = 5,
+        scroll_delay: float = 1.0,
+    ) -> Optional[ScrapedArticle]:
+        """
+        Async version of extract method with Playwright support.
+
+        Tries each strategy in order, including Playwright for JS-rendered content.
+        Falls back to next strategy if one fails.
+
+        Args:
+            url: The URL of the page
+            html: The raw HTML content
+            title_hint: Optional title extracted from other sources
+            include_html: Whether to include raw HTML in output
+            wait_for_selector: CSS selector to wait for when using Playwright
+            additional_delay: Additional seconds to wait after page load when using Playwright
+            enable_scroll: Whether to perform infinite scroll when using Playwright
+            max_scrolls: Maximum number of scrolls to perform
+            scroll_delay: Delay between scrolls in seconds
+        """
+        # Try each strategy in order
+        for strategy in self.strategies:
+            if strategy == "custom":
+                if self.custom_selectors:
+                    logger.info(f"Trying custom extractor for {url}")
+                    try:
+                        result = await asyncio.to_thread(
+                            CustomExtractor(self.custom_selectors).extract,
+                            url,
+                            html,
+                            title_hint,
+                            include_html,
+                        )
+                        if result:
+                            logger.info(f"Successfully extracted {url} using custom")
+                            return result
+                        else:
+                            logger.debug(
+                                f"Custom extractor returned no result for {url}"
+                            )
+                    except Exception as e:
+                        logger.debug(f"Custom extractor failed for {url}: {e}")
+                else:
+                    logger.debug(
+                        "Skipping 'custom' strategy - no custom selectors provided"
+                    )
+
+            elif strategy == "newspaper":
+                logger.info(f"Trying newspaper extractor for {url}")
+                try:
+                    result = await asyncio.to_thread(
+                        NewspaperExtractor().extract,
+                        url,
+                        html,
+                        title_hint,
+                        include_html,
+                    )
+                    if result:
+                        logger.info(f"Successfully extracted {url} using newspaper")
+                        return result
+                    else:
+                        logger.debug(
+                            f"Newspaper extractor returned no result for {url}"
+                        )
+                except Exception as e:
+                    logger.debug(f"Newspaper extractor failed for {url}: {e}")
+
+            elif strategy == "fusion":
+                logger.info(f"Trying fusion extractor for {url}")
+                try:
+                    result = await asyncio.to_thread(
+                        FusionExtractor().extract,
+                        url,
+                        html,
+                        title_hint,
+                        include_html,
+                    )
+                    if result:
+                        logger.info(f"Successfully extracted {url} using fusion")
+                        return result
+                    else:
+                        logger.debug(f"Fusion extractor returned no result for {url}")
+                except Exception as e:
+                    logger.debug(f"Fusion extractor failed for {url}: {e}")
+
+            elif strategy == "trafilatura":
+                logger.info(f"Trying trafilatura extractor for {url}")
+                try:
+                    result = await asyncio.to_thread(
+                        TrafilaturaExtractor().extract,
+                        url,
+                        html,
+                        title_hint,
+                        include_html,
+                    )
+                    if result:
+                        logger.info(f"Successfully extracted {url} using trafilatura")
+                        return result
+                    else:
+                        logger.debug(
+                            f"Trafilatura extractor returned no result for {url}"
+                        )
+                except Exception as e:
+                    logger.debug(f"Trafilatura extractor failed for {url}: {e}")
+
+            elif strategy == "playwright":
+                logger.info(f"Trying playwright extractor for {url}")
+                try:
+                    result = await self._extract_with_playwright_async(
+                        url,
+                        title_hint,
+                        include_html,
+                        wait_for_selector,
+                        additional_delay,
+                        enable_scroll,
+                        max_scrolls,
+                        scroll_delay,
+                    )
+                    if result:
+                        logger.info(f"Successfully extracted {url} using playwright")
+                        return result
+                    else:
+                        logger.debug(
+                            f"Playwright extractor returned no result for {url}"
+                        )
+                except Exception as e:
+                    logger.debug(f"Playwright extractor failed for {url}: {e}")
+
+        # All extractors failed
+        logger.error(f"All extractors failed for {url}")
+        return None
+
+    async def _extract_with_playwright_async(
+        self,
+        url: str,
+        title_hint: str = None,
+        include_html: bool = False,
+        wait_for_selector: str = None,
+        additional_delay: float = 0,
+        enable_scroll: bool = False,
+        max_scrolls: int = 5,
+        scroll_delay: float = 1.0,
+    ) -> Optional[ScrapedArticle]:
+        """
+        Fetch via Playwright (async) and extract using Trafilatura
+
+        Args:
+            url: The URL to fetch
+            title_hint: Optional title hint
+            include_html: Whether to include raw HTML in output
+            wait_for_selector: CSS selector to wait for after navigation
+            additional_delay: Additional seconds to wait after page load
+            enable_scroll: Whether to perform infinite scroll
+            max_scrolls: Maximum number of scrolls to perform
+            scroll_delay: Delay between scrolls in seconds
+        """
+        try:
+            logger.info(f"Starting Playwright fetch for {url}")
+            if wait_for_selector:
+                logger.info(f"Will wait for selector: {wait_for_selector}")
+            if additional_delay > 0:
+                logger.info(f"Will wait additional {additional_delay} seconds")
+            if enable_scroll:
+                logger.info(
+                    f"Will perform infinite scroll: {max_scrolls} scrolls with {scroll_delay}s delay"
+                )
+
+            from utils.cf_browser import CloudflareBrowserClient
+
+            async with CloudflareBrowserClient(headless=False) as browser:
+                logger.info("CloudflareBrowserClient started")
+
+                # Navigate to URL
+                await browser.page.goto(url, wait_until="networkidle", timeout=60000)
+                logger.info(f"Navigated to {url}")
+
+                # Wait for selector if specified
+                if wait_for_selector:
+                    await browser.page.wait_for_selector(
+                        wait_for_selector, timeout=30000
+                    )
+                    logger.info(f"Selector found: {wait_for_selector}")
+
+                # Additional delay if specified
+                if additional_delay > 0:
+                    await asyncio.sleep(additional_delay)
+
+                # Infinite scroll if enabled
+                if enable_scroll:
+                    for i in range(max_scrolls):
+                        await browser.page.evaluate(
+                            "window.scrollTo(0, document.body.scrollHeight)"
+                        )
+                        await asyncio.sleep(scroll_delay)
+                        logger.info(f"Scroll {i+1}/{max_scrolls}")
+
+                logger.info("Browser navigated")
+                html = await browser.page.content()
+                logger.info(f"Got HTML from browser: {len(html)} bytes")
+                if html:
+                    # Try Trafilatura on rendered HTML
+                    return await asyncio.to_thread(
+                        TrafilaturaExtractor().extract,
+                        url,
+                        html,
+                        title_hint,
+                        include_html,
+                    )
+                else:
+                    logger.warning("Browser navigation failed")
+        except Exception as e:
+            logger.error(f"Playwright fetch failed: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+        return None

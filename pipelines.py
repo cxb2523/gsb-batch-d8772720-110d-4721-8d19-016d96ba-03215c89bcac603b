@@ -1,0 +1,225 @@
+from datetime import datetime, timezone
+from itemadapter import ItemAdapter
+
+
+def _normalize_dt(dt):
+    """Normalize any publish datetime to tz-aware UTC (matching scraped_at).
+
+    Dates arrive parsed by different paths (extruct/dateutil in the site's own
+    offset, parse_datetime, custom selectors) — a mix of timezones and of
+    naive/aware. Storing one canonical form (UTC) keeps the corpus comparable
+    and sortable. A naive datetime is assumed to already be UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _serialize_datetime_recursive(obj):
+    """Recursively convert datetime objects to ISO strings for JSON serialization.
+
+    Handles nested dicts and lists from nested_list extraction.
+    """
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: _serialize_datetime_recursive(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_datetime_recursive(item) for item in obj]
+    else:
+        return obj
+
+
+class ScrapaiPipeline:
+    @classmethod
+    def from_crawler(cls, crawler):
+        """Create pipeline from crawler (Scrapy convention)."""
+        pipe = cls()
+        pipe.crawler = crawler
+        return pipe
+
+    def process_item(self, item):
+        adapter = ItemAdapter(item)
+
+        # Add scraped timestamp
+        adapter["scraped_at"] = datetime.now().isoformat()
+
+        # Add source (get spider name from crawler)
+        spider_name = (
+            self.crawler.spider.name
+            if hasattr(self, "crawler") and self.crawler.spider
+            else "unknown"
+        )
+        adapter["source"] = spider_name
+
+        return item
+
+
+class DatabasePipeline:
+    def __init__(self):
+        from core.db import SessionLocal
+
+        self.db = SessionLocal()
+        self.buffer = []
+        self.batch_size = 100
+
+    def process_item(self, item, spider):
+        self.buffer.append(item)
+        if len(self.buffer) >= self.batch_size:
+            self._flush(spider)
+        return item
+
+    def close_spider(self, spider):
+        if self.buffer:
+            self._flush(spider)
+        self.db.close()
+
+    def _flush(self, spider):
+        from core.models import ScrapedItem
+
+        if not self.buffer:
+            return
+
+        # Drop malformed items missing the 'url' key before anything else.
+        # A single url-less item used to raise KeyError in the dedup step
+        # below and abort the whole flush, losing every buffered item.
+        dropped = [i for i in self.buffer if "url" not in i]
+        if dropped:
+            spider.logger.warning(
+                f"Skipping {len(dropped)} item(s) with no 'url' key during flush"
+            )
+            self.buffer = [i for i in self.buffer if "url" in i]
+        if not self.buffer:
+            return
+
+        # 1. Deduplication (Batch Query) — scoped per-spider so the same URL
+        #    can legitimately exist across spiders / projects
+        urls = [i["url"] for i in self.buffer]
+        spider_id = self.buffer[0]["spider_id"]
+        try:
+            existing_items = (
+                self.db.query(ScrapedItem.url)
+                .filter(ScrapedItem.spider_id == spider_id, ScrapedItem.url.in_(urls))
+                .all()
+            )
+            existing_urls = {r[0] for r in existing_items}
+        except Exception as e:
+            spider.logger.error(f"Error checking duplicates: {e}")
+            existing_urls = set()
+
+        # Fields that map to ScrapedItem columns or are pipeline bookkeeping.
+        STANDARD_FIELDS = {
+            "url",
+            "title",
+            "content",
+            "author",
+            "published_date",
+            "spider_id",
+            "spider_name",
+            "source",
+            "metadata",
+            "html",
+            "extracted_at",
+            "_callback",
+            "scraped_at",
+        }
+
+        # Extractor-internal fields that exist on the item only so FIELDS
+        # `from` directives can reference them; they are never persisted.
+        # clean_html is the raw extractor output used to compute markdown and
+        # discover media — keeping it in metadata_json would balloon row sizes.
+        EXTRACTOR_INTERNAL_FIELDS = {"clean_html"}
+
+        # 2. Filter and Create Objects
+        new_objects = []
+        seen_in_batch = set()
+        for item in self.buffer:
+            if item["url"] in existing_urls:
+                spider.logger.debug(f"Item already exists: {item['url']}")
+                continue
+            if item["url"] in seen_in_batch:
+                spider.logger.debug(f"Duplicate in batch, skipping: {item['url']}")
+                continue
+            seen_in_batch.add(item["url"])
+
+            # Check if this is a callback-extracted item
+            if "_callback" in item:
+                # Separate custom fields from standard fields
+                custom_fields = {
+                    k: v for k, v in item.items() if k not in STANDARD_FIELDS
+                }
+
+                # Convert datetime objects to ISO strings for JSON serialization
+                for key, value in list(custom_fields.items()):
+                    if isinstance(value, datetime):
+                        custom_fields[key] = value.isoformat()
+                    elif isinstance(value, list):
+                        # Handle lists that might contain datetime objects
+                        custom_fields[key] = [
+                            v.isoformat() if isinstance(v, datetime) else v
+                            for v in value
+                        ]
+                    elif isinstance(value, dict):
+                        # Handle nested dicts (from nested_list extraction)
+                        custom_fields[key] = _serialize_datetime_recursive(value)
+
+                custom_fields["_callback"] = item["_callback"]
+                metadata = custom_fields
+            else:
+                # Legacy article extraction — preserve all non-standard fields
+                # (extractor extras like markdown/top_image/videos plus any
+                # FIELDS-populated project schema fields) in metadata_json
+                # so the project's schema-as-contract holds end-to-end.
+                metadata = dict(item.get("metadata") or {})
+                for key, value in item.items():
+                    if key in STANDARD_FIELDS or key in EXTRACTOR_INTERNAL_FIELDS:
+                        continue
+                    if key in metadata:
+                        continue
+                    if isinstance(value, datetime):
+                        value = value.isoformat()
+                    metadata[key] = value
+
+            db_item = ScrapedItem(
+                spider_id=item["spider_id"],
+                url=item["url"],
+                title=item.get("title"),
+                content=item.get("content"),
+                published_date=_normalize_dt(item.get("published_date")),
+                author=item.get("author"),
+                metadata_json=metadata,
+            )
+            new_objects.append(db_item)
+
+        # 3. Bulk Insert (with per-row fallback so one bad row doesn't drop the batch)
+        if new_objects:
+            try:
+                self.db.add_all(new_objects)
+                self.db.commit()
+                spider.logger.info(f"Saved {len(new_objects)} items to DB (Batch)")
+            except Exception as e:
+                self.db.rollback()
+                spider.logger.warning(
+                    f"Batch insert failed ({e}); falling back to per-row insert"
+                )
+                saved = 0
+                quarantined = 0
+                for obj in new_objects:
+                    try:
+                        self.db.add(obj)
+                        self.db.commit()
+                        saved += 1
+                    except Exception as row_err:
+                        self.db.rollback()
+                        quarantined += 1
+                        spider.logger.error(
+                            f"Quarantined item url={obj.url!r}: {row_err}"
+                        )
+                spider.logger.info(
+                    f"Saved {saved}/{len(new_objects)} items "
+                    f"({quarantined} quarantined)"
+                )
+
+        self.buffer = []

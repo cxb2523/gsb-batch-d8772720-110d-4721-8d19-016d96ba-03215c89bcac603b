@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""
+Page Inspector Utility
+
+Downloads and analyzes HTML from a source URL to help create scrapers.
+
+In the default (lightweight) mode it ESCALATES transports automatically:
+plain HTTP → curl_cffi (TLS impersonation). If both are blocked it reports that a
+browser is needed; the CLI then runs the browser subprocess (with Xvfb handling).
+It tells you which transport worked and the flag to set in the spider config.
+
+Usage:
+    python -m utils.inspector https://example.com/fact-checks
+"""
+
+import os
+import argparse
+import asyncio
+import aiohttp
+from pathlib import Path
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+
+from core.config import DATA_DIR
+from core.block_signals import is_blocked
+from core import proxy
+from settings import USER_AGENT
+
+
+def _resolve_output_dir(url, output_dir, project):
+    """Resolve the analysis output directory from the URL (domain-based)."""
+    if output_dir is not None:
+        return output_dir
+
+    parsed_url = urlparse(url)
+    domain = parsed_url.netloc.replace("www.", "")
+
+    if domain == "web.archive.org":
+        import re
+
+        wayback_pattern = r"/web/(\d{8})\d*/(?:https?://)?(?:www\.)?([^/]+)"
+        match = re.search(wayback_pattern, url)
+        if match:
+            timestamp = match.group(1)
+            original_domain = match.group(2).replace(".", "_").replace(":", "_")
+            return str(
+                Path(DATA_DIR)
+                / project
+                / "web_archive_org"
+                / original_domain
+                / timestamp
+                / "analysis"
+            )
+        return str(Path(DATA_DIR) / project / "web_archive_org" / "analysis")
+
+    source_id = domain.replace(".", "_")
+    return str(Path(DATA_DIR) / project / source_id / "analysis")
+
+
+async def _fetch_http(url, proxy_url=None):
+    """Plain aiohttp fetch. Returns (status, html) or (None, None) on error."""
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        headers = {"User-Agent": USER_AGENT}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, timeout=timeout, proxy=proxy_url
+            ) as response:
+                return response.status, await response.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        print(f"Plain HTTP fetch failed: {e}")
+        return None, None
+
+
+def _fetch_curl_cffi(url, proxy_url=None):
+    """curl_cffi (Chrome TLS impersonation). Returns (status, html) or (None, None)."""
+    try:
+        from curl_cffi import requests as cffi_requests
+
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        resp = cffi_requests.get(
+            url,
+            impersonate="chrome",
+            timeout=30,
+            allow_redirects=True,
+            proxies=proxies,
+        )
+        return resp.status_code, resp.text
+    except Exception as e:
+        print(f"curl_cffi fetch failed: {e}")
+        return None, None
+
+
+async def _capture_screenshot(page, path, screens=2):
+    """Save a screenshot capped at ``screens`` viewport-heights from the top.
+
+    A full-page PNG of a long article is too tall to stay legible once viewed
+    (and costs a lot of tokens). Capping at ~2 screen-heights keeps the header,
+    title, and start of the content sharp — which is where most fields live.
+    ``screens=0`` falls back to a full-page capture.
+    """
+    if not screens:
+        await page.screenshot(path=path, full_page=True)
+        return
+    vp = page.viewport_size or {"width": 1280, "height": 800}
+    try:
+        scroll_h = int(await page.evaluate("document.body.scrollHeight"))
+    except Exception:
+        scroll_h = vp["height"] * screens
+    height = min(vp["height"] * screens, scroll_h) or vp["height"]
+    await page.screenshot(
+        path=path, clip={"x": 0, "y": 0, "width": vp["width"], "height": height}
+    )
+
+
+def _resolve_session_file(name):
+    """Map a session NAME to its storage_state file, or None if absent."""
+    if not name:
+        return None
+    from core.sessions import session_path
+
+    p = session_path(name)
+    if p.exists():
+        return str(p)
+    print(f"Session '{name}' not found at {p} — proceeding without it.")
+    return None
+
+
+async def _fetch_browser(
+    url, proxy_type, screenshot_path=None, screenshot_screens=2, session=None
+):
+    """Fetch a rendered page, reusing the shared browser service if it is
+    running, otherwise cold-starting a browser. Returns html or None.
+
+    When ``screenshot_path`` is given, a PNG of the rendered page is saved too.
+    ``session`` is an optional saved-login session NAME (see core/sessions.py).
+    """
+    from utils import browser_client
+
+    if browser_client.is_running():
+        print("Using shared browser service (warm browser)...")
+        resp = browser_client.request(
+            "inspect",
+            url=url,
+            path=screenshot_path,
+            screens=screenshot_screens,
+            session=session,
+            timeout=180,
+        )
+        if resp and resp.get("ok"):
+            if screenshot_path:
+                print(f"Saved screenshot to: {screenshot_path}")
+            return resp.get("html")
+        print("Browser service fetch failed.")
+        return None
+
+    return await _fetch_browser_cold(
+        url, proxy_type, screenshot_path, screenshot_screens, session
+    )
+
+
+async def _fetch_browser_cold(
+    url, proxy_type, screenshot_path=None, screenshot_screens=2, session=None
+):
+    """CloakBrowser fetch (JS rendering + Cloudflare bypass). Returns html or None.
+
+    When ``screenshot_path`` is given, also saves a PNG of the rendered page
+    (capped at ``screenshot_screens`` screen-heights) for the agent to view.
+    """
+    from utils.cf_browser import CloudflareBrowserClient
+
+    async with CloudflareBrowserClient(
+        headless=False,
+        proxy_chain=proxy.chain(proxy_type),
+        session_file=_resolve_session_file(session),
+    ) as browser:
+        html = await browser.fetch(url)
+        if screenshot_path and html:
+            try:
+                await _capture_screenshot(
+                    browser.page, screenshot_path, screenshot_screens
+                )
+                print(f"Saved screenshot to: {screenshot_path}")
+            except Exception as e:
+                print(f"Screenshot failed: {e}")
+        return html
+
+
+_FLAG_HINT = {
+    "http": "Plain HTTP works — no transport flag needed.",
+    "curl_cffi": "curl_cffi works (plain HTTP was blocked). "
+    'Set "CURL_CFFI_ENABLED": true in the spider config.',
+    "browser": 'Browser works. Set "CLOUDFLARE_ENABLED": true '
+    '(or "BROWSER_ENABLED": true for JS-only sites).',
+}
+
+
+def _report(transport):
+    print(f"\n✓ Transport: {transport} — {_FLAG_HINT[transport]}")
+
+
+async def inspect_page_async(
+    url,
+    output_dir=None,
+    proxy_type="auto",
+    save_html=True,
+    mode="http",
+    project="default",
+    screenshot=False,
+    screenshot_screens=2,
+    session=None,
+):
+    """Inspect a page, escalating transport as needed.
+
+    Returns a dict: {"transport": "http"|"curl_cffi"|"browser"|None,
+                     "needs_browser": bool}.
+    In http mode, escalates plain HTTP → curl_cffi; if both blocked, returns
+    needs_browser=True so the caller can run the browser path. When ``screenshot``
+    is set (browser mode), saves a full-page page.png for the agent to view.
+    """
+    print(f"Inspecting: {url}")
+    output_dir = _resolve_output_dir(url, output_dir, project)
+    os.makedirs(output_dir, exist_ok=True)
+
+    html_content = None
+    transport = None
+
+    if mode == "browser":
+        print("Using CloakBrowser (JS rendering + Cloudflare bypass)...")
+        shot = os.path.join(output_dir, "page.png") if screenshot else None
+        html_content = await _fetch_browser(
+            url, proxy_type, shot, screenshot_screens, session
+        )
+        if not html_content:
+            print(f"Failed to fetch page: {url}")
+            return {"transport": None, "needs_browser": True}
+        transport = "browser"
+    else:
+        # Only route the lightweight fetchers through a proxy when one is
+        # explicitly requested; "auto"/"none" stay direct (direct-first).
+        http_proxy = (
+            proxy.select(proxy_type)[0] if proxy_type not in ("auto", "none") else None
+        )
+        if http_proxy:
+            print(f"Using {proxy_type} proxy for HTTP/curl_cffi...")
+        print("Trying plain HTTP...")
+        status, html_content = await _fetch_http(url, http_proxy)
+        if not is_blocked(status, html_content):
+            transport = "http"
+        else:
+            print(f"Plain HTTP blocked (status {status}) — trying curl_cffi...")
+            status, html_content = await asyncio.to_thread(
+                _fetch_curl_cffi, url, http_proxy
+            )
+            if not is_blocked(status, html_content):
+                transport = "curl_cffi"
+            else:
+                print("curl_cffi also blocked — a browser is needed.")
+                return {"transport": None, "needs_browser": True}
+
+    if save_html and html_content:
+        html_file = os.path.join(output_dir, "page.html")
+        with open(html_file, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        print(f"Saved HTML to: {html_file}")
+
+    if html_content:
+        soup = BeautifulSoup(html_content, "html.parser")
+        title = soup.title.text if soup.title else "No title"
+        print(f"\nTitle: {title}")
+        print(f"HTML size: {len(html_content)} bytes")
+
+    _report(transport)
+    return {"transport": transport, "needs_browser": False}
+
+
+def inspect_page(
+    url,
+    output_dir=None,
+    proxy_type="auto",
+    save_html=True,
+    mode="http",
+    project="default",
+    screenshot=False,
+    screenshot_screens=2,
+    session=None,
+):
+    """Synchronous wrapper for inspect_page_async."""
+    return asyncio.run(
+        inspect_page_async(
+            url,
+            output_dir,
+            proxy_type,
+            save_html,
+            mode,
+            project,
+            screenshot,
+            screenshot_screens,
+            session,
+        )
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Inspect a page to help with creating a scraper"
+    )
+    parser.add_argument("url", type=str, help="URL to inspect")
+    parser.add_argument(
+        "--output-dir", type=str, default=None, help="Directory to save analysis"
+    )
+    parser.add_argument(
+        "--proxy-type",
+        default="auto",
+        help="Proxy to use: auto/none, or any name configured in .env",
+    )
+    parser.add_argument(
+        "--no-save-html", action="store_true", help="Do not save the full HTML"
+    )
+    parser.add_argument(
+        "--browser", action="store_true", help="Use CloakBrowser for JS + Cloudflare"
+    )
+    parser.add_argument(
+        "--screenshot",
+        action="store_true",
+        help="Save a screenshot (page.png) — forces browser rendering",
+    )
+    parser.add_argument(
+        "--screenshot-screens",
+        type=int,
+        default=2,
+        help="Screen-heights to capture from the top (default 2; 0 = full page)",
+    )
+    parser.add_argument("--project", type=str, default="default", help="Project name")
+    parser.add_argument(
+        "--session", type=str, default=None, help="Saved login session name"
+    )
+
+    args = parser.parse_args()
+
+    # A screenshot needs a rendered page, so it implies browser mode.
+    mode = "browser" if (args.browser or args.screenshot) else "http"
+    inspect_page(
+        args.url,
+        args.output_dir,
+        args.proxy_type,
+        not args.no_save_html,
+        mode=mode,
+        project=args.project,
+        screenshot=args.screenshot,
+        screenshot_screens=args.screenshot_screens,
+        session=args.session,
+    )
+
+
+if __name__ == "__main__":
+    main()

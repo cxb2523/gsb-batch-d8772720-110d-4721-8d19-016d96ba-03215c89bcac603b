@@ -1,0 +1,68 @@
+import os
+from contextlib import contextmanager
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker, scoped_session, DeclarativeBase
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///scrapai.db"
+
+engine = create_engine(DATABASE_URL)
+
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_conn, connection_record):
+    if "sqlite" in DATABASE_URL:
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA cache_size=-64000")
+        # Wait up to 5s for write locks instead of immediately failing with
+        # "database is locked" — needed for concurrent queue workers.
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+
+def is_postgres():
+    return "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL
+
+
+def is_sqlite():
+    return "sqlite" in DATABASE_URL
+
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+db_session = scoped_session(SessionLocal)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+@contextmanager
+def get_db():
+    """Yield a SQLAlchemy session, rolling back on exception and always closing.
+
+    Usage:
+        with get_db() as db:
+            db.query(...)
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def init_db():
+    import core.models  # noqa: F401 - needed to register models with SQLAlchemy
+
+    Base.metadata.create_all(bind=engine)

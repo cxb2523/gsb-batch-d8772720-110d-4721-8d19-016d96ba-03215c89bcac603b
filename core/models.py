@@ -1,0 +1,141 @@
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Text,
+    JSON,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import relationship
+from .db import Base
+
+
+def _utcnow():
+    """Return current UTC time."""
+    return datetime.now(timezone.utc)
+
+
+def deserialize_spider_settings(settings_rows: Iterable) -> Dict[str, Any]:
+    """Convert SpiderSetting rows into a settings dict.
+
+    Values are stored as strings in the DB. We first try JSON decoding (which
+    covers dicts, lists, true/false/null literals, and numbers); failing that,
+    we honor a legacy convention of stringified booleans and integers.
+    """
+    result: Dict[str, Any] = {}
+    for s in settings_rows:
+        val = s.value
+        try:
+            val = json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            if isinstance(val, str):
+                if val.lower() == "true":
+                    val = True
+                elif val.lower() == "false":
+                    val = False
+                elif val.isdigit():
+                    val = int(val)
+        result[s.key] = val
+    return result
+
+
+class Spider(Base):
+    __tablename__ = "spiders"
+    __table_args__ = (
+        UniqueConstraint("name", "project", name="uq_spider_name_project"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, nullable=False)
+    allowed_domains = Column(JSON, nullable=False)
+    start_urls = Column(JSON, nullable=False)
+    source_url = Column(String, nullable=True)
+    active = Column(Boolean, default=True)
+    project = Column(String(255), default="default")
+    callbacks_config = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    rules = relationship(
+        "SpiderRule", back_populates="spider", cascade="all, delete-orphan"
+    )
+    settings = relationship(
+        "SpiderSetting", back_populates="spider", cascade="all, delete-orphan"
+    )
+    items = relationship(
+        "ScrapedItem", back_populates="spider", cascade="all, delete-orphan"
+    )
+
+
+class SpiderRule(Base):
+    __tablename__ = "spider_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    spider_id = Column(Integer, ForeignKey("spiders.id"), nullable=False)
+
+    allow_patterns = Column(JSON, nullable=True)
+    deny_patterns = Column(JSON, nullable=True)
+    restrict_xpaths = Column(JSON, nullable=True)
+    restrict_css = Column(JSON, nullable=True)
+    tags = Column(JSON, nullable=True)
+
+    callback = Column(String, nullable=True, default=None)
+    follow = Column(Boolean, default=True)
+    priority = Column(Integer, default=0)
+
+    spider = relationship("Spider", back_populates="rules")
+
+
+class SpiderSetting(Base):
+    __tablename__ = "spider_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    spider_id = Column(Integer, ForeignKey("spiders.id"), nullable=False)
+
+    key = Column(String, nullable=False)
+    value = Column(String, nullable=False)
+    type = Column(String, default="string")
+
+    spider = relationship("Spider", back_populates="settings")
+
+
+class ScrapedItem(Base):
+    __tablename__ = "scraped_items"
+    __table_args__ = (UniqueConstraint("spider_id", "url", name="uq_item_spider_url"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    spider_id = Column(Integer, ForeignKey("spiders.id"), nullable=False)
+
+    url = Column(String, index=True, nullable=False)
+    title = Column(String, nullable=True)
+    content = Column(Text, nullable=True)
+    published_date = Column(DateTime, nullable=True)
+    author = Column(String, nullable=True)
+    scraped_at = Column(DateTime, default=_utcnow)
+    metadata_json = Column(JSON, nullable=True)
+
+    spider = relationship("Spider", back_populates="items")
+
+
+class CrawlQueue(Base):
+    __tablename__ = "crawl_queue"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_name = Column(String(255), nullable=False, default="default")
+    website_url = Column(Text, nullable=False)
+    custom_instruction = Column(Text, nullable=True)
+    status = Column(String(50), nullable=False, default="pending")
+    priority = Column(Integer, nullable=False, default=5)
+    processing_by = Column(String(255), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    completed_at = Column(DateTime, nullable=True)
