@@ -15,7 +15,7 @@ from base_api.modules.provider import fetch_content, download_errors, download_h
 from base_api.modules.logger import configure_app_logging, get_logger
 import logging
 from typing import AsyncGenerator, ClassVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from selectolax.lexbor import LexborHTMLParser
 from curl_cffi.requests import AsyncSession
 from base_api.modules.type_hints import DownloadReport
@@ -29,6 +29,7 @@ from base_api import (
     ErrorAction,
     ErrorMode,
     Helper,
+    LoadState,
     MediaLoadError,
     MediaLoadErrors,
     RetryPolicy,
@@ -52,6 +53,26 @@ logger = get_logger(__name__)
 
 
 HELPER_RETRY = RetryPolicy(max_attempts=4, base_delay=0.5, max_delay=8.0)
+
+# Provenance labels returned alongside the parsed Video fields.  They record
+# which layer of a detail page ultimately supplied a value, or whether the
+# field was missing from every available layer.
+FIELD_SOURCE_JSON_LD = "json-ld"
+FIELD_SOURCE_DOM = "dom"
+FIELD_SOURCE_SCRIPT = "script"
+FIELD_SOURCE_DEFAULT = "default"
+FIELD_SOURCE_MISSING = "missing"
+
+# Fields whose extraction layer is tracked in ``_html_field_sources``.
+TRACKED_HTML_FIELDS = (
+    "title",
+    "thumbnail_url",
+    "publish_date",
+    "content_url",
+    "author_link",
+    "author_name",
+    "embed_url",
+)
 
 _is_resource_gone = is_resource_gone
 on_error = default_on_error
@@ -165,14 +186,45 @@ class Video(BaseMedia):
     # Optional
     video_id: str | None = None
 
+    # Per-field provenance for the latest HTML parse; keyed by field name with
+    # FIELD_SOURCE_* values.  A regular slot (not a media_field), so it is
+    # excluded from loader validation and ``to_dict`` output.
+    _html_field_sources: dict[str, str] = field(default_factory=dict, init=False, repr=False, compare=False)
+
     loader_methods: ClassVar[dict[str, str]] = {"html": "_load_html"}
 
     async def _load_html(self) -> dict[str, object]:
         html_content = await get_html_content(core=self.core, url=self.url, owner=self)
-        return await asyncio.to_thread(self._extract_html, html_content, self.url)
+        extracted, field_sources = await asyncio.to_thread(
+            self._extract_html_with_sources, html_content, self.url
+        )
+        # Provenance comes from this single parse run; the page is never
+        # re-requested to determine where a value originated.
+        self._html_field_sources = field_sources
+        return extracted
+
+    async def get_field_sources(self) -> dict[str, str]:
+        """Return the provenance label of each tracked field from this parse.
+
+        Missing fields are labeled :data:`FIELD_SOURCE_MISSING` rather than
+        carrying an empty source.  Triggers the HTML load once if it has not
+        run yet, and reuses the result of that same parse afterwards — even
+        when that parse produced an all-missing provenance mapping.
+        """
+        if self._source_states.get("html") is not LoadState.LOADED:
+            await self.load_sources("html")
+        return dict(self._html_field_sources)
 
     @staticmethod
     def _extract_html(html_content: str, url: str | None = None) -> dict:
+        """Backward-compatible wrapper returning only the flat field mapping."""
+        extracted, _ = Video._extract_html_with_sources(html_content, url)
+        return extracted
+
+    @staticmethod
+    def _extract_html_with_sources(
+        html_content: str, url: str | None = None
+    ) -> tuple[dict, dict[str, str]]:
         parser = LexborHTMLParser(html_content)
 
         data = {}
@@ -185,19 +237,50 @@ class Video(BaseMedia):
                 logger.warning("Skipping invalid JSON-LD metadata for %s", url, exc_info=True)
                 continue
 
+        def resolve(candidates):
+            """Return (value, source) for the first non-empty candidate.
+
+            ``candidates`` is an ordered list of ``(source, value)`` pairs;
+            the first hit wins and later layers never override it.
+            """
+            for source, value in candidates:
+                if value:
+                    return value, source
+            return None, FIELD_SOURCE_MISSING
+
+        def json_ld_author(key: str) -> str | None:
+            author = data.get("author")
+            if isinstance(author, dict):
+                value = author.get(key)
+                return value if isinstance(value, str) else None
+            if isinstance(author, str) and key == "name":
+                return author
+            return None
+
+        # Duration / length — captured before any fallback node decomposition
+        # below mutates the shared DOM.
+        length_node = parser.css_first("span.duration")
+        length = length_node.text(strip=True) if length_node else None
+
         # Title
         title = None
         title_node = parser.css_first("#title-auto-tr")
         if title_node:
             title = title_node.text(strip=True)
-        elif raw_title := data.get("name"):
-            title = html.unescape(raw_title)
-        elif match := re.search(r"html5player\.setVideoTitle\('([^']+)'\)", html_content):
-            title = html.unescape(match.group(1))
-        elif title_node := parser.css_first(".page-title, .video-title"):
-            for bad_span in title_node.css(".duration, .video-hd-mark, .icon-f, .badge"):
+        title_candidates = [(FIELD_SOURCE_DOM, title)]
+        if raw_title := data.get("name"):
+            title_candidates.append((FIELD_SOURCE_JSON_LD, html.unescape(raw_title)))
+        if match := re.search(r"html5player\.setVideoTitle\('([^']+)'\)", html_content):
+            # Script titles routinely carry HTML entities; unescape on fallback.
+            title_candidates.append((FIELD_SOURCE_SCRIPT, html.unescape(match.group(1))))
+        fallback_title_node = parser.css_first(".page-title, .video-title")
+        if fallback_title_node is not None:
+            for bad_span in fallback_title_node.css(".duration, .video-hd-mark, .icon-f, .badge"):
                 bad_span.decompose()
-            title = title_node.text(strip=True)
+            title_candidates.append(
+                (FIELD_SOURCE_DOM, fallback_title_node.text(strip=True))
+            )
+        title, title_source = resolve(title_candidates)
 
         # Description
         description = html.unescape(data["description"]) if data.get("description") else None
@@ -207,37 +290,78 @@ class Video(BaseMedia):
         if not description:
             description = title
 
-        # Thumbnail URL
+        # Thumbnail URL — preferred JSON-LD, then html5player scripts, then DOM.
         raw_thumb = data.get("thumbnailUrl")
-        thumbnail_url = None
+        json_ld_thumb = None
         if isinstance(raw_thumb, list) and raw_thumb:
-            thumbnail_url = raw_thumb[0]
+            json_ld_thumb = raw_thumb[0]
         elif isinstance(raw_thumb, str):
-            thumbnail_url = raw_thumb
-        elif match := re.search(r"html5player\.setThumbUrl\('([^']+)'\)", html_content):
-            thumbnail_url = match.group(1)
+            json_ld_thumb = raw_thumb
+
+        script_thumb = None
+        if match := re.search(r"html5player\.setThumbUrl\('([^']+)'\)", html_content):
+            script_thumb = match.group(1)
         elif match := re.search(r"html5player\.setThumbUrl169\('([^']+)'\)", html_content):
-            thumbnail_url = match.group(1)
-        elif img_node := parser.css_first(".video-pic img"):
-            thumbnail_url = img_node.attributes.get("src")
+            script_thumb = match.group(1)
+
+        dom_thumb = None
+        if img_node := parser.css_first(".video-pic img"):
+            dom_thumb = img_node.attributes.get("src")
+        if not dom_thumb:
+            if og_img := parser.css_first('meta[property="og:image"]'):
+                dom_thumb = og_img.attributes.get("content")
+        if not dom_thumb:
+            if thumb_link := parser.css_first('link[rel="image_src"], link[rel="thumbnail"]'):
+                dom_thumb = thumb_link.attributes.get("href")
+
+        thumbnail_url, thumbnail_source = resolve([
+            (FIELD_SOURCE_JSON_LD, json_ld_thumb),
+            (FIELD_SOURCE_SCRIPT, script_thumb),
+            (FIELD_SOURCE_DOM, dom_thumb),
+        ])
 
         # Preview video URL
         preview_video_url = f"{thumbnail_url.rsplit('/', 1)[0]}/preview.mp4" if thumbnail_url else None
 
-        # Publish date
-        publish_date = data.get("uploadDate")
-        if not publish_date:
-            if match := re.search(r"<!--\s*dispo\s*-\s*([A-Za-z]+,\s*\d+\s+[A-Za-z]+\s+\d+\s+\d+:\d+:\d+\s+[+\-]?\d*)", html_content):
-                publish_date = match.group(1)
+        # Publish date — JSON-LD first, then the inline dispo comment /
+        # html5player-style regex, then DOM metadata nodes.
+        dispo_date = None
+        if match := re.search(
+            r"<!--\s*dispo\s*-\s*([A-Za-z]+,\s*\d+\s+[A-Za-z]+\s+\d+\s+\d+:\d+:\d+\s+[+\-]?\d*)",
+            html_content,
+        ):
+            dispo_date = match.group(1)
+        dom_publish_date = None
+        if date_meta := parser.css_first('meta[property="article:published_time"], meta[itemprop="uploadDate"], meta[name="publish-date"]'):
+            dom_publish_date = date_meta.attributes.get("content")
+        if not dom_publish_date:
+            if time_node := parser.css_first("time[datetime]"):
+                dom_publish_date = time_node.attributes.get("datetime")
+        publish_date, publish_date_source = resolve([
+            (FIELD_SOURCE_JSON_LD, data.get("uploadDate") or data.get("datePublished")),
+            (FIELD_SOURCE_SCRIPT, dispo_date),
+            (FIELD_SOURCE_DOM, dom_publish_date),
+        ])
 
-        # Content URL
-        content_url = data.get("contentUrl")
-        if not content_url:
-            if match := (
-                re.search(r"html5player\.setVideoUrlHigh\('([^']+)'\)", html_content)
-                or re.search(r"html5player\.setVideoUrlLow\('([^']+)'\)", html_content)
-            ):
-                content_url = match.group(1)
+        # Content URL — JSON-LD first, then html5player quality assignments,
+        # then DOM player sources / Open Graph metadata.
+        script_content_url = None
+        if match := (
+            re.search(r"html5player\.setVideoUrlHigh\('([^']+)'\)", html_content)
+            or re.search(r"html5player\.setVideoUrlLow\('([^']+)'\)", html_content)
+        ):
+            script_content_url = match.group(1)
+        dom_content_url = None
+        if source_node := parser.css_first("video source[src]"):
+            dom_content_url = source_node.attributes.get("src")
+        if not dom_content_url:
+            if og_video := parser.css_first('meta[property="og:video:url"], meta[property="og:video"]'):
+                dom_content_url = og_video.attributes.get("content")
+        content_url, content_url_source = resolve([
+            (FIELD_SOURCE_JSON_LD, data.get("contentUrl")),
+            (FIELD_SOURCE_SCRIPT, script_content_url),
+            (FIELD_SOURCE_DOM, dom_content_url),
+        ])
 
         # HLS master playlist URL
         m = REGEX_VIDEO_M3U8.search(html_content) or re.search(r"html5player\.setVideoHLS\('([^']+)'\)", html_content)
@@ -266,37 +390,56 @@ class Video(BaseMedia):
         comment_node = parser.css_first("button.comments .badge, .thread-node-children-count.badge")
         comment_count = comment_node.text(strip=True) if comment_node else "0"
 
-        # Embed URL
+        # Embed URL — preferred DOM input, then iframe regex / encoded-id
+        # construction (both inline script/regex layers), then JSON-LD embedUrl.
         embed_node = parser.css_first("#copy-video-embed")
+        dom_embed = None
         if embed_node and (raw_embed := embed_node.attributes.get("value")):
-            embed_url = raw_embed
-        elif match := (REGEX_IFRAME.search(html_content) or re.search(r'id=["\']copy-video-embed["\'][^>]*value=["\']([^"\']+)["\']', html_content)):
-            embed_url = html.unescape(match.group(1))
+            dom_embed = raw_embed
+        script_embed = None
+        if match := (
+            REGEX_IFRAME.search(html_content)
+            or re.search(r'id=["\']copy-video-embed["\'][^>]*value=["\']([^"\']+)["\']', html_content)
+        ):
+            script_embed = html.unescape(match.group(1))
         elif match := re.search(r"html5player\.setEncodedIdVideo\('([^']+)'\)", html_content):
-            embed_url = f'<iframe src="https://www.xvideos.com/embedframe/{match.group(1)}" frameborder=0 width=510 height=400 scrolling=no allowfullscreen=allowfullscreen></iframe>'
-        else:
-            embed_url = None
+            script_embed = f'<iframe src="https://www.xvideos.com/embedframe/{match.group(1)}" frameborder=0 width=510 height=400 scrolling=no allowfullscreen=allowfullscreen></iframe>'
+        embed_url, embed_source = resolve([
+            (FIELD_SOURCE_DOM, dom_embed),
+            (FIELD_SOURCE_SCRIPT, script_embed),
+            (FIELD_SOURCE_JSON_LD, data.get("embedUrl")),
+        ])
 
-        # Duration / length
-        length_node = parser.css_first("span.duration")
-        length = length_node.text(strip=True) if length_node else None
-
-        # Author link
-        author_link = None
-        author_name = None
+        # Author link / author name — preferred uploader DOM node, then the
+        # html5player uploader assignment, then JSON-LD author metadata.
+        # DOM-derived values are captured separately so the script fallback
+        # below cannot be mislabeled as a DOM hit.
+        dom_author_link = None
+        dom_author_name = None
         uploader_node = parser.css_first("li.main-uploader a")
         if uploader_node and (href := uploader_node.attributes.get("href")):
-            author_link = href if href.startswith("http") else f"https://xvideos.com{href}"
+            dom_author_link = href if href.startswith("http") else f"https://xvideos.com{href}"
             name_node = uploader_node.css_first(".name")
             if name_node is not None:
-                author_name = name_node.text(strip=True) or None
-        elif match := re.search(r"html5player\.setUploaderName\('([^']+)'\)", html_content):
-            author_link = f"https://xvideos.com/{match.group(1)}"
-            author_name = match.group(1)
+                dom_author_name = name_node.text(strip=True) or None
 
-        if not author_name:
-            if match := re.search(r"html5player\.setUploaderName\('([^']+)'\)", html_content):
-                author_name = match.group(1)
+        uploader_match = re.search(r"html5player\.setUploaderName\('([^']+)'\)", html_content)
+        script_uploader = uploader_match.group(1) if uploader_match else None
+        script_author_link = f"https://xvideos.com/{script_uploader}" if script_uploader else None
+
+        json_ld_author_name = json_ld_author("name")
+        json_ld_author_url = json_ld_author("url")
+
+        author_link, author_link_source = resolve([
+            (FIELD_SOURCE_DOM, dom_author_link),
+            (FIELD_SOURCE_SCRIPT, script_author_link),
+            (FIELD_SOURCE_JSON_LD, json_ld_author_url),
+        ])
+        author_name, author_name_source = resolve([
+            (FIELD_SOURCE_DOM, dom_author_name),
+            (FIELD_SOURCE_SCRIPT, script_uploader),
+            (FIELD_SOURCE_JSON_LD, json_ld_author_name),
+        ])
 
         # Featured pornstars
         pornstars_urls = []
@@ -304,6 +447,16 @@ class Video(BaseMedia):
             href = el.attributes.get("href")
             if href:
                 pornstars_urls.append(href if href.startswith("http") else f"https://xvideos.com{href}")
+
+        field_sources = {
+            "title": title_source,
+            "thumbnail_url": thumbnail_source,
+            "publish_date": publish_date_source,
+            "content_url": content_url_source,
+            "author_link": author_link_source,
+            "author_name": author_name_source,
+            "embed_url": embed_source,
+        }
 
         return {
             "title": title,
@@ -324,7 +477,7 @@ class Video(BaseMedia):
             "author_link": author_link,
             "author_name": author_name,
             "pornstars_urls": pornstars_urls,
-        }
+        }, field_sources
 
     @download_errors(DownloadFailed)
     async def download(self, configuration: DownloadConfigHLS) -> bool | DownloadReport:
