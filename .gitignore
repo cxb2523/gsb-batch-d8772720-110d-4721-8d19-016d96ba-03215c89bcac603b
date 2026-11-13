@@ -1,0 +1,9 @@
+*.pyc
+*.DS_Store
+*.egg*
+*.db
+*.sqlite3
+
+/.idea
+/packages/*/dist/
+/packages/*/build/
