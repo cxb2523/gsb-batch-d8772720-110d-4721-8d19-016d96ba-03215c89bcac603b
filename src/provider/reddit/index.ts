@@ -20,5 +20,7 @@ export const parseReddit = async (url: string, options?: ParseOptions): Promise<
     content,
     wordCount,
     readTime: estimateReadTime(wordCount, options?.wordsPerMinute),
+    redirects: [],
+    finalUrl: url,
   }
 }

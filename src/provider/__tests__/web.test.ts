@@ -145,3 +145,100 @@ describe("parseWeb", () => {
     expect(failure!.message).not.toContain("--timeout")
   })
 })
+
+describe("redirect records", () => {
+  it("records a followed 302 with source, target and status, plus the final URL", async () => {
+    const final = htmlResponse(
+      '<html><body><article><h1>Landed</h1><p>Body text here.</p></article></body></html>',
+    )
+    Object.defineProperty(final, "url", { value: "https://docs.example/guide" })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url === "https://old.example/start")
+          return new Response("", { status: 302, headers: { location: "https://docs.example/guide" } })
+        return final
+      }),
+    )
+    const result = await parseWeb("https://old.example/start")
+    expect(result.redirects).toEqual([
+      { from: "https://old.example/start", to: "https://docs.example/guide", status: 302 },
+    ])
+    expect(result.finalUrl).toBe("https://docs.example/guide")
+  })
+
+  it("records multiple hops in order", async () => {
+    const final = htmlResponse("<html><body><article><h1>End</h1><p>Text.</p></article></body></html>")
+    Object.defineProperty(final, "url", { value: "https://c.example/end" })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url === "https://a.example/1")
+          return new Response("", { status: 301, headers: { location: "https://b.example/2" } })
+        if (url === "https://b.example/2")
+          return new Response("", { status: 302, headers: { location: "/end" } })
+        return final
+      }),
+    )
+    const result = await parseWeb("https://a.example/1")
+    expect(result.redirects).toEqual([
+      { from: "https://a.example/1", to: "https://b.example/2", status: 301 },
+      { from: "https://b.example/2", to: "https://b.example/end", status: 302 },
+    ])
+    expect(result.finalUrl).toBe("https://c.example/end")
+  })
+
+  it("records an empty chain and the request URL when no redirect occurs", async () => {
+    stubFetch(() => htmlResponse("<html><body><article><h1>Direct</h1><p>Text.</p></article></body></html>"))
+    const result = await parseWeb("https://public.example/direct")
+    expect(result.redirects).toEqual([])
+    expect(result.finalUrl).toBe("https://public.example/direct")
+  })
+
+  it("still refuses https -> http downgrades and returns no result", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 302, headers: { location: "http://public.example/plain" } })),
+    )
+    await expect(parseWeb("https://public.example/secure")).rejects.toThrow(/https -> http/)
+  })
+
+  it("reports only the successful attempt's chain after a simple-UA fallback", async () => {
+    const final = htmlResponse("<html><body><article><h1>Fallback</h1><p>Text.</p></article></body></html>")
+    Object.defineProperty(final, "url", { value: "https://public.example/c" })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        const ua = new Headers(init?.headers).get("user-agent") ?? ""
+        if (ua.includes("Mozilla")) {
+          // Browser-UA attempt: one redirect, then UA-gated 403.
+          if (url === "https://public.example/a")
+            return new Response("", { status: 302, headers: { location: "https://public.example/b" } })
+          return new Response("gated", { status: 403 })
+        }
+        // Simple-UA attempt: a different chain that succeeds.
+        if (url === "https://public.example/a")
+          return new Response("", { status: 301, headers: { location: "https://public.example/c" } })
+        return final
+      }),
+    )
+    const result = await parseWeb("https://public.example/a")
+    expect(result.redirects).toEqual([
+      { from: "https://public.example/a", to: "https://public.example/c", status: 301 },
+    ])
+    expect(result.finalUrl).toBe("https://public.example/c")
+  })
+
+  it("parseHtml reports an empty chain and the given url as final", async () => {
+    const html = "<html><body><article><h1>A</h1><p>Prose prose prose.</p></article></body></html>"
+    const withUrl = await parseHtml(html, { url: "https://example.com/a" })
+    expect(withUrl.redirects).toEqual([])
+    expect(withUrl.finalUrl).toBe("https://example.com/a")
+    const withoutUrl = await parseHtml(html)
+    expect(withoutUrl.redirects).toEqual([])
+    expect(withoutUrl.finalUrl).toBe("")
+  })
+})

@@ -118,6 +118,8 @@ const buildResult = (
     published,
     wordCount,
     readTime: estimateReadTime(wordCount, options?.wordsPerMinute),
+    redirects: [],
+    finalUrl: `https://www.npmjs.com/package/${ref.name}`,
   }
 }
 

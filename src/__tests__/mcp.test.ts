@@ -27,6 +27,8 @@ const webpage = (over: Partial<WebpageResult> = {}): WebpageResult => ({
   published: null,
   wordCount: 11,
   readTime: "1 min read",
+  redirects: [],
+  finalUrl: "https://example.com/",
   ...over,
 })
 

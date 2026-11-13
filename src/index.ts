@@ -17,6 +17,7 @@ export type {
   ParseOptions,
   ParseResult,
   ParsedResult,
+  RedirectRecord,
   XStatusResult,
   Chapter,
   TranscriptSegment,

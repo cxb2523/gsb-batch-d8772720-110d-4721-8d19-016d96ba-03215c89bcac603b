@@ -1,6 +1,6 @@
 import { countWords, estimateReadTime, mergeSignals, safeDomain } from "@shared"
 import "../extract/sites/init"
-import type { ParseOptions, WebpageResult } from "../types"
+import type { ParseOptions, RedirectRecord, WebpageResult } from "../types"
 import { extractAsync } from "../extract/engine"
 import { toMarkdown } from "../extract/markdown"
 import { parseLinkedomHTML } from "../extract/utils/parse-html"
@@ -67,11 +67,13 @@ export const parseHtml = async (html: string, options?: ParseHtmlOptions): Promi
     published: result.published || null,
     wordCount: result.wordCount,
     readTime: estimateReadTime(result.wordCount, options?.wordsPerMinute),
+    redirects: [],
+    finalUrl: url,
   }
 }
 
 export const parseWeb = async (url: string, options?: ParseOptions): Promise<WebpageResult> => {
-  const res = await fetchWithRedirects(url, options)
+  const { res, redirects } = await fetchTracked(url, options)
 
   if (!res.ok) throw new Error(fetchErrorMessage(res.status, res.statusText, url))
 
@@ -86,7 +88,7 @@ export const parseWeb = async (url: string, options?: ParseOptions): Promise<Web
 
   if (isRawText(contentType, finalUrl)) {
     const text = await readResponseText(res)
-    return rawTextResult(text, finalUrl, options?.wordsPerMinute)
+    return { ...rawTextResult(text, finalUrl, options?.wordsPerMinute), redirects }
   }
 
   if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
@@ -94,7 +96,8 @@ export const parseWeb = async (url: string, options?: ParseOptions): Promise<Web
   }
 
   const html = await readResponseText(res)
-  return parseHtml(html, { ...options, url: finalUrl })
+  const result = await parseHtml(html, { ...options, url: finalUrl })
+  return { ...result, redirects }
 }
 
 const fetchErrorMessage = (status: number, statusText: string, url: string): string => {
@@ -190,10 +193,21 @@ const rawTextResult = (text: string, url: string, wpm?: number): WebpageResult =
     published: null,
     wordCount: wc,
     readTime: estimateReadTime(wc, wpm),
+    redirects: [],
+    finalUrl: url,
   }
 }
 
-export const fetchWithRedirects = async (url: string, opts: FetchOpts = {}): Promise<Response> => {
+interface TrackedResponse {
+  res: Response
+  /** Redirects followed by the attempt that produced `res`, in order. */
+  redirects: RedirectRecord[]
+}
+
+export const fetchWithRedirects = async (url: string, opts: FetchOpts = {}): Promise<Response> =>
+  (await fetchTracked(url, opts)).res
+
+const fetchTracked = async (url: string, opts: FetchOpts = {}): Promise<TrackedResponse> => {
   // If the caller pinned a User-Agent, honour it exclusively -- no silent fallback.
   if (opts.userAgent) {
     const only = await tryFetch(url, opts.userAgent, opts)
@@ -205,9 +219,11 @@ export const fetchWithRedirects = async (url: string, opts: FetchOpts = {}): Pro
   //   - redirect loop was detected (tryFetch returned null), or
   //   - the server responded with 403/429/503 which sometimes signals UA-based gating.
   const primary = await tryFetch(url, USER_AGENT, opts)
-  if (primary && !shouldRetryWithSimpleUa(primary.status)) return primary
+  if (primary && !shouldRetryWithSimpleUa(primary.res.status)) return primary
 
-  await primary?.body?.cancel()
+  // The fallback re-fetches from the original URL: its redirect chain replaces
+  // the primary attempt's chain rather than extending it.
+  await primary?.res.body?.cancel()
   const fallback = await tryFetch(url, SIMPLE_UA, opts)
   if (fallback) return fallback
   if (primary) return primary
@@ -217,8 +233,9 @@ export const fetchWithRedirects = async (url: string, opts: FetchOpts = {}): Pro
 
 const shouldRetryWithSimpleUa = (status: number): boolean => status === 403 || status === 429 || status === 503
 
-const tryFetch = async (url: string, userAgent: string, opts: FetchOpts): Promise<Response | null> => {
+const tryFetch = async (url: string, userAgent: string, opts: FetchOpts): Promise<TrackedResponse | null> => {
   const visited = new Set<string>()
+  const redirects: RedirectRecord[] = []
   let current = url
 
   for (let i = 0; i < MAX_REDIRECTS; i++) {
@@ -249,7 +266,7 @@ const tryFetch = async (url: string, userAgent: string, opts: FetchOpts): Promis
       throw err
     }
 
-    if (res.status < 300 || res.status >= 400) return res
+    if (res.status < 300 || res.status >= 400) return { res, redirects }
 
     await res.body?.cancel()
     const location = res.headers.get("location")
@@ -267,6 +284,7 @@ const tryFetch = async (url: string, userAgent: string, opts: FetchOpts): Promis
 
     if (visited.has(next.href)) return null
 
+    redirects.push({ from: current, to: next.href, status: res.status })
     current = next.href
   }
 

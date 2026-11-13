@@ -66,8 +66,21 @@ export interface YouTubeResult extends ParseResult {
   isLyric: boolean
 }
 
+export interface RedirectRecord {
+  /** URL that responded with a redirect. */
+  from: string
+  /** URL the redirect pointed at, after resolving a relative Location header. */
+  to: string
+  /** HTTP status code of the redirect response (3xx). */
+  status: number
+}
+
 export interface WebpageResult extends ParseResult {
   type: "webpage"
+  /** Every redirect followed to reach the final response, in order. Empty when none occurred. */
+  redirects: RedirectRecord[]
+  /** URL of the final response. Equals the request URL when no redirect occurred. */
+  finalUrl: string
 }
 
 export interface GitHubResult extends ParseResult {
