@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "CCencrypt"
+version = "0.4.0"
+description = "Card encryption and tokenisation for Adyen, CyberSource, eWay, Stripe, Braintree, Shopify and PayDock"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "itsregza" }]
+dependencies = [
+    "cryptography>=42.0.0",
+    "requests>=2.28.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/itsregza/CCencrypt"
+Repository = "https://github.com/itsregza/CCencrypt"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ccencrypt*"]
