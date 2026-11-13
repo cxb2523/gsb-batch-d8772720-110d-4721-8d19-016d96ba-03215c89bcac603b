@@ -1,0 +1,66 @@
+name: First PR Merged Welcome
+
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  welcome-on-merge:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Thank contributor and ask for star
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.YOUR_TOKEN_NAME }}
+          script: |
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            const { owner, repo } = context.repo;
+            const creator = context.payload.pull_request.user.login;
+            const currentPrNumber = context.payload.pull_request.number;
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'closed',
+              per_page: 100
+            });
+
+            const mergedPrsByUser = prs.filter(pr =>
+              pr.user.login === creator &&
+              pr.merged_at !== null
+            );
+
+            let message;
+
+            if (mergedPrsByUser.length === 1) {
+              message = [
+                `🎊 **Welcome, @${creator}!** Your first contribution has been merged! 🚀`,
+                ``,
+                `Thank you for helping improve the project! If you find this tool useful, please consider giving us a ⭐ **star on GitHub**—it helps more developers find our work and motivates us to keep improving!`
+              ].join('\n');
+            } else if (mergedPrsByUser.length <= 3) {
+              message = [
+                `✨ **Thank you, @${creator}!** Another great contribution merged! 🚀`,
+                ``,
+                `We truly appreciate your continued support! If you find this tool useful, please consider giving us a ⭐ **star on GitHub**—it helps more developers find our work and motivates us to keep improving!`
+              ].join('\n');
+            } else {
+              message = [
+                `✨ **Thank you, @${creator}!** Another great contribution merged! 🚀`,
+                ``,
+                `You've been a fantastic contributor! We truly appreciate your continued support.`
+              ].join('\n');
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: currentPrNumber,
+              body: message
+            });

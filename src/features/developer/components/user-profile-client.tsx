@@ -1,0 +1,702 @@
+"use client";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import type { Route } from "next";
+import { useClipboardCopy } from "@/hooks";
+import {
+  ArrowLeft,
+  BadgeCheck,
+  Check,
+  Copy,
+  ExternalLink,
+  GitPullRequest,
+  MapPin,
+  MessageSquare,
+  Scale,
+  ShieldCheck,
+  Star,
+  Trophy,
+} from "lucide-react";
+import { Avatar } from "@/components/layout/avatar";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import {
+  ScoreCard,
+  RepoCardItem,
+  PullRequestCardItem,
+  CommunityCardItem,
+} from "@/components/cards";
+import { useTranslation } from "@/components/providers/language-provider";
+import { getCountryCode, detectCountry } from "@/lib/geo";
+import countriesData from "@/data/countries.json";
+import type { UserResult } from "../types";
+import { getSignalMetricEntries } from "../signal-metrics";
+
+type CountryInfo = {
+  slug: string;
+  title: string;
+};
+
+const countries = countriesData as CountryInfo[];
+
+type Props = {
+  user: UserResult;
+  location?: string | null;
+  countryParam?: string | null;
+};
+
+export function UserProfileClient({ user, location, countryParam }: Props) {
+  const { t } = useTranslation();
+  const searchParams = useSearchParams();
+  const { copied, copy } = useClipboardCopy();
+  const { copied: markdownCopied, copy: copyMarkdown } = useClipboardCopy();
+  const { copied: htmlCopied, copy: copyHtml } = useClipboardCopy();
+  const [badgeDialogOpen, setBadgeDialogOpen] = useState(false);
+  const [badgeStyle, setBadgeStyle] = useState<"flat" | "flat-square" | "gradient">("flat-square");
+
+  const displayName = user.name?.trim() || user.username;
+  const githubUrl = `https://github.com/${user.username}`;
+  const compareUrl = `/?user1=${encodeURIComponent(user.username)}`;
+  const scoreColor = (s: number) =>
+    s >= 80 ? "brightgreen" : s >= 60 ? "green" : s >= 40 ? "yellow" : s >= 20 ? "orange" : "red";
+  const esc = (s: string) => s.replace(/-/g, "--").replace(/_/g, "__").replace(/ /g, "_");
+  const { badgeUrl, markdownSnippet, htmlSnippet } = useMemo(() => {
+    const score = user.normalizedFinalScore ?? 0;
+    const isGradient = badgeStyle === "gradient";
+    const color = isGradient ? scoreColor(score) : "blue";
+    const shieldStyle = isGradient ? "flat-square" : badgeStyle;
+
+    const badgeUrl =
+      `https://img.shields.io/badge/${esc("DevImpact Score")}-${esc(score.toFixed(1))}-${color}` +
+      `?style=${shieldStyle}&logo=github`;
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+    let origin = "";
+    if (siteUrl) {
+      origin = siteUrl.endsWith("/") ? siteUrl.slice(0, -1) : siteUrl;
+    } else if (typeof window !== "undefined") {
+      origin = window.location.origin;
+    }
+
+    const profileUrl = `${origin}/user/${encodeURIComponent(user.username)}`;
+
+    return {
+      badgeUrl,
+      markdownSnippet: `[![DevImpact Score](${badgeUrl})](${profileUrl})`,
+      htmlSnippet: `<a href="${profileUrl}"><img src="${badgeUrl}" alt="DevImpact Score" /></a>`,
+    };
+  }, [user.normalizedFinalScore, user.username, badgeStyle]);
+
+  const handleCopyMarkdown = () => copyMarkdown(markdownSnippet);
+  const handleCopyHtml = () => copyHtml(htmlSnippet);
+
+  useEffect(() => {
+    if (!badgeDialogOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setBadgeDialogOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [badgeDialogOpen]);
+
+  // Location & Country detection
+  const detectedSlug = detectCountry(location ?? null);
+  const rawCountry = (countryParam || searchParams.get("country") || detectedSlug || "")
+    .trim()
+    .toLowerCase();
+  const activeCountrySlug = rawCountry ? rawCountry.replace(/[^a-z0-9_-]/g, "") : null;
+
+  const activeCountryInfo = activeCountrySlug
+    ? (countries.find((c) => c.slug.toLowerCase() === activeCountrySlug) ?? {
+        slug: activeCountrySlug,
+        title: activeCountrySlug
+          .split("_")
+          .filter(Boolean)
+          .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+          .join(" "),
+      })
+    : null;
+
+  const flagSlug = activeCountryInfo?.slug || detectedSlug;
+  const flagCode = flagSlug ? getCountryCode(flagSlug) : null;
+
+  const handleCopyLink = () => copy(window.location.href);
+
+  // Signal stats entries for transparency
+  const signalEntries = getSignalMetricEntries(user.signals, t);
+
+  const totalRawSum = Math.max(
+    1,
+    user.repoScore * 0.45 + user.prScore * 0.45 + user.contributionScore * 0.1,
+  );
+  const repoWeightPct = Math.round(((user.repoScore * 0.45) / totalRawSum) * 100);
+  const prWeightPct = Math.round(((user.prScore * 0.45) / totalRawSum) * 100);
+  const contributionWeightPct = Math.max(0, 100 - repoWeightPct - prWeightPct);
+
+  return (
+    <div className="animate-fadeIn space-y-6">
+      {/* ── Breadcrumb & Back Navigation ────────────────────────────── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+        <div className="flex items-center gap-2">
+          {activeCountryInfo ? (
+            <Link href={`/leaderboard/${activeCountryInfo.slug}` as Route}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="h-4 w-4 rtl:-scale-x-100" />
+                <span>{t("profile.backToCountry", { country: activeCountryInfo.title })}</span>
+              </Button>
+            </Link>
+          ) : (
+            <Link href="/leaderboard">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="h-4 w-4 rtl:-scale-x-100" />
+                <span>{t("profile.backToLeaderboard")}</span>
+              </Button>
+            </Link>
+          )}
+        </div>
+
+        {/* Breadcrumbs */}
+        <nav
+          aria-label="Breadcrumb"
+          className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex"
+        >
+          <Link href="/" className="transition-colors hover:text-foreground">
+            {t("profile.breadcrumbs.home")}
+          </Link>
+          <span>/</span>
+          <Link href="/leaderboard" className="transition-colors hover:text-foreground">
+            {t("profile.breadcrumbs.leaderboards")}
+          </Link>
+          {activeCountryInfo ? (
+            <>
+              <span>/</span>
+              <Link
+                href={`/leaderboard/${activeCountryInfo.slug}` as Route}
+                className="transition-colors hover:text-foreground"
+              >
+                {activeCountryInfo.title}
+              </Link>
+            </>
+          ) : null}
+          <span>/</span>
+          <span className="font-semibold text-foreground">@{user.username}</span>
+        </nav>
+      </div>
+
+      {/* ── Header Profile Hero Section ────────────────────────────── */}
+      <section className="rounded-3xl border border-border/60 bg-gradient-to-br from-primary/10 via-background to-background p-6 shadow-sm sm:p-8">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-col items-center gap-5 text-center sm:flex-row sm:items-center sm:gap-6 sm:text-start">
+            {/* Interactive Avatar with Ambient Glow & Floating Score Badge */}
+            <a
+              href={githubUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group relative shrink-0 rounded-full transition-transform duration-300 hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              aria-label={t("profile.viewOnGithub")}
+            >
+              {/* Ambient Glow */}
+              <div
+                aria-hidden="true"
+                className="absolute -inset-1.5 rounded-full bg-gradient-to-tr from-primary/30 via-primary/50 to-primary/20 opacity-70 blur-md transition-opacity duration-300 group-hover:opacity-100 dark:from-primary/25 dark:via-primary/45 dark:to-primary/15"
+              />
+
+              {/* Gradient Halo Ring */}
+              <div className="relative rounded-full bg-gradient-to-tr from-primary/40 via-primary/80 to-primary/30 p-1 shadow-lg shadow-primary/10 transition-all duration-300 group-hover:from-primary/60 group-hover:via-primary group-hover:to-primary/50">
+                <div className="relative h-20 w-20 overflow-hidden rounded-full bg-background sm:h-24 sm:w-24 md:h-28 md:w-28">
+                  <Avatar
+                    src={user.avatarUrl}
+                    alt={t("comparison.avatarAlt", { name: displayName })}
+                    size={112}
+                    priority={true}
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
+                </div>
+              </div>
+
+              {/* Floating Score Badge on Corner */}
+              <div
+                className="absolute -bottom-1 -end-1 flex items-center gap-1 rounded-full border border-background bg-card px-2 py-0.5 text-[11px] font-bold text-foreground shadow-md ring-2 ring-primary/20 sm:bottom-0 sm:end-0"
+                title={`${t("comparison.final.score")}: ${Math.round(user.normalizedFinalScore ?? user.finalScore)}`}
+              >
+                <Trophy className="h-3 w-3 text-primary" />
+                <span>{Math.round(user.normalizedFinalScore ?? user.finalScore)}</span>
+              </div>
+            </a>
+
+            <div className="space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/80">
+                {t("profile.header.eyebrow")}
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 sm:justify-start">
+                <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl lg:text-4xl">
+                  {displayName}
+                </h1>
+                <span className="rounded-full bg-primary/10 px-3 py-0.5 text-xs font-semibold text-primary">
+                  @{user.username}
+                </span>
+              </div>
+
+              {location ? (
+                <div className="flex items-center justify-center gap-1.5 text-sm text-muted-foreground sm:justify-start">
+                  {flagCode ? (
+                    <span
+                      className={`fi fi-${flagCode} fis inline-block h-3.5 w-3.5 rounded-sm`}
+                      title={detectedSlug ?? location}
+                    />
+                  ) : (
+                    <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+                  )}
+                  <span>{location}</span>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-1 text-xs text-muted-foreground sm:justify-start">
+                <a
+                  href={githubUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                  aria-label={t("profile.viewOnGithub")}
+                >
+                  <span>GitHub</span>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                {user.scoreVersion ? (
+                  <span>
+                    • {t("results.scoreVersion")}: {user.scoreVersion}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-[280px] lg:min-w-[300px]">
+            {/* Primary Action (1) */}
+            <Link href={compareUrl as Route} className="w-full">
+              <Button className="flex w-full items-center justify-center gap-1.5 px-3 text-xs shadow-sm sm:px-4 sm:text-sm">
+                <Scale className="h-4 w-4 shrink-0" />
+
+                <span className="truncate sm:hidden">{t("profile.compareShort")}</span>
+
+                <span className="hidden truncate sm:inline">{t("profile.compareWith")}</span>
+              </Button>
+            </Link>
+
+            {/* Secondary Actions (2) */}
+            <div className="grid w-full grid-cols-2 gap-2">
+              <Button
+                variant="secondary"
+                size="md"
+                onClick={handleCopyLink}
+                className="flex w-full items-center justify-center gap-1.5 px-2.5 text-xs sm:px-3 sm:text-sm"
+                aria-label={t("profile.copyLink")}
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-4 w-4 shrink-0 text-green-500" />
+
+                    <span className="truncate text-green-500 sm:hidden">
+                      {t("profile.copiedShort")}
+                    </span>
+
+                    <span className="hidden truncate text-green-500 sm:inline">
+                      {t("profile.copied")}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4 shrink-0" />
+
+                    <span className="truncate sm:hidden">{t("profile.shareShort")}</span>
+
+                    <span className="hidden truncate sm:inline">{t("profile.copyLink")}</span>
+                  </>
+                )}
+              </Button>
+
+              {/* Get README Badge */}
+              <Button
+                variant="secondary"
+                size="md"
+                onClick={() => setBadgeDialogOpen(true)}
+                className="flex w-full items-center justify-center gap-1.5 whitespace-nowrap px-2.5 text-xs sm:px-3 sm:text-sm"
+                aria-label={t("profile.getBadge")}
+              >
+                <BadgeCheck className="h-4 w-4 shrink-0" />
+                <span className="truncate">{t("profile.getBadge")}</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Score Cards Grid ────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/80">
+            {t("profile.scoreOverview")}
+          </p>
+
+          <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+            {t("profile.title")}
+          </h2>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <ScoreCard
+            title={t("comparison.final.score")}
+            rawValue={user.finalScore}
+            normalizedValue={user.normalizedFinalScore}
+            highlight={true}
+            helperText={t("tooltip.final")}
+          />
+
+          <ScoreCard
+            title={t("comparison.repo.score")}
+            rawValue={user.repoScore}
+            normalizedValue={user.normalizedRepoScore}
+            helperText={t("tooltip.repo")}
+          />
+
+          <ScoreCard
+            title={t("comparison.pr.score")}
+            rawValue={user.prScore}
+            normalizedValue={user.normalizedPRScore}
+            helperText={t("tooltip.pr")}
+          />
+
+          <ScoreCard
+            title={t("comparison.contribution.score")}
+            rawValue={user.contributionScore}
+            normalizedValue={user.normalizedContributionScore}
+            helperText={t("tooltip.contribution")}
+          />
+        </div>
+      </section>
+
+      {/* ── Score Weighting Distribution ────────────────────────────── */}
+      <Card className="border border-border/80 shadow-sm">
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-2">
+            <Scale className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">{t("profile.scoreDistribution")}</CardTitle>
+          </div>
+
+          <CardDescription>{t("methodology.sections.weights.formula")}</CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5 font-medium text-foreground">
+                <span className="h-2 w-2 rounded-full bg-amber-500" />
+                {t("breakdown.repo")} (45%)
+              </span>
+
+              <span className="font-semibold text-foreground">
+                {t("profile.signalShare", { pct: repoWeightPct })}
+              </span>
+            </div>
+
+            <Progress value={repoWeightPct} className="h-2" />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5 font-medium text-foreground">
+                <span className="h-2 w-2 rounded-full bg-cyan-500" />
+                {t("breakdown.pr")} (45%)
+              </span>
+
+              <span className="font-semibold text-foreground">
+                {t("profile.signalShare", { pct: prWeightPct })}
+              </span>
+            </div>
+
+            <Progress value={prWeightPct} className="h-2" />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5 font-medium text-foreground">
+                <span className="h-2 w-2 rounded-full bg-violet-500" />
+                {t("breakdown.contribution")} (10%)
+              </span>
+
+              <span className="font-semibold text-foreground">
+                {t("profile.signalShare", { pct: contributionWeightPct })}
+              </span>
+            </div>
+
+            <Progress value={contributionWeightPct} className="h-2" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Top Work Section ────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/80">
+            {t("topwork.title")}
+          </p>
+
+          <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+            {t("profile.topWork")}
+          </h2>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          {/* Top Repositories */}
+          <Card className="flex flex-col border border-border/80 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Star className="h-4 w-4 text-amber-500" />
+                {t("topwork.toprepos")}
+              </CardTitle>
+
+              <CardDescription>{t("topwork.desc")}</CardDescription>
+            </CardHeader>
+
+            <CardContent className="flex-1 space-y-3">
+              {user.topRepos.length === 0 ? (
+                <p className="text-sm text-muted-foreground">{t("empty.repos")}</p>
+              ) : (
+                user.topRepos
+                  .slice(0, 3)
+                  .map((repo, idx) => (
+                    <RepoCardItem
+                      key={`${user.username}-repo-${idx}`}
+                      repo={repo}
+                      rankIndex={idx}
+                      showRank={true}
+                    />
+                  ))
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Top Pull Requests */}
+          <Card className="flex flex-col border border-border/80 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <GitPullRequest className="h-4 w-4 text-cyan-500" />
+                {t("topwork.topprs")}
+              </CardTitle>
+
+              <CardDescription>{t("topwork.desc")}</CardDescription>
+            </CardHeader>
+
+            <CardContent className="flex-1 space-y-3">
+              {user.topPullRequests.length === 0 ? (
+                <p className="text-sm text-muted-foreground">{t("empty.pullRequests")}</p>
+              ) : (
+                user.topPullRequests
+                  .slice(0, 3)
+                  .map((pr, idx) => (
+                    <PullRequestCardItem
+                      key={`${user.username}-pr-${idx}`}
+                      pr={pr}
+                      rankIndex={idx}
+                      showRank={true}
+                    />
+                  ))
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Top Community Contributions */}
+          <Card className="flex flex-col border border-border/80 shadow-sm md:col-span-2">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <MessageSquare className="h-4 w-4 text-violet-500" />
+                {t("community.title")}
+              </CardTitle>
+
+              <CardDescription>{t("community.desc")}</CardDescription>
+            </CardHeader>
+
+            <CardContent className="flex-1 space-y-3">
+              {user.topCommunityContributions && user.topCommunityContributions.length > 0 ? (
+                user.topCommunityContributions
+                  .slice(0, 3)
+                  .map((item, idx) => (
+                    <CommunityCardItem
+                      key={`${user.username}-comm-${idx}`}
+                      item={item}
+                      rankIndex={idx}
+                      showRank={true}
+                    />
+                  ))
+              ) : (
+                <p className="text-sm text-muted-foreground">{t("empty.community")}</p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      {/* ── Transparency Signals ────────────────────────────────────── */}
+      {signalEntries.length > 0 ? (
+        <details className="group rounded-2xl border border-border/80 bg-card p-5 shadow-sm transition-colors open:bg-card">
+          <summary className="flex cursor-pointer items-center justify-between text-sm font-semibold text-foreground">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              <span>{t("signals.title")}</span>
+            </div>
+
+            <span className="text-xs text-muted-foreground transition-transform duration-200 group-open:rotate-180">
+              ▼
+            </span>
+          </summary>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {signalEntries.map((entry) => (
+              <div
+                key={`${user.username}-${entry.label}`}
+                className="rounded-lg border border-border/80 bg-background/60 p-3"
+              >
+                <p className="text-xs text-muted-foreground">{entry.label}</p>
+
+                <p className="mt-1 text-sm font-semibold text-foreground">{entry.value}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+
+      {/* ── Scoring Methodology CTA ─────────────────────────────────── */}
+      <Card className="border-2 border-primary/20 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent shadow-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Trophy className="h-4 w-4 text-primary" />
+            {t("explanations.title")}
+          </CardTitle>
+        </CardHeader>
+
+        <CardContent className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+          <p className="text-sm text-muted-foreground">{t("methodology.cta.description")}</p>
+
+          <Link
+            href="/scoring-methodology"
+            className="inline-flex items-center whitespace-nowrap rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          >
+            {t("methodology.cta.button")}
+          </Link>
+        </CardContent>
+      </Card>
+
+      {badgeDialogOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setBadgeDialogOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="badge-dialog-title"
+            className="w-full max-w-lg rounded-xl border bg-background p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-6">
+              <h2 id="badge-dialog-title" className="text-lg font-semibold">
+                {t("profile.getBadge")}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">{t("profile.badgeDescription")}</p>
+            </div>
+
+            {/* Live preview */}
+            <div className="flex justify-center rounded-lg border p-6">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={badgeUrl}
+                alt={`DevImpact Score: ${(user.normalizedFinalScore ?? 0).toFixed(1)}`}
+                className="h-auto"
+              />
+            </div>
+
+            {/* Style picker */}
+            <div className="mt-6 space-y-2">
+              <p className="text-sm font-medium">{t("profile.badgeStyle")}</p>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    ["flat", "profile.flat"],
+                    ["flat-square", "profile.flatSquare"],
+                    ["gradient", "profile.scoreColor"],
+                  ] as const
+                ).map(([value, labelKey]) => (
+                  <Button
+                    key={value}
+                    size="sm"
+                    className="px-3 text-sm"
+                    variant={badgeStyle === value ? "primary" : "secondary"}
+                    onClick={() => setBadgeStyle(value)}
+                  >
+                    {t(labelKey)}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {/* Markdown */}
+            <div className="mt-6 space-y-2">
+              <p className="text-sm font-medium">{t("profile.markdownLabel")}</p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  readOnly
+                  dir="ltr"
+                  value={markdownSnippet}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-2 text-xs"
+                />
+                <Button
+                  variant="secondary"
+                  className="w-full shrink-0 whitespace-nowrap sm:w-auto"
+                  onClick={handleCopyMarkdown}
+                >
+                  {markdownCopied ? t("profile.copied") : t("profile.copyMarkdown")}
+                </Button>
+              </div>
+            </div>
+
+            {/* HTML */}
+            <div className="mt-6 space-y-2">
+              <p className="text-sm font-medium">{t("profile.htmlLabel")}</p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  readOnly
+                  dir="ltr"
+                  value={htmlSnippet}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-2 text-xs"
+                />
+                <Button
+                  variant="secondary"
+                  className="w-full shrink-0 whitespace-nowrap sm:w-auto"
+                  onClick={handleCopyHtml}
+                >
+                  {htmlCopied ? t("profile.copied") : t("profile.copyHtml")}
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <Button variant="secondary" onClick={() => setBadgeDialogOpen(false)}>
+                {t("profile.close")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

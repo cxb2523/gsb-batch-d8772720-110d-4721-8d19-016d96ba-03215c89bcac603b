@@ -1,0 +1,110 @@
+/**
+ * Standalone script to calculate the next country's leaderboard.
+ *
+ * This script:
+ * 1. Loads .env file automatically
+ * 2. Connects to the shared PostgreSQL database (via DATABASE_URL)
+ * 3. Picks the country that was calculated longest ago
+ * 4. Calls the same calculateLeaderboard() function used by the API
+ * 5. Updates the leaderboard_calculation tracking table
+ * 6. Exits
+ *
+ * Usage:
+ *   npx tsx scripts/calculate-next-country.ts
+ *
+ * Prerequisites:
+ *   - DATABASE_URL must be set (in .env or environment)
+ *   - GITHUB_TOKEN must be set (in .env or environment)
+ */
+// Load .env file for standalone execution. This must be the first import.
+import "dotenv/config";
+
+import { getDatabaseStore } from "@/lib/db";
+import { calculateLeaderboard } from "@/features/leaderboard/services";
+import { logger } from "@/lib/logger";
+
+let activeCountrySlug: string | null = null;
+
+const handleShutdownSignal = (signal: string) => {
+  logger.warn(
+    `Received ${signal}. Graceful shutdown initiated. Waiting for active calculation (${activeCountrySlug ?? "none"}) to finish...`,
+  );
+};
+
+process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
+process.on("SIGINT", () => handleShutdownSignal("SIGINT"));
+
+async function main() {
+  const overallStartTime = performance.now();
+  const workerVersion =
+    process.env.DEVIMPACT_VERSION || process.env.GIT_COMMIT_SHA || "development";
+  logger.info("=== DevImpact Leaderboard Calculator Start ===");
+  logger.info(`Version: ${workerVersion}`);
+  logger.info(`DB:      ${(process.env.DATABASE_URL ?? "").slice(0, 40)}...`);
+
+  const db = getDatabaseStore();
+
+  // 1. Pick and atomically claim the next country to calculate
+  logger.info("Picking next country to calculate...");
+  let next = await db.getNextCountryToCalculate();
+  if (!next) {
+    // Attempt one-time seed if the calculation table is unseeded
+    await db.seedCalculationCountries();
+    next = await db.getNextCountryToCalculate();
+  }
+
+  if (!next) {
+    logger.info("No countries to calculate. All are up-to-date or running.");
+    process.exit(0);
+  }
+
+  activeCountrySlug = next.slug;
+
+  logger.info(`Selected and claimed: ${next.title} (${next.slug})`);
+
+  try {
+    // 3. Run the calculation (same function used by the API endpoint)
+    logger.info("Starting leaderboard calculation...");
+    const result = await calculateLeaderboard(next.slug);
+
+    // 4. Mark as done
+    const errorCount = result._meta.errors;
+    const errorMessage = errorCount > 0 ? `${errorCount} users failed` : undefined;
+
+    await db.finishCalculation(next.slug, errorMessage);
+    logger.info(`Finished calculation for '${next.slug}'.`);
+
+    // 5. Log detailed summary
+    const overallDuration = (performance.now() - overallStartTime) / 1000;
+    const totalFetchTime = result._meta.totalFetchTime ?? 0;
+    const successfulFetches = result._meta.successfulFetches ?? 0;
+    const averageFetchTime =
+      successfulFetches > 0 ? (totalFetchTime / successfulFetches / 1000).toFixed(2) : "N/A";
+
+    logger.info("=== Calculation Summary ===", {
+      country: next.title,
+      newUsers: result._meta.newUsers,
+      skippedExisting: result._meta.skippedExisting,
+      refreshedUsers: result._meta.refreshedUsers,
+      totalInDb: result._meta.totalInDb,
+      errors: errorCount,
+      failedUsernames: result._meta.failedUsernames,
+      totalFetchTime: `${(totalFetchTime / 1000).toFixed(2)}s`,
+      averageFetchTime: `${averageFetchTime}s`,
+      overallDuration: `${overallDuration.toFixed(2)}s`,
+    });
+
+    if (result._meta.userFetchErrors && result._meta.userFetchErrors.length > 0) {
+      logger.warn("Detailed user fetch errors:", { errors: result._meta.userFetchErrors });
+    }
+
+    process.exit(0);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(`FATAL: ${message}`);
+    await db.finishCalculation(next.slug, message);
+    process.exit(1);
+  }
+}
+
+main();

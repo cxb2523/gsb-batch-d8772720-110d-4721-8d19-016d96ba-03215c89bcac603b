@@ -1,0 +1,78 @@
+name: Auto Assign Issue
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  assign:
+    # Ensure this only runs on actual Issues, not Pull Request comments
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Assign commenter
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+            const assignee = context.payload.comment.user.login;
+            const comment_id = context.payload.comment.id;
+            const body = (context.payload.comment.body || '').toLowerCase();
+
+            const keywords = ['assign me', 'assign it to me', 'assign this to me', 'assign this issue to me'];
+            const hasAssignKeyword = keywords.some(k => body.includes(k));
+
+            if (!hasAssignKeyword) return;
+
+            // 1. Check if already assigned
+            const currentAssignees = context.payload.issue.assignees || [];
+            if (currentAssignees.length > 0) {
+              core.info('Already assigned.');
+              return;
+            }
+
+            try {
+              // 2. Attempt Assignment
+              await github.rest.issues.addAssignees({
+                owner,
+                repo,
+                issue_number,
+                assignees: [assignee],
+              });
+
+              // 3. Verify if assignment actually stuck
+              const { data: updatedIssue } = await github.rest.issues.get({
+                owner, repo, issue_number
+              });
+              
+              const isAssigned = updatedIssue.assignees.some(a => a.login === assignee);
+
+              if (!isAssigned) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: `⚠️ @${assignee}, I couldn't assign you. You must be a collaborator or a member of this organization to be assigned to issues.`
+                });
+                return;
+              }
+
+              // 4. Success Actions
+              await github.rest.issues.createComment({
+                owner, repo, issue_number,
+                body: `🎉 Issue assigned to @${assignee}! Happy coding!`
+              });
+              
+              await github.rest.reactions.createForIssueComment({
+                owner, repo, comment_id, content: 'rocket'
+              });
+
+            } catch (error) {
+              core.setFailed(`Workflow failed: ${error.message}`);
+            }
