@@ -1,0 +1,18 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "hasdata_amazon_search_getSearchResults",
+        "description": "Search Amazon product results for a keyword query through HasData.",
+        "inputSchema": { "type": "object", "required": ["q"] }
+      },
+      {
+        "name": "hasdata_amazon_product_getProductDetails",
+        "description": "Fetch full product details for one ASIN through the HasData Amazon API.",
+        "inputSchema": { "type": "object", "required": ["asin"] }
+      }
+    ]
+  }
+}

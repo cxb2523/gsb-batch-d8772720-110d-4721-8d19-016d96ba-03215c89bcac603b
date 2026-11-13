@@ -1,0 +1,9 @@
+event: message
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"tok-1","progress":25}}
+
+event: message
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"tok-1","progress":75}}
+
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text",
+data: "text":"{\"asin\":\"B0DHJ7SBDR\",\"title\":\"Laptop stand\"}"}],"isError":false}}

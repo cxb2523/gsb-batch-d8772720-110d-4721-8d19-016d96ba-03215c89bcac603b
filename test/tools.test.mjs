@@ -13,15 +13,28 @@
 // that only lists tools stays green with a revoked or mistyped key. That call costs 5 credits,
 // which is the price of a canary that can fail for the right reason.
 //
+// A bare pass/fail cannot tell a changed tool list, a dead key and a concurrency cap apart.
+// Every real call therefore goes through the recording client in test-helpers/rpc.mjs, and a
+// top-level hook prints a per-tool summary (calls, successes, retries, final HTTP status and
+// verdict) at the end. Without HASDATA_API_KEY the live checks are skipped and the summary says
+// so explicitly, instead of looking like an all-green run. The parsing, retry and summary logic
+// has its own offline suite in rpc.offline.test.mjs driven by canned JSON-RPC responses.
+//
 // Run: HASDATA_API_KEY=your_key_here npm test
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {
+    ENDPOINT,
+    TIMEOUT_MS,
+    createRpcClient,
+    createFetchTransport,
+    parseRpc,
+    formatSummary,
+} from '../test-helpers/rpc.mjs';
 
-const ENDPOINT = 'https://mcp.hasdata.com/mcp?apis=amazon';
 const KEY = process.env.HASDATA_API_KEY;
-const TIMEOUT_MS = 30_000;
 
 const EXPECTED = {
     hasdata_amazon_search_getSearchResults: ['q'],
@@ -35,63 +48,15 @@ const RETIRED = {
     hasdata_amazon_reviews_getProductReviews: ['asin'],
 };
 
-// A streamable HTTP body arrives either as plain JSON or as server-sent events. One SSE event
-// can span several data: lines, several events can share one response, and a server is free to
-// send progress notifications before the answer. So collect every event and pick the message
-// carrying our request id instead of trusting the first data: line.
-function parseRpc(raw, id) {
-    const trimmed = raw.trim();
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return JSON.parse(trimmed);
-
-    const messages = [];
-    for (const event of trimmed.split(/\r?\n\r?\n+/)) {
-        const data = event
-            .split(/\r?\n/)
-            .filter((l) => l.startsWith('data:'))
-            .map((l) => l.slice(5).replace(/^ /, ''))
-            .join('\n');
-        if (!data || data === '[DONE]') continue;
-        try {
-            messages.push(JSON.parse(data));
-        } catch {
-            // A keep-alive or a partial event is not our response.
-        }
-    }
-    assert.ok(messages.length, `no JSON-RPC message in the response: ${raw.slice(0, 300)}`);
-    const match = messages.find((m) => m.id === id);
-    assert.ok(match, `no message with id ${id} in the response: ${raw.slice(0, 300)}`);
-    return match;
-}
-
-let nextId = 1;
+// The recording client: the real endpoint over fetch, with the concurrency_limit retry budget
+// and one record appended per call. Offline tests inject a fake transport instead.
+const rpcClient = createRpcClient({
+    transport: createFetchTransport({ endpoint: ENDPOINT, apiKey: KEY, timeoutMs: TIMEOUT_MS }),
+});
 
 async function rpc(method, params = {}) {
-    // The CI key sits on the free plan, where concurrency is 1. When several of
-    // these repos are pushed at once their contract runs collide, and HasData
-    // answers 429 with code concurrency_limit straight away rather than queueing.
-    // That is a plan limit, not a broken contract, so the call is retried before
-    // the test gives up. A 401 still fails on the first attempt.
-    for (let attempt = 1; ; attempt++) {
-        const id = nextId++;
-        const res = await fetch(ENDPOINT, {
-            method: 'POST',
-            headers: {
-                'x-api-key': KEY,
-                'Content-Type': 'application/json',
-                // The server answers over streamable HTTP, so accept both a plain body and a stream.
-                Accept: 'application/json, text/event-stream',
-            },
-            body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-            signal: AbortSignal.timeout(TIMEOUT_MS),
-        });
-        assert.equal(res.status, 200, `${method} returned ${res.status}`);
-        const raw = await res.text();
-        if (raw.includes('concurrency_limit') && attempt < 5) {
-            await new Promise((r) => setTimeout(r, attempt * 4000));
-            continue;
-        }
-        return { raw, body: parseRpc(raw, id) };
-    }
+    const { body, raw, record } = await rpcClient.call(method, params);
+    return { body, raw, record };
 }
 
 // One network round trip for every test that needs the list.
@@ -107,6 +72,12 @@ function listTools() {
 const live = { skip: KEY ? false : 'HASDATA_API_KEY is not set, skipping the live checks' };
 
 const ALL = { ...EXPECTED, ...RETIRED };
+
+// Runs after every test, including skipped and failing ones, so the summary is always emitted.
+after(() => {
+    process.stdout.write(formatSummary(rpcClient.records, { skipped: !KEY }));
+    process.stdout.write('\n');
+});
 
 test('apis=amazon exposes the documented tools and nothing else', live, async () => {
     const tools = await listTools();
@@ -152,19 +123,24 @@ test('every tool carries a description', live, async () => {
 });
 
 test('the key is accepted by HasData', live, async () => {
-    const { raw } = await rpc('tools/call', {
+    const { raw, record } = await rpc('tools/call', {
         name: 'hasdata_amazon_search_getSearchResults',
         arguments: { q: 'laptop stand' },
     });
     assert.ok(!raw.includes('401 Unauthorized'), 'HasData rejected the key');
     assert.ok(!raw.includes('"isError":true'), `the tool call failed: ${raw.slice(0, 300)}`);
+    // The same facts the assertions just checked must be visible in the record as well.
+    assert.equal(record.method, 'tools/call');
+    assert.equal(record.toolName, 'hasdata_amazon_search_getSearchResults');
+    assert.equal(record.status, 200);
+    assert.equal(record.ok, true);
 });
 
 // The reviews endpoint is retired upstream and answers 400. The README does not document the
 // tool for that reason. This check exists so the omission stays deliberate: the day the call
 // succeeds, or the day the server drops the tool, this fails and the README gets revisited.
 test('the retired reviews tool still answers with an error', live, async () => {
-    const { raw } = await rpc('tools/call', {
+    const { raw, record } = await rpc('tools/call', {
         name: 'hasdata_amazon_reviews_getProductReviews',
         arguments: { asin: 'B0DHJ7SBDR' },
     });
@@ -174,6 +150,12 @@ test('the retired reviews tool still answers with an error', live, async () => {
         'the reviews endpoint answered successfully. It is retired upstream and left out of the '
         + 'README on that basis, so document it again or drop this test.'
     );
+    // The transport worked but the tool failed: the record has to say so, or the summary would
+    // count a retired-tool error as a green call.
+    assert.equal(record.method, 'tools/call');
+    assert.equal(record.toolName, 'hasdata_amazon_reviews_getProductReviews');
+    assert.equal(record.status, 200);
+    assert.equal(record.ok, false);
 });
 
 // The prompts and resources section of the README is generated from the live server, and the
@@ -184,7 +166,7 @@ test('the retired reviews tool still answers with an error', live, async () => {
 const README_MD = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 
 async function anonymousRpc(method) {
-    const id = nextId++;
+    const id = nextAnonymousId++;
     const res = await fetch(ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
@@ -194,6 +176,7 @@ async function anonymousRpc(method) {
     assert.equal(res.status, 200, `${method} returned ${res.status}`);
     return parseRpc(await res.text(), id).result;
 }
+let nextAnonymousId = 1;
 
 // The section writes "ships one prompt" for a single entry and "ships 7 prompts" otherwise.
 const statedCount = (verb) => {

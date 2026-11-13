@@ -428,6 +428,8 @@ The tests in `test/` assert the tool contract, the part that can break without a
 
 One more test covers a tool this README does not document. The server also lists a reviews tool whose upstream endpoint is retired and answers with an error, so documenting it would send readers at a dead end. The test pins that state instead of ignoring it, and it fails the day the endpoint returns or the day the server drops the tool, which is when this README needs a decision.
 
+Every real `tools/list` and `tools/call` request goes through a recording client. Each call keeps its method, tool name, attempt count, whether it hit a `concurrency_limit` retry, the final HTTP status and the final verdict; a run ends with a per-tool summary of calls, successes, retries and outcomes. A 429 carrying `concurrency_limit` is retried up to five times with a wait that grows per attempt, while a 401 fails on the first attempt and is never retried. The retired reviews tool still counts as a failed outcome rather than a silent green. When `HASDATA_API_KEY` is absent the live checks are skipped and the summary says so explicitly instead of looking all-green. The request/response parsing, retry and summary logic lives in `test-helpers/rpc.mjs` behind an injectable transport and has its own offline suite in `test/rpc.offline.test.mjs`, driven by canned plain-JSON and SSE JSON-RPC samples (including repeated `concurrency_limit` answers and a 401), so it runs on a fork without a key or network access.
+
 The contract suite also runs weekly on a schedule, because the upstream tool list can change without anyone touching this repository.
 
 ## Contributing

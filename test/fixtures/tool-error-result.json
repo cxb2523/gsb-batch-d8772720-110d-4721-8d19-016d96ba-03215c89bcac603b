@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [{ "type": "text", "text": "reviews endpoint is retired upstream" }],
+    "isError": true
+  }
+}
