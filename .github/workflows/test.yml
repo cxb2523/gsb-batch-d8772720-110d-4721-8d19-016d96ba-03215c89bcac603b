@@ -1,0 +1,255 @@
+name: test
+
+on:
+  push:
+    branches-ignore:
+      - 'dependabot/**' #avoid duplicates: only run the PR, not the commit
+    tags-ignore:
+      - 'v*' #avoids rerun existing commit on release
+  pull_request:
+    branches:
+      - 'main'
+  workflow_dispatch:
+
+jobs:
+  test-ut:
+    runs-on: ubuntu-latest
+    #avoids duplicate execution of pr from local repo, but allows pr from forked repos and dependabot
+    #if: ${{ false }}
+    if: (github.event_name != 'pull_request' && ! github.event.pull_request.head.repo.fork) || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || startsWith(github.head_ref, 'dependabot/')))
+    steps:
+      - run : |
+          echo "event name: ${{ github.event_name }}"
+          echo "fork: ${{ github.event.pull_request.head.repo.fork }}"
+          echo "head ref: ${{ github.head_ref }}"
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: 'dashgit-web/test/.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: 'dashgit-web/test/package-lock.json'
+      - name: Run unit tests
+        working-directory: ./dashgit-web/test
+        run: |
+          mkdir actual
+          npm ci
+          npm run report
+      - name: Publish test report files
+        if: success() || failure() # always run even if the previous step fails
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: "test-ut-report-files"
+          path: |
+            dashgit-web/test/expected
+            dashgit-web/test/actual
+            dashgit-web/test/mochawesome-report
+
+  test-ut-server-py:
+    runs-on: ubuntu-latest
+    # As in test-ut: avoids duplicate execution of pr from local repo, but allows pr from forked repos and dependabot
+    if: (github.event_name != 'pull_request' && ! github.event.pull_request.head.repo.fork) || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || startsWith(github.head_ref, 'dependabot/')))
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - name: Run unit tests for server.py
+        working-directory: ./dashgit-server-py
+        run: python3 -m unittest test_server.py -v
+
+  test-ut-oauth-exchange:
+    runs-on: ubuntu-latest
+    # As in test-ut: avoids duplicate execution of pr from local repo, but allows pr from forked repos and dependabot
+    if: (github.event_name != 'pull_request' && ! github.event.pull_request.head.repo.fork) || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || startsWith(github.head_ref, 'dependabot/')))
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: 'oauth-exchange/.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: 'oauth-exchange/package-lock.json'
+      - name: Run unit tests for oauth-exchange
+        working-directory: ./oauth-exchange
+        run: |
+          npm ci
+          npm test
+
+  test-e2e:
+    runs-on: ubuntu-latest
+    # As in test-ut: avoids duplicate execution of pr from local repo, but allows pr from forked repos and dependabot
+    #if: ${{ false }}
+    if: (github.event_name != 'pull_request' && ! github.event.pull_request.head.repo.fork) || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || startsWith(github.head_ref, 'dependabot/')))
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v7
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: 'dashgit-web/e2e/.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: 'dashgit-web/e2e/package-lock.json'
+      - name: Install dependencies
+        working-directory: ./dashgit-web/e2e
+        run: npm ci
+      - name: Install Playwright browser
+        working-directory: ./dashgit-web/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run e2e smoke tests
+        working-directory: ./dashgit-web/e2e
+        run: npm test
+      - name: Publish Playwright report
+        if: success() || failure() # always run even if the previous step fails
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: "test-e2e-report-files"
+          path: |
+            dashgit-web/e2e/playwright-report
+            dashgit-web/e2e/test-results
+            dashgit-web/e2e/screenshots
+
+  sonarqube:
+    needs: [test-ut, test-ut-server-py, test-ut-oauth-exchange, test-e2e]
+    #if: ${{ false }}
+    # This job fails when comming from a dependabot PR or a forked repo
+    # (can't read the sonarqube token for security reasons).
+    # Also skipped on the branches merged by dashgit, that only contain version updates
+    if: ${{ github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork
+      && !startsWith(github.ref, 'refs/heads/dashgit/combined/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: javiertuya/sonarqube-action@v1.4.5
+        with: 
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sonar-token: ${{ secrets.SONAR_TOKEN }}
+          java-directory: dashgit-updater
+
+# Notes on IT tests:
+
+# Integration tests require access to two dedicated test repositories that should be accessed exclusively. Instead of using the native
+# concurrency control, we use a mutex action, that allows more than one job waiting for the test repositories.
+
+# Jobs are configured to remove duplicated PRs when run in local branches, and run on PRs from forks and dependabot,
+# However, as we do not use pull_request_target to trigger workflows, IT tests will fail from forks and dependabot 
+# due to the security configuration of Actions.
+# To test the pr #ID branch in local: git fetch origin pull/ID/head:PR-ID && git switch PR-ID
+
+# IT tests only run when some file on the dashgit-updater project changes. 
+# If this is controlled by specifying the pahts in the on events, a problem appears:
+# if no file changes in these paths, the IT checks appears as not run and then the branch protection rule is blocked. 
+# There are different dicussions about this, e.g.
+# https://github.com/orgs/community/discussions/26733 that uses the re-actors/alls-green action.
+# The approach used is here is the suggested in 
+# https://stackoverflow.com/questions/70708306/github-actions-run-step-job-in-a-workflow-if-changes-happen-in-specific-folde
+# using dorny/paths-filter in a first job that produces an output with a true value if some file in the paths has changed
+# and the test jobs that require the previous output to be true. If not, the job will be skipped, which does not block
+# the branch protection rule.
+
+# The last problem is with the matrix (GitHub and GitLab): their status can't be used in a branch protection rule when skipped. 
+# To overcome this, each matrix execution uploads an artifact with the status (true or false) and a final job
+# downloads and combines the artifacts, failing the job if any is not successful
+
+  test-it-trigger:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      output1: ${{ steps.filter.outputs.workflows }}
+    #if: ${{ false }}
+    if: (github.event_name != 'pull_request' && ! github.event.pull_request.head.repo.fork) || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || startsWith(github.head_ref, 'dependabot/')))
+    steps:
+    - uses: actions/checkout@v7
+    - run: echo "current branch ${{ github.ref_name }}"
+    - uses: dorny/paths-filter@v4.0.3
+      id: filter
+      with:
+        base: ${{ github.ref_name }}
+        filters: |
+          workflows:
+            - 'dashgit-updater/**'
+    - name: Trigger IT tests
+      if: steps.filter.outputs.workflows == 'true'
+      run: echo "Trigger IT tests"
+
+  test-it:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # for mutex on test repos
+      checks: write # for junit report
+    strategy:
+      matrix:
+        scope: [Github, Gitlab]
+      fail-fast: false
+    needs:  test-it-trigger
+    if: needs.test-it-trigger.outputs.output1 == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      # workaround #35, avoid infinite loop of ben-z/gh-action-mutex, issue #15
+      - if: github.event.pull_request.head.repo.fork
+        name: Failing job that is executed from forked repo
+        run: exit 1
+
+      - name: Set up & wait mutex - ${{ matrix.scope }}
+        env: 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ben-z/gh-action-mutex@v1.0.0-alpha.10
+        with:
+          branch: gh-mutex-${{ matrix.scope }}
+
+      - name: Create dashgit-updater/it.properties
+        # The test repo should be defined by the user that is running this workflow
+        # except when running from dependabot
+        run: |
+          if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            USERNAME="javiertuya"
+          else
+            USERNAME="${{ github.actor }}"
+          fi
+          echo "github.server=https://github.com"             > dashgit-updater/it.properties
+          echo "github.repo=$USERNAME/dashgit-test"           >> dashgit-updater/it.properties
+          echo "github.secret=DASHGIT_GITHUB_IT_TOKEN"        >> dashgit-updater/it.properties
+          echo "github.user=$USERNAME"                        >> dashgit-updater/it.properties
+          echo "github.email="                                >> dashgit-updater/it.properties
+          echo "gitlab.server=https://gitlab.com"             >> dashgit-updater/it.properties
+          echo "gitlab.repo=$USERNAME/dashgit-test"           >> dashgit-updater/it.properties
+          echo "gitlab.secret=DASHGIT_GITLAB_IT_TOKEN"        >> dashgit-updater/it.properties
+          echo "gitlab.user=$USERNAME"                        >> dashgit-updater/it.properties
+          echo "gitlab.email="                                >> dashgit-updater/it.properties
+
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Run IT tests - ${{ matrix.scope }}
+        env:
+          DASHGIT_GITHUB_IT_TOKEN: ${{ secrets.DASHGIT_GITHUB_IT_TOKEN}}
+          DASHGIT_GITLAB_IT_TOKEN: ${{ secrets.DASHGIT_GITLAB_IT_TOKEN}}
+        run: cd dashgit-updater && mvn test -Dtest=TestIt${{ matrix.scope }}*,TestUt* -Dmaven.test.failure.ignore=false -U --no-transfer-progress
+        #run: cd dashgit-updater && mvn test -Dtest=TestUt* -Dmaven.test.failure.ignore=false -U --no-transfer-progress
+
+      - name: Generate report checks - ${{ matrix.scope }}
+        if: success() || failure()
+        uses: mikepenz/action-junit-report@v6.6.1
+        with:
+          check_name: "test-it-result-${{ matrix.scope }}"
+          report_paths: "**/surefire-reports/TEST-*.xml"
+          fail_on_failure: 'true'
+
+  # Aggregated result of the matrix, recomputed when re-running only the failed jobs
+  test-it-status:
+    runs-on: ubuntu-latest
+    needs:  test-it
+    if: success() || failure()
+    steps:
+      - name: Check matrix status and fails if any is unsuccessful
+        run: |
+          echo "Combined status is: ${{ needs.test-it.result }}"
+          if [ "${{ needs.test-it.result }}" != "success" ]; then exit 1; fi

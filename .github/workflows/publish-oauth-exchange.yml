@@ -1,0 +1,41 @@
+name: publish-oauth-exchange
+
+# Builds and smoke tests the oauth-exchange container image, and publishes it to GHCR
+# (see javiertuya/docker-workflows for the tags and packages published on each branch and event).
+# - Production: every push to main that changes the container or this workflow (or a manual dispatch
+#   on main) publishes the tags main and main-<timestamp> (UTC).
+# - Development: a manual dispatch on another branch publishes oauth-exchange-dev:dev.
+#   Refused on the automated update branches (dependabot, digestabot and combined updates).
+# - Pushes to other branches (with the same paths) only build and smoke test the image
+#   (e.g. digestabot updates of the base image).
+
+on:
+  push:
+    branches-ignore:
+      - 'dependabot/**' # runs triggered by Dependabot can't read the DHI secrets, the combined updates branch covers them
+    paths:
+      - 'oauth-exchange/**'
+      - '.github/workflows/publish-oauth-exchange.yml'
+  # On main: republish without changes (e.g. when the push run is too old to be re-run).
+  # On other branches: publish the development image (fails on the automated update branches)
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Do not run in forks
+    if: github.repository == 'javiertuya/dashgit'
+    permissions:
+      contents: read
+      packages: write
+    uses: javiertuya/docker-workflows/.github/workflows/publish-image.yml@v1.0.0
+    with:
+      image-name: oauth-exchange
+      context: oauth-exchange
+      smoke-test-script: oauth-exchange/test/smoke-test.sh
+      # dashgit/combined/* are the combined updates
+      dev-excluded-branches: 'dependabot/* digestabot/* dashgit/combined/*'
+      image-description: 'DashGit OAuth token exchange proxy: exchanges the authorization code for an access token without exposing the client secret to the frontend'
+      dhi-login: true
+    secrets:
+      DHI_USERNAME: ${{ secrets.DHI_USERNAME }}
+      DHI_TOKEN: ${{ secrets.DHI_TOKEN }}

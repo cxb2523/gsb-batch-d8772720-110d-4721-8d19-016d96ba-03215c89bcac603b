@@ -1,0 +1,131 @@
+# AGENTS.md — DashGit
+
+Instructions for AI coding agents working in this repository. Human-facing documentation lives in [README.md](README.md).
+
+## What this project is
+
+DashGit is a browser-based dashboard for viewing and managing work items (issues, pull requests, branches, Dependabot updates, build statuses, notifications) across multiple GitHub and GitLab repositories. It runs entirely in the browser and is hosted on GitHub Pages at https://javiertuya.github.io/dashgit. Authentication uses OAuth2 (Authorization Code + PKCE) or Personal Access Tokens; configuration and tokens live in the browser's local/session storage.
+
+## Repository layout
+
+This is a multi-component workspace. There is **no `package.json` at the repository root** and no root build step.
+
+| Component | Path | Stack | Purpose |
+| --------- | ---- | ----- | ------- |
+| Web app | `dashgit-web/` | Vanilla JS (ES modules), static HTML/CSS | The DashGit UI — the main component |
+| Local runner | `dashgit-server-py/` | Python 3.7+ stdlib | Runs the web app + OAuth proxy together on one port |
+| Updater | `dashgit-updater/` | Java 17 / Maven | Generates and applies combined Dependabot update payloads |
+| OAuth proxy | `oauth-exchange/` | Node.js / Express 5 | Exchanges OAuth authorization codes for tokens without exposing secrets |
+
+### `dashgit-web/`
+- `app/` — the front-end source (this is what you edit). Served as static files; no bundler/transpiler.
+  - `index.html` — entry point. External libraries (Octokit, Gitbeaker, Bootstrap) are loaded via CDN + an `importmap`, not from `node_modules`.
+  - `core/` — app model and caches: `Config.js`, `Model.js`, `StatusesCache.js`, `StatusIndex.js`, `NotifCache.js`, `LabelsCache.js`, `Surrogates.js`.
+  - `git/` — GitHub/GitLab REST + GraphQL adapters and API wrappers (`GitHubAdapter.js`, `GitHubApi.js`, `GitHubGraphql.js`, `GitLab*`, `GitStore*`, `Log.js`).
+  - `login/` — login flow, token storage, PAT encryption.
+  - `oauth/` — PKCE and OAuth helper functions.
+  - `*Controller*.js` / `*View*.js` / `WiServices.js` — UI controllers and rendering for the work-item views and the configuration tab.
+  - `assets/` — icons, images, bundled Fontawesome.
+  - `package.json` — declares the runtime dependency versions (`@octokit/rest`, `@octokit/graphql`, `@gitbeaker/rest`) that must be kept in sync with the CDN versions pinned in the `importmap` in `index.html`.
+- `test/` — Mocha unit tests (see Testing below). Its own `package.json` and `node_modules`.
+- `dist/` — **generated output. Do not edit by hand.** Produced by `prepare-release.sh` from `app/` during the release workflow (it copies `app/`, appends `?v=<version>` cache-busting query strings, and stamps the version into `Config.js`).
+- `OAUTH2.md` — OAuth2 / PKCE flow and customization documentation.
+- `prepare-release.sh` — builds `dist/` for GitHub Pages deployment.
+
+### `dashgit-updater/`
+- Java 17, built with Maven; packaged as a `jar-with-dependencies` (main class `giis.dashgit.updater.Main`).
+- `src/main/java/giis/dashgit/updater/` — orchestration: `Main`, `UpdaterController`, `DependencyUpdater`, `DependencyUpdaterFacade`, `UpdaterModel`, `ConflictResolver`.
+- `src/main/java/giis/qabot/ci/` — git platform clients (`GithubGitClient`, `GitlabClient`, `GithubGraphqlClient`, `GitLocal`) and CI models.
+- `src/test/java/giis/dashgit/updater/test/` — tests (see Testing below).
+- `it.properties` — configuration for integration tests (test repo names, tokens); generated per-run in CI.
+
+### `oauth-exchange/`
+- `server.js` — minimal Express proxy exposing an `/exchange` endpoint. Reads OAuth client secrets and token URLs from environment variables.
+- `Dockerfile` — container image for deployment.
+- `test/server.test.js` — unit tests (`node:test`, no extra dependencies). `server.js` exports the Express `app` and only listens when run directly (`import.meta.main`), so the tests run it in-process against a fake local Authorization Server: no network nor real credentials. In VS Code they appear in the Testing panel through the **node:test runner** extension (`connor4312.nodejs-testing`, recommended in `.vscode/extensions.json`), restricted to `oauth-exchange/` by `nodejs-testing.include` so it does not pick up the Mocha tests.
+
+## Build, test, and run
+
+### Web app
+- **Run locally:** serve `dashgit-web/app/` as static files from any local web server and open `index.html`. There is no build step for development.
+- **Unit tests** (Mocha + Chai + Sinon, ES modules) run from `dashgit-web/test/`:
+  ```
+  cd dashgit-web/test
+  npm install
+  npm test           # runs: mocha Test*.js
+  npm run report     # same, with the mochawesome HTML reporter (loaded through mochawesome-compat.cjs)
+  ```
+  Tests cover API-response-to-model transformations, rendering, and configuration. Test files are `Test*.js` (e.g. `TestGitHubAdapter.js`, `TestWiViewRender.js`, `TestConfig.js`, `TestOALogin.js`). Some tests compare generated output under `test/actual/` against golden files in `test/expected/`; create `test/actual/` if it does not exist. VS Code Mocha Explorer is preconfigured in `.vscode/settings.json`.
+- **End-to-end smoke tests** (Playwright) run from `dashgit-web/e2e/` — a separate, self-contained package that boots the real app in a browser:
+  ```
+  cd dashgit-web/e2e
+  npm install
+  npx playwright install chromium   # one-time browser download
+  npm test                          # runs: playwright test (all *.spec.js)
+  ```
+  `playwright.config.js` launches a static server (`http-server`) against `dashgit-web/app/`. Specs:
+  - `smoke.spec.js` — the app boots with empty local storage (all tabs render, "no providers" warning) and a GitHub provider added through the Configure form persists to local storage. Makes no API calls (git-API hosts are blocked in the test).
+  - `workitems.spec.js` — the synchronous work-items flow: seeds a GitHub PAT provider in local storage and **mocks the three GitHub endpoints** (`/search/issues`, `/notifications`, `POST /graphql`) with `page.route` to render issues + PRs decorated with notification/mention icons and success/failure build statuses (Involved tab). Mock payloads live in `workitems.fixtures.js`. Because the mocked calls are cross-origin and octokit sends an `Authorization` header, each route must answer the CORS preflight (`OPTIONS`) and add `access-control-allow-origin` to responses.
+  - `review-github.spec.js` / `review-gitlab.spec.js` — the review-workflow badges in the Assigned view, for both the author and the reviewer of a PR/MR (fixtures in the matching `*.fixtures.js`, shared assertions in `review-workflow.js`).
+  - `oauth-config.spec.js` — the OAuth2 configuration of a provider depends on the deployment (see `app/login/OAConfig.js`): in development the OAuth App ID must be entered by the user (customization forced, App ID required to save), in production it is optional. The production environment is simulated with `mockProductionEnvironment` (`mock-helpers.js`), that serves a patched `OAConfig.js` where the production url is the url of the test server.
+
+  **No GitHub/GitLab credentials are needed**, but the app pulls CDN assets (jQuery, Bootstrap, crypto-js, esm.sh) so **internet access is required**. Runs in CI (`test.yml`, job `test-e2e`). Gotchas: the Configure form validates on `keyup`, so type into inputs with `pressSequentially`, not `fill`, or the save is blocked; a seeded PAT `token` must be `ghp_`-prefixed (single search call) and works with `encrypted:false` (stored token passes through). With the VS Code **Playwright Test** extension (`ms-playwright.playwright`, recommended in `.vscode/extensions.json`), the tests appear in the Testing panel and **Debug Test** runs them headed (visible browser) with breakpoints.
+
+### Updater (Java)
+From `dashgit-updater/`:
+- `mvn test` — runs tests. `TestUt*` are self-contained unit tests (merge-conflict resolution). `TestIt*` integration tests require two dedicated live test repositories and tokens configured via `it.properties` / environment variables — **do not run these blindly**; see the class comments in `TestItGithubLiveUpdates.java`.
+- `mvn package` — builds the runnable `jar-with-dependencies`.
+- Run a single test class: `mvn test -Dtest=TestUtConflictResolution`.
+
+### OAuth proxy
+From `oauth-exchange/`: `npm install` then run `server.js` with the required OAuth environment variables set. Unit tests: `npm test` (runs `node --test`).
+
+### Run everything locally
+`dashgit-server-py/server.py` serves `dashgit-web/app/` as static files plus the OAuth proxy's `/exchange` and `/healthcheck` on the same port, i.e. the whole stack:
+```
+python3 dashgit-server-py/server.py [port] # http://127.0.0.1:8080, or the given port
+```
+- Binds `127.0.0.1` only, no CORS headers: app and `/exchange` are same-origin.
+- Credentials `CLIENT_SECRET_<client_id>` / `TOKEN_URL_<client_id>` come from `dashgit-server-py/.env` (format in `.env.example`); shell environment wins over `.env`, so a wrapper can inject them from a secret manager.
+- OAuth setup (own *App*, callback URL, address must match the browser's address bar exactly) is in `dashgit-web/OAUTH2.md`, section "Run everything locally". Do not restate it here.
+- Tests for the exchange decision logic (`prepare_exchange`): `cd dashgit-server-py && python3 -m unittest test_server.py`. Named `TestUt*` to mirror the updater's JUnit tests.
+- `oauth-exchange/server.js` + `Dockerfile` remain the Node/Docker alternative for containerized deployment; `dashgit-server-py/` is local-only.
+
+## CI/CD (`.github/workflows/`)
+- `test.yml` — on push/PR: `test-ut` (web Mocha tests, Node 24), `test-ut-server-py` (`dashgit-server-py` unittest), `test-ut-oauth-exchange` (`oauth-exchange` node:test), `test-e2e` (Playwright e2e, Node 24), `sonarqube` analysis, and a `test-it` matrix (GitHub/GitLab integration tests, only when files under `dashgit-updater/**` change).
+- `release.yml` — on GitHub Release: runs `prepare-release.sh` and deploys `dashgit-web/dist/` to GitHub Pages.
+- `publish-oauth-exchange.yml` — on push touching `oauth-exchange/**` (except `dependabot/**`, without access to the DHI secrets) or manual dispatch: builds the `oauth-exchange` image and smoke tests it (`/healthcheck` and a forbidden `/exchange`, no configuration needed). Only on `main` it publishes it to GHCR (`ghcr.io/javiertuya/oauth-exchange`) with tags `main` and `main-YYYYMMDD.HHmmss` (UTC). A manual dispatch on another branch publishes the development image to a separate package (`ghcr.io/javiertuya/oauth-exchange-dev`, floating tag `dev`), refused on the automated update branches (`dependabot/**`, `digestabot/**`, `dashgit/**`). Consumers pin the timestamp tag (optionally with its digest), and the sortable timestamp lets update tools detect the newer versions, so do not add a `latest` or `sha` tag. After each publication, `dataaxiom/ghcr-cleanup-action` removes the old versions of that package: it keeps the newest 20 tagged images of `oauth-exchange` (consumers may pin an older one by digest) and deletes the untagged (overwritten) images of `oauth-exchange-dev`. `provenance`/`sbom` are disabled: a single amd64 manifest per version, without attestation entries in GHCR.
+- Sonar configuration is in `sonar-project.properties` (analyzes `dashgit-web/app` and `dashgit-updater/src/main/java`).
+- **Analysis runs on SonarCloud (public project key `my:dashgit`)**, so its API is reachable without auth — no token needed to read results. When the `sonarqube` job fails, `gh run view <id> --log-failed` only shows "Quality Gate has FAILED"; get the actual cause from the public API (URL-encode the `:` as `%3A`):
+  - Failing conditions: `curl -sS "https://sonarcloud.io/api/qualitygates/project_status?projectKey=my%3Adashgit&branch=<branch>"` — look for conditions with `"status":"ERROR"` (e.g. `new_code_smells > 0`).
+  - The offending issues (new code): `curl -sS "https://sonarcloud.io/api/issues/search?componentKeys=my%3Adashgit&branch=<branch>&resolved=false&inNewCodePeriod=true&types=CODE_SMELL"` — each issue has `rule`, `component`, `line`, `message`. The quality gate requires **zero** new code smells/issues.
+
+## Frontend architecture (`dashgit-web/app`)
+
+The UI is orchestrated by `WiController.js` (work-item views) driving the `git/*Adapter` + `git/*Api` layers and the `WiView*` renderers. The data flow for a view (tab) mixes a synchronous first paint with asynchronous cache-backed refinements:
+
+1. **Synchronous display of work items.** `dispatch(target)` builds one promise per enabled provider calling the REST API (`getWorkItems`), awaits them with `Promise.allSettled` (failed providers are isolated into alerts, the rest still render), and paints the items. Most tabs (assigned, created, involved, unassigned, dependabot) follow this path. The *Branches* tab (`target == "statuses"`) is the exception: it skips the REST promises and renders entirely from the statuses cache.
+2. **Asynchronous refinement after paint.** Once items are on screen, `dispatchNotifications(target)` and `dispatchStatuses(target)` fire async calls that fill in the notification and status/build icons and update the UI in place via the `updateNotifications` / `updateStatuses` callbacks. Statuses (branches + build statuses) come from the **expensive GraphQL API**; notifications come from the REST API. Both are cached so a fast tab switch reuses cached data instead of re-calling the APIs.
+
+### Caches (`app/core/`)
+- **`StatusesCache.js` — two-level, time-based.** Keyed per provider, holds `{ updateTime, refreshTime, model }`. `hit()` returns true only while *both* windows are valid: within `statusCacheUpdateTime` (short — serve cache as-is, no API call) and within `statusCacheRefreshTime` (long — full refresh due). Between the two, `updateSince()` returns a timestamp so the controller does an **incremental** update (only repos with recent commits) and `mergeBranchesAndPrs` merges it in; past the long window it forces a **full refresh**. Both windows are user-configurable (Configuration tab). `scheduleNearRefresh()` shortens the next refresh after a failed GraphQL call. `StatusIndex.js` is a flat index of the cached statuses for direct lookup during rendering.
+- **`NotifCache.js` — model cache consumed synchronously.** Stores the latest notification per provider keyed by model UID (repo/type/iid). Filled by the async notification calls and read synchronously the next time work items render, so notification icons appear immediately on a re-render.
+- **GitHub notification poll-interval control (in `git/GitHubApi.js`, `notifLastModified`/`notifPollInterval`).** A second layer specific to GitHub notifications: GitHub's REST API dictates a minimum poll interval (`x-poll-interval` header, default 120s). Within that interval `updateNotificationsAsync` does **not** hit the API — it calls `updateNotifications(provider, null)`, which reuses the model already in `NotifCache`. So GitHub notifications are effectively cached at two levels: the API-call throttle (don't fetch too often) and the model cache (`NotifCache`, reuse the last fetched model). **GitLab has no equivalent poll-interval throttle** — `GitLabApi.updateNotificationsAsync` (backed by `TodoLists`) hits the API on every refresh; it only benefits from the `NotifCache` model layer.
+- **`LabelsCache.js`** — caches label colors (mainly for GitLab, whose items only carry label names).
+- **`Surrogates.js`** — when several providers share the same authenticated user on the same platform, one *surrogate* issues the expensive GraphQL/notification calls and the others read its cached model, avoiding duplicate calls. All the caches above resolve through `surrogates` when reading a model.
+
+`WiController.reset(hard)` invalidates these caches on reload: a soft reset only invalidates `statusesCache` update times; a hard reset also clears `notifCache`, `statusIndex`, and `labelsCache`.
+
+## Conventions and gotchas
+- **Edit `dashgit-web/app/`, never `dashgit-web/dist/`** — `dist/` is regenerated on release.
+- The web app is **plain ES modules with no bundler**. Keep imports relative and browser-compatible; do not introduce Node-only APIs into `app/`. External dependency versions must match between `app/index.html`'s `importmap` and `app/package.json`.
+- GitHub and GitLab support is generally mirrored: when changing behavior in a `GitHub*` file, check whether the corresponding `GitLab*` file needs the same change (and vice versa), and the same for the updater's `Github*`/`Gitlab*` clients.
+- Branch/status data uses the GraphQL API (with a two-level cache in `core/StatusesCache.js`); most other work-item data uses the REST API. See README "Status cache configuration".
+- **Assigned review-workflow badges** (`git/GitHubApi.js` + `WiViewRender.actions2html`). Extra search queries decorate PRs/MRs in the Assigned view with `custom_actions` badges, so Assigned is the single "what needs my action" list. GitHub and GitLab mirror the same workflow on both roles (author/reviewer); the badges are painted synchronously and then refined by one async GraphQL call after paint (the search/REST APIs can't tell "whose turn it is" nor return the requested reviewers). The badges: `review_request` (I'm a requested reviewer), `changes_requested` (a reviewer wants changes on my PR), `in_review` (muted; my PR is under review), `pending_merge` (approved-but-open PR I authored or reviewed; opt-out per provider via `enablePendingMerge`).
+  - **Assigned surfaces ALL my open authored PRs/MRs** (deduped/merged with the role queries by `wiServices.merge`), so it reflects everything I am working on. Lifecycle of an authored PR: no badge (created, no reviewers) → `in_review` → `changes_requested` (a reviewer wants changes) → `in_review` (after I re-request) → `pending_merge` (approved).
+  - **GitHub.** Sync search queries add the base badges; the `authored` query (`is:open is:pr author:me`) surfaces my open PRs. Async refinement: `WiController.dispatchReviewStates` → `dispatchGitHubReviewStates` → `GitHubApi.updateReviewStatesAsync` → `GitHubGraphql.getReviewRequestsQuery` → `GitHubAdapter.reviewRequests2decisions` → `WiController.updateReviewStates`, reading each PR's pending `reviewRequests`. Per role: role `changes_requested` → `WiView.muteChangesRequestedBadge` mutes it to `in_review` once I re-requested review; role `author` (my other open PRs, no `changes_requested`/`pending_merge`) → `WiView.setInReviewBadge` injects a muted `in_review` badge when a review is pending.
+  - **GitLab.** No server-side "changes requested" filter, and `reviewer_username`/authored queries keep returning MRs regardless of turn, so Assigned surfaces (a) MRs where I'm a reviewer (`review_request`) and (b) my authored MRs — those with reviewers get a sync muted `in_review` badge (`GitLabApi.wrapAuthoredReviewCall` → `GitLabAdapter.addInReviewActionToMergeRequests`). Async refinement: `GitLabApi.updateReviewStatesAsync` → `GitLabGraphql.getReviewStatesQuery` → `GitLabAdapter.reviewStates2decisions` → `WiController.updateReviewRequestStates`, reading each MR's `approvedBy.nodes` and `reviewers.nodes[].mergeRequestInteraction.reviewState`. Precedence: (1) `pendingMerge` (either role, only when `enablePendingMerge`) on ≥1 approval and no reviewer requesting changes → `WiView.setPendingMergeBadge`; (2) reviewer → `WiView.muteReviewRequestBadge` mutes `review_request` to "changes requested" when *my* state is `REQUESTED_CHANGES`; (3) author → `WiView.activateChangesRequestedBadge` upgrades the muted `in_review` to an active `changes_requested` when *any* reviewer is `REQUESTED_CHANGES`.
+  - **GitLab gotchas.** Unlike GitHub, `pending_merge` is derived from this GraphQL, not REST (`approved_by_usernames`/`_ids` is an array param whose `Any` value gitbeaker did not serialize correctly, returning everything). With `enablePendingMerge` on, the async covers ALL my authored MRs (an approved MR may have no assigned reviewers); off, only those under review. GitLab resets `reviewState` to `UNREVIEWED` on re-request, so badges return to their muted state naturally.
+- Advanced features (combined Dependabot updates, follow-ups) require a separate user-owned *manager repository*; the updater's payload format and the web app's push logic (`git/GitStore*`) must stay compatible.
+- Default branch is `main`; active development happens on `develop`.
+- Contribution policy follows the giis-uniovi org guidelines: https://github.com/giis-uniovi/.github/blob/main/profile/CONTRIBUTING.md

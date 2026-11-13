@@ -1,0 +1,248 @@
+import { Gitlab } from 'gitbeaker/rest' //https://www.npmjs.com/package/@gitbeaker/rest
+import { gitLabAdapter } from "./GitLabAdapter.js"
+import { gitLabGraphql } from "./GitLabGraphql.js"
+import { gitStoreApi } from "./GitStoreApi.js"
+import { log } from "./Log.js"
+import { wiController } from "../WiController.js"
+import { config } from "../core/Config.js"
+import { login } from "../login/Login.js"
+
+/**
+ * Core interface with the provider api (GitLab). See doc at Controller.js
+ * Al services and return a provider-independent model (using an adapter) to show in the UI.
+ * See doc at Controller.js
+ */
+const gitLabApi = {
+
+  // OAuth tokens require different call (only for REST API, not for GraphQL)
+  getGitLabApi: async function (provider) {
+    return provider.oauth
+      ? new Gitlab({ host: provider.url, oauthToken: login.getProviderToken(provider), })
+      : new Gitlab({ host: provider.url, token: login.getProviderToken(provider), });
+  },
+
+  getWorkItems: async function (target, provider, sorting) { // NOSONAR
+    const api = await this.getGitLabApi(provider);
+    // issue #116 set sorting criteria to match the selected in the UI
+    const sort = (sorting ?? "").includes("updated") ? "updated_at" : "created_at";
+    const order = (sorting ?? "").includes("descending") ? "desc" : "asc";
+    const assigned = { state: "opened", assignee_username: provider.user, scope: "all", with_labels_details: true, perPage: 100, maxPages: 1, order_by: sort, sort: order };
+    const unassigned = { state: "opened", assignee_id: "None", scope: "all", with_labels_details: true, perPage: 100, maxPages: 1, order_by: sort, sort: order };
+    const reviewer = { state: "opened", reviewer_username: provider.user, scope: "all", with_labels_details: true, perPage: 100, maxPages: 1, order_by: sort, sort: order };
+    const created = { state: "opened", author_username: provider.user, scope: "all", with_labels_details: true, perPage: 100, maxPages: 1, order_by: sort, sort: order };
+    const dependabot = { state: "opened", author_username: provider.dependabotUser, scope: "all", with_labels_details: true, perPage: 100, maxPages: 1, order_by: sort, sort: order };
+    const dependabotTest = { state: "opened", with_labels_details: true, in: "Test pull Request for dependabot/testupdate" };
+    // Note: On gitlab.com, triage is deactivated and dependabot shows many items because the only query used is all merge requests.
+    // This should be restricted to have a like GitHub scope. If needed, consider the below in the future:
+    // According the doc, it is possible to list project and group merge requests separately, but not personal projects.
+    // But there is an undocumented option to get personal projects: https://gitlab.com/gitlab-org/gitlab/-/work_items/582636
+
+    let promises = [];
+    if (target == "assigned")
+      promises = [
+        api.MergeRequests.all(assigned),
+        api.Issues.all(assigned),
+        // Also include the MRs I authored (deduped/merged with the assigned ones by wiServices.merge), so
+        // Assigned stays the single "what needs my action" list. GitLab has no server-side "changes
+        // requested" filter, so ones that already have reviewers get a muted "in review" badge here, later
+        // upgraded to "changes requested" by the async reviewState refinement if a reviewer asked for changes.
+        this.wrapAuthoredReviewCall(api, created),
+        //Unlike GitHub, GitLab only can search for assigned as reviewer, but not as assigned to revise.
+        this.wrapReviewRequestCall(api, reviewer, "review_request"),
+        //Also show work items that need follow-up
+        gitStoreApi.followUpAll(provider, true),
+      ];
+    else if (target == "unassigned" && provider.url != "https://gitlab.com")
+      promises = [
+        api.MergeRequests.all(unassigned),
+        api.Issues.all(unassigned)
+      ];
+    else if (target == "unassigned" && provider.url == "https://gitlab.com")
+      return this.emptyModel(provider, "On gitlab.com, this view is disabled because api call timeouts.");
+    else if (target == "created")
+      promises = [
+        api.MergeRequests.all(created),
+        api.Issues.all(created)
+      ];
+    else if (target == "involved")
+      promises = [
+        api.MergeRequests.all(assigned),
+        api.MergeRequests.all(reviewer),
+        api.Issues.all(assigned),
+        api.MergeRequests.all(created),
+        api.Issues.all(created),
+        //Issues/PRs where user is involved because of mentions: https://docs.gitlab.com/ee/api/todos.html
+        //Mentioned is where the name appears at the end, directly_addressed at the beginning
+        //Also separate pending from done (if a to do is done, it must appear too)
+        api.TodoLists.all({ state: "pending", action: "mentioned", perPage: 40, maxPages: 1 }),
+        api.TodoLists.all({ state: "pending", action: "directly_addressed", perPage: 40, maxPages: 1 }),
+        api.TodoLists.all({ state: "done", action: "mentioned", perPage: 40, maxPages: 1 }),
+        api.TodoLists.all({ state: "done", action: "directly_addressed", perPage: 40, maxPages: 1 }),
+      ];
+    else if (target == "follow-up")
+      promises = [
+        gitStoreApi.followUpAll(provider, false)
+      ];
+    else if (target == "dependabot") {
+      promises = [
+        api.MergeRequests.all(dependabot)
+      ];
+      if (config.ff["updtest"])
+        promises.push(api.MergeRequests.all(dependabotTest))
+    } else
+      return;
+
+    return await this.dispatchPromisesAndGetModel(target, provider, promises);
+  },
+  dispatchPromisesAndGetModel: async function (target, provider, promises) {
+    const t0 = Date.now();
+    let responses = await Promise.all(promises);
+    log.debug(provider.uid, `Data received from the api [${Date.now() - t0}ms]:`, responses);
+    //creates single result with all responses
+    let allResponses = [];
+    for (let response of responses)
+      if (response.followUp != undefined) // follow-ups have different structure than other items
+        allResponses.push(...response.followUp);
+      else
+        allResponses.push(...response);
+    let model = gitLabAdapter.workitems2model(provider, allResponses, {});
+    model.header.target = target;
+    model.header.message = promises.length == 0 ? `Target ${target} not implemented for this provider` : ``;
+    if (target == "involved")
+      model.header.message = "<em>On GitLab, this view displays open issues/merge requests that you are author, assignee or mentioned, but no comenter.</em>";
+    return model;
+  },
+  wrapReviewRequestCall: async function (api, query, action) {
+    return api.MergeRequests.all(query)
+      .then(async function (response) {
+        return gitLabAdapter.addActionToMergeRequestItems(response, action);
+      })
+  },
+  // Wraps the authored-MRs call to synchronously flag the ones that already have reviewers with a muted
+  // "in review" badge (see the comment at the assigned target). MRs without reviewers get no badge.
+  wrapAuthoredReviewCall: async function (api, query) {
+    return api.MergeRequests.all(query)
+      .then(async function (response) {
+        return gitLabAdapter.addInReviewActionToMergeRequests(response);
+      })
+  },
+  emptyModel: function (provider, message) {
+    let model = gitLabAdapter.workitems2model(provider, [], {});
+    model.header.message = message;
+    return model;
+  },
+
+  // ASYNC refinement of the review action badges (symmetric review workflow). Per-MR reviewer states
+  // are not in the REST responses, so we query them here after the synchronous paint (never delaying
+  // the Assigned view) and let the view react per role (prItems carry role "reviewer"/"author"):
+  // - reviewer: mute the "review request" badge once I have requested changes (ball back with author).
+  // - author: add a "changes requested" badge once a reviewer has requested changes (ball with me).
+  updateReviewStatesAsync: function (provider, prItems) {
+    if (prItems == undefined || prItems.length == 0)
+      return;
+    const prs = prItems.map((it, i) => ({ uid: it.uid, fullPath: it.repo_name, iid: it.iid, alias: `mr${i}`, role: it.role }));
+    log.debug(provider.uid, `ASYNC Get review states for ${prs.length} review MR(s)`);
+    const query = gitLabGraphql.getReviewStatesQuery(prs);
+    const t0 = Date.now();
+    gitLabGraphql.callGraphqlApi(provider, query, false).then(function (response) {
+      log.debug(provider.uid, `ASYNC review states response [${Date.now() - t0}ms]:`, response);
+      const decisions = gitLabAdapter.reviewStates2decisions(prs, response, provider.user, provider.enablePendingMerge);
+      wiController.updateReviewRequestStates(provider.uid, decisions);
+    }).catch(function (error) {
+      console.error("GitLab review-states GraphQL call failed");
+      console.error(error);
+    });
+  },
+
+  updateNotificationsAsync: async function (target, provider) {
+    log.debug(provider.uid, "ASYNC Get Notifications from the REST api");
+    const api = await this.getGitLabApi(provider);
+    api.TodoLists.all({ state: "pending", perPage: 100, maxPages: 1 }).then(async function (response) {
+      log.debug(provider.uid, "ASYNC Notifications response:", response);
+      let model = gitLabAdapter.notifications2model(response);
+      wiController.updateNotifications(provider.uid, model); //direct call instead of using a callback
+    });
+  },
+
+  getStatusesRequest: async function (provider, updateSince) {
+    //This can not be done with a single graphql query, because the api will return
+    //error due to a high estimated complexity. Approach:
+    //- Get a model with project and branch names, filtering archived projects
+    //- Complete this model with pipelines (to get status) and merge requests 
+    //  (to determine the branches that are associated to a merge request).
+    //  The list of projects allows selecting the actual branches (if not,
+    //  the pipelines could add branches that were removed)
+    //- Get the label colors (only once in the page life)
+    let query0 = gitLabGraphql.getProjectsQuery(provider, provider.graphql.maxProjects, true);
+    const t0 = Date.now();
+    let gqlresponse0 = await gitLabGraphql.callGraphqlApi(provider, query0, true);
+    log.debug(provider.uid, `Statuses graphql response (projects) [${Date.now() - t0}ms]:`, gqlresponse0);
+
+    if (updateSince != "") { //filter out oldest projects to do a partial update
+      this.filterOldProjects(gqlresponse0, updateSince);
+      log.debug(provider.uid, `Partial update with ${gqlresponse0.data.projects.nodes.length} projects`);
+    }
+
+    //Get first version of model, with branches of projects, without any additional data
+    let model0 = gitLabAdapter.projects2model(provider, gqlresponse0);
+    log.debug(provider.uid, "Statuses model (projects):", model0);
+
+    if (gqlresponse0.data.projects.nodes.length == 0) { //model0 has been created with header and no items, skip api calls
+      log.debug(provider.uid, `No update needed, skip GraphQL api calls`);
+      return model0;
+    }
+
+    //From now on, all calls are related to the project gids determined here (excluding archived)
+    const gids = gitLabAdapter.model4projectIds(model0);
+
+    // Now gets the statuses of all pipelines and complete the model
+    let query = gitLabGraphql.getStatusesQuery(provider, "ids:" + JSON.stringify(gids));
+    let gqlresponse = await gitLabGraphql.callGraphqlApi(provider, query, true);
+    log.debug(provider.uid, "Statuses graphql response (branches/prs):", gqlresponse);
+
+    const model = gitLabAdapter.statuses2model(model0, gqlresponse);
+    log.debug(provider.uid, "Statuses model (branches/prs):", model);
+
+    return model;
+  },
+
+  //Keeps in a gql response only projects updated since the date specified
+  filterOldProjects: async function (gqlresponse, keepSince) {
+    let nodes = gqlresponse.data.projects.nodes;
+    for (let i = 0; i < nodes.length; i++) {
+      if (new Date(keepSince).getTime() > new Date(nodes[i].lastActivityAt).getTime()) { //old project
+        gqlresponse.data.projects.nodes = nodes.slice(0, i);
+        break;
+      }
+    }
+  },
+
+  //Keeps only projects updated at since the date specified
+  keepProjectsSince: async function (gqlresponse, since) {
+    let nodes = gqlresponse.data.projects.nodes;
+    for (let i = 0; i < nodes.length; i++) {
+      if (new Date(since).getTime() > new Date(nodes[i].lastActivityAt).getTime()) { //old project
+        gqlresponse.data.projects.nodes = nodes.slice(0, i);
+        break;
+      }
+    }
+  },
+
+  //Gets the statuses model, but asynchronously.
+  //When the model is completed, calls controller to update the status valueof the current target
+  updateStatusesAsync: function (provider, updateSince) {
+    log.debug(provider.uid, "Get Statuses from the GraphQL api");
+    const t0 = Date.now();
+    gitLabApi.getStatusesRequest(provider, updateSince).then(function (model) {
+      log.debug(provider.uid, `ASYNC Statuses model [${Date.now() - t0}ms]:`, model);
+      wiController.updateStatuses(provider.uid, model, updateSince); //direct call instead of using a callback
+    }).catch(function (error) {
+      console.error("GitLab GraphQL transformation failed");
+      console.error(error)
+      wiController.updateStatusesOnError("GitLab GraphQL transformation failed. Message: " + error, provider.uid);
+    });
+  },
+
+}
+
+export { gitLabApi };

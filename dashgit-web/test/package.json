@@ -1,0 +1,24 @@
+{
+  "name": "dashgit-test",
+  "description": "DashGit - A Dashboard for GitHub and GitLab - Unit tests",
+  "author": "Javier Tuya <tuya@uniovi.es>",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "mocha Test*.js",
+    "report": "mocha Test*.js --reporter ./mochawesome-compat.cjs"
+  },
+  "devDependencies": {
+    "mocha": "12.0.3",
+    "sinon": "22.1.0",
+    "chai": "6.3.0",
+    "mochawesome": "8.1.1"
+  },
+  "overrides": {
+    "glob": "^14.0.4",
+    "minimatch": "^11.0.5"
+  }
+}

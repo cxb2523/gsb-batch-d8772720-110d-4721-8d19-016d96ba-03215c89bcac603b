@@ -1,0 +1,26 @@
+name: digestabot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '11 1 * * 5'
+      timezone: 'Europe/Madrid'
+
+jobs:
+  update-digests:
+    # Only the repository owner can run this workflow
+    if: github.actor == 'javiertuya'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: javiertuya/digestabot-workflows/.github/workflows/docker-digests.yml@v1.0.0
+    with:
+      image-name: oauth-exchange
+      working-dir: oauth-exchange
+      dhi-login: true
+      assignee: javiertuya
+    secrets:
+      DIGESTABOT_TOKEN: ${{ secrets.DIGESTABOT_TOKEN }}
+      DHI_USERNAME: ${{ secrets.DHI_USERNAME }}
+      DHI_TOKEN: ${{ secrets.DHI_TOKEN }}

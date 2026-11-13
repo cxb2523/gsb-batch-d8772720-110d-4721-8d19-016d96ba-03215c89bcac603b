@@ -1,0 +1,652 @@
+import { config } from "./core/Config.js"
+import { wiHeaders } from "./WiViewHeaders.js"
+import { wiRender } from "./WiViewRender.js"
+import { wiServices } from "./WiServices.js"
+
+/**
+ * Generates the html content for the work item view
+ */
+const wiView = {
+  //only api-related target. Note that statuses is named Branches in the UI tab
+  allTargets: ["assigned", "involved", "created", "unassigned", "follow-up", "dependabot", "statuses"],
+
+  setLoading(value) {
+    setTimeout(function () {
+      $("#loadingIcon").css('visibility', value ? 'visible' : 'hidden');
+    }, 0)
+  },
+
+  renderAlert: function (type, message) {
+    let html = `
+      <div class="alert alert-${type} alert-dismissible" role="alert">
+      ${message}
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    `;
+    $("#alert-div").append(html);
+  },
+  resetAlerts: function () {
+    $("#alert-div").html("");
+  },
+
+  reset() {
+    for (let target of this.allTargets)
+      $(`#${target}`).html("");
+  },
+
+  // Work items appear in different providers and targets (tabs).
+  // This gets an unique id that prepends the target and provider id to the work item id
+  getId: function (target, providerId, uid) {
+    return `${this.getIdPrefix(target, providerId)}${uid}`;
+  },
+  getIdPrefix: function (target, providerId) {
+    return `${target}_${providerId}_`;
+  },
+  getPanelId: function (target, providerId) {
+    return `wi-items-${this.getId(target, providerId, "all")}`;
+  },
+  getPanelBadgesId: function (target, providerId) {
+    return `wi-badges-${this.getId(target, providerId, "all")}`;
+  },
+
+  selectActiveTarget: function () {
+    return $(".tab-pane.active").attr("id");
+  },
+
+  renderWorkItems: function (target, models, sorting, highlightSince) {
+    let compact =  config.data.viewFilter[target]?.compact ?? false;
+    let grouping = $("#checkGroup").is(':checked');
+    
+    let html = `<div class="accordion" id="wi-providers-panel">`;
+    html += wiHeaders.allProvidersHeader2html(target);
+
+    let savedBadgesHtml = {};
+    for (let mod of models) {
+      let header = mod.header;
+      let items = mod.items;
+      items = wiServices.merge(items);
+      items = wiServices.sort(sorting, items);
+      items = wiServices.filter(target, mod.header.uid, mod.header.user, items);
+      items = wiServices.group(grouping || compact, items); // compact view requires grouping
+      html += this.model2html(target, header, items, grouping, compact, sorting, highlightSince);
+
+      // Badges that count items are updated asynchronously later, but when rendering we will need to
+      // display the previous saved value (if any) to avoid flickering
+      let badgesId = this.getPanelBadgesId(target, header.uid);
+      savedBadgesHtml[badgesId] = $(`#${badgesId}`).html();
+    }
+    html += `</div>`;
+    $(`#${target}`).html(html);
+    for (let mod of models) {
+      let badgesId = this.getPanelBadgesId(target, mod.header.uid);
+      $(`#${badgesId}`).html(savedBadgesHtml[badgesId] ?? ""); // undefined on first load
+      $(`#${this.getPanelId(target, mod.header.uid)} .wi-status-icon`).tooltip({ delay: 200 });
+      $(`#${this.getPanelId(target, mod.header.uid)} .wi-action-badge`).tooltip({ delay: 200 });
+    }
+  },
+
+  model2html: function (target, header, items, grouping, compact, sorting, highlightSince) {
+    let provider = header.uid;
+    let html = `
+    <div class="accordion-item">
+      <h4 class="accordion-header">
+        <button id="wi-providers-panelbutton-${target}-${provider}" 
+            wi-providers-panelbutton-provider="${provider}"
+            class="${this.statePanelButton(target, provider)}"
+            type="button" data-bs-toggle="collapse" 
+            data-bs-target="#wi-providers-panel-${target}-${provider}" 
+            aria-expanded="${this.statePanelAria(target, provider)}" 
+            aria-controls="wi-providers-panel-${target}-${provider}">
+          <p class="m-0">
+            <span class='h4'>${wiRender.provider2html(header.provider)} ${header.provider} - ${header.user}</span>
+            <span class='h6'>${wiServices.filterMatchItemSummary(provider)}</span>
+            <span class='h6'>${header.url != "" ? " &nbsp; at " + header.url.replace("https://", "") : ""}</span>
+            <span id="wi-badges-${this.getId(target, header.uid, "all")}" style='position:relative; bottom:2px;'></span>
+            <!--
+            <span id="wi-spinner-${this.getId(target, header.uid, "all")}" style='position:relative; bottom:2px;'> ${target != "statuses" ? wiRender.spinnerIcon : ""}</span>
+            -->
+          </p>
+        </button>
+      </h4>
+      <div id="wi-providers-panel-${target}-${provider}" 
+          class="${this.statePanelBody(target, provider)}">
+        <div class="accordion-body">
+`;
+    // adds the header (if applicable)
+    html += wiHeaders.providerHeader2html(target, provider);
+
+    // adds every row
+    html += `<table id="wi-items-${this.getId(target, header.uid, "all")}" provider="${provider}" class='table table-sm table-borderless m-0'>`;
+    html += this.rowsmodel2html(target, header, items, grouping, compact, sorting, highlightSince);
+    html += `</table>`;
+    html += `</div></div></div>`;
+    return html;
+  },
+
+  rowsmodel2html: function (target, header, items, grouping, compact, sorting, highlightSince) {
+    let html = "";
+    if (items.length == 0)
+      html += `<tr><td>No work items in this view. ${header.message}</td></tr>`;
+    else {
+      html += header.message;
+      for (let i = 0; i < items.length; i++) {
+        html += compact
+          ? this.rowmodel2htmlCompact(items, i)
+          : this.rowmodel2htmlItem(target, header, items, i, grouping, sorting, highlightSince);
+      }
+    }
+    return html;
+  },
+
+  // Standard view for a given row, grouped by dates or repo
+
+  rowmodel2htmlItem: function (target, header, items, i, grouping, sorting, highlightSince) {
+    let html = "";
+    let item = items[i];
+    //set group if item group value is different from previous
+    if ((i == 0 || this.groupValue(item, grouping, sorting) != this.groupValue(items[i - 1], grouping, sorting)))
+      html += `<tr class="wi-status-class-header fs-5"><td colspan=4>
+        ${grouping
+          ? wiRender.repourl2html(item.repo_url, item.repo_name)
+          : "<span class='text-secondary fw-bold'>" + this.groupValue(item, grouping, sorting) + "</span>"}
+      <td><tr>`;
+    html += this.rowmodel2html(target, header, item, grouping, highlightSince);
+    return html;
+  },
+  rowmodel2html: function (target, header, item, grouping, highlightSince) {
+    return `
+    <tr id="wi-item-${this.getId(target, header.uid, item.uid)}" 
+        itemrepo="${item.repo_name}"
+        itemtype="${item.type}"
+        itemiid="${item.iid}"
+        class="wi-status-class-any wi-status-class-${wiRender.status2class(item.type, header.uid, item.uid)}">
+      <td class="wi-item-column-clickable">${wiRender.status2html(item.type, header.uid, item.uid, this.getId(target, header.uid, item.uid))}</td>
+      <td class="wi-item-column-clickable">${wiRender.type2html(item.type, new Date(item.updated_at) > highlightSince)}</td>
+      <td style="color:${wiRender.gitColor};" 
+        class="wi-item-column-clickable wi-notifications-${this.getId(target, header.uid, 'all')}" 
+        id="wi-notifications-${this.getId(target, header.uid, item.uid)}">
+        ${wiRender.notifications2html(header.uid, item.uid)}
+      </td>
+      <td class="wi-item-column-content">
+        ${wiRender.updateCheck2html(target, header.uid, item.repo_name, item.iid)}
+        ${wiRender.actions2html(item.actions)}
+        ${grouping ? "" : wiRender.repourl2html(item.repo_url, item.repo_name)}
+        ${wiRender.branch2html(item.branch_url, this.branchName2display(item))}
+        <span class='wi-item-title ${item.type == "branch" ? "fw-normal" : "fw-bold"}'>${wiRender.url2html(item.url, item.title)}</span>
+        <span class='text-secondary'>${item.iidstr}</span>
+        <span class='text-primary'>${item.assignees}</span>
+        <span class='text-secondary'>${wiServices.intervalToString(item.created_at, item.updated_at)}</span>
+        ${wiRender.labels2html(item.repo_name, item.labels)}
+      </td>
+    </tr>
+    `;
+  },
+  branchName2display: function(item) {
+    // Replaces the prefix fork: in the item branch name by the fork icon (as the we do not store this characteristic in the model)
+    return item?.branch_name?.startsWith("fork:") ? item.branch_name.replace("fork:", wiRender.forkIcon + " ") : item.branch_name;
+  },
+
+  // Compact view for a single row per repo, add branches in the row repo
+  // (requires the items be grouped by repo)
+
+  rowmodel2htmlCompact: function (items, i) {
+    let html = "";
+    let item = items[i];
+    //Set new row if item group value is different from previous
+    //Note that this row has wi-status-class-compact instead wi-status-class-any to handle differenty in setting visibility
+    if (i == 0 || item.repo_name != items[i - 1].repo_name) // row begin
+      html += `
+        <tr class="wi-status-class-branch-compact" itemrepo="${item.repo_name}"><td colspan=4>
+        ${wiRender.repourl2html(item.repo_url, item.repo_name)} `;
+
+    // add pr icon and link to pr for prs that are not from forks
+    let labelName = item.branch_name;
+    let labelUrl = item.branch_url;
+    let labelTitle = "";
+    if (item.type == "pr" && !item.branch_name?.startsWith("fork:")) {
+      labelName = wiRender.prIcon + " " + item.branch_name;
+      labelUrl = item.url;
+      labelTitle = "Pull Request: " + item.title;
+    } else if (item.branch_name?.startsWith("fork:")) {
+      labelName = this.branchName2display(item);
+      labelUrl = item.url;
+      labelTitle = "Pull Request from forked repository: " + item.title;
+    }
+    html += this.branch2htmlCompact(labelName, labelUrl, labelTitle, item.status);
+
+    if (i == items.length - 1 || item.repo_name != items[i + 1].repo_name) // row end, finish this repo
+      html += `</td></tr>`;
+
+    return html;
+  },
+  branch2htmlCompact: function (name, url, title, status) {
+    return `
+      <a href="${url}" title="${title}" target="_blank" class="wi-status-class-${status} badge ${wiRender.statusBadgeColor(status)} text-decoration-none" style="${wiRender.statusBadgeStyle(status)}">${name}</a>`;
+  },
+
+  // Other low level content
+
+  groupValue: function (item, grouping, sorting) {
+    //grouping=true is to group by project name. If false, groups by date groups (today, week, month, older)
+    let value = "";
+    if (grouping)
+      value = item.repo_name;
+    else if (sorting.endsWith("updated_at"))
+      value = wiServices.intervalPeriodAsString(new Date(item.updated_at), new Date()).toString();
+    else if (sorting.endsWith("created_at"))
+      value = wiServices.intervalPeriodAsString(new Date(item.created_at), new Date()).toString();
+    return value;
+  },
+
+  //Callbacks called from asynchronous calls after the work items are rendered
+
+  updateStatusItems: function (statusesModel, providerId) {
+    for (let item of statusesModel.items) {
+      if (item.type == "pr" || item.type == "branch")
+        this.upateStatusIcon(item.status, providerId, item.uid);
+      this.upateStatusClass(item.status, providerId, item.uid)
+    }
+  },
+  updateStatuses: function (statusesModel, providerId) {
+    this.updateStatusItems(statusesModel, providerId);
+    this.updateSpinnerEnd(providerId);
+    this.updateBadges(providerId);
+    this.updateStatusVisibility();
+    $(`#${this.getPanelId(this.selectActiveTarget(), providerId)} .wi-status-icon`).tooltip({ delay: 200 });
+  },
+  // Helpers shared by the async review-badge refinements below. Review rows always carry the "assigned"
+  // target in their id. Tooltips are replaced via dispose + reinit (the jQuery API that initialized the
+  // badges) so a stale Bootstrap tooltip does not linger; fresh badges are injected via actions2html.
+  resetBadgeTooltip: function (badge, title) {
+    badge.tooltip("dispose");
+    badge.attr("title", title);
+    badge.tooltip({ delay: 200 });
+  },
+  injectActionBadge: function (cell, action) {
+    cell.prepend(wiRender.actions2html({ [action]: true }));
+    cell.find(`.wi-action-${action.replaceAll("_", "-")}`).tooltip({ delay: 200 });
+  },
+  // Mutes the active "changes requested" badge to "in review" (GitHub author already re-requested review:
+  // ball back with the reviewer, no action needed for now). The row stays; only the badge is dimmed.
+  muteChangesRequestedBadge: function (providerId, itemId) {
+    const id = this.getId("assigned", providerId, itemId);
+    const badge = $(`#wi-item-${id} .wi-action-changes-requested`);
+    if (badge.length == 0)
+      return;
+    badge.removeClass("bg-primary text-light").addClass("bg-secondary text-light opacity-50");
+    badge.html(`<i class="fa-regular fa-comment"></i> in review`);
+    this.resetBadgeTooltip(badge, "You have already re-requested review; waiting for the reviewer, no action needed for now");
+  },
+  // Adds a muted "in review" badge to one of my authored GitHub PRs with a pending review request
+  // (injected after paint, since the search response omits the requested reviewers). No-op if the row
+  // already shows any review badge, so it never overrides a more specific one.
+  setInReviewBadge: function (providerId, itemId) {
+    const id = this.getId("assigned", providerId, itemId);
+    const cell = $(`#wi-item-${id} .wi-item-column-content`);
+    if (cell.length == 0
+      || cell.find(".wi-action-review-request, .wi-action-changes-requested, .wi-action-in-review, .wi-action-pending-merge").length > 0)
+      return;
+    this.injectActionBadge(cell, "in_review");
+  },
+  // Mutes the "review request" badge to "changes requested" (GitLab reviewer already requested changes:
+  // ball with the author, no action needed for now). The row stays; only the badge is dimmed.
+  muteReviewRequestBadge: function (providerId, itemId) {
+    const id = this.getId("assigned", providerId, itemId);
+    const badge = $(`#wi-item-${id} .wi-action-review-request`);
+    if (badge.length == 0)
+      return;
+    badge.removeClass("bg-info text-dark").addClass("bg-secondary text-light opacity-50");
+    badge.html(`<i class="fa-regular fa-comment"></i> changes requested`);
+    this.resetBadgeTooltip(badge, "You have requested changes; waiting for the author to update the merge request, no action needed for now");
+  },
+  // Upgrades the muted "in review" badge to an active "changes requested" one (GitLab author: a reviewer
+  // wants changes, ball with me; GitLab drops it back on re-request). If the sync "in review" badge is
+  // missing (reviewers not yet in the REST list), a fresh "changes requested" badge is injected instead.
+  activateChangesRequestedBadge: function (providerId, itemId) {
+    const id = this.getId("assigned", providerId, itemId);
+    const row = $(`#wi-item-${id}`);
+    const badge = row.find(".wi-action-in-review");
+    if (badge.length > 0) {
+      badge.removeClass("bg-secondary opacity-50 wi-action-in-review").addClass("bg-primary wi-action-changes-requested");
+      badge.html(`<i class="fa-regular fa-comment"></i> changes requested`);
+      this.resetBadgeTooltip(badge, "A reviewer has requested changes on this merge request");
+    } else {
+      const cell = row.find(".wi-item-column-content");
+      if (cell.length > 0 && cell.find(".wi-action-changes-requested").length == 0)
+        this.injectActionBadge(cell, "changes_requested");
+    }
+  },
+  // Shows the green "pending merge" badge on an approved-but-open MR (GitLab, either role). Transforms
+  // the existing sync "review request"/"in review" badge in place, or injects a fresh one if none is
+  // present (e.g. approved by someone who is not an assigned reviewer).
+  setPendingMergeBadge: function (providerId, itemId) {
+    const id = this.getId("assigned", providerId, itemId);
+    const row = $(`#wi-item-${id}`);
+    if (row.find(".wi-action-pending-merge").length > 0) // already shown
+      return;
+    let badge = row.find(".wi-action-review-request, .wi-action-in-review").first();
+    if (badge.length > 0) {
+      badge.attr("class", "wi-item-column-clickable badge text-light bg-success wi-action-badge wi-action-pending-merge");
+      badge.html(`<i class="fa-solid fa-code-merge"></i> pending merge`);
+      this.resetBadgeTooltip(badge, "This merge request is approved and pending merge");
+    } else {
+      const cell = row.find(".wi-item-column-content");
+      if (cell.length > 0)
+        this.injectActionBadge(cell, "pending_merge");
+    }
+  },
+  upateStatusIcon: function (status, providerId, itemId) {
+    const target = this.selectActiveTarget();
+    const id = this.getId(target, providerId, itemId);
+    const statusIcon = wiRender.statusIcon(status, false);
+    let selector = $("#wi-status-" + id);
+    if (selector.length) {
+      selector.html(statusIcon);
+    }
+  },
+  upateStatusClass: function (status, providerId, itemId) {
+    const target = this.selectActiveTarget();
+    const id = this.getId(target, providerId, itemId);
+    let selector = $("#wi-item-" + id);
+    if (selector.length) {
+      selector.attr("class", "wi-status-class-any wi-status-class-" + status);
+    }
+  },
+  updateStatusVisibility: function () {
+    const status = $("#inputStatus").val();
+    // First filter based on the status selected, global change without any iteration
+    // Selected value encodes the statuses to show in binary, left bit is for issues.
+    // Hide/show all items that belong to the appropriate class to match the selected status
+    const classes = ["issue", "success", "failure", "pending", "notavailable", "undefined"];
+    for (let i = 0; i < status.length; i++)
+      this.showIf(".wi-status-class-" + classes[i], status.substring(i, i + 1) == "1")
+
+    // Additional filters to hide rows in the UI require iterate over the work items (like search or remove empty groups)
+    // Apply to all targets to avoid flickering when changing target
+    for (let target of this.allTargets)
+      for (let provider of config.data.providers)
+        this.updateUiVisibility(`wi-items-${target}_${provider.uid}_all`, target);
+  },
+  updateUiVisibility: function (id, targetName) {
+    // As the dom does not have a physical hierarchy, iterates from the end
+    // to allow filter headers that do not contain any visible rows
+    let target = $("#" + id).find("tbody tr");
+    let filterRepoInclude = $("#inputFilterRepoInclude").val().trim().toLowerCase();
+    let filterRepoExclude = $(`#wi-view-filter-${targetName}-exclude`)?.val()?.trim()?.toLowerCase() ?? ""; // not in all views
+    let visibleCount = 0;
+    for (let i = target.length - 1; i >= 0; i--) {
+      let row = target[i];
+      if (row.attributes.class != undefined) {
+        visibleCount = this.hideInvisibleRows(row, visibleCount, filterRepoInclude, filterRepoExclude);
+      }
+    }
+  },
+  hideInvisibleRows: function(row, visibleCount, filterRepoInclude, filterRepoExclude) {
+      // When a row is not a grouping (has a any status class) apply other filters
+      if ($(row).hasClass("wi-status-class-any")) { //an item
+        // Filter by repo name
+        this.hideInvisibleRow(row, filterRepoInclude, filterRepoExclude);
+
+        // if visible, increment count in its group, to be used when processing a group header
+        const style = $(row).attr("style") ?? "";
+        if (!style.includes("display: none")) //is displayed
+          visibleCount++;
+
+      // When a row represents a grouping (class wi-status-class-header),
+      // if all inner rows are hidden (display:none), it should be hidden too
+      } else if ($(row).hasClass("wi-status-class-header")) { //a header, check visibleCount
+        this.showIf(row, visibleCount != 0);
+        visibleCount = 0; //begin next header
+
+      // Special case for branch compact view, each repo group is a single row, that will be hidden here if required
+      } else if ($(row).hasClass("wi-status-class-branch-compact")) {
+        $(row).show(); // if not set as shown by default, removing a filter will not redisplay the row
+        this.hideInvisibleRow(row, filterRepoInclude, filterRepoExclude);
+        // Always hide the row if there are no branches to show (because they are filtered by status) to avoid show empty groups. 
+        // (first children goes down to the td tag, second children counts branches that are not hidden)
+        const visibleBranches = $(row).children().children("a").filter(function() { 
+          return $(this).css('display') !== 'none'; 
+        }).length;
+        if (visibleBranches == 0)
+          $(row).hide();
+      }
+      
+      return visibleCount;
+  },
+  hideInvisibleRow: function (row, filterRepoInclude, filterRepoExclude) {
+    let show = true;
+    if (filterRepoInclude != "" && !$(row).attr("itemrepo").trim().toLowerCase().includes(filterRepoInclude))
+      show = false;
+
+    if (filterRepoExclude != "") {
+      const exclude = filterRepoExclude.split(" ");
+      for (let ex of exclude)
+        if (ex != "" && $(row).attr("itemrepo").trim().toLowerCase().includes(ex))
+          show = false;
+    }
+    // Only hide if required to avoid override of other filters (like status)
+    if (!show)
+      $(row).hide();
+  },
+  saveViewFilterState: function () {
+    const target = $(".nav-link.active").attr("aria-controls");
+    // set values to the filters that have the corresponding element in the UI
+    if ($(`#wi-view-filter-${target}-authorMe`).length > 0)
+      config.data.viewFilter[target].authorMe = $(`#wi-view-filter-${target}-authorMe`).is(':checked');
+    if ($(`#wi-view-filter-${target}-authorOthers`).length > 0)
+      config.data.viewFilter[target].authorOthers = $(`#wi-view-filter-${target}-authorOthers`).is(':checked');
+    if ($(`#wi-view-filter-${target}-assignedMe`).length > 0)
+      config.data.viewFilter[target].assignedMe = $(`#wi-view-filter-${target}-assignedMe`).is(':checked');
+    if ($(`#wi-view-filter-${target}-assignedOthers`).length > 0)
+      config.data.viewFilter[target].assignedOthers = $(`#wi-view-filter-${target}-assignedOthers`).is(':checked');
+    if ($(`#wi-view-filter-${target}-assignedNone`).length > 0)
+      config.data.viewFilter[target].assignedNone = $(`#wi-view-filter-${target}-assignedNone`).is(':checked');
+    if ($(`#wi-view-filter-${target}-compact`).length > 0)
+      config.data.viewFilter[target].compact = $(`#wi-view-filter-${target}-compact`).is(':checked');
+    if ($(`#wi-view-filter-${target}-exclude`).length > 0)
+      config.data.viewFilter[target].exclude = $(`#wi-view-filter-${target}-exclude`).val().trim();
+    config.save();
+  },
+
+  updateNotifications(providerId, thisMentions, allMentions) {
+    const target = this.selectActiveTarget();
+    let panel = `#${this.getPanelId(target, providerId)}`;
+    let viewItems = $(panel).find(`.wi-notifications-${this.getId(target, providerId, "all")}`);
+    let displayedMentions = 0;
+    for (let viewItem of viewItems) {
+      let viewId = $(viewItem).attr("id");
+      let itemId = viewId.replace(`wi-notifications-${this.getIdPrefix(target, providerId)}`, "");
+      let html = wiRender.notifications2html(providerId, itemId);
+      $(viewItem).html(html);
+      if (html.includes(wiRender.mentionIconClass)) // only increment if html displays a mention
+        displayedMentions++;
+    }
+    $(`${panel} .wi-notification-icon`).tooltip({ delay: 200 });
+    //In addition to the notifications of each item, updates the display of total notifications that are mentions
+    //Note that although this display is shown in the involved tab, it is updated when displaying any other tab
+    let notifHtml = allMentions == 0 ? "" : ` <i class="${wiRender.mentionIconClass}"></i><strong>${allMentions}</strong>`;
+    $(`#wi-notifications-tab-badge`).html(notifHtml);
+    //If mentions that are displayed is lower than mentions in this provider, displays a message (only if displaying involved tab)
+    //PENDING: in a next iteration, include mentions of closed items in this view (need to refactor the merge of work items)
+    if (target == "involved" && thisMentions > displayedMentions)
+      $(`#wi-providers-target-header-${target}-${providerId}`)
+       .html(`<div class="mb-0" style="color:${wiRender.gitColor}"><em>You have ${thisMentions-displayedMentions} mention(s) in filtered or closed work items not shown in this view.</em></div>`)
+    return displayedMentions;
+  },
+  updateSpinnerEnd: function (provider) {
+    const target = this.selectActiveTarget();
+    // hide spinner at the provider header
+    // let spinnerAll = `#wi-spinner-${this.getId(target, provider, "all")}`;
+    // $(spinnerAll).hide();
+    // convert spinner at each row into not available (it will be updted later if status is known)
+    let panel = `#${this.getPanelId(target, provider)}`;
+    let spinners = $(panel).find(`.${wiRender.spinnerClass}`);
+    for (let spinner of spinners)
+      $(spinner).parent().html(wiRender.unknownIcon);
+  },
+  updateBadges: function (provider) {
+    const target = this.selectActiveTarget();
+    const panel = this.getPanelId(target, provider);
+    let html = "";
+    html = wiRender.headerbadge2html("Blue", $("#" + panel + " tbody tr.wi-status-class-any").length, "")
+      + wiRender.headerbadge2html("DodgerBlue", $("#" + panel + " tbody tr.wi-status-class-issue").length, "issues")
+      + wiRender.headerbadge2html("MediumSeaGreen", $("#" + panel + " tbody tr.wi-status-class-success").length, "success")
+      + wiRender.headerbadge2html("Red", $("#" + panel + " tbody tr.wi-status-class-failure").length, "failed")
+      + wiRender.headerbadge2html("Orange", $("#" + panel + " tbody tr.wi-status-class-pending").length, "pending")
+    $(`#${this.getPanelBadgesId(target, provider)}`).html(" &nbsp; " + html);
+  },
+  updateLabelColors: function (providerId, allLabels) {
+    if (allLabels == undefined) //refresh colors is only needed in GitLab
+      return;
+    const target = this.selectActiveTarget();
+    const items = $(`#${this.getPanelId(target, providerId)}`).find(".badge-color-undefined");
+    for (let item of items) {
+      let key = $(item).attr("data-colorkey");
+      if (allLabels[key] != undefined) {
+        const color = allLabels[key].color.replace("#", "");
+        $(item).attr("style", wiRender.getLabelStyle($(item).text(), color));
+        $(item).removeClass("badge-color-undefined"); //do not check this again
+      }
+    }
+  },
+
+  showIf: function (selector, condition) {
+    if (condition)
+      $(selector).show();
+    else
+      $(selector).hide();
+  },
+
+  // Content of UI related with dependabot updates
+
+  confirmUpdateClear: function () {
+    $("#wi-update-header-confirm").html("");
+  },
+  confirmUpdate: function () {
+    if (this.getUpdateCheckItems().length == 0)
+      return;
+    $("#wi-update-header-confirm").html(`
+        <p class="text-danger">You are going to update ${this.getUpdateCheckItems().length} dependencies, please, press CONFIRM to start the update process<p>
+        <button type="button" id="wi-btn-update-dispatch-confirm" class="btn btn-danger btn-sm">
+        CONFIRM (takes a few seconds)
+        <span id="wi-update-header-confirm-spinner"></span>
+        </button>
+      `);
+  },
+  confirmUpdateProgress: function () {
+    //setTimeout(function() {
+    $("#wi-update-header-confirm-spinner").html(`<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>`);
+    //}, 0);
+  },
+  confirmUpdateEnd: function (logUrl, updateUrl) {
+    $("#wi-update-header-confirm").html(`
+        <p class="text-success"><strong>${this.getUpdateCheckItems().length} dependencies are being updated... &nbsp;
+        <a href="${logUrl}" target="_blank">[See the logs at GitHub Actions]</a> &nbsp; 
+        </strong><p>
+      `);
+    $("#tab-content").find(`.wi-update-check:checkbox:checked`).attr("disabled", true);
+  },
+  getUpdateCheckItems: function () { // all selected, but not disabled
+    const items = $("#tab-content").find(`.wi-update-check:checkbox:checked:visible`);
+    let updates = [];
+    for (let item of items)
+      if (!$(item).attr("disabled")) //exclude previous updates (that have been disabled)
+        updates.push({ provider: $(item).attr("provider"), repo: $(item).attr("repo"), iid: $(item).attr("iid") });
+    console.log("Updates to process: ", updates);
+    return updates;
+  },
+
+  //Display at the follow-up form
+  
+  followUpSetValues: function (params) {
+    $("#wi-follow-up-modal-server").text(params.server);
+    $("#wi-follow-up-modal-user").text(params.user);
+    $("#wi-follow-up-modal-repo").text(params.repo);
+    $("#wi-follow-up-modal-type").text(params.type);
+    $("#wi-follow-up-modal-type-label").text(params.type == "issue" ? "Issue number:" : "Pull Request number:");
+    $("#wi-follow-up-modal-iid").text(params.iid);
+    $("#wi-follow-up-modal-title").text(decodeURIComponent(params.title));
+    $("#wi-follow-up-modal-message").val(params.message);
+    $("#wi-follow-up-modal-days").val(params.days);
+    // The own button stores the kind of operation to do on save
+    $("#wi-follow-up-btn-save").html(params.exists ? "Update" : "Create");
+    $("#wi-follow-up-modal-label").html(`<i class="fa-regular fa-flag"></i> ${params.exists ? "Update a follow up" : "Create a follow up"}`);
+    $("#wi-follow-up-btn-save").show();
+    if (params.exists)
+      $("#wi-follow-up-btn-delete").show();
+  },
+  followUpGetValues: function () {
+    return {
+      server: $("#wi-follow-up-modal-server").text(),
+      user: $("#wi-follow-up-modal-user").text(),
+      repo: $("#wi-follow-up-modal-repo").text(),
+      type: $("#wi-follow-up-modal-type").text(),
+      iid: $("#wi-follow-up-modal-iid").text(),
+      // Always encode title to allow non ascii characters be transformed into base64 to use the content rest api
+      title: encodeURIComponent($("#wi-follow-up-modal-title").text()).replaceAll("%20", " "),
+      message: $("#wi-follow-up-modal-message").val(),
+      days: $("#wi-follow-up-modal-days").val(),
+    };
+  },
+  followUpProgress: function () {
+    $("#wi-follow-up-btn-delete").hide();
+    $("#wi-follow-up-btn-save").hide();
+    $("#wi-follow-up-btn-progress").show();
+    $("#wi-follow-up-btn-end").hide();
+    $("#wi-follow-up-btn-end").text("");
+    $("#wi-follow-up-btn-error").hide();
+    $("#wi-follow-up-btn-error").text("");
+  },
+  followUpEnd: function (success, error) {
+    $("#wi-follow-up-btn-progress").hide();
+    $("#wi-follow-up-btn-cancel").text("Close");
+    if (error == undefined || error == "") {
+      $("#wi-follow-up-btn-end").text(success);
+      $("#wi-follow-up-btn-end").show();
+    } else {
+      $("#wi-follow-up-btn-error").text(error);
+      $("#wi-follow-up-btn-error").show();
+    }
+  },
+  followUpClear: function () {
+    this.followUpSetValues({ server: "", repo: "", type: "", iid: "", title: "", message: "" });
+    $("#wi-follow-up-modal-label").text("Loading ...");
+    $("#wi-follow-up-btn-cancel").text("Cancel");
+    $("#wi-follow-up-btn-delete").hide();
+    $("#wi-follow-up-btn-save").hide();
+    $("#wi-follow-up-btn-progress").hide();
+    $("#wi-follow-up-btn-end").hide();
+    $("#wi-follow-up-btn-end").text("");
+    $("#wi-follow-up-btn-error").hide();
+    $("#wi-follow-up-btn-error").text("");
+  },
+
+  //Memoria de los paneles acordeon de cada target+provider
+  saveStatePanel: function (id, expanded) {
+    //el accordion se maneja cambiando tres atributos diferentes, por lo que no se puede
+    //sincronizar facilmente el estado para todos los targets de un proveedor.
+    //Obtengo el proveedor de un atributo anyadido en el markup para el id recibido
+    //y sincronizo manualmente con todos los targets
+    const collapsed = expanded != "true";
+    const provider = $("#" + id).attr("wi-providers-panelbutton-provider");
+    for (let target of this.allTargets)
+      this.statesPanelAll(target, provider, collapsed);
+  },
+  statesPanelAll: function (target, provider, collapsed) {
+    config.session.panelCollapsed[`wi-providers-panelbutton-${target}-${provider}`] = collapsed;
+    $(`#wi-providers-panelbutton-${target}-${provider}`).attr("class", this.statePanelButton(target, provider));
+    $(`#wi-providers-panelbutton-${target}-${provider}`).attr("aria-expanded", this.statePanelAria(target, provider));
+    $(`#wi-providers-panel-${target}-${provider}`).attr("class", this.statePanelBody(target, provider));
+  },
+  statePanelBody: function (target, provider) {
+    return config.session.panelCollapsed[`wi-providers-panelbutton-${target}-${provider}`] ? "accordion-collapse collapse" : "accordion-collapse collapse show";
+  },
+  statePanelAria: function (target, provider) {
+    return config.session.panelCollapsed[`wi-providers-panelbutton-${target}-${provider}`] ? "false" : "true";
+  },
+  statePanelButton: function (target, provider) {
+    return config.session.panelCollapsed[`wi-providers-panelbutton-${target}-${provider}`] ? "accordion-button collapsed" : "accordion-button";
+  },
+
+}
+
+export { wiView };

@@ -1,0 +1,40 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directories: ['dashgit-web/test/', 'dashgit-web/e2e/', 'oauth-exchange/']
+    schedule:
+      interval: weekly
+      day: "friday"
+    open-pull-requests-limit: 20
+    # Do not rely on the auto heuristic: always bump the requirement in package.json, not only the lock
+    versioning-strategy: increase
+
+  # app dependencies are grouped and should be manually updated in the index.html importmap
+  - package-ecosystem: 'npm'
+    directory: 'dashgit-web/app/'
+    groups:
+      web-manual-updates:
+        patterns:
+          - "*"
+    schedule:
+      interval: weekly
+      day: "friday"
+    open-pull-requests-limit: 20
+    versioning-strategy: increase
+
+  - package-ecosystem: maven
+    directory: "dashgit-updater/"
+    groups:
+      maven-updates:
+        patterns:
+          - "*"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 20
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: "friday"
+    open-pull-requests-limit: 20

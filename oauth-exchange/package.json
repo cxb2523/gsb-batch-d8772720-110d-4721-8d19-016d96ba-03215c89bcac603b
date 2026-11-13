@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24.2"
+  },
+  "dependencies": {
+    "cors": "2.8.6",
+    "express": "5.3.0"
+  }
+}

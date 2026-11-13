@@ -1,0 +1,207 @@
+import assert from 'assert';
+import fs from "fs"
+import { gitHubAdapter } from "../app/git/GitHubAdapter.js"
+
+beforeEach(function() {
+    if (!fs.existsSync("actual")){
+        fs.mkdirSync("actual");
+    }});
+
+/**
+ * Test the (GitHub) adapters taking as input the provider api response from an external file.
+ * Test inputs are created by getting real data, removing unneeded fields
+ * and customized to represent the test situations.
+ */
+describe("TestGitHubAdapter - Model transformations from GitHub API results", function () {
+
+    //Rest API
+    // - pr assigned, pr reviewer(not assigned), issue
+    // - 0,1,2 assignees
+    // - 0,1,2 labels
+    // - >1 repo, >1 organization
+    it("Transform GitHub REST API results", function () {
+        let input = JSON.parse(fs.readFileSync("./input/github-rest-result1.json"));
+        let provider = { provider: "GitHub", uid: "0-github", user: "usr1", url: 'https://github.com', api: 'https://api.github.com' };
+        let actual = gitHubAdapter.workitems2model(provider, input);
+        fs.writeFileSync("./actual/github-rest-model1.json", JSON.stringify(actual, null, 2)); //to allow extenal diff
+        let expected = JSON.parse(fs.readFileSync("./expected/github-rest-model1.json"));
+        assert.deepEqual(expected, actual);
+    });
+
+    //Rest API with actions: Same as before, but calling the method to add the actions and then the transformation
+    it("Transform GitHub REST API results with actions", function () {
+        let input = JSON.parse(fs.readFileSync("./input/github-rest-result1.json"));
+        gitHubAdapter.addActionToPullRequestItems(input, "review_request");
+        gitHubAdapter.addActionToPullRequestItems(input, "other_action");
+        let provider = { provider: "GitHub", uid: "0-github", user: "usr1", url: 'https://github.com', api: 'https://api.github.com' };
+        let actual = gitHubAdapter.workitems2model(provider, input);
+        fs.writeFileSync("./actual/github-rest-model1-actions.json", JSON.stringify(actual, null, 2)); //to allow extenal diff
+        let expected = JSON.parse(fs.readFileSync("./expected/github-rest-model1-actions.json"));
+        assert.deepEqual(expected, actual);
+    });
+
+    it("Transform GitHub REST API results with issue type objects", function () {
+        let input = JSON.parse(fs.readFileSync("./input/github-rest-result1-type-object.json"));
+        let provider = { provider: "GitHub", uid: "0-github", user: "usr1", url: 'https://github.com', api: 'https://api.github.com' };
+        let actual = gitHubAdapter.workitems2model(provider, input);
+        fs.writeFileSync("./actual/github-rest-model1-type-object.json", JSON.stringify(actual, null, 2));
+        let expected = JSON.parse(fs.readFileSync("./expected/github-rest-model1-type-object.json"));
+        assert.deepEqual(expected, actual);
+        assert.equal(actual.items[1].labels[0].isIssueType, true);
+        assert.equal(actual.items[1].labels[0].name, 'bug');
+        assert.equal(actual.items[1].labels[1].isPriority, true);
+        assert.equal(actual.items[1].labels[1].name, 'High');
+        assert.equal(actual.items[1].labels[2].name, 'question');
+    });
+
+    //Data about follow ups is stored in the manager repository, but it is transformed to models as it if where from the GitHub api
+    it("Transform GitHub Follow up results from GitStoreApi", function () {
+        let input = JSON.parse(fs.readFileSync("./input/gitstore-follow-up-result.json"));
+        let provider = { provider: "GitHub", uid: "0-github", user: "usr1", url: 'https://github.com', api: 'https://api.github.com' };
+        let actual = gitHubAdapter.workitems2model(provider, input.followUp);
+        fs.writeFileSync("./actual/gitstore-follow-up-github-model.json", JSON.stringify(actual, null, 2)); //to allow extenal diff
+        let expected = JSON.parse(fs.readFileSync("./expected/gitstore-follow-up-github-model.json"));
+        assert.deepEqual(expected, actual);
+    });
+
+    // GraphQL API
+    [
+        // Basic (use a first repo: testrepo), deprecated version V1
+        // - pr with branch (63), branch without PR (develop)
+        // - all pr statuses: success, failure, pending, not available (63 61 60 59)
+        // - branch without PR statuses: only existing (develop) and not available (main)
+        // - title pr equal (63)/different (64) of commit (if different uses pr title)
+        // - pr dates!=commit dates (all)
+        // Focus on other features (different repo: testrepo2)
+        // - pr status OPEN(alredy covered)/CLOSED(79)/other(78) (any different to OPEN is managed as a branch)
+        { input: "github-graphql-result1.json", expected: "github-graphql-model1.json", graphqlV2: false },
+
+        // Version V2. Uses the same expected model than the previous,
+        // but the input is adapted to have the PRs as siblings of the branches
+        { input: "github-graphqlV2-result1.json", expected: "github-graphql-model1.json", graphqlV2: true },
+
+        // PR from a fork (baseRepo!=headRepo -> branchUrl is at the forked repo (head) and branchName with fork icon)
+        // - no matching branch (fork20)
+        // - matching branch by name and title (match20) with PR in my repo (match20) -> show PR and branch
+        { input: "github-graphqlV2-result2.json", expected: "github-graphql-model2.json", graphqlV2: true },
+
+        // Postprocessing of the GraphQL query: The user specified repositories are siblings of the viewer node
+        // and must be moved to the viewer node and transformed accordingly
+        // - more than one, first (userrepo1) and last(userrepo9)
+        // - already in the viewer (do not duplicate model) (userrepo2)
+        // - without PRs (do not add to the model) (userrepo3)
+        { input: "github-graphqlV2-result-user-spec.json", expected: "github-graphql-model-user-spec.json", graphqlV2: true },
+    ].forEach(function (item) {
+        it(`Transform GitHub GraphQL API results from ${item.input}`, function () {
+            let input = JSON.parse(fs.readFileSync(`./input/${item.input}`));
+            input = gitHubAdapter.postprocessGraphQl(input);
+            let actual = gitHubAdapter.statuses2model({ provider: "GitHub", uid: "0-github", user: "usr1" }, input, item.graphqlV2);
+            fs.writeFileSync(`./actual/${item.expected}`, JSON.stringify(actual, null, 2)); //to allow extenal diff
+            let expected = JSON.parse(fs.readFileSync(`./expected/${item.expected}`));
+            assert.deepEqual(expected, actual);
+        });
+    });
+
+    // Matching Status coverage of 
+    // - all statusCheckRollup values at: https://docs.github.com/en/graphql/reference/enums#statusstate
+    // - not defined or not matching any value
+    [
+        { input: null, expected: "notavailable" },
+        { input: undefined, expected: "notavailable" },
+        { input: "XXXXX", expected: "notavailable" },
+        { input: "ERROR", expected: "failure" },
+        { input: "EXPECTED", expected: "pending" },
+        { input: "FAILURE", expected: "failure" },
+        { input: "PENDING", expected: "pending" },
+        { input: "SUCCESS", expected: "success" }
+    ].forEach(function (item) {
+        it(`GitHub StatusCheckRollup state conversion: ${item.input} to ${item.expected}`, function () {
+            assert.equal(item.expected, gitHubAdapter.transformStatus(item.input));
+            assert.equal(item.expected, gitHubAdapter.transformStatus(item.input??"".toLowerCase()));
+        });
+    });
+
+    // Determine what repositories need to be updated since a given date (update requirements)
+    // - viewer repos: all, none, one included, one excluded
+    // - user spec repos: idem
+    // - date is empty string (include all)
+    // Check boundaries of date for each repo
+    [
+        { since: "2024-12-09T14:00:31Z", maxProjects: 0, otherRepos: "" },
+        { since: "2024-12-09T14:00:29Z", maxProjects: 1, otherRepos: "" },
+        { since: "2024-12-09T13:00:31Z", maxProjects: 1, otherRepos: "" },
+        { since: "2024-12-09T13:00:29Z", maxProjects: 1, otherRepos: "user3/userrepo3" },
+        { since: "2024-12-09T12:00:31Z", maxProjects: 1, otherRepos: "user3/userrepo3" },
+        { since: "2024-12-09T12:00:29Z", maxProjects: 2, otherRepos: "user3/userrepo3" },
+        { since: "2024-12-09T11:00:31Z", maxProjects: 2, otherRepos: "user3/userrepo3" },
+        { since: "2024-12-09T11:00:29Z", maxProjects: 2, otherRepos: "user3/userrepo3 user4/userrepo4" },
+        { since: "", maxProjects: 2, otherRepos: "user3/userrepo3 user4/userrepo4" },
+    ].forEach(function (item) {
+        it(`Update requirements since "${item.since}" -> ${item.maxProjects} "${item.otherRepos}"`, function () {
+            let gqlresponse = JSON.parse(fs.readFileSync(`./input/github-graphqlV2-result-update-reqs.json`));
+            assert.equal(item.maxProjects, gitHubAdapter.getNumReposToUpdate(gqlresponse, 2, item.since));
+            assert.equal(item.otherRepos, gitHubAdapter.getUserReposToUpdate(gqlresponse, item.since));
+        });
+    });
+
+    // Per-role decisions from the pending reviewRequests (see reviewRequests2decisions). Each prs entry
+    // is annotated with the case it exercises.
+    it("Decide review badges of authored PRs from reviewRequests", function () {
+        let prs = [
+            { uid: "r1/p#1", alias: "pr0", role: "changes_requested" }, // pending re-review -> muted
+            { uid: "r1/p#2", alias: "pr1", role: "changes_requested" }, // no pending -> not muted
+            { uid: "r1/p#3", alias: "pr2", role: "author" }, // pending review -> in review
+            { uid: "r1/p#4", alias: "pr3", role: "author" }, // no pending -> no badge
+            { uid: "r1/p#5", alias: "pr4" }, // no role (compat) with pending -> muted
+            { uid: "r1/p#6", alias: "pr5", role: "author" }, // inaccessible repo (null) -> no badge
+            { uid: "r1/p#7", alias: "pr6", role: "changes_requested" }, // pullRequest without reviewRequests -> not muted
+        ];
+        let gqlResponse = {
+            pr0: { pullRequest: { number: 1, reviewRequests: { nodes: [{ requestedReviewer: { login: "usr1" } }] } } },
+            pr1: { pullRequest: { number: 2, reviewRequests: { nodes: [] } } },
+            pr2: { pullRequest: { number: 3, reviewRequests: { nodes: [{ requestedReviewer: { login: "usr1" } }] } } },
+            pr3: { pullRequest: { number: 4, reviewRequests: { nodes: [] } } },
+            pr4: { pullRequest: { number: 5, reviewRequests: { nodes: [{ requestedReviewer: { login: "usr1" } }] } } },
+            pr5: null,
+            pr6: { pullRequest: { number: 7 } },
+        };
+        let actual = gitHubAdapter.reviewRequests2decisions(prs, gqlResponse);
+        assert.deepEqual([
+            { uid: "r1/p#1", muted: true, inReview: false },
+            { uid: "r1/p#2", muted: false, inReview: false },
+            { uid: "r1/p#3", muted: false, inReview: true },
+            { uid: "r1/p#4", muted: false, inReview: false },
+            { uid: "r1/p#5", muted: true, inReview: false },
+            { uid: "r1/p#6", muted: false, inReview: false },
+            { uid: "r1/p#7", muted: false, inReview: false },
+        ], actual);
+    });
+
+    // Approved but still open PRs (pending merge) are surfaced both when the user authored them and
+    // when the user only reviewed them. The pending_merge action is carried into the model in both
+    // situations (the role only differs in the item author).
+    it("Transform GitHub approved PRs pending merge for author and reviewer", function () {
+        let provider = { provider: "GitHub", uid: "0-github", user: "usr1", url: 'https://github.com', api: 'https://api.github.com' };
+        // Situation 1: I (usr1) am the author of an approved PR
+        let authored = {
+            number: 10, title: "My approved PR", pull_request: {}, repository_url: "https://api.github.com/repos/org/repo1",
+            user: { login: "usr1" }, assignees: [], created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-02T00:00:00Z",
+            html_url: "https://github.com/org/repo1/pull/10", labels: []
+        };
+        // Situation 2: I (usr1) am a reviewer of someone else's approved PR
+        let reviewed = {
+            number: 20, title: "PR I reviewed", pull_request: {}, repository_url: "https://api.github.com/repos/org/repo2",
+            user: { login: "other" }, assignees: [], created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-02T00:00:00Z",
+            html_url: "https://github.com/org/repo2/pull/20", labels: []
+        };
+        let input = [authored, reviewed];
+        gitHubAdapter.addActionToPullRequestItems(input, "pending_merge");
+        let actual = gitHubAdapter.workitems2model(provider, input);
+        assert.equal(2, actual.items.length);
+        assert.equal("usr1", actual.items[0].author); // author role
+        assert.equal(true, actual.items[0].actions.pending_merge);
+        assert.equal("other", actual.items[1].author); // reviewer role
+        assert.equal(true, actual.items[1].actions.pending_merge);
+    });
+
+});
