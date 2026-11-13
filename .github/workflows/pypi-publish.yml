@@ -1,0 +1,98 @@
+name: Publish to PyPI
+
+# Builds and publishes the pip-installable Hirara packages using PyPI Trusted
+# Publishing (OIDC) — there is no API token to store. Each package is its own
+# PyPI project, so each needs a trusted (or pending) publisher configured on
+# PyPI pointing at this repo + workflow. See RELEASING.md.
+#
+# Triggers:
+#   - pushing a version tag (v0.2.0, ...) -> publishes to PyPI. Each package
+#     publishes at the version in its own pyproject.toml; the tag is only the
+#     release trigger. Versions already on PyPI are skipped (they are immutable).
+#   - manual run from the Actions tab      -> choose TestPyPI (dry run) or PyPI.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    # A distinct GitHub environment per package gives each trusted-publisher
+    # identity a unique owner/repo/workflow/environment tuple. PyPI refuses two
+    # *pending* publishers that share the same tuple, so a blank environment can
+    # cover only one package; naming one per package sidesteps that. GitHub
+    # creates these environments automatically on first run.
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      id-token: write # OIDC token for Trusted Publishing — no secrets needed
+    strategy:
+      fail-fast: false
+      # Run one package at a time. Fanning out all five at once starved the
+      # runner queue on this account (only ~2 jobs got a runner; the rest sat
+      # queued ~15 min and were auto-cancelled). Sequential keeps exactly one
+      # job waiting for a runner, and each finishes in well under a minute.
+      max-parallel: 1
+      matrix:
+        include:
+          # hirara-core has no repo-local dependency, so it can always build
+          # first; the others depend on it, but publish order does not matter to
+          # PyPI (it does not resolve dependencies at upload time).
+          - { name: hirara-core, path: hirara-core, environment: pypi-core }
+          - { name: hirara-web, path: ".", environment: pypi-web }
+          - { name: hirarapdf, path: hirarapdf, environment: pypi-pdf }
+          - { name: hirarareader, path: hirarareader, environment: pypi-reader }
+          - { name: hiraranet, path: hiraranet, environment: pypi-net }
+          - { name: hirarabrowser, path: hirarabrowser, environment: pypi-browser }
+          - { name: hirarahttp, path: hirarahttp, environment: pypi-http }
+          - { name: hirarafs, path: hirarafs, environment: pypi-fs }
+          - { name: hirarautil, path: hirarautil, environment: pypi-util }
+          - { name: hiraradb, path: hiraradb, environment: pypi-db }
+          - { name: hiraraops, path: hiraraops, environment: pypi-ops }
+          - { name: hiraraaudio, path: hiraraaudio, environment: pypi-audio }
+          - { name: hiraradata, path: hiraradata, environment: pypi-data }
+          - { name: hiraramedia, path: hiraramedia, environment: pypi-media }
+          - { name: hiraraagent, path: hiraraagent, environment: pypi-agent }
+          - { name: hirara, path: hirara, environment: pypi-sdk }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          python -m pip install --upgrade build
+          python -m build --outdir dist "${{ matrix.path }}"
+
+      - name: Publish ${{ matrix.name }} to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true
+
+      - name: Publish ${{ matrix.name }} to PyPI
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true

@@ -1,0 +1,132 @@
+"""HTTP front end.
+
+    uvicorn hirarabrowser.service:app --host 0.0.0.0 --port 8700
+"""
+
+from __future__ import annotations
+
+from hirara_core.policy import install_backend
+
+import logging
+from contextlib import asynccontextmanager
+import asyncio
+from contextlib import suppress
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from .tools import Toolset
+
+log = logging.getLogger("hirarabrowser.service")
+
+_toolset = Toolset.from_env()
+
+@asynccontextmanager
+async def lifespan(app):
+    async def sweep():
+        while True:
+            await asyncio.sleep(1)
+            await _toolset.store.drain()
+    sweeper = asyncio.create_task(sweep())
+    try:
+        yield
+    finally:
+        sweeper.cancel()
+        with suppress(asyncio.CancelledError):
+            await sweeper
+        await _toolset.close()
+
+
+app = FastAPI(title="hirarabrowser", version="0.2.0", lifespan=lifespan)
+
+install_backend(app)
+
+
+class BrowserOpenRequest(BaseModel):
+    url: str
+    session_id: str | None = None
+    timeout: float | None = None
+    include_text: bool = False
+
+
+class BrowserClickRequest(BaseModel):
+    session_id: str
+    selector: str
+    timeout: float | None = None
+    button: str = "left"
+    click_count: int = 1
+
+
+class BrowserTypeRequest(BaseModel):
+    session_id: str
+    selector: str
+    text: str
+    timeout: float | None = None
+    clear: bool = True
+    press_enter: bool = False
+    delay_ms: float | None = None
+
+
+class BrowserScreenshotRequest(BaseModel):
+    session_id: str
+    full_page: bool = False
+    selector: str | None = None
+    image_format: str = "png"
+    quality: int | None = None
+    timeout: float | None = None
+
+
+@app.get("/health")
+async def health() -> dict:
+    return _toolset.health()
+
+
+@app.get("/schemas")
+async def schemas() -> dict:
+    return {"tools": _toolset.schemas()}
+
+
+@app.post("/browser_open")
+async def browser_open(request: BrowserOpenRequest) -> dict:
+    return await _toolset.browser_open(
+        url=request.url,
+        session_id=request.session_id,
+        timeout=request.timeout,
+        include_text=request.include_text,
+    )
+
+
+@app.post("/browser_click")
+async def browser_click(request: BrowserClickRequest) -> dict:
+    return await _toolset.browser_click(
+        session_id=request.session_id,
+        selector=request.selector,
+        timeout=request.timeout,
+        button=request.button,
+        click_count=request.click_count,
+    )
+
+
+@app.post("/browser_type")
+async def browser_type(request: BrowserTypeRequest) -> dict:
+    return await _toolset.browser_type(
+        session_id=request.session_id,
+        selector=request.selector,
+        text=request.text,
+        timeout=request.timeout,
+        clear=request.clear,
+        press_enter=request.press_enter,
+        delay_ms=request.delay_ms,
+    )
+
+
+@app.post("/browser_screenshot")
+async def browser_screenshot(request: BrowserScreenshotRequest) -> dict:
+    return await _toolset.browser_screenshot(
+        session_id=request.session_id,
+        full_page=request.full_page,
+        selector=request.selector,
+        image_format=request.image_format,
+        quality=request.quality,
+        timeout=request.timeout,
+    )

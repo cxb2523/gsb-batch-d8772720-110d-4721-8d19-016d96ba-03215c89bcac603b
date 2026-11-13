@@ -1,0 +1,262 @@
+# The whole Hirara hub, one command:  docker compose -f docker-compose.hub.yml up -d --build
+#
+# Every tool runs in its own container (isolation preserved); only the gateway
+# publishes a port, and only on loopback. Tools talk to each other and to the
+# gateway over the private `hirara` network by service name — so a foreign
+# process occupying a port on the host can never masquerade as a tool.
+#
+# Auth is opt-in: set HUB_TOKEN in the environment (or a .env file) to require a
+# bearer token. Unset = open, which is fine because only 127.0.0.1 is bound.
+#
+# NOTE: hiraracode mounts the Docker socket — that container can control the
+# host's Docker daemon (root-equivalent). Only run this stack on a host you are
+# comfortable giving that power to; do NOT run it on a shared production box.
+
+name: hirara
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    networks: [hirara]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+
+  websearch:
+    build: { context: ., dockerfile: Dockerfile }
+    restart: unless-stopped
+    depends_on: [searxng]
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+      - WT_SEARXNG_URL=http://searxng:8080
+      - WT_CACHE_PATH=/data/cache.db
+      - WT_FETCH_URL_POLICY=strict
+    volumes: [websearch-cache:/data]
+    networks: [hirara]
+
+  hirarapdf:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hirarapdf/Dockerfile }
+    restart: unless-stopped
+    networks: [hirara]
+
+  hiraracode:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraracode/Dockerfile }
+    restart: unless-stopped
+    # Host-root-equivalent — see the note at the top of this file.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [executor]
+
+  hiraraocr:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraraocr/Dockerfile }
+    restart: unless-stopped
+    volumes: [ocr-models:/data]  # PaddleOCR weights download once
+    networks: [hirara]
+
+  hirarareader:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hirarareader/Dockerfile }
+    restart: unless-stopped
+    networks: [hirara]
+
+  hiraranet:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraranet/Dockerfile }
+    restart: unless-stopped
+    networks: [hirara]
+
+  hirarabrowser:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hirarabrowser/Dockerfile }
+    restart: unless-stopped
+    shm_size: "256mb"
+    networks: [hirara]
+
+  hirarahttp:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hirarahttp/Dockerfile }
+    restart: unless-stopped
+    volumes: [http-data:/data]
+    networks: [hirara]
+
+  hirarafs:
+    environment:
+      - CRAG_COLLECTIONS
+      - CRAG_MODEL_DIR
+      - CRAG_TIER
+      - CRAG_ALLOW_WRITE
+      - CRAG_MAX_INPUT_BYTES
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hirarafs/Dockerfile }
+    restart: unless-stopped
+    volumes: [fs-data:/data, rag-indexes:/indexes, rag-models:/models:ro]
+    networks: [hirara]
+
+  hirarautil:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hirarautil/Dockerfile }
+    restart: unless-stopped
+    networks: [hirara]
+
+  hiraradb:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraradb/Dockerfile }
+    restart: unless-stopped
+    volumes: [db-data:/data:ro]
+    networks: [hirara]
+
+  hiraraops:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraraops/Dockerfile }
+    restart: unless-stopped
+    volumes: [ops-logs:/logs:ro]
+    networks: [hirara]
+
+  # Audio tools: FFmpeg + NumPy only, no model download. Put files to work on
+  # in the audio-data volume and name them /data/... in tool calls.
+  hiraraaudio:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraraaudio/Dockerfile }
+    restart: unless-stopped
+    volumes: [audio-data:/data]
+    networks: [hirara]
+
+  # Data profiling, charts (matplotlib) and diagrams (Graphviz).
+  hiraradata:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraradata/Dockerfile }
+    restart: unless-stopped
+    volumes: [data-data:/data]
+    networks: [hirara]
+
+  # Video / image / barcode tools (FFmpeg, Pillow, zbar).
+  hiraramedia:
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+    build: { context: ., dockerfile: hiraramedia/Dockerfile }
+    restart: unless-stopped
+    volumes: [media-data:/data]
+    networks: [hirara]
+
+  # Agent state: memory, ask_human, reminders. People answer at the hub's
+  # host on port 9600 only if you publish it; set HG_HUMAN_TOKEN first.
+  hiraraagent:
+    build: { context: ., dockerfile: hiraraagent/Dockerfile }
+    restart: unless-stopped
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+      - HG_HUMAN_TOKEN=${HG_HUMAN_TOKEN:-}
+      - HG_NOTIFY_URL=${HG_NOTIFY_URL:-}
+    volumes: [agent-data:/data]
+    networks: [hirara]
+
+  # hirarastt (Whisper STT) is still experimental and heavy (downloads a
+  # model at boot). Uncomment to include it — the gateway will pick it up.
+  # hirarastt:
+  #   build: { context: ., dockerfile: hirarastt/Dockerfile }
+  #   restart: unless-stopped
+  #   volumes: [stt-models:/data/models]
+  #   networks: [hirara]
+
+  hub:
+    build: { context: ., dockerfile: hirara-hub/Dockerfile }
+    restart: unless-stopped
+    depends_on: [websearch, hirarapdf, hiraracode, hiraraocr, hirarareader, hiraranet, hirarabrowser, hirarahttp, hirarafs, hirarautil, hiraradb, hiraraops, hiraraaudio, hiraradata, hiraramedia, hiraraagent]
+    environment:
+      - HIRARA_BACKEND_TOKEN=${HIRARA_BACKEND_TOKEN:-${HUB_TOKEN:-}}
+      - HIRARA_ALLOWED_TOOLS
+      - HIRARA_ALLOW_PRIVATE_IPS=${HIRARA_ALLOW_PRIVATE_IPS:-false}
+      - HUB_TOKEN=${HUB_TOKEN:-}
+      - HUB_WEBSEARCH_URL=http://websearch:8000
+      - HUB_HIRARAPDF_URL=http://hirarapdf:8200
+      - HUB_HIRARACODE_URL=http://hiraracode:8300
+      - HUB_HIRARAOCR_URL=http://hiraraocr:8400
+      - HUB_HIRARAREADER_URL=http://hirarareader:8500
+      - HUB_HIRARANET_URL=http://hiraranet:8600
+      - HUB_HIRARABROWSER_URL=http://hirarabrowser:8700
+      - HUB_HIRARAHTTP_URL=http://hirarahttp:8800
+      - HUB_HIRARAFS_URL=http://hirarafs:8900
+      - HUB_HIRARAUTIL_URL=http://hirarautil:9000
+      - HUB_HIRARADB_URL=http://hiraradb:9100
+      - HUB_HIRARAOPS_URL=http://hiraraops:9200
+      - HUB_HIRARAAUDIO_URL=http://hiraraaudio:9300
+      - HUB_HIRARADATA_URL=http://hiraradata:9400
+      - HUB_HIRARAMEDIA_URL=http://hiraramedia:9500
+      - HUB_HIRARAAGENT_URL=http://hiraraagent:9600
+      - HUB_HIRARASTT_URL=http://hirarastt:8100
+    ports:
+      - "127.0.0.1:${HUB_PORT:-8080}:8080"
+    networks: [hirara, executor]
+
+networks:
+  executor:
+    driver: bridge
+    internal: true
+  hirara:
+    driver: bridge
+
+volumes:
+  rag-indexes:
+  rag-models:
+  websearch-cache:
+  ocr-models:
+  stt-models:
+  fs-data:
+  db-data:
+  ops-logs:
+  audio-data:
+  http-data:
+  data-data:
+  media-data:
+  agent-data:

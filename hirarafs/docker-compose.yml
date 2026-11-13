@@ -1,0 +1,52 @@
+# HiraraFs — self-hosted filesystem tools for agents (HTTP + MCP).
+#
+# v1: file_read. Bound to loopback: put your own auth in front before
+# exposing this. Mount a host directory at /data (CFS_ROOTS).
+
+name: hirarafs
+
+services:
+  hirarafs:
+    build:
+      context: ..
+      dockerfile: hirarafs/Dockerfile
+    restart: unless-stopped
+    environment:
+      - CRAG_COLLECTIONS
+      - CRAG_MODEL_DIR
+      - CRAG_TIER
+      - CRAG_ALLOW_WRITE
+      - CRAG_MAX_INPUT_BYTES
+      - CFS_MAX_BYTES=${CFS_MAX_BYTES:-2000000}
+      - CFS_MAX_WRITE_BYTES=${CFS_MAX_WRITE_BYTES:-2000000}
+      - CFS_ROOTS=${CFS_ROOTS:-/data}
+      - CFS_ALLOW_ANY_PATH=${CFS_ALLOW_ANY_PATH:-false}
+      - CFS_ALLOW_WRITE=${CFS_ALLOW_WRITE:-true}
+      - CFS_DEFAULT_ENCODING=${CFS_DEFAULT_ENCODING:-auto}
+    volumes:
+      - ${CFS_DATA:-./data}:/data
+      - rag-indexes:/indexes
+      - rag-models:/models:ro
+    ports:
+      - "127.0.0.1:${CFS_PORT:-8900}:8900"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8900/health',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  rag-indexes:
+  rag-models:

@@ -1,0 +1,8 @@
+# Runtime — pin ranges; install with: pip install -e ".[service,mcp]"
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+mcp>=2.3,<3
+
+# Shared tool permissions and backend authentication.
+hirara-core>=0.3
