@@ -61,11 +61,11 @@ Click ▸ to open the dashboard panel:
 - **Build**: esbuild (Host half = Node ESM; Client half = browser factory bundle matching DSH Web `PLATFORM_MODULES`)
 - **Visualization**: Zero-dependency handcrafted SVG (matches platform rendering, minimal footprint, ultra-stable)
 
-## v1.1.9 — Claude pricing and consistent cost valuation
+## v1.2.0 — Per-source collection results
 
-**v1.1.9** includes the Claude standard-price catalog, separate cache-write rates, safer model-id matching and explicit unpriced-round handling, plus consistent Host/Client override priority, complete cost breakdowns and shared FX valuation. All single-currency quotes use one display rate; explicit dual-currency prices remain unchanged. See [v1.1.9 changes and upgrade notes](./CHANGELOG.md).
+**v1.2.0** adds auditable per-source results for the Host balance and live-FX probes: every request returns `attempts` in real attempt order with the redacted source URL, outcome (`success` / `http-error` / `timeout` / `network-error` / `bad-response`) and duration; FX fallback marks the hit source, and an all-failed refresh keeps every attempt. Balance distinguishes `no-api-key`, `request-failed` and `bad-response` with readable reasons. The API key never leaves the Host, sensitive query values are redacted, and clients without `attempts` keep rendering unchanged. Builds on v1.1.9's Claude pricing catalog, separate cache-write rates, safer model-id matching and shared FX valuation. See [v1.2.0 changes and upgrade notes](./CHANGELOG.md).
 
-The source version is not proof of npm publication. Run `npm view dsh-usage-chart@1.1.9 version` before using the version-pinned upgrade command below. After upgrading, restart `dsh web` and reload the browser; no session-data migration is required.
+The source version is not proof of npm publication. Run `npm view dsh-usage-chart@1.2.0 version` before using the version-pinned upgrade command below. After upgrading, restart `dsh web` and reload the browser; no session-data migration is required.
 
 ## Install
 
@@ -81,11 +81,11 @@ dsh plugin --profile web add dsh-usage-chart   # installs and registers the prof
 dsh web --profile web                          # starts DSH Web (stop it first if already running)
 ```
 
-To update after **v1.1.9** is published: pnpm may print `Already up to date` when already installed — use an **explicit version** (recommended) or **remove then re-add**:
+To update after **v1.2.0** is published: pnpm may print `Already up to date` when already installed — use an **explicit version** (recommended) or **remove then re-add**:
 
 ```sh
 # Option ①: pin the target version explicitly
-dsh plugin --profile web add dsh-usage-chart@1.1.9
+dsh plugin --profile web add dsh-usage-chart@1.2.0
 # Option ②: remove, then re-add (back to latest)
 dsh plugin --profile web remove dsh-usage-chart
 dsh plugin --profile web add dsh-usage-chart
@@ -147,6 +147,7 @@ The balance query needs a DeepSeek API key, resolved per request in this order (
         # currency: 'cny'        # optional (v0.3): 'usd' (default) | 'cny'
         # cnyPerUsd: 6.76        # optional: shared display FX rate for single-currency quotes
         # fxUrl: 'https://open.er-api.com/v6/latest/USD'   # optional (v0.3): custom live rate source
+        # timeoutMs: 8000        # optional: per-request timeout for balance and each FX source (ms)
 ```
 
 The key stays in the Host process and is never sent to the browser.
@@ -199,6 +200,26 @@ The **CNY/USD** toggle is remembered in the browser. The indicator, panel, chart
 - **Estimates, not invoices**: historical costs are revalued at the current display rate, not the FX rate at request time. Session logs are never changed. Native dual-currency quotes do not change on refresh.
 - **Complete breakdown**: input (cache miss plus cache write), cache read and output appear in both the cost breakdown and composition bar. They sum to the total; a separate cache-write rate is explained in the panel when present.
 
+### Per-source collection results (balance and live FX)
+
+Both Host probes answer "which sources did this request actually try, and how did each end?" Every response carries an `attempts` array in real attempt order:
+
+```json
+{
+  "ok": true,
+  "rate": 6.77,
+  "source": "https://open.er-api.com/v6/latest/USD",
+  "sourceIndex": 0,
+  "attempts": [
+    { "index": 0, "url": "https://open.er-api.com/v6/latest/USD", "outcome": "success", "durationMs": 34 }
+  ]
+}
+```
+
+`outcome` is one of `success`, `http-error` (with `status`), `timeout`, `network-error` or `bad-response` (missing/invalid `rates.CNY`, or a missing `balance_infos`). `ok` still only says whether a usable value was obtained. FX sources are tried in order; the first valid one wins and is marked with `source`/`sourceIndex`. When every source fails, all attempts are kept (not just the last one) and `message` summarises them. Balance responses also report `attempts` and distinguish `no-api-key` (empty `attempts`), `request-failed` and `bad-response` with a readable message.
+
+Source URLs are redacted before leaving the Host: userinfo and fragments are removed and sensitive query values (`api_key`, `token`, `signature`, …) become `***`. The API key is only used in the `Authorization` header and is scrubbed from messages, so it never appears in any response. Each external request keeps its own timeout (default 8 s, `config.timeoutMs`); failures return structured JSON instead of throwing. Clients that predate `attempts` keep working: the panel simply omits the per-source list when the field is absent.
+
 Single-currency override example (per 1M tokens, flat across both tiers):
 
 ```json
@@ -229,7 +250,7 @@ A: `npx @deepseek-ai/dsh` runs transiently and installs no global command. Run `
 A: Harmless — react is provided by the DSH Web platform in the browser; the profile does not need it. Plugin ≥ 0.1.1 marks react as an optional peer.
 
 **Q: DSH 0.2.x warns `dsh-usage-chart@1.1.7 与 DSH 0.2.1-rc.2 不兼容（要求 @deepseek-ai/dsh-client-locale >=0.1.0-rc.6 <0.2.0, ...）…` — is the plugin incompatible?**
-A: That warning comes from DSH 0.2.x's **plugin admission gate**, not from a damaged DSH install and not from data loss: DSH refuses to load a plugin whose `@deepseek-ai/dsh*` peer ranges do not match the running runtime version, and plugin versions through 1.1.7 declared 0.1.x-only ranges. Upgrade the plugin to **≥ 1.1.8** (`dsh plugin --profile web add dsh-usage-chart@1.1.9`), then restart `dsh web` and reload the DSH Web page if it was already open. DSH itself was not damaged and no session data, costs, or credentials were lost — the plugin simply was not loaded.
+A: That warning comes from DSH 0.2.x's **plugin admission gate**, not from a damaged DSH install and not from data loss: DSH refuses to load a plugin whose `@deepseek-ai/dsh*` peer ranges do not match the running runtime version, and plugin versions through 1.1.7 declared 0.1.x-only ranges. Upgrade the plugin to **≥ 1.1.8** (`dsh plugin --profile web add dsh-usage-chart@1.2.0`), then restart `dsh web` and reload the DSH Web page if it was already open. DSH itself was not damaged and no session data, costs, or credentials were lost — the plugin simply was not loaded.
 
 **Q: The balance still shows `–` / "not configured" after setting the API key in the web UI?**
 A: Make sure the plugin is ≥ 0.1.1, then restart `dsh web`. As a stopgap, set `DEEPSEEK_API_KEY` or `config.apiKey`.
@@ -267,30 +288,30 @@ node scripts/verify-render.mjs # Full render verification (light/dark themes, ZH
 
 ## Maintainer releases
 
-The version is **1.1.9** and its content is finalized. The maintainer chooses when to publish it; a source version or dated changelog is not proof that npm already has the package. Use **one** publication path, not both at once.
+The version is **1.2.0** and its content is finalized. The maintainer chooses when to publish it; a source version or dated changelog is not proof that npm already has the package. Use **one** publication path, not both at once.
 
 ### Manual npm publication (this release)
 
-The release content is on `fix/pricing-currency-consistency`, not yet on `main`. In your own checkout, with a clean working tree:
+The release content for v1.2.0 sits on the working branch (not yet on `main`). In your own checkout, with a clean working tree:
 
 ```sh
 git fetch origin
-git switch fix/pricing-currency-consistency
-git pull --ff-only origin fix/pricing-currency-consistency
+git switch <release-branch>
+git pull --ff-only
 git status --short                       # must be clean
-node -p "require('./package.json').version"  # must print 1.1.9
+node -p "require('./package.json').version"  # must print 1.2.0
 npm ci
 npm run verify
 npm pack --dry-run
-npm view dsh-usage-chart versions --json   # confirm 1.1.9 is not already published
+npm view dsh-usage-chart versions --json   # confirm 1.2.0 is not already published
 # Maintainer only: after reviewing the checks above
 npm publish --access public
-npm view dsh-usage-chart@1.1.9 version     # must print 1.1.9 after publication
+npm view dsh-usage-chart@1.2.0 version     # must print 1.2.0 after publication
 ```
 
-Stop if the worktree/version is unexpected or npm already has 1.1.9; do not change versions or overwrite existing packages automatically. The `prepublishOnly` hook reruns verification and `prepare` rebuilds ignored `lib/` output. Inspect packaged runtime/type entries and README images; do not upload an old tarball or build from the earlier implementation commit. The maintainer handles npm sign-in and any 2FA prompts directly—never paste credentials into chat.
+Stop if the worktree/version is unexpected or npm already has 1.2.0; do not change versions or overwrite existing packages automatically. The `prepublishOnly` hook reruns verification and `prepare` rebuilds ignored `lib/` output. Inspect packaged runtime/type entries and README images; do not upload an old tarball or build from the earlier implementation commit. The maintainer handles npm sign-in and any 2FA prompts directly—never paste credentials into chat.
 
-Both changelogs use the version-record date **2026-11-10 (Asia/Shanghai)**. If publication occurs on a different day, update both before publishing. Record supported-runtime clean-profile tests separately; unit tests or the isolated synthetic-Host browser probe do not certify installation. Users must restart `dsh web` and reload the browser after upgrading. No session-data migration is required.
+Both changelogs use the version-record date **2026-11-14 (Asia/Shanghai)**. If publication occurs on a different day, update both before publishing. Record supported-runtime clean-profile tests separately; unit tests or the isolated synthetic-Host browser probe do not certify installation. Users must restart `dsh web` and reload the browser after upgrading. No session-data migration is required.
 
 ### Optional GitHub Release workflow
 
@@ -306,6 +327,7 @@ dsh-usage-chart/
 ├── src/
 │   ├── index.ts          # Host half: /balance proxy + /usage round fold + /pricing snapshot
 │   │                     #          + /meta currency config + /rate live FX proxy
+│   ├── probe.ts          # External collection: per-source attempts (redacted URL/outcome/duration)
 │   ├── pricing/
 │   │   ├── calc.ts       # Pure shared pricing math (dual-currency, peak/off-peak)
 │   │   ├── source.ts     # PricingSource seam: builtin list prices + pricing.json file adapter
@@ -326,8 +348,9 @@ dsh-usage-chart/
 │       │   └── context.ts      # ContextReport: breakdown / compaction stats / suggestions
 │       ├── badge/CostBadge.tsx # Assistant message cost badge
 │       ├── pricing-api.ts      # usePricing: /pricing snapshot consumer
-│       ├── currency.ts         # Currency store (/meta config + switch + /rate refresh)
-│       ├── balance.ts          # Balance query hook (proxied through Host)
+│       ├── currency.ts         # Currency store (/meta config + switch + /rate refresh + attempts)
+│       ├── balance.ts          # Balance query hook (proxied through Host; optional attempts)
+│       ├── attempts.tsx        # Per-source result list shared by balance and FX
 │       └── styles.ts           # Injected CSS (<style data-plugin>)
 └── types/                # Minimal Host Cordis types; Client types live in src/client/context.ts
 ```
@@ -349,7 +372,7 @@ dsh-usage-chart/
 | Web UI | React 18 / `conversation.composer.dock` + `conversation.chat.assistant-actions` |
 | OS | macOS, Linux, Windows (pure JavaScript, no native dependencies) |
 
-Validation scope for v1.1.9: Node 20.19.5 / 22.17.0 / 24.22.2 each pass **85 tests with zero skipped**, including the release-version consistency check. Package and isolated synthetic-Host browser regressions pass (configured/live FX, saved-rate reload, CNY/USD, complete cost components and English narrow layout). These are not actual DSH/clean-profile installation tests. Historical evidence remains separate: the v1.1.8 compatibility PR author reported a DSH 0.2.1-rc.2 linked-build smoke; the Claude PR author reported 0.2.2-rc.1 bundle/API/log checks. Neither certifies current clean-profile installation on both supported lines. No live 0.1.x installation has been re-run after the retired runtime injection was removed.
+Validation scope for v1.2.0: Node 24 (Windows) passes **all tests with zero skipped**, including the release-version consistency check, the new per-source probe/loopback suites and the panel render suites. These are not actual DSH/clean-profile installation tests. Historical evidence remains separate: the v1.1.8 compatibility PR author reported a DSH 0.2.1-rc.2 linked-build smoke; the Claude PR author reported 0.2.2-rc.1 bundle/API/log checks. Neither certifies current clean-profile installation on both supported lines. No live 0.1.x installation has been re-run after the retired runtime injection was removed.
 
 ## Community and open source
 

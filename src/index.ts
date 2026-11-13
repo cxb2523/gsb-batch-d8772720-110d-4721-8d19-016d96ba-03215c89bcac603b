@@ -12,13 +12,20 @@
  *    成本计算的唯一价格输入（ADR 2）。
  *  - `/dsh-usage-chart/meta`    — 下发成本显示币种与汇率配置（成本按所选币种的
  *    官方刊例价直接计算，汇率仅作参考注记）。
- *  - `/dsh-usage-chart/rate`    — 代理实时 USD→CNY 汇率查询。
+ *  - `/dsh-usage-chart/rate`    — 代理实时 USD→CNY 汇率查询（多源按序回退）。
+ *
+ * 余额与汇率的外部采集由 `probe.ts` 完成：每次响应都带按实际尝试顺序排列的
+ * `attempts`（脱敏源地址 / 结局 / 耗时），整体 `ok` 只表示是否拿到可用结果。
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context, CredentialsService } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { normalizeCnyPerUsd, normalizeCurrency } from './pricing/calc.ts'
+import { DEFAULT_PROBE_TIMEOUT_MS, probeBalance, probeRate } from './probe.ts'
+import type { BalanceResponse, ProbeOptions } from './probe.ts'
+export { probeBalance, probeRate, redactSourceUrl, scrubSecrets } from './probe.ts'
+export type { BalanceInfo, BalanceResponse, ProbeOutcome, RateResponse, SourceAttempt } from './probe.ts'
 
 // ── 共享纯计算（client 同源 bundle）────────────────────────────────────────
 export {
@@ -109,23 +116,10 @@ export interface Config {
   cnyPerUsd?: number
   /** 可选：实时汇率数据源 URL（须返回 `{ rates: { CNY: number } }` 结构），默认 open.er-api.com。 */
   fxUrl?: string
-}
-
-interface BalanceInfo {
-  currency: string
-  totalBalance: string
-  grantedBalance: string
-  toppedUpBalance: string
-}
-
-export interface BalanceResponse {
-  ok: boolean
-  apiKeyConfigured: boolean
-  source?: 'api'
-  reason?: 'no-api-key' | 'request-failed' | 'bad-response'
-  message?: string
-  isAvailable?: boolean
-  balances?: BalanceInfo[]
+  /** 可选：单个外部请求（余额 / 每个汇率源）的超时毫秒数，默认 8000。 */
+  timeoutMs?: number
+  /** 测试接缝：替换外部 fetch 实现（默认全局 fetch）。 */
+  fetchImpl?: typeof fetch
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com'
@@ -238,107 +232,6 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-/** 拉取官方余额。任何失败都返回结构化错误，不抛异常。 */
-async function fetchBalance(apiKey: string, baseUrl: string): Promise<BalanceResponse> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 8_000)
-  try {
-    const res = await fetch(`${baseUrl}/user/balance`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      signal: controller.signal,
-    })
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      return {
-        ok: false,
-        apiKeyConfigured: true,
-        reason: 'request-failed',
-        message: `官方接口返回 HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
-      }
-    }
-    const data = (await res.json()) as {
-      is_available?: boolean
-      balance_infos?: Array<{
-        currency?: string
-        total_balance?: string
-        granted_balance?: string
-        topped_up_balance?: string
-      }>
-    }
-    const balances: BalanceInfo[] = (data.balance_infos ?? []).map((b) => ({
-      currency: b.currency ?? 'CNY',
-      totalBalance: b.total_balance ?? '0',
-      grantedBalance: b.granted_balance ?? '0',
-      toppedUpBalance: b.topped_up_balance ?? '0',
-    }))
-    if (balances.length === 0) {
-      return { ok: false, apiKeyConfigured: true, reason: 'bad-response', message: '官方接口未返回 balance_infos' }
-    }
-    return {
-      ok: true,
-      apiKeyConfigured: true,
-      source: 'api',
-      isAvailable: data.is_available ?? false,
-      balances,
-    }
-  } catch (error) {
-    return {
-      ok: false,
-      apiKeyConfigured: true,
-      reason: 'request-failed',
-      message: error instanceof Error ? error.message : String(error),
-    }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/**
- * 拉取实时 USD→CNY 汇率：按 fxUrls 顺序依次尝试（配置源优先，内置回退源兜底），
- * 每个源独立 8s 超时；任一源返回合法 rates.CNY 即成功并标注 source。
- * 全部失败返回结构化错误，不抛异常。
- */
-async function fetchLiveRate(fxUrls: string[]): Promise<{
-  ok: boolean
-  rate?: number
-  fetchedAt?: number
-  reason?: 'request-failed' | 'bad-response'
-  message?: string
-  source?: string
-}> {
-  let last: { reason: 'request-failed' | 'bad-response'; message?: string } | null = null
-  for (const url of fxUrls) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 8_000)
-    try {
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      })
-      if (!res.ok) {
-        last = { reason: 'request-failed', message: `汇率源返回 HTTP ${res.status}` }
-        continue
-      }
-      const data = (await res.json()) as { rates?: { CNY?: unknown } }
-      const rate = data.rates?.CNY
-      if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) {
-        last = { reason: 'bad-response', message: '汇率源未返回有效的 rates.CNY' }
-        continue
-      }
-      return { ok: true, rate, fetchedAt: Date.now(), source: url }
-    } catch (error) {
-      last = { reason: 'request-failed', message: error instanceof Error ? error.message : String(error) }
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-  return { ok: false, reason: last?.reason ?? 'request-failed', message: last?.message }
-}
 /**
  * 插件入口：注册余额代理 / 用量折叠 / 价格快照 / 显示配置 / 汇率代理路由。
  * @param ctx - 宿主 Context（cordis）。
@@ -366,6 +259,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     return (process.env.DEEPSEEK_API_KEY ?? '').trim()
   }
   const baseUrl = normalizeBaseUrl(config.baseUrl)
+  // 每次外部请求独立超时；测试可经 config.fetchImpl 注入本地伪造 fetch。
+  const timeoutMs = typeof config.timeoutMs === 'number' && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0
+    ? config.timeoutMs
+    : DEFAULT_PROBE_TIMEOUT_MS
+  const probeOptions: ProbeOptions = {
+    timeoutMs,
+    ...(config.fetchImpl === undefined ? {} : { fetchImpl: config.fetchImpl }),
+  }
 
   // 价格解析（单一真相）：用户覆盖文件（含变更监听）→ 内置刊例价 → 回退。
   const pricingFile = config.pricingFile?.trim() || defaultPricingFile()
@@ -387,10 +288,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           apiKeyConfigured: false,
           reason: 'no-api-key',
           message: '未配置 DEEPSEEK_API_KEY（或插件 config.apiKey / 网页端 API Key）。余额显示为 –，点击可重试。',
+          attempts: [],
         } satisfies BalanceResponse)
         return
       }
-      const result = await fetchBalance(apiKey, baseUrl)
+      const result = await probeBalance(apiKey, baseUrl, probeOptions)
       writeJson(res, 200, result)
     },
   }), 'dsh-usage-chart: balance route')
@@ -449,7 +351,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     path: '/dsh-usage-chart/rate',
     async handler(req: IncomingMessage, res: ServerResponse) {
       if (!guardRequest(req, res)) return
-      const result = await fetchLiveRate(fxUrls)
+      const result = await probeRate(fxUrls, probeOptions)
       writeJson(res, 200, result)
     },
   }), 'dsh-usage-chart: rate route')

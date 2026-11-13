@@ -512,6 +512,27 @@ body[data-ds-dark-theme] .duc-chart-tooltip { box-shadow: 0 8px 22px rgba(0, 0, 
 .duc-balance-skeleton i { width: 88px; height: 19px; }
 .duc-balance-skeleton span { width: 58%; height: 10px; }
 
+/* 逐源采集结局（余额 / 汇率共用）：有序列表表达实际尝试顺序 */
+.duc-attempts { margin-top: 6px; font-size: 10px; color: var(--dsw-alias-label-tertiary, rgba(255, 255, 255, 0.6)); }
+.duc-attempts-title { font-weight: 600; color: var(--dsw-alias-label-secondary, rgba(255, 255, 255, 0.74)); }
+.duc-attempts-list { margin: 3px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.duc-attempt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 6px;
+}
+.duc-attempt-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duc-attempt-outcome { font-weight: 600; white-space: nowrap; }
+.duc-attempt-time { white-space: nowrap; opacity: 0.8; }
+.duc-attempt-success .duc-attempt-outcome { color: var(--duc-output); }
+.duc-attempt-http-error .duc-attempt-outcome,
+.duc-attempt-bad-response .duc-attempt-outcome,
+.duc-attempt-timeout .duc-attempt-outcome,
+.duc-attempt-network-error .duc-attempt-outcome,
+.duc-attempt-unknown .duc-attempt-outcome { color: var(--dsw-static-amber-500, #e8a33d); }
+.duc-attempts-hit { margin-top: 3px; color: var(--dsw-alias-label-secondary, rgba(255, 255, 255, 0.74)); }
+
 /* v1.1.0：上下文与压缩诊断模块样式 */
 .duc-context-bar {
   display: flex;

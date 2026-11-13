@@ -1,8 +1,12 @@
 /**
  * 余额读取：浏览器 → 宿主同源路由 `/dsh-usage-chart/balance`（宿主办代理，
  * 避免浏览器直连官方 API 的 CORS 与密钥暴露问题）。数据来自官方接口。
+ *
+ * 兼容性：新版宿主会附带 `attempts`（逐源结局）；旧宿主没有该字段时页面照常
+ * 显示请求结果，不因缺少逐源细节而报错。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { SourceAttempt } from './attempts.tsx'
 
 export interface BalanceInfo {
   currency: string
@@ -19,6 +23,8 @@ export interface BalanceData {
   message?: string
   isAvailable?: boolean
   balances?: BalanceInfo[]
+  /** 旧宿主可能没有该字段。 */
+  attempts?: SourceAttempt[]
 }
 
 export type BalanceStatus = 'idle' | 'loading' | 'ok' | 'error'

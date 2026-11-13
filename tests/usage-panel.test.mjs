@@ -10,7 +10,9 @@ import { createPricingResolver, FALLBACK_PRICING } from '../lib/index.js'
 
 // 仅替换数据 hook；保留真实面板、价格解析、文案与 HStack，防止测试重复实现 UI。
 const result = await build({ entryPoints: ['src/client/UsagePanel.tsx'], bundle: true, write: false, format: 'cjs', platform: 'node', external: ['react', 'react/jsx-runtime', 'react-dom'], plugins: [{ name: 'panel-hooks', setup(b) {
-  b.onResolve({ filter: /^\.\/(currency|pricing-api)\.ts$/ }, (a) => a.importer.endsWith('/UsagePanel.tsx') ? { path: a.path, namespace: 'hooks' } : undefined)
+  // Windows 的 importer 使用反斜杠：统一后再判断，否则 mock 不会生效。
+  const isPanel = (file) => file.replace(/\\/g, '/').endsWith('/UsagePanel.tsx')
+  b.onResolve({ filter: /^\.\/(currency|pricing-api)\.ts$/ }, (a) => isPanel(a.importer) ? { path: a.path, namespace: 'hooks' } : undefined)
   b.onLoad({ filter: /.*/, namespace: 'hooks' }, (a) => ({ contents: a.path.includes('currency')
     ? 'export const useDisplayCurrency=()=>globalThis.__meta; export const setDisplayCurrency=()=>{}; export const refreshLiveRate=async()=>"ok";'
     : `export {resolvePricing} from ${JSON.stringify(resolve('src/client/pricing-api.ts'))}; export const usePricing=()=>({table:globalThis.__table});`, loader: 'js', resolveDir: process.cwd() }))
@@ -22,12 +24,13 @@ context.globalThis = context
 runInNewContext(result.outputFiles[0].text, context)
 
 const totals = { uncachedInputTokens: 1, cacheReadTokens: 1, cacheWriteTokens: 1, outputTokens: 1 }
-function render(currency, locale, model = 'claude-opus-5-5', unpriced = false) {
-  context.__meta = { currency, cnyPerUsd: 7.3 }
+function render(currency, locale, model = 'claude-opus-5-5', unpriced = false, extra = {}) {
+  context.__meta = { currency, cnyPerUsd: 7.3, ...(extra.meta ?? {}) }
   return renderToStaticMarkup(createElement(context.module.exports.UsagePanel, {
     locale, history: { status: 'ok', rounds: [], compactions: [] }, totals, model,
     costSplitTotal: { input: 1, cacheRead: 2, output: 3, total: 6, estimated: unpriced, unpriced },
     observedRounds: [], balanceStatus: 'idle', balanceData: null, loadBalance: async () => {},
+    ...(extra.props ?? {}),
   }))
 }
 
@@ -63,4 +66,40 @@ test('native dual-currency prices stay native; unpriced models never advertise z
   assert.match(html, /Unpriced model/)
   assert.match(html, /lower bound/)
   assert.doesNotMatch(html, /List price|Cache-write price/)
+})
+
+test('per-source attempts render in order for balance and rate; legacy payloads still render', () => {
+  const attempts = [
+    { index: 0, url: 'https://primary.example/latest', outcome: 'http-error', status: 500, durationMs: 12 },
+    { index: 1, url: 'https://fallback.example/latest', outcome: 'success', durationMs: 8 },
+  ]
+  const html = render('cny', 'zh', 'deepseek-flash', false, {
+    meta: { rateAttempts: attempts, rateAttemptSource: 'https://fallback.example/latest', rateMessage: undefined },
+    props: {
+      balanceStatus: 'error',
+      balanceData: {
+        ok: false, apiKeyConfigured: true, reason: 'bad-response', message: '官方接口未返回 balance_infos',
+        attempts: [{ index: 0, url: 'https://api.deepseek.com/user/balance', outcome: 'bad-response', durationMs: 4 }],
+      },
+    },
+  })
+  assert.match(html, /逐源采集结果/)
+  // 实际尝试顺序：主源在前、回退源在后。
+  assert.ok(html.indexOf('primary.example') < html.indexOf('fallback.example'))
+  assert.match(html, /HTTP 非 2xx/)
+  assert.match(html, /响应结构非法/)
+  assert.match(html, /命中源：https:\/\/fallback\.example\/latest/)
+  assert.match(html, /12 ms/)
+})
+
+test('legacy responses without attempts keep the panel rendering unchanged', () => {
+  const html = render('cny', 'zh', 'deepseek-flash', false, {
+    meta: {},
+    props: {
+      balanceStatus: 'error',
+      balanceData: { ok: false, apiKeyConfigured: true, reason: 'request-failed', message: '网络错误' },
+    },
+  })
+  assert.doesNotMatch(html, /逐源采集结果/)
+  assert.match(html, /余额查询失败/)
 })

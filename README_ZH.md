@@ -61,11 +61,11 @@
 - **构建**：esbuild（host 半区 = Node ESM；client 半区 = `window.__ModuleLoader__.load({id, factory})` 工厂包，外部依赖与 DSH web 的 `PLATFORM_MODULES` 完全一致）
 - **可视化**：零依赖手写 SVG（DSH web 未内置图表库；自绘与平台渲染方式一致、体积最小、最稳定）
 
-## v1.1.9 — Claude 定价与一致的成本估值
+## v1.2.0 — 逐源采集结果
 
-**v1.1.9** 包含 Claude 标准价格表、写缓存独立单价、更安全的模型名匹配与未定价轮次处理，并统一宿主／客户端覆盖优先级、补齐成本分项及共享汇率估值。所有单币种报价使用同一个展示汇率；显式双币种原价不变。完整说明见 [v1.1.9 更新日志](./CHANGELOG_ZH.md)。
+**v1.2.0** 为宿主余额与实时汇率采集补充可核对的逐源结局：每次响应按实际尝试顺序返回 `attempts`，含脱敏后的源地址、结局（`success` / `http-error` / `timeout` / `network-error` / `bad-response`）与耗时；汇率回退命中即标注命中源，全部失败时保留每个源的结局。余额侧区分 `no-api-key`、`request-failed` 与 `bad-response` 并给出可读原因。API Key 不出宿主，敏感查询参数脱敏，旧客户端无 `attempts` 时照常渲染。本版延续 v1.1.9 的 Claude 价格表、写缓存独立单价、更安全的模型名匹配与共享汇率估值。完整说明见 [v1.2.0 更新日志](./CHANGELOG_ZH.md)。
 
-源码版本不代表 npm 已发布。使用下面的指定版本升级命令前，请先运行 `npm view dsh-usage-chart@1.1.9 version` 确认版本存在。升级后重启 `dsh web` 并刷新浏览器；无需迁移会话数据。
+源码版本不代表 npm 已发布。使用下面的指定版本升级命令前，请先运行 `npm view dsh-usage-chart@1.2.0 version` 确认版本存在。升级后重启 `dsh web` 并刷新浏览器；无需迁移会话数据。
 
 ## 安装
 
@@ -82,12 +82,12 @@ dsh plugin --profile web add dsh-usage-chart   # 安装并自动登记为 profil
 dsh web --profile web                          # 启动 DSH Web（已在运行时先停止再启动）
 ```
 
-**v1.1.9 发布后**更新：pnpm 对已安装的依赖重新 `add` 可能显示 `Already up to date`
+**v1.2.0 发布后**更新：pnpm 对已安装的依赖重新 `add` 可能显示 `Already up to date`
 而不升级，请用**显式版本**（推荐）或**先卸载再安装**：
 
 ```sh
 # 方式①：显式指定目标版本
-dsh plugin --profile web add dsh-usage-chart@1.1.9
+dsh plugin --profile web add dsh-usage-chart@1.2.0
 # 方式②：先移除再重装（回到最新版）
 dsh plugin --profile web remove dsh-usage-chart
 dsh plugin --profile web add dsh-usage-chart
@@ -100,7 +100,7 @@ dsh plugin --profile web add dsh-usage-chart
 
 > ⚠️ **未全局安装 dsh（报 `dsh: command not found` / PowerShell `无法将“dsh”项识别为…`）？
 > 把上面每条 `dsh` 都写成 `npx --yes @deepseek-ai/dsh`**，例如
-> `npx --yes @deepseek-ai/dsh plugin --profile web add dsh-usage-chart@1.1.9`
+> `npx --yes @deepseek-ai/dsh plugin --profile web add dsh-usage-chart@1.2.0`
 > （原因与解法见 [FAQ](#常见问题faq) 第一条）。
 
 ### 方式二：从 GitHub 安装（源码构建）
@@ -162,6 +162,7 @@ dsh web --profile web
         # currency: 'cny'        # 可选（v0.3）：成本显示币种 'usd'（默认）| 'cny'
         # cnyPerUsd: 6.76        # 可选（v0.3）：单币种报价的统一展示汇率（默认 6.76，可「刷新汇率」）
         # fxUrl: 'https://open.er-api.com/v6/latest/USD'   # 可选（v0.3）：自定义实时汇率源
+        # timeoutMs: 8000        # 可选：余额与每个汇率源的独立超时（毫秒）
 ```
 
 > 插件版本 < 0.1.1 时不读取网页端密钥：请用环境变量或上面的 `config.apiKey` 配置。
@@ -230,6 +231,26 @@ dsh web --profile web
 - **估算而非账单**：历史成本按当前展示汇率重估，不是请求发生时的历史汇率，不修改会话日志。双币种官方报价不随刷新变化。
 - **分项完整**：成本分项及比例条展示输入（未命中 + 写缓存）、缓存命中、输出，三者之和等于总额；写缓存有独立单价时在面板说明。
 
+### 逐源采集结果（余额与实时汇率）
+
+宿主两条采集链路都回答同一个问题：「这次请求实际试过哪些源，每个源结局如何？」每次响应都带 `attempts` 数组，顺序即实际尝试顺序：
+
+```json
+{
+  "ok": true,
+  "rate": 6.77,
+  "source": "https://open.er-api.com/v6/latest/USD",
+  "sourceIndex": 0,
+  "attempts": [
+    { "index": 0, "url": "https://open.er-api.com/v6/latest/USD", "outcome": "success", "durationMs": 34 }
+  ]
+}
+```
+
+`outcome` 取值：`success`、`http-error`（附 `status`）、`timeout`、`network-error`、`bad-response`（缺少／非法的 `rates.CNY`，或缺少 `balance_infos`）。整体 `ok` 仍只表示是否拿到可用结果。汇率源按顺序尝试，第一个合法源命中即停，并用 `source`/`sourceIndex` 标注；全部失败时保留每个源的结局（不只留最后一条），`message` 汇总可读原因。余额响应同样带 `attempts`，并区分 `no-api-key`（`attempts` 为空）、`request-failed` 与 `bad-response`，失败时给出可读原因。
+
+源地址离开宿主前会脱敏：去掉 userinfo 与 fragment，敏感查询参数（`api_key`、`token`、`signature` 等）的值替换为 `***`。API Key 只用于 `Authorization` 头，并从可读消息中清除，因此绝不会出现在任何响应里。每个外部请求仍有独立超时（默认 8 秒，可用 `config.timeoutMs` 调整）；失败返回结构化 JSON 而不抛异常。旧客户端兼容：响应没有 `attempts` 时，面板照常显示、只是不渲染逐源列表。
+
 单币种覆盖示例（每 1M tokens，两个时段同价）：
 
 ```json
@@ -274,7 +295,7 @@ A：正常且无害——react 由 DSH Web 平台在浏览器端内置，profile
 已把 react 标记为可选 peer，不再报警；0.1.0 的该警告可忽略。
 
 **Q：DSH 0.2.x 提示 `dsh-usage-chart@1.1.7 与 DSH 0.2.1-rc.2 不兼容（要求 @deepseek-ai/dsh-client-locale >=0.1.0-rc.6 <0.2.0, ...）…`，是插件不兼容吗？**
-A：该警告来自 DSH 0.2.x 的**插件准入校验**，不是 DSH 装坏了，也不会丢数据：当插件的 `@deepseek-ai/dsh*` peer 范围不匹配当前运行时版本时 DSH 会拒绝加载，而截至 1.1.7 的插件声明的是仅 0.1.x 的范围。把插件升级到 **≥ 1.1.8**（`dsh plugin --profile web add dsh-usage-chart@1.1.9`）后重启 `dsh web`；若 DSH Web 页面已打开，再刷新页面即可。DSH 本身未受损，会话数据、成本记录与凭据均未丢失——插件只是没有被加载。
+A：该警告来自 DSH 0.2.x 的**插件准入校验**，不是 DSH 装坏了，也不会丢数据：当插件的 `@deepseek-ai/dsh*` peer 范围不匹配当前运行时版本时 DSH 会拒绝加载，而截至 1.1.7 的插件声明的是仅 0.1.x 的范围。把插件升级到 **≥ 1.1.8**（`dsh plugin --profile web add dsh-usage-chart@1.2.0`）后重启 `dsh web`；若 DSH Web 页面已打开，再刷新页面即可。DSH 本身未受损，会话数据、成本记录与凭据均未丢失——插件只是没有被加载。
 
 **Q：网页端配了 API Key，余额仍显示 `–` 或「未配置」？**
 A：请确认插件版本 ≥ 0.1.1（0.1.1 起余额查询才走 DSH 凭据服务读取网页端密钥）；
@@ -317,30 +338,30 @@ node scripts/verify-render.mjs # 完整渲染验证（含明暗主题、中英�
 
 ## 维护者发布
 
-版本号为 **1.1.9**，内容已定稿。具体 npm 发布时间由维护者决定；源码版本或有日期的更新日志不代表 npm 已发布。两条发布路径**择一执行**，不要并行。
+版本号为 **1.2.0**，内容已定稿。具体 npm 发布时间由维护者决定；源码版本或有日期的更新日志不代表 npm 已发布。两条发布路径**择一执行**，不要并行。
 
 ### 手动发布 npm（本次方式）
 
-发布内容当前位于 `fix/pricing-currency-consistency`，尚未合并 `main`。请在你自己的仓库副本、工作区干净的前提下执行：
+v1.2.0 的发布内容位于当前工作分支，尚未合并 `main`。请在你自己的仓库副本、工作区干净的前提下执行：
 
 ```sh
 git fetch origin
-git switch fix/pricing-currency-consistency
-git pull --ff-only origin fix/pricing-currency-consistency
+git switch <发布分支>
+git pull --ff-only
 git status --short                       # 应无输出
-node -p "require('./package.json').version"  # 应为 1.1.9
+node -p "require('./package.json').version"  # 应为 1.2.0
 npm ci
 npm run verify
 npm pack --dry-run
-npm view dsh-usage-chart versions --json   # 确认 1.1.9 尚不存在
+npm view dsh-usage-chart versions --json   # 确认 1.2.0 尚不存在
 # 以下仅由维护者在检查无误后自行执行
 npm publish --access public
-npm view dsh-usage-chart@1.1.9 version     # 发布后应返回 1.1.9
+npm view dsh-usage-chart@1.2.0 version     # 发布后应返回 1.2.0
 ```
 
-如果工作区／版本不符合预期，或 npm 已存在 1.1.9，应停止，不要自动递增版本或尝试覆盖。`prepublishOnly` 会重跑验证，`prepare` 会重建被忽略的 `lib/`；检查包内运行时入口、类型声明和 README 图片，不要上传旧 tgz，也不要从之前的实现提交发布。npm 登录及可能的 2FA 提示由你直接处理，不要将凭据粘贴到聊天中。
+如果工作区／版本不符合预期，或 npm 已存在 1.2.0，应停止，不要自动递增版本或尝试覆盖。`prepublishOnly` 会重跑验证，`prepare` 会重建被忽略的 `lib/`；检查包内运行时入口、类型声明和 README 图片，不要上传旧 tgz，也不要从之前的实现提交发布。npm 登录及可能的 2FA 提示由你直接处理，不要将凭据粘贴到聊天中。
 
-双语日志的版本记录日期为 **2026-11-10（北京时间）**；若实际发布跨日，请在发布前同步调整。各支持版本线的干净 profile 安装结果应单独记录，单元测试或隔离合成宿主浏览器验证不能代替安装验收。用户升级后须重启 `dsh web` 并刷新浏览器；无需迁移会话数据。
+双语日志的版本记录日期为 **2026-11-14（北京时间）**；若实际发布跨日，请在发布前同步调整。各支持版本线的干净 profile 安装结果应单独记录，单元测试或隔离合成宿主浏览器验证不能代替安装验收。用户升级后须重启 `dsh web` 并刷新浏览器；无需迁移会话数据。
 
 ### 可选：GitHub Release 自动发布
 
@@ -358,6 +379,7 @@ dsh-usage-chart/
 ├── src/
 │   ├── index.ts          # host 半区：/balance 余额代理 + /usage 轮次折叠 + /pricing 价格快照
 │   │                     #          + /meta 币种配置下发 + /rate 实时汇率代理（多源回退）
+│   ├── probe.ts          # 外部采集：逐源结局（脱敏地址/结局/耗时），余额与汇率共用
 │   ├── pricing/
 │   │   ├── calc.ts       # 纯共享计算（成本分拆/多币种格式化；两个半区 bundle 同一份）
 │   │   ├── source.ts     # PricingSource 接缝：builtin 刊例价 + pricing.json 文件适配器
@@ -378,8 +400,9 @@ dsh-usage-chart/
 │       │   └── context.ts      # ContextReport：上下文构成拆解/压缩统计/优化建议（纯模块）
 │       ├── badge/CostBadge.tsx # assistant 消息尾部可关闭成本徽章
 │       ├── pricing-api.ts      # usePricing：/pricing 快照消费（client 唯一价格输入）
-│       ├── currency.ts         # 币种/汇率 store（/meta 配置 + 切换 + /rate 刷新）
-│       ├── balance.ts          # 余额读取 hook（经宿主代理）
+│       ├── currency.ts         # 币种/汇率 store（/meta 配置 + 切换 + /rate 刷新 + 逐源结局）
+│       ├── balance.ts          # 余额读取 hook（经宿主代理；可选逐源结局）
+│       ├── attempts.tsx        # 逐源采集结局列表（余额与汇率共用）
 │       └── styles.ts           # 注入样式（<style data-plugin>）
 └── types/                # 宿主 Cordis 最小类型声明；客户端类型在 src/client/context.ts
 ```
@@ -402,7 +425,7 @@ dsh-usage-chart/
 | Web UI | React 18 / `conversation.composer.dock` + `conversation.chat.assistant-actions` |
 | 系统 | macOS、Linux、Windows（纯 JavaScript，无原生依赖） |
 
-v1.1.9 验证范围：Node 20.19.5 / 22.17.0 / 24.22.2 各 **85 项测试通过、0 跳过**，包括发布版本一致性测试；打包及隔离合成宿主浏览器回归通过（配置／实时汇率、保存后重载、CNY/USD、完整成本分项与英文窄屏）。这些都不是实际 DSH／干净 profile 安装验收。历史证据单独保留：v1.1.8 兼容性 PR 作者报告了 DSH 0.2.1-rc.2 链接构建冒烟，Claude PR 作者报告了 0.2.2-rc.1 应用包／接口／日志检查，均不等于当前版本在两条支持线上的干净 profile 安装认证。移除退役 runtime 注入后，仍未重跑 0.1.x 实机安装。
+v1.2.0 验证范围：Node 24（Windows）下**全部测试通过、0 跳过**，包括发布版本一致性测试、新增的逐源采集／回环服务测试套件与面板渲染测试。这些都不是实际 DSH／干净 profile 安装验收。历史证据单独保留：v1.1.8 兼容性 PR 作者报告了 DSH 0.2.1-rc.2 链接构建冒烟，Claude PR 作者报告了 0.2.2-rc.1 应用包／接口／日志检查，均不等于当前版本在两条支持线上的干净 profile 安装认证。移除退役 runtime 注入后，仍未重跑 0.1.x 实机安装。
 
 ## 社区与开源
 

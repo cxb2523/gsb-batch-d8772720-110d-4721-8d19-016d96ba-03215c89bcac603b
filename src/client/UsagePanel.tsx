@@ -11,6 +11,7 @@ import type { PriceTierId, TokenUsageBuckets } from '../pricing/calc.ts'
 import { billedInputTokens, cacheHitPercent, formatMoney, formatPricePerM, formatTokens, tierAt } from '../pricing/calc.ts'
 import { currencySymbol, type BalanceData, type BalanceStatus } from './balance.ts'
 import { refreshLiveRate, setDisplayCurrency, useDisplayCurrency } from './currency.ts'
+import { AttemptsList, toAttemptsView } from './attempts.tsx'
 import { RoundBars, type RoundChartMode } from './chart/RoundBars.tsx'
 import { HStack, Legend, SEGMENT_COLORS, tokenLegend } from './charts.tsx'
 import { flagAnomalies } from './diagnose/anomaly.ts'
@@ -69,7 +70,7 @@ export function UsagePanel(props: UsagePanelProps): JSX.Element {
     balanceStatus: status, balanceData: data, loadBalance: load,
   } = props
   const copy = getUiCopy(locale)
-  const { currency, cnyPerUsd, rateFetchedAt } = useDisplayCurrency()
+  const { currency, cnyPerUsd, rateFetchedAt, rateAttempts, rateAttemptSource, rateMessage } = useDisplayCurrency()
   // 币种标签只描述币种，不能把参考汇率暗示成官方双币种报价的换算关系。
   const currencySuffix = currency.toUpperCase()
   const currentTier = useCurrentTier()
@@ -101,6 +102,10 @@ export function UsagePanel(props: UsagePanelProps): JSX.Element {
   const hasTokens = billedInputTokens(totals) > 0 || totals.outputTokens > 0
 
   const balance = data?.balances?.[0]
+
+  // 逐源结局只在宿主实际给出时展示；旧响应（无 attempts）保持原样、不报错。
+  const balanceAttemptsView = toAttemptsView(data?.attempts)
+  const rateAttemptsView = toAttemptsView(rateAttempts)
 
   const chartSourceNote = historyRounds !== null
     ? copy.historySource(chartRounds.length)
@@ -290,6 +295,9 @@ export function UsagePanel(props: UsagePanelProps): JSX.Element {
         ) : (
           <div className="duc-empty">{copy.costUnavailable}</div>
         )}
+        {/* 逐源结局与成本快照是否可用无关：只要刷新过汇率就展示可核对的结果。 */}
+        {rateStatus === 'error' && rateMessage !== undefined && <div className="duc-note">{rateMessage}</div>}
+        {rateAttemptsView !== null && <AttemptsList view={rateAttemptsView} copy={copy} testId="rate-attempts" />}
       </section>
 
       <section className="duc-section">
@@ -361,6 +369,7 @@ export function UsagePanel(props: UsagePanelProps): JSX.Element {
         {status === 'idle' && data === null && (
           <div className="duc-empty">{copy.balanceIdle}</div>
         )}
+        {balanceAttemptsView !== null && <AttemptsList view={balanceAttemptsView} copy={copy} testId="balance-attempts" />}
       </section>
     </div>
   )

@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/). 中文版见 [CHANGELOG_ZH.md](./CHANGELOG_ZH.md).
 
+## [1.2.0] - 2026-11-14
+
+### Added
+
+- **Per-source collection results** — the Host balance (`GET /dsh-usage-chart/balance`) and live-FX (`GET /dsh-usage-chart/rate`) probes now return an `attempts` array in real attempt order. Each entry carries the redacted source URL, an `outcome` (`success` | `http-error` with `status` | `timeout` | `network-error` | `bad-response`) and `durationMs`. `ok` still only reports whether a usable value was obtained.
+- **FX fallback is auditable** — sources are tried in order; the first valid `rates.CNY` wins and is marked with `source` / `sourceIndex`. When every source fails, all attempts are kept (not just the last error) and `message` summarises the per-source outcomes.
+- **Balance failure taxonomy** — `no-api-key` (empty `attempts`), `request-failed` (HTTP non-2xx, timeout, network) and `bad-response` (missing/invalid `balance_infos`, non-JSON body) are reported separately with a readable message.
+- **Config** — `timeoutMs` sets the per-request timeout for the balance call and each FX source (default 8000 ms).
+- **Host seam** — shared `probe.ts` module (`probeBalance`, `probeRate`, `redactSourceUrl`, `scrubSecrets`) with an injectable `fetch` for tests; also exported from the package entry point.
+- **Client display** — the panel lists per-source outcomes in attempt order for both balance and rate, marking the hit FX source. The API key is never rendered.
+
+### Changed
+
+- **`/rate` response** gains `sourceIndex` and `attempts`; `source` is now the redacted hit URL. Legacy fields (`ok`, `rate`, `fetchedAt`, `reason`, `message`, `source`) keep their meaning.
+- **`/balance` response** gains `attempts`; `reason` / `message` / `balances` are unchanged for existing consumers.
+
+### Compatibility
+
+- **Old responses stay usable** — clients treat `attempts` as optional: when a response (from an older Host, or a mocked/legacy payload) has no attempt list, the panel renders exactly as before and shows no per-source section.
+- **Security unchanged** — only same-origin GET is accepted (405 for other methods, 403 for cross-origin), JSON responses carry `Cache-Control: no-store`, and the API key remains Host-only: it is sent solely in the `Authorization` header and scrubbed from any message before serialisation.
+- **Redaction** — source URLs drop userinfo/fragments and mask sensitive query values (`api_key`, `token`, `secret`, `signature`, …) as `***`; failures return structured JSON instead of throwing, and each external request keeps its own timeout.
+
+### Validation and upgrade notes
+
+- Added `tests/probe.test.mjs` (fake fetch: success, HTTP 500, timeout, invalid structure, primary-fail → fallback-success, all-fail, redaction, no key leakage), `tests/loopback.test.mjs` (real loopback HTTP server), `tests/probe-client.test.mjs` (client parsing and legacy compatibility) and panel render assertions.
+- `npm run verify` (typecheck + build + `node --test tests/*.test.mjs`) passes with zero failures on Node 24 (Windows). This is not an installed-DSH or clean-profile certification.
+- No session-data migration is required. Restart `dsh web` and reload the browser after upgrading. Native dual-currency prices, FX valuation and all prior behavior are unchanged.
+
 ## [1.1.9] - 2026-11-10
 
 ### Added

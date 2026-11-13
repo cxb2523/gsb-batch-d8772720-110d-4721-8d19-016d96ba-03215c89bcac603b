@@ -110,6 +110,10 @@ pricing 解析优先级（host/client 共用）：
 
 面板分项及比例条须覆盖输入、缓存命中、输出三个费用桶；写缓存计入输入并说明独立单价及 TTL 边界。验证见 `pricing-consistency`、`currency-history`、`usage-panel` 回归测试。以下已发布里程碑保留历史事实，不表示 v1.1.9 已完成实际安装验收。
 
+### 当前补充：逐源采集结局（v1.2.0）
+
+余额与实时汇率采集对用户可核对：每次响应按实际尝试顺序返回 `attempts`（脱敏源地址、结局 `success`／`http-error`／`timeout`／`network-error`／`bad-response`、耗时），整体 `ok` 仍只表示是否拿到可用结果。汇率按顺序回退，首个合法源命中即停并标注命中源；全部失败时保留每个源的结局。余额区分未配置密钥、请求失败与响应缺少 `balance_infos`。API Key 不出宿主，敏感查询参数脱敏，旧客户端无 `attempts` 时照常渲染。验证见 `probe`、`loopback`、`probe-client` 与 `usage-panel` 回归测试。
+
 ## 5. 路线图
 
 ### ✅ v0.2.0 — 会话成本解释力（轮次级）· 已交付 2026-08-15
@@ -227,6 +231,12 @@ pricing 解析优先级（host/client 共用）：
 - PR #19 已合并；完成 peer 范围、客户端类型、模型身份、失败/重试计费、首 token 时序与来源格式适配，细节见 §3.5 与双语 CHANGELOG。
 - 发布准备同步 npm lockfile 根元数据、README 截图打包清单和当前架构说明，并补充对应回归测试。
 - 已于 2026-10-22 发布；该版本的测试与安装证据保留在双语 CHANGELOG，不能用后续版本的测试数量改写历史记录。
+
+### v1.2.0 — 逐源采集结局 · 2026-11-14 内容定稿
+
+- `/balance` 与 `/rate` 返回逐源 `attempts`（脱敏 URL、结局、耗时），汇率命中源用 `source`/`sourceIndex` 标注，全部失败保留每条结局；余额失败分类为 `no-api-key`／`request-failed`／`bad-response`。
+- 抽取可注入 `fetch` 的共享 `probe.ts`，每源独立超时（`config.timeoutMs`，默认 8s），失败结构化返回；密钥只进 `Authorization` 头并从消息中清除；客户端把 `attempts` 作为可选字段，旧响应原样渲染。
+- 验证：`npm run verify` 全绿（新增伪造 fetch、真实回环服务、客户端兼容与面板渲染用例）；不等同实际 DSH／干净 profile 安装验收。
 
 ### v1.1.9 — Claude 定价与一致成本估值 · 2026-11-10 内容定稿
 

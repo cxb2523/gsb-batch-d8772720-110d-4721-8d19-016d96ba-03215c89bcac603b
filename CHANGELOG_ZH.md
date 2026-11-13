@@ -3,6 +3,34 @@
 本文件记录本项目所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。英文版见 [CHANGELOG.md](./CHANGELOG.md)。
 
+## [1.2.0] - 2026-11-14
+
+### 新增
+
+- **逐源采集结局**——宿主余额（`GET /dsh-usage-chart/balance`）与实时汇率（`GET /dsh-usage-chart/rate`）采集现在按实际尝试顺序返回 `attempts` 数组。每条记录包含脱敏后的源地址、结局（`success` | 带 `status` 的 `http-error` | `timeout` | `network-error` | `bad-response`）与 `durationMs`。整体 `ok` 仍只表示是否拿到可用结果。
+- **汇率回退可核对**——按顺序尝试各源，第一个合法 `rates.CNY` 命中即停，并用 `source` / `sourceIndex` 标注；全部失败时保留每个源的结局（不只留最后一条），`message` 汇总逐源结果。
+- **余额失败分类**——区分 `no-api-key`（`attempts` 为空）、`request-failed`（HTTP 非 2xx／超时／网络）与 `bad-response`（缺少或非法 `balance_infos`、响应非 JSON），并给出可读原因。
+- **配置项**——`timeoutMs` 控制余额请求与每个汇率源的独立超时（默认 8000 毫秒）。
+- **宿主接缝**——新增共享 `probe.ts`（`probeBalance`、`probeRate`、`redactSourceUrl`、`scrubSecrets`），测试可注入 `fetch`；同样从包入口导出。
+- **客户端展示**——面板按尝试顺序列出余额与汇率的逐源结局，并标注命中的汇率源；API Key 永不渲染。
+
+### 变更
+
+- **`/rate` 响应**新增 `sourceIndex` 与 `attempts`；`source` 现为脱敏后的命中 URL。旧字段（`ok`、`rate`、`fetchedAt`、`reason`、`message`、`source`）语义不变。
+- **`/balance` 响应**新增 `attempts`；`reason` / `message` / `balances` 对既有消费方保持不变。
+
+### 兼容性
+
+- **旧响应照常可用**——客户端把 `attempts` 视为可选：旧宿主或旧格式响应没有逐源结局时，面板按原样渲染、不显示逐源区块，也不报错。
+- **安全约束不变**——只接受同源 GET（非 GET 返回 405，跨源返回 403），JSON 响应带 `Cache-Control: no-store`；API Key 只在宿主使用，仅出现在 `Authorization` 头，并在序列化前从所有消息中清除。
+- **脱敏**——源地址去掉 userinfo／fragment，敏感查询参数（`api_key`、`token`、`secret`、`signature` 等）的值替换为 `***`；失败返回结构化 JSON 而不抛异常，每个外部请求仍有独立超时。
+
+### 验证与升级说明
+
+- 新增 `tests/probe.test.mjs`（伪造 fetch：成功、HTTP 500、超时、结构非法、主源失败后回退成功、全部失败、脱敏、无密钥泄漏）、`tests/loopback.test.mjs`（真实回环 HTTP 服务）、`tests/probe-client.test.mjs`（客户端解析与旧响应兼容）及面板渲染断言。
+- `npm run verify`（类型检查 + 构建 + `node --test tests/*.test.mjs`）在 Node 24（Windows）下全部通过、0 失败。这不是实际 DSH 或干净 profile 安装认证。
+- 无需迁移会话数据。升级后重启 `dsh web` 并刷新浏览器。显式双币种原价、汇率估值及既有行为均未改变。
+
 ## [1.1.9] - 2026-11-10
 
 ### 新增

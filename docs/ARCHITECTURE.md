@@ -4,7 +4,7 @@
 > 词汇：**模块 / 接口 / 深度 / 接缝（seam）/ 适配器（adapter）/ 杠杆（leverage）/ 局部性（locality）**。
 > 目标版本：v0.2（会话成本解释力）→ v0.3（多币种成本显示）→ **v1.0（首个完整版本：全部轮次横向滚动）** → v1.1（上下文诊断）→ v1.2（跨会话概览），见 [ROADMAP.md](./ROADMAP.md)。
 
-## 1. 现状地图（v1.1.9）
+## 1. 现状地图（v1.2.0）
 
 ```
 Host 半区（Node）：src/
@@ -50,7 +50,7 @@ Client 半区（浏览器）：src/client/
 - `ctx.sessions.get` 只解析当前已加载会话，跨工作区/未加载会话返回 `session-not-found`；
 - 大会话（26 万事件）折叠正确，但每请求全量计算 + 全量传输（v1.2 HistoryStore 一并考虑截断/缓存）。
 
-## 2. 当前模块地图（v1.1.9）与可选扩展（v1.2）
+## 2. 当前模块地图（v1.2.0）与可选扩展（v1.3）
 
 ### 2.1 Host 半区
 
@@ -60,9 +60,10 @@ Client 半区（浏览器）：src/client/
 | **PricingResolver**（`pricing/resolve.ts`） | `resolve(model) → { pricing, source, verifiedAt, estimated, known, unpriced }` | 优先级解析（覆盖>内置>回退）、峰谷时段、未知模型标记、来源/时效标注；键匹配走 `matchPricingKey`（精确 > 最长前缀，Claude 仅接受日期快照后缀）；未收录的 Claude 不套 DeepSeek 回退价（`unpriced`，单价全零） | **接缝：PricingSource**（见 2.3） |
 | **PricingCalc**（`pricing/calc.ts`） | `estimateCost / formatTokens / buckets 数学` | 纯共享计算，两个半区 bundle 同一份 | 无 IO；不解析来源 |
 | **HostRoutes**（`src/index.ts`） | 注册 `/usage` `/balance` `/pricing` `/meta` `/rate` | 编排 RoundFold + PricingResolver + 安全守卫（沿用 `isTrustedRequest`） | 适配器：`webServer` 接缝 |
+| **ExternalProbe**（`probe.ts`） | `probeBalance(apiKey, baseUrl, opts)` / `probeRate(urls, opts)` → `{ ok, …, attempts }`；`redactSourceUrl` / `scrubSecrets` | 余额与汇率的外部采集：逐源结局（脱敏 URL、结局、耗时）、按序回退、命中源标注、独立超时、失败结构化返回、密钥清洗 | 适配器：可注入 `fetch`（生产用全局 fetch，测试用伪造 fetch／回环服务） |
 | **HistoryStore**（`history/store.ts`，v1.2） | `appendSample(round)` / `queryRange(from, to) → rows` | 聚合/按天落盘、索引、一键清除、导出 | **接缝：历史存储**（2.3） |
 
-### 2.1.1 统一价格与汇率契约（v1.1.9）
+### 2.1.1 统一价格与汇率契约（v1.1.9）与逐源采集契约（v1.2.0）
 
 - `createPricingResolver(file?, cnyPerUsd?)` 与 client `resolvePricing(table, model, cnyPerUsd?)` 都按文件 → 内置顺序解析，再在各来源内精确／最长有效前缀匹配。快照携带 `source`，不能拍平后忽略来源优先级。
 - 每个 `PriceTier` 可带 `baseCurrency: 'usd' | 'cny'`：只有一种原币种时设置。`pricingAtRate` 从原币种重算派生报价，不修改内置表／文件快照；明确给出的双币种价格不设置标记、保持原价。允许高峰／空闲分别采用单币种或双币种形状。
@@ -70,6 +71,8 @@ Client 半区（浏览器）：src/client/
 - HistoryFeed 将当前汇率显式传给 `/usage?session=…&cnyPerUsd=…`，宿主用该汇率折叠轮次和压缩成本；非法参数回退配置值。参数仅控制展示，不修改事件，不保存历史账单汇率，也不改变其他标签页。
 - HistoryFeed 的请求缓存与状态身份均为“会话 + 汇率”，请求版本防止旧响应回写。指示器、消息徽章共用该身份；观测回退与面板单价说明传同一汇率。刷新使换算金额重新估值，双币种原价不变。
 - 面板成本构成与 RoundBars 统一为输入（未命中 + 写缓存）、缓存命中、输出；费用不得漏桶。
+
+**逐源采集契约（v1.2.0）**：`/balance` 与 `/rate` 的响应都带 `attempts: SourceAttempt[]`（`index` / 脱敏 `url` / `outcome` / `status?` / `durationMs` / `message?`），顺序即实际尝试顺序。`outcome ∈ {success, http-error, timeout, network-error, bad-response}`；`ok` 只表示是否拿到可用结果。汇率按 `fxUrls` 顺序尝试，首个合法 `rates.CNY` 命中即停并标注 `source`/`sourceIndex`，全部失败时保留每条结局。余额区分 `no-api-key`（`attempts` 为空）、`request-failed` 与 `bad-response`。源地址脱敏（去 userinfo/fragment、敏感查询值为 `***`），API Key 只进 `Authorization` 头并从消息中清除；每个外部请求独立超时（`config.timeoutMs`，默认 8s）。客户端把 `attempts` 当作可选：旧响应没有该字段时面板原样渲染。
 
 ### 2.2 Client 半区
 
@@ -131,6 +134,7 @@ HistoryStore = { appendSample(round), queryRange(from,to) }   // 接口
 | v1.1.0 | ContextReport（`diagnose/context.ts`）、compaction 折叠（独立 `usage/compactions.ts`）、Dock 压力条深化（breakdown 分段 + 悬浮详情）、输入来源归因（`userSource`） | 压力条用 `contextPressure` + `contextBreakdown` 投影，不新开路由；`contextBreakdown` 消费标注近似值；`/usage` 路由返回 compactions | ✅ 已交付 2026-08-26 |
 | v1.1.8 | DSH 0.2.x peer / Context 类型适配、providerMetadata 模型回退、message/attempt 用量与首 token 时序、来源归一化 | 移除退役 runtime peer/inject/类型导入；补齐 manifest、模型与事件回归 | 已发布 2026-10-22；实机验证边界见 2.5 |
 | v1.1.9 | Claude 标准定价、cacheWrite 单价、模型 ID 归一化、未定价下限；来源优先级一致、共享 FX 与完整成本分项 | PriceTier 原币种元数据与纯换算；HistoryFeed 会话＋汇率身份／旧响应保护；补充双语说明 | 内容定稿 2026-11-10；85 项测试与隔离浏览器验证，npm 由维护者发布；不等于 DSH 干净安装认证 |
+| v1.2.0 | **逐源采集结局**：`/balance` 与 `/rate` 返回 `attempts`（脱敏 URL／结局／耗时）、汇率命中源标注、余额失败分类；`config.timeoutMs`；客户端旧响应兼容 | 抽取共享 `probe.ts`（可注入 fetch、独立超时、密钥清洗、敏感查询脱敏）；面板逐源列表 | 内容定稿 2026-11-14；`npm run verify` 全绿（含伪造 fetch、真实回环服务、客户端兼容与面板渲染）；不等于 DSH 干净安装认证 |
 | v1.2.0 | HistoryStore 接缝 + 设置页历史视图、导出 | 热力图作为入口之一（复用 RoundBars 的 SVG 设施） | 可选 |
 
 ## 4. 测试面（接口即测试面）
@@ -141,11 +145,12 @@ HistoryStore = { appendSample(round), queryRange(from,to) }   // 接口
 | PricingResolver | 注入 source map fake（builtin/file），断言优先级与未知标记 | ✅ `tests/pricing.test.mjs` + `tests/pricing-consistency.test.mjs`（真实文件与快照、来源优先级、双向换算、历史/压缩路由） |
 | Anomaly | 喂 round 序列断言 flag | ✅ `tests/anomaly.test.mjs`（经 `lib/client-test.js` 束） |
 | 币种/汇率（v0.3） | 断言 `normalizeFxUrl`、`fetchLiveRate` 多源回退、`/meta`/`/rate` 路由 | ✅ `tests/core.test.mjs` + `tests/currency-history.test.mjs`（恢复、失败保留、会话/汇率切换、乱序响应与去重） |
+| 逐源采集（v1.2） | 伪造 fetch 与真实回环服务：成功／HTTP 500／超时／结构非法／主源失败后回退成功／全部失败；断言顺序、结局、`ok`、命中源、无密钥 | ✅ `tests/probe.test.mjs` + `tests/loopback.test.mjs` + `tests/probe-client.test.mjs`（旧响应兼容） |
 | Compaction 折叠（v1.1） | 喂合成压缩事件流，断言 shadowed 规模与 summarize 成本核算 | ✅ `tests/compactions.test.mjs` |
 | 上下文诊断（v1.1） | 喂投影与压缩历史，断言容量、分段比例与优化建议 | ✅ `tests/compactions.test.mjs`（经 `lib/context-test.js` 束） |
 | 来源归因（v1.1） | 喂带 `source` 的 `user/message` 事件，断言 `userSource` 归因 | ✅ `tests/compactions.test.mjs` + `tests/rounds.test.mjs`（字符串与对象来源） |
 | manifest / 模型兼容 | peer 与 lock 根元数据、发布声明、README 截图清单、模型回退 | `tests/manifest.test.mjs` + `tests/merge-regression.test.mjs` |
-| UsagePanel | 真实组件静态渲染，断言双语/双币种分项、比例、汇率与写缓存说明 | ✅ `tests/usage-panel.test.mjs`；不等同实机安装/视觉验收 |
+| UsagePanel | 真实组件静态渲染，断言双语/双币种分项、比例、汇率、写缓存说明与逐源结局顺序 | ✅ `tests/usage-panel.test.mjs`；不等同实机安装/视觉验收 |
 | HistoryStore（v1.2） | memory fake + 临时目录 JSONL 真写读 | 待 v1.2 |
 | HistoryFeed / RoundBars / CostBadge | playwright-core 视觉验证（现有 `scripts/probe-*.mjs` 扩展） | `scripts/verify-render.mjs`；本次发布应单独记录运行时版本/profile/结果，不沿用旧版本结果 |
 
