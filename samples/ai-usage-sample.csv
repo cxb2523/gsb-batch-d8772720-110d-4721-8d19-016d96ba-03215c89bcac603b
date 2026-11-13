@@ -1,0 +1,325 @@
+date,product,sku,quantity,unit_type,applied_cost_per_quantity,gross_amount,discount_amount,net_amount,username,organization,repository,cost_center_name,model
+2026-06-01,copilot,copilot_premium_request,98,request,0.04,3.92,0.59,3.33,alice,acme-platform,core-api,Platform Engineering,Claude Sonnet 4.6
+2026-06-01,copilot,copilot_premium_request,58,request,0.04,2.32,0.35,1.97,bob,acme-platform,infra-tools,Platform Engineering,Gemini 2.5 Pro
+2026-06-01,copilot,copilot_premium_request,81,request,0.04,3.24,0.49,2.75,heidi,acme-platform,billing-service,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-01,copilot,copilot_premium_request,46,request,0.04,1.84,0.28,1.56,heidi,acme-platform,core-api,Platform Engineering,Claude Haiku 4.5
+2026-06-01,copilot,copilot_premium_request,44,request,0.04,1.76,0.26,1.50,ivan,acme-platform,infra-tools,Platform Engineering,Claude Haiku 4.5
+2026-06-01,copilot,copilot_premium_request,50,request,0.04,2.00,0.30,1.70,ivan,acme-platform,infra-tools,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-01,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,carol,acme-data,feature-store,Data Science,Claude Sonnet 4.6
+2026-06-01,copilot,copilot_premium_request,61,request,0.04,2.44,0.37,2.07,carol,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-01,copilot,copilot_premium_request,80,request,0.04,3.20,0.48,2.72,dave,acme-data,ml-pipeline,Data Science,GPT-5.3-Codex
+2026-06-01,copilot,copilot_premium_request,85,request,0.04,3.40,0.51,2.89,dave,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-01,copilot,copilot_premium_request,28,request,0.04,1.12,0.17,0.95,judy,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-01,copilot,copilot_premium_request,41,request,0.04,1.64,0.25,1.39,judy,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-01,copilot,copilot_premium_request,104,request,0.04,4.16,0.62,3.54,erin,acme-mobile,android-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-01,copilot,copilot_premium_request,100,request,0.04,4.00,0.60,3.40,erin,acme-mobile,android-app,Mobile,Claude Sonnet 4.6
+2026-06-01,copilot,copilot_premium_request,92,request,0.04,3.68,0.55,3.13,mallory,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-01,copilot,copilot_premium_request,90,request,0.04,3.60,0.54,3.06,mallory,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-01,copilot,copilot_premium_request,86,request,0.04,3.44,0.52,2.92,frank,acme-frontend,web-dashboard,Frontend,Auto: Gemini 2.5 Pro
+2026-06-01,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,oscar,acme-frontend,design-system,Frontend,Auto: GPT-5.3-Codex
+2026-06-01,copilot,copilot_premium_request,32,request,0.04,1.28,0.19,1.09,oscar,acme-frontend,design-system,Frontend,Claude Opus 4.7
+2026-06-02,copilot,copilot_premium_request,59,request,0.04,2.36,0.35,2.01,bob,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,63,request,0.04,2.52,0.38,2.14,bob,acme-platform,core-api,Platform Engineering,Auto: Gemini 2.5 Pro
+2026-06-02,copilot,copilot_premium_request,42,request,0.04,1.68,0.25,1.43,heidi,acme-platform,billing-service,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-02,copilot,copilot_premium_request,63,request,0.04,2.52,0.38,2.14,ivan,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,64,request,0.04,2.56,0.38,2.18,ivan,acme-platform,core-api,Platform Engineering,Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,100,request,0.04,4.00,0.60,3.40,carol,acme-data,ml-pipeline,Data Science,Claude Opus 4.7
+2026-06-02,copilot,copilot_premium_request,39,request,0.04,1.56,0.23,1.33,dave,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,67,request,0.04,2.68,0.40,2.28,dave,acme-data,feature-store,Data Science,Auto: Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,105,request,0.04,4.20,0.63,3.57,judy,acme-data,ml-pipeline,Data Science,Gemini 2.5 Pro
+2026-06-02,copilot,copilot_premium_request,106,request,0.04,4.24,0.64,3.60,erin,acme-mobile,android-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-02,copilot,copilot_premium_request,88,request,0.04,3.52,0.53,2.99,erin,acme-mobile,ios-app,Mobile,Gemini 2.5 Pro
+2026-06-02,copilot,copilot_premium_request,88,request,0.04,3.52,0.53,2.99,mallory,acme-mobile,android-app,Mobile,Code Review model
+2026-06-02,copilot,copilot_premium_request,62,request,0.04,2.48,0.37,2.11,frank,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,99,request,0.04,3.96,0.59,3.37,grace,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-02,copilot,copilot_premium_request,55,request,0.04,2.20,0.33,1.87,oscar,acme-frontend,design-system,Frontend,Auto: GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,alice,acme-platform,core-api,Platform Engineering,GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,68,request,0.04,2.72,0.41,2.31,alice,acme-platform,billing-service,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,74,request,0.04,2.96,0.44,2.52,bob,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,bob,acme-platform,core-api,Platform Engineering,Claude Opus 4.7
+2026-06-03,copilot,copilot_premium_request,72,request,0.04,2.88,0.43,2.45,heidi,acme-platform,core-api,Platform Engineering,GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,78,request,0.04,3.12,0.47,2.65,ivan,acme-platform,core-api,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,86,request,0.04,3.44,0.52,2.92,ivan,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,60,request,0.04,2.40,0.36,2.04,carol,acme-data,feature-store,Data Science,Auto: Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,26,request,0.04,1.04,0.16,0.88,dave,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,28,request,0.04,1.12,0.17,0.95,dave,acme-data,feature-store,Data Science,Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,37,request,0.04,1.48,0.22,1.26,judy,acme-data,feature-store,Data Science,Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,44,request,0.04,1.76,0.26,1.50,judy,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-03,copilot,copilot_premium_request,74,request,0.04,2.96,0.44,2.52,erin,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,63,request,0.04,2.52,0.38,2.14,erin,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,68,request,0.04,2.72,0.41,2.31,mallory,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,75,request,0.04,3.00,0.45,2.55,mallory,acme-mobile,ios-app,Mobile,Auto: GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,39,request,0.04,1.56,0.23,1.33,frank,acme-frontend,design-system,Frontend,Code Review model
+2026-06-03,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,frank,acme-frontend,design-system,Frontend,Code Review model
+2026-06-03,copilot,copilot_premium_request,104,request,0.04,4.16,0.62,3.54,grace,acme-frontend,web-dashboard,Frontend,Auto: GPT-5.3-Codex
+2026-06-03,copilot,copilot_premium_request,85,request,0.04,3.40,0.51,2.89,grace,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-03,copilot,copilot_premium_request,54,request,0.04,2.16,0.32,1.84,oscar,acme-frontend,web-dashboard,Frontend,Auto: Gemini 2.5 Pro
+2026-06-04,copilot,copilot_premium_request,29,request,0.04,1.16,0.17,0.99,alice,acme-platform,billing-service,Platform Engineering,Claude Opus 4.7
+2026-06-04,copilot,copilot_premium_request,41,request,0.04,1.64,0.25,1.39,alice,acme-platform,infra-tools,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-04,copilot,copilot_premium_request,25,request,0.04,1.00,0.15,0.85,bob,acme-platform,billing-service,Platform Engineering,Code Review model
+2026-06-04,copilot,copilot_premium_request,32,request,0.04,1.28,0.19,1.09,bob,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,20,request,0.04,0.80,0.12,0.68,heidi,acme-platform,infra-tools,Platform Engineering,Claude Opus 4.7
+2026-06-04,copilot,copilot_premium_request,12,request,0.04,0.48,0.07,0.41,heidi,acme-platform,core-api,Platform Engineering,Claude Opus 4.7
+2026-06-04,copilot,copilot_premium_request,27,request,0.04,1.08,0.16,0.92,ivan,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,27,request,0.04,1.08,0.16,0.92,carol,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,36,request,0.04,1.44,0.22,1.22,carol,acme-data,ml-pipeline,Data Science,Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,19,request,0.04,0.76,0.11,0.65,dave,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-04,copilot,copilot_premium_request,51,request,0.04,2.04,0.31,1.73,judy,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,23,request,0.04,0.92,0.14,0.78,erin,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,25,request,0.04,1.00,0.15,0.85,mallory,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,31,request,0.04,1.24,0.19,1.05,mallory,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,21,request,0.04,0.84,0.13,0.71,frank,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-04,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,grace,acme-frontend,web-dashboard,Frontend,GPT-5.3-Codex
+2026-06-04,copilot,copilot_premium_request,34,request,0.04,1.36,0.20,1.16,oscar,acme-frontend,design-system,Frontend,GPT-5.3-Codex
+2026-06-05,copilot,copilot_premium_request,30,request,0.04,1.20,0.18,1.02,alice,acme-platform,core-api,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-05,copilot,copilot_premium_request,31,request,0.04,1.24,0.19,1.05,bob,acme-platform,core-api,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-05,copilot,copilot_premium_request,42,request,0.04,1.68,0.25,1.43,heidi,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-05,copilot,copilot_premium_request,36,request,0.04,1.44,0.22,1.22,heidi,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-05,copilot,copilot_premium_request,40,request,0.04,1.60,0.24,1.36,ivan,acme-platform,infra-tools,Platform Engineering,Claude Haiku 4.5
+2026-06-05,copilot,copilot_premium_request,29,request,0.04,1.16,0.17,0.99,ivan,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-05,copilot,copilot_premium_request,15,request,0.04,0.60,0.09,0.51,dave,acme-data,feature-store,Data Science,Auto: Gemini 2.5 Pro
+2026-06-05,copilot,copilot_premium_request,19,request,0.04,0.76,0.11,0.65,dave,acme-data,ml-pipeline,Data Science,Auto: Gemini 2.5 Pro
+2026-06-05,copilot,copilot_premium_request,35,request,0.04,1.40,0.21,1.19,judy,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-05,copilot,copilot_premium_request,50,request,0.04,2.00,0.30,1.70,erin,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-05,copilot,copilot_premium_request,42,request,0.04,1.68,0.25,1.43,erin,acme-mobile,android-app,Mobile,Auto: Gemini 2.5 Pro
+2026-06-05,copilot,copilot_premium_request,15,request,0.04,0.60,0.09,0.51,mallory,acme-mobile,ios-app,Mobile,GPT-5.3-Codex
+2026-06-05,copilot,copilot_premium_request,32,request,0.04,1.28,0.19,1.09,frank,acme-frontend,design-system,Frontend,GPT-5.3-Codex
+2026-06-05,copilot,copilot_premium_request,19,request,0.04,0.76,0.11,0.65,grace,acme-frontend,design-system,Frontend,Auto: Claude Haiku 4.5
+2026-06-05,copilot,copilot_premium_request,47,request,0.04,1.88,0.28,1.60,oscar,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-05,copilot,copilot_premium_request,40,request,0.04,1.60,0.24,1.36,oscar,acme-frontend,web-dashboard,Frontend,GPT-5.3-Codex
+2026-06-06,copilot,copilot_premium_request,119,request,0.04,4.76,0.71,4.05,alice,acme-platform,core-api,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-06,copilot,copilot_premium_request,127,request,0.04,5.08,0.76,4.32,alice,acme-platform,core-api,Platform Engineering,Auto: Gemini 2.5 Pro
+2026-06-06,copilot,copilot_premium_request,87,request,0.04,3.48,0.52,2.96,bob,acme-platform,billing-service,Platform Engineering,Gemini 2.5 Pro
+2026-06-06,copilot,copilot_premium_request,64,request,0.04,2.56,0.38,2.18,bob,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-06,copilot,copilot_premium_request,91,request,0.04,3.64,0.55,3.09,heidi,acme-platform,core-api,Platform Engineering,Claude Sonnet 4.6
+2026-06-06,copilot,copilot_premium_request,96,request,0.04,3.84,0.58,3.26,heidi,acme-platform,billing-service,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-06,copilot,copilot_premium_request,109,request,0.04,4.36,0.65,3.71,ivan,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-06,copilot,copilot_premium_request,76,request,0.04,3.04,0.46,2.58,carol,acme-data,ml-pipeline,Data Science,Claude Opus 4.7
+2026-06-06,copilot,copilot_premium_request,91,request,0.04,3.64,0.55,3.09,dave,acme-data,feature-store,Data Science,Claude Sonnet 4.6
+2026-06-06,copilot,copilot_premium_request,80,request,0.04,3.20,0.48,2.72,dave,acme-data,ml-pipeline,Data Science,Claude Opus 4.7
+2026-06-06,copilot,copilot_premium_request,104,request,0.04,4.16,0.62,3.54,judy,acme-data,feature-store,Data Science,Auto: Gemini 2.5 Pro
+2026-06-06,copilot,copilot_premium_request,80,request,0.04,3.20,0.48,2.72,erin,acme-mobile,ios-app,Mobile,Gemini 2.5 Pro
+2026-06-06,copilot,copilot_premium_request,75,request,0.04,3.00,0.45,2.55,mallory,acme-mobile,android-app,Mobile,GPT-5.4
+2026-06-06,copilot,copilot_premium_request,61,request,0.04,2.44,0.37,2.07,mallory,acme-mobile,ios-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-06,copilot,copilot_premium_request,58,request,0.04,2.32,0.35,1.97,frank,acme-frontend,design-system,Frontend,Auto: GPT-5.3-Codex
+2026-06-06,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,frank,acme-frontend,web-dashboard,Frontend,GPT-5.3-Codex
+2026-06-06,copilot,copilot_premium_request,106,request,0.04,4.24,0.64,3.60,oscar,acme-frontend,design-system,Frontend,Auto: Claude Sonnet 4.6
+2026-06-07,copilot,copilot_premium_request,110,request,0.04,4.40,0.66,3.74,alice,acme-platform,core-api,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-07,copilot,copilot_premium_request,87,request,0.04,3.48,0.52,2.96,alice,acme-platform,billing-service,Platform Engineering,Gemini 2.5 Pro
+2026-06-07,copilot,copilot_premium_request,73,request,0.04,2.92,0.44,2.48,bob,acme-platform,core-api,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-07,copilot,copilot_premium_request,62,request,0.04,2.48,0.37,2.11,ivan,acme-platform,core-api,Platform Engineering,Auto: Gemini 2.5 Pro
+2026-06-07,copilot,copilot_premium_request,43,request,0.04,1.72,0.26,1.46,dave,acme-data,ml-pipeline,Data Science,Claude Sonnet 4.6
+2026-06-07,copilot,copilot_premium_request,86,request,0.04,3.44,0.52,2.92,judy,acme-data,ml-pipeline,Data Science,Claude Opus 4.7
+2026-06-07,copilot,copilot_premium_request,100,request,0.04,4.00,0.60,3.40,judy,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-07,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,erin,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-07,copilot,copilot_premium_request,65,request,0.04,2.60,0.39,2.21,erin,acme-mobile,ios-app,Mobile,Claude Opus 4.7
+2026-06-07,copilot,copilot_premium_request,41,request,0.04,1.64,0.25,1.39,mallory,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-07,copilot,copilot_premium_request,56,request,0.04,2.24,0.34,1.90,frank,acme-frontend,web-dashboard,Frontend,GPT-5.4
+2026-06-07,copilot,copilot_premium_request,58,request,0.04,2.32,0.35,1.97,frank,acme-frontend,design-system,Frontend,Auto: Claude Sonnet 4.6
+2026-06-07,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,grace,acme-frontend,web-dashboard,Frontend,Auto: Claude Haiku 4.5
+2026-06-07,copilot,copilot_premium_request,82,request,0.04,3.28,0.49,2.79,oscar,acme-frontend,design-system,Frontend,GPT-5.3-Codex
+2026-06-07,copilot,copilot_premium_request,79,request,0.04,3.16,0.47,2.69,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Haiku 4.5
+2026-06-08,copilot,copilot_premium_request,156,request,0.04,6.24,0.94,5.30,alice,acme-platform,core-api,Platform Engineering,GPT-5.3-Codex
+2026-06-08,copilot,copilot_premium_request,78,request,0.04,3.12,0.47,2.65,bob,acme-platform,core-api,Platform Engineering,Claude Opus 4.7
+2026-06-08,copilot,copilot_premium_request,132,request,0.04,5.28,0.79,4.49,bob,acme-platform,core-api,Platform Engineering,Code Review model
+2026-06-08,copilot,copilot_premium_request,240,request,0.04,9.60,1.44,8.16,heidi,acme-platform,billing-service,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-08,copilot,copilot_premium_request,251,request,0.04,10.04,1.51,8.53,heidi,acme-platform,core-api,Platform Engineering,Claude Haiku 4.5
+2026-06-08,copilot,copilot_premium_request,66,request,0.04,2.64,0.40,2.24,ivan,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-08,copilot,copilot_premium_request,173,request,0.04,6.92,1.04,5.88,carol,acme-data,ml-pipeline,Data Science,Auto: Gemini 2.5 Pro
+2026-06-08,copilot,copilot_premium_request,163,request,0.04,6.52,0.98,5.54,carol,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-08,copilot,copilot_premium_request,120,request,0.04,4.80,0.72,4.08,dave,acme-data,ml-pipeline,Data Science,Auto: Gemini 2.5 Pro
+2026-06-08,copilot,copilot_premium_request,107,request,0.04,4.28,0.64,3.64,dave,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-08,copilot,copilot_premium_request,113,request,0.04,4.52,0.68,3.84,erin,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-08,copilot,copilot_premium_request,173,request,0.04,6.92,1.04,5.88,erin,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-08,copilot,copilot_premium_request,181,request,0.04,7.24,1.09,6.15,mallory,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-08,copilot,copilot_premium_request,180,request,0.04,7.20,1.08,6.12,mallory,acme-mobile,ios-app,Mobile,GPT-5.3-Codex
+2026-06-08,copilot,copilot_premium_request,197,request,0.04,7.88,1.18,6.70,frank,acme-frontend,web-dashboard,Frontend,Auto: Claude Haiku 4.5
+2026-06-08,copilot,copilot_premium_request,173,request,0.04,6.92,1.04,5.88,grace,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-08,copilot,copilot_premium_request,207,request,0.04,8.28,1.24,7.04,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Haiku 4.5
+2026-06-09,copilot,copilot_premium_request,35,request,0.04,1.40,0.21,1.19,alice,acme-platform,core-api,Platform Engineering,Claude Sonnet 4.6
+2026-06-09,copilot,copilot_premium_request,124,request,0.04,4.96,0.74,4.22,bob,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-09,copilot,copilot_premium_request,58,request,0.04,2.32,0.35,1.97,heidi,acme-platform,billing-service,Platform Engineering,Auto: Gemini 2.5 Pro
+2026-06-09,copilot,copilot_premium_request,92,request,0.04,3.68,0.55,3.13,ivan,acme-platform,core-api,Platform Engineering,Claude Sonnet 4.6
+2026-06-09,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,carol,acme-data,feature-store,Data Science,Claude Haiku 4.5
+2026-06-09,copilot,copilot_premium_request,90,request,0.04,3.60,0.54,3.06,dave,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-09,copilot,copilot_premium_request,76,request,0.04,3.04,0.46,2.58,dave,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-09,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,judy,acme-data,ml-pipeline,Data Science,Claude Sonnet 4.6
+2026-06-09,copilot,copilot_premium_request,54,request,0.04,2.16,0.32,1.84,judy,acme-data,ml-pipeline,Data Science,GPT-5.3-Codex
+2026-06-09,copilot,copilot_premium_request,88,request,0.04,3.52,0.53,2.99,erin,acme-mobile,ios-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-09,copilot,copilot_premium_request,42,request,0.04,1.68,0.25,1.43,mallory,acme-mobile,ios-app,Mobile,GPT-5.4
+2026-06-09,copilot,copilot_premium_request,48,request,0.04,1.92,0.29,1.63,mallory,acme-mobile,android-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-09,copilot,copilot_premium_request,31,request,0.04,1.24,0.19,1.05,frank,acme-frontend,web-dashboard,Frontend,Claude Opus 4.7
+2026-06-09,copilot,copilot_premium_request,81,request,0.04,3.24,0.49,2.75,grace,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-09,copilot,copilot_premium_request,76,request,0.04,3.04,0.46,2.58,grace,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-10,copilot,copilot_premium_request,57,request,0.04,2.28,0.34,1.94,alice,acme-platform,billing-service,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-10,copilot,copilot_premium_request,55,request,0.04,2.20,0.33,1.87,bob,acme-platform,core-api,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-10,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,bob,acme-platform,infra-tools,Platform Engineering,Claude Haiku 4.5
+2026-06-10,copilot,copilot_premium_request,42,request,0.04,1.68,0.25,1.43,heidi,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-10,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,heidi,acme-platform,billing-service,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-10,copilot,copilot_premium_request,65,request,0.04,2.60,0.39,2.21,ivan,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-10,copilot,copilot_premium_request,101,request,0.04,4.04,0.61,3.43,carol,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-10,copilot,copilot_premium_request,39,request,0.04,1.56,0.23,1.33,dave,acme-data,feature-store,Data Science,Auto: Gemini 2.5 Pro
+2026-06-10,copilot,copilot_premium_request,70,request,0.04,2.80,0.42,2.38,dave,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-10,copilot,copilot_premium_request,71,request,0.04,2.84,0.43,2.41,judy,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-10,copilot,copilot_premium_request,50,request,0.04,2.00,0.30,1.70,erin,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-10,copilot,copilot_premium_request,85,request,0.04,3.40,0.51,2.89,mallory,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-10,copilot,copilot_premium_request,80,request,0.04,3.20,0.48,2.72,oscar,acme-frontend,design-system,Frontend,Auto: Claude Sonnet 4.6
+2026-06-11,copilot,copilot_premium_request,17,request,0.04,0.68,0.10,0.58,bob,acme-platform,core-api,Platform Engineering,GPT-5.4
+2026-06-11,copilot,copilot_premium_request,18,request,0.04,0.72,0.11,0.61,bob,acme-platform,billing-service,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-11,copilot,copilot_premium_request,47,request,0.04,1.88,0.28,1.60,carol,acme-data,feature-store,Data Science,Claude Sonnet 4.6
+2026-06-11,copilot,copilot_premium_request,38,request,0.04,1.52,0.23,1.29,dave,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-11,copilot,copilot_premium_request,47,request,0.04,1.88,0.28,1.60,dave,acme-data,ml-pipeline,Data Science,Auto: Gemini 2.5 Pro
+2026-06-11,copilot,copilot_premium_request,48,request,0.04,1.92,0.29,1.63,judy,acme-data,feature-store,Data Science,Code Review model
+2026-06-11,copilot,copilot_premium_request,41,request,0.04,1.64,0.25,1.39,erin,acme-mobile,android-app,Mobile,Claude Haiku 4.5
+2026-06-11,copilot,copilot_premium_request,29,request,0.04,1.16,0.17,0.99,erin,acme-mobile,ios-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-11,copilot,copilot_premium_request,30,request,0.04,1.20,0.18,1.02,frank,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-11,copilot,copilot_premium_request,19,request,0.04,0.76,0.11,0.65,frank,acme-frontend,web-dashboard,Frontend,Code Review model
+2026-06-11,copilot,copilot_premium_request,53,request,0.04,2.12,0.32,1.80,grace,acme-frontend,design-system,Frontend,GPT-5.3-Codex
+2026-06-11,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,oscar,acme-frontend,design-system,Frontend,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,19,request,0.04,0.76,0.11,0.65,alice,acme-platform,infra-tools,Platform Engineering,Claude Haiku 4.5
+2026-06-12,copilot,copilot_premium_request,22,request,0.04,0.88,0.13,0.75,alice,acme-platform,billing-service,Platform Engineering,Claude Haiku 4.5
+2026-06-12,copilot,copilot_premium_request,19,request,0.04,0.76,0.11,0.65,bob,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,25,request,0.04,1.00,0.15,0.85,ivan,acme-platform,core-api,Platform Engineering,GPT-5.4
+2026-06-12,copilot,copilot_premium_request,34,request,0.04,1.36,0.20,1.16,carol,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,carol,acme-data,feature-store,Data Science,GPT-5.3-Codex
+2026-06-12,copilot,copilot_premium_request,26,request,0.04,1.04,0.16,0.88,dave,acme-data,feature-store,Data Science,Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,23,request,0.04,0.92,0.14,0.78,dave,acme-data,feature-store,Data Science,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,60,request,0.04,2.40,0.36,2.04,judy,acme-data,feature-store,Data Science,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,judy,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-12,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,erin,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,46,request,0.04,1.84,0.28,1.56,erin,acme-mobile,ios-app,Mobile,GPT-5.4
+2026-06-12,copilot,copilot_premium_request,32,request,0.04,1.28,0.19,1.09,frank,acme-frontend,design-system,Frontend,Claude Opus 4.7
+2026-06-12,copilot,copilot_premium_request,30,request,0.04,1.20,0.18,1.02,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Sonnet 4.6
+2026-06-12,copilot,copilot_premium_request,27,request,0.04,1.08,0.16,0.92,oscar,acme-frontend,design-system,Frontend,GPT-5.4
+2026-06-13,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,alice,acme-platform,core-api,Platform Engineering,Claude Opus 4.7
+2026-06-13,copilot,copilot_premium_request,54,request,0.04,2.16,0.32,1.84,bob,acme-platform,billing-service,Platform Engineering,GPT-5.3-Codex
+2026-06-13,copilot,copilot_premium_request,39,request,0.04,1.56,0.23,1.33,bob,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,71,request,0.04,2.84,0.43,2.41,heidi,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,ivan,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,57,request,0.04,2.28,0.34,1.94,carol,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-13,copilot,copilot_premium_request,66,request,0.04,2.64,0.40,2.24,dave,acme-data,ml-pipeline,Data Science,Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,55,request,0.04,2.20,0.33,1.87,judy,acme-data,feature-store,Data Science,Auto: Gemini 2.5 Pro
+2026-06-13,copilot,copilot_premium_request,62,request,0.04,2.48,0.37,2.11,erin,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,76,request,0.04,3.04,0.46,2.58,mallory,acme-mobile,android-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,46,request,0.04,1.84,0.28,1.56,mallory,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,94,request,0.04,3.76,0.56,3.20,frank,acme-frontend,design-system,Frontend,GPT-5.4
+2026-06-13,copilot,copilot_premium_request,131,request,0.04,5.24,0.79,4.45,frank,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-13,copilot,copilot_premium_request,71,request,0.04,2.84,0.43,2.41,grace,acme-frontend,web-dashboard,Frontend,Auto: GPT-5.3-Codex
+2026-06-13,copilot,copilot_premium_request,68,request,0.04,2.72,0.41,2.31,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Haiku 4.5
+2026-06-13,copilot,copilot_premium_request,64,request,0.04,2.56,0.38,2.18,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,67,request,0.04,2.68,0.40,2.28,alice,acme-platform,infra-tools,Platform Engineering,Code Review model
+2026-06-14,copilot,copilot_premium_request,59,request,0.04,2.36,0.35,2.01,alice,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,64,request,0.04,2.56,0.38,2.18,bob,acme-platform,billing-service,Platform Engineering,Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,95,request,0.04,3.80,0.57,3.23,bob,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,87,request,0.04,3.48,0.52,2.96,ivan,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,40,request,0.04,1.60,0.24,1.36,carol,acme-data,feature-store,Data Science,GPT-5.4
+2026-06-14,copilot,copilot_premium_request,46,request,0.04,1.84,0.28,1.56,judy,acme-data,ml-pipeline,Data Science,GPT-5.4
+2026-06-14,copilot,copilot_premium_request,79,request,0.04,3.16,0.47,2.69,erin,acme-mobile,ios-app,Mobile,GPT-5.4
+2026-06-14,copilot,copilot_premium_request,84,request,0.04,3.36,0.50,2.86,erin,acme-mobile,android-app,Mobile,GPT-5.3-Codex
+2026-06-14,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,mallory,acme-mobile,ios-app,Mobile,Claude Haiku 4.5
+2026-06-14,copilot,copilot_premium_request,85,request,0.04,3.40,0.51,2.89,frank,acme-frontend,design-system,Frontend,Gemini 2.5 Pro
+2026-06-14,copilot,copilot_premium_request,98,request,0.04,3.92,0.59,3.33,frank,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,61,request,0.04,2.44,0.37,2.07,grace,acme-frontend,design-system,Frontend,Auto: Claude Sonnet 4.6
+2026-06-14,copilot,copilot_premium_request,36,request,0.04,1.44,0.22,1.22,grace,acme-frontend,design-system,Frontend,Claude Opus 4.7
+2026-06-14,copilot,copilot_premium_request,119,request,0.04,4.76,0.71,4.05,oscar,acme-frontend,design-system,Frontend,Auto: GPT-5.3-Codex
+2026-06-15,copilot,copilot_premium_request,62,request,0.04,2.48,0.37,2.11,alice,acme-platform,billing-service,Platform Engineering,Code Review model
+2026-06-15,copilot,copilot_premium_request,67,request,0.04,2.68,0.40,2.28,bob,acme-platform,infra-tools,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-15,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,bob,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-15,copilot,copilot_premium_request,94,request,0.04,3.76,0.56,3.20,heidi,acme-platform,core-api,Platform Engineering,GPT-5.4
+2026-06-15,copilot,copilot_premium_request,105,request,0.04,4.20,0.63,3.57,heidi,acme-platform,billing-service,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-15,copilot,copilot_premium_request,122,request,0.04,4.88,0.73,4.15,ivan,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-15,copilot,copilot_premium_request,53,request,0.04,2.12,0.32,1.80,carol,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-15,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,carol,acme-data,feature-store,Data Science,Auto: Claude Haiku 4.5
+2026-06-15,copilot,copilot_premium_request,48,request,0.04,1.92,0.29,1.63,dave,acme-data,feature-store,Data Science,Auto: Claude Haiku 4.5
+2026-06-15,copilot,copilot_premium_request,121,request,0.04,4.84,0.73,4.11,judy,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-15,copilot,copilot_premium_request,112,request,0.04,4.48,0.67,3.81,judy,acme-data,feature-store,Data Science,GPT-5.3-Codex
+2026-06-15,copilot,copilot_premium_request,103,request,0.04,4.12,0.62,3.50,frank,acme-frontend,web-dashboard,Frontend,GPT-5.4
+2026-06-15,copilot,copilot_premium_request,88,request,0.04,3.52,0.53,2.99,grace,acme-frontend,web-dashboard,Frontend,Gemini 2.5 Pro
+2026-06-15,copilot,copilot_premium_request,35,request,0.04,1.40,0.21,1.19,oscar,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,99,request,0.04,3.96,0.59,3.37,alice,acme-platform,billing-service,Platform Engineering,Auto: Gemini 2.5 Pro
+2026-06-16,copilot,copilot_premium_request,89,request,0.04,3.56,0.53,3.03,alice,acme-platform,billing-service,Platform Engineering,Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,70,request,0.04,2.80,0.42,2.38,bob,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,119,request,0.04,4.76,0.71,4.05,bob,acme-platform,infra-tools,Platform Engineering,Code Review model
+2026-06-16,copilot,copilot_premium_request,83,request,0.04,3.32,0.50,2.82,heidi,acme-platform,billing-service,Platform Engineering,Claude Opus 4.7
+2026-06-16,copilot,copilot_premium_request,91,request,0.04,3.64,0.55,3.09,heidi,acme-platform,billing-service,Platform Engineering,Code Review model
+2026-06-16,copilot,copilot_premium_request,92,request,0.04,3.68,0.55,3.13,ivan,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,108,request,0.04,4.32,0.65,3.67,ivan,acme-platform,infra-tools,Platform Engineering,Gemini 2.5 Pro
+2026-06-16,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,carol,acme-data,feature-store,Data Science,GPT-5.3-Codex
+2026-06-16,copilot,copilot_premium_request,74,request,0.04,2.96,0.44,2.52,dave,acme-data,ml-pipeline,Data Science,GPT-5.3-Codex
+2026-06-16,copilot,copilot_premium_request,79,request,0.04,3.16,0.47,2.69,dave,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-16,copilot,copilot_premium_request,106,request,0.04,4.24,0.64,3.60,judy,acme-data,ml-pipeline,Data Science,GPT-5.4
+2026-06-16,copilot,copilot_premium_request,87,request,0.04,3.48,0.52,2.96,judy,acme-data,feature-store,Data Science,Auto: Claude Haiku 4.5
+2026-06-16,copilot,copilot_premium_request,99,request,0.04,3.96,0.59,3.37,erin,acme-mobile,ios-app,Mobile,Claude Haiku 4.5
+2026-06-16,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,mallory,acme-mobile,android-app,Mobile,Auto: Gemini 2.5 Pro
+2026-06-16,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,mallory,acme-mobile,ios-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-16,copilot,copilot_premium_request,83,request,0.04,3.32,0.50,2.82,frank,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,83,request,0.04,3.32,0.50,2.82,grace,acme-frontend,web-dashboard,Frontend,Auto: Gemini 2.5 Pro
+2026-06-16,copilot,copilot_premium_request,55,request,0.04,2.20,0.33,1.87,grace,acme-frontend,design-system,Frontend,Auto: Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,126,request,0.04,5.04,0.76,4.28,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Sonnet 4.6
+2026-06-16,copilot,copilot_premium_request,103,request,0.04,4.12,0.62,3.50,oscar,acme-frontend,web-dashboard,Frontend,GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,52,request,0.04,2.08,0.31,1.77,alice,acme-platform,core-api,Platform Engineering,Auto: Claude Haiku 4.5
+2026-06-17,copilot,copilot_premium_request,36,request,0.04,1.44,0.22,1.22,alice,acme-platform,core-api,Platform Engineering,Claude Sonnet 4.6
+2026-06-17,copilot,copilot_premium_request,92,request,0.04,3.68,0.55,3.13,bob,acme-platform,billing-service,Platform Engineering,Auto: Gemini 2.5 Pro
+2026-06-17,copilot,copilot_premium_request,74,request,0.04,2.96,0.44,2.52,bob,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-17,copilot,copilot_premium_request,43,request,0.04,1.72,0.26,1.46,heidi,acme-platform,core-api,Platform Engineering,GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,heidi,acme-platform,core-api,Platform Engineering,Claude Opus 4.7
+2026-06-17,copilot,copilot_premium_request,97,request,0.04,3.88,0.58,3.30,ivan,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-17,copilot,copilot_premium_request,77,request,0.04,3.08,0.46,2.62,ivan,acme-platform,core-api,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,69,request,0.04,2.76,0.41,2.35,carol,acme-data,ml-pipeline,Data Science,Auto: Gemini 2.5 Pro
+2026-06-17,copilot,copilot_premium_request,77,request,0.04,3.08,0.46,2.62,carol,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,44,request,0.04,1.76,0.26,1.50,dave,acme-data,ml-pipeline,Data Science,Auto: Claude Sonnet 4.6
+2026-06-17,copilot,copilot_premium_request,38,request,0.04,1.52,0.23,1.29,dave,acme-data,ml-pipeline,Data Science,Auto: Claude Haiku 4.5
+2026-06-17,copilot,copilot_premium_request,100,request,0.04,4.00,0.60,3.40,judy,acme-data,ml-pipeline,Data Science,Auto: GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,32,request,0.04,1.28,0.19,1.09,erin,acme-mobile,ios-app,Mobile,Claude Opus 4.7
+2026-06-17,copilot,copilot_premium_request,54,request,0.04,2.16,0.32,1.84,mallory,acme-mobile,ios-app,Mobile,Claude Sonnet 4.6
+2026-06-17,copilot,copilot_premium_request,75,request,0.04,3.00,0.45,2.55,mallory,acme-mobile,android-app,Mobile,Auto: GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,70,request,0.04,2.80,0.42,2.38,frank,acme-frontend,web-dashboard,Frontend,GPT-5.4
+2026-06-17,copilot,copilot_premium_request,107,request,0.04,4.28,0.64,3.64,frank,acme-frontend,design-system,Frontend,Auto: Claude Haiku 4.5
+2026-06-17,copilot,copilot_premium_request,71,request,0.04,2.84,0.43,2.41,grace,acme-frontend,design-system,Frontend,GPT-5.4
+2026-06-17,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,grace,acme-frontend,web-dashboard,Frontend,Claude Opus 4.7
+2026-06-17,copilot,copilot_premium_request,75,request,0.04,3.00,0.45,2.55,oscar,acme-frontend,web-dashboard,Frontend,Auto: GPT-5.3-Codex
+2026-06-17,copilot,copilot_premium_request,128,request,0.04,5.12,0.77,4.35,oscar,acme-frontend,design-system,Frontend,Gemini 2.5 Pro
+2026-06-18,copilot,copilot_premium_request,46,request,0.04,1.84,0.28,1.56,heidi,acme-platform,billing-service,Platform Engineering,Gemini 2.5 Pro
+2026-06-18,copilot,copilot_premium_request,34,request,0.04,1.36,0.20,1.16,ivan,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-18,copilot,copilot_premium_request,26,request,0.04,1.04,0.16,0.88,ivan,acme-platform,infra-tools,Platform Engineering,GPT-5.4
+2026-06-18,copilot,copilot_premium_request,53,request,0.04,2.12,0.32,1.80,carol,acme-data,ml-pipeline,Data Science,GPT-5.4
+2026-06-18,copilot,copilot_premium_request,50,request,0.04,2.00,0.30,1.70,dave,acme-data,feature-store,Data Science,Auto: GPT-5.3-Codex
+2026-06-18,copilot,copilot_premium_request,20,request,0.04,0.80,0.12,0.68,judy,acme-data,feature-store,Data Science,Auto: Claude Sonnet 4.6
+2026-06-18,copilot,copilot_premium_request,20,request,0.04,0.80,0.12,0.68,judy,acme-data,feature-store,Data Science,Auto: Claude Haiku 4.5
+2026-06-18,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,erin,acme-mobile,ios-app,Mobile,Auto: Claude Sonnet 4.6
+2026-06-18,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,mallory,acme-mobile,android-app,Mobile,Auto: Gemini 2.5 Pro
+2026-06-18,copilot,copilot_premium_request,37,request,0.04,1.48,0.22,1.26,grace,acme-frontend,web-dashboard,Frontend,Gemini 2.5 Pro
+2026-06-18,copilot,copilot_premium_request,26,request,0.04,1.04,0.16,0.88,oscar,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-18,copilot,copilot_premium_request,42,request,0.04,1.68,0.25,1.43,oscar,acme-frontend,web-dashboard,Frontend,Auto: Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,46,request,0.04,1.84,0.28,1.56,alice,acme-platform,infra-tools,Platform Engineering,Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,45,request,0.04,1.80,0.27,1.53,alice,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,49,request,0.04,1.96,0.29,1.67,bob,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,44,request,0.04,1.76,0.26,1.50,bob,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,26,request,0.04,1.04,0.16,0.88,heidi,acme-platform,billing-service,Platform Engineering,Gemini 2.5 Pro
+2026-06-19,copilot,copilot_premium_request,31,request,0.04,1.24,0.19,1.05,heidi,acme-platform,billing-service,Platform Engineering,Auto: GPT-5.3-Codex
+2026-06-19,copilot,copilot_premium_request,31,request,0.04,1.24,0.19,1.05,dave,acme-data,feature-store,Data Science,Auto: Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,21,request,0.04,0.84,0.13,0.71,erin,acme-mobile,android-app,Mobile,GPT-5.3-Codex
+2026-06-19,copilot,copilot_premium_request,30,request,0.04,1.20,0.18,1.02,erin,acme-mobile,ios-app,Mobile,Auto: Gemini 2.5 Pro
+2026-06-19,copilot,copilot_premium_request,47,request,0.04,1.88,0.28,1.60,mallory,acme-mobile,android-app,Mobile,Gemini 2.5 Pro
+2026-06-19,copilot,copilot_premium_request,41,request,0.04,1.64,0.25,1.39,mallory,acme-mobile,ios-app,Mobile,Claude Haiku 4.5
+2026-06-19,copilot,copilot_premium_request,50,request,0.04,2.00,0.30,1.70,frank,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-19,copilot,copilot_premium_request,43,request,0.04,1.72,0.26,1.46,frank,acme-frontend,design-system,Frontend,Claude Opus 4.7
+2026-06-19,copilot,copilot_premium_request,28,request,0.04,1.12,0.17,0.95,oscar,acme-frontend,design-system,Frontend,Auto: GPT-5.3-Codex
+2026-06-19,copilot,copilot_premium_request,24,request,0.04,0.96,0.14,0.82,oscar,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,56,request,0.04,2.24,0.34,1.90,bob,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,64,request,0.04,2.56,0.38,2.18,bob,acme-platform,core-api,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,95,request,0.04,3.80,0.57,3.23,heidi,acme-platform,infra-tools,Platform Engineering,Auto: Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,106,request,0.04,4.24,0.64,3.60,heidi,acme-platform,billing-service,Platform Engineering,GPT-5.4
+2026-06-20,copilot,copilot_premium_request,61,request,0.04,2.44,0.37,2.07,ivan,acme-platform,infra-tools,Platform Engineering,Code Review model
+2026-06-20,copilot,copilot_premium_request,123,request,0.04,4.92,0.74,4.18,dave,acme-data,ml-pipeline,Data Science,Claude Haiku 4.5
+2026-06-20,copilot,copilot_premium_request,84,request,0.04,3.36,0.50,2.86,dave,acme-data,ml-pipeline,Data Science,Claude Opus 4.7
+2026-06-20,copilot,copilot_premium_request,85,request,0.04,3.40,0.51,2.89,judy,acme-data,ml-pipeline,Data Science,Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,117,request,0.04,4.68,0.70,3.98,judy,acme-data,feature-store,Data Science,Auto: Claude Haiku 4.5
+2026-06-20,copilot,copilot_premium_request,65,request,0.04,2.60,0.39,2.21,erin,acme-mobile,android-app,Mobile,Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,54,request,0.04,2.16,0.32,1.84,erin,acme-mobile,android-app,Mobile,GPT-5.4
+2026-06-20,copilot,copilot_premium_request,120,request,0.04,4.80,0.72,4.08,mallory,acme-mobile,android-app,Mobile,Auto: Claude Haiku 4.5
+2026-06-20,copilot,copilot_premium_request,121,request,0.04,4.84,0.73,4.11,frank,acme-frontend,web-dashboard,Frontend,Code Review model
+2026-06-20,copilot,copilot_premium_request,109,request,0.04,4.36,0.65,3.71,grace,acme-frontend,design-system,Frontend,Claude Opus 4.7
+2026-06-20,copilot,copilot_premium_request,119,request,0.04,4.76,0.71,4.05,grace,acme-frontend,design-system,Frontend,Claude Sonnet 4.6
+2026-06-20,copilot,copilot_premium_request,104,request,0.04,4.16,0.62,3.54,oscar,acme-frontend,web-dashboard,Frontend,Gemini 2.5 Pro
+2026-06-20,copilot,copilot_premium_request,78,request,0.04,3.12,0.47,2.65,oscar,acme-frontend,web-dashboard,Frontend,Claude Sonnet 4.6

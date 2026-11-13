@@ -1,0 +1,1934 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background-color: var(--bgColor-emphasis);
+  color: var(--fgColor-onEmphasis);
+  flex-shrink: 0;
+}
+
+.appRoot {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.appBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.pane {
+  width: 296px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--borderColor-default);
+  background-color: var(--bgColor-default);
+  overflow-y: auto;
+}
+
+/* Hamburger toggle: only relevant on narrow viewports. */
+.menuToggle {
+  display: none;
+}
+
+.paneBackdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .menuToggle {
+    display: flex;
+  }
+
+  .pane {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 30;
+    width: 280px;
+    max-width: 85vw;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: var(--shadow-floating-large, 0 8px 24px rgba(31, 35, 40, 0.2));
+  }
+
+  .paneOpen {
+    transform: translateX(0);
+  }
+
+  .paneBackdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background-color: rgba(31, 35, 40, 0.4);
+  }
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.headerBrand {
+  font-weight: 600;
+  color: var(--fgColor-onEmphasis);
+}
+
+.contentBand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--borderColor-default);
+  border-left: 4px solid var(--group-color, transparent);
+  background-color: var(--bgColor-default);
+  flex-shrink: 0;
+}
+
+.contentBandTitle {
+  margin-right: auto;
+}
+
+.contentBandHeading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.contentInner {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  background-color: var(--bgColor-inset);
+}
+
+/* Tool switch: fade and ease the new view up into place. Keyed on the active
+   tool id in app-shell so it remounts and replays on every change. */
+.toolView {
+  animation: toolFadeIn 0.22s ease;
+}
+
+@keyframes toolFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .toolView {
+    animation: none;
+  }
+
+  .toolItem,
+  .toolIcon {
+    transition: none;
+  }
+
+  .toolItem:hover:not(:disabled),
+  .toolItemActive .toolIcon {
+    transform: none;
+  }
+
+  .toolItemActive::before {
+    animation: none;
+  }
+
+  .promptDetails::details-content {
+    transition: none;
+  }
+
+  .promptSummary::before {
+    transition: none;
+  }
+}
+
+.disclaimer {
+  max-width: 1000px;
+  margin: 32px auto 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--borderColor-default);
+}
+
+.promptShell {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 40px 0 16px;
+}
+
+.promptCard {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 32px;
+  border: 1px solid var(--borderColor-default);
+  border-radius: 12px;
+  background-color: var(--bgColor-default);
+  box-shadow: none;
+  padding: 28px;
+}
+
+.promptCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  align-self: center;
+  text-align: left;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 560px;
+}
+
+.promptHeading {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--fgColor-default);
+}
+
+.promptLead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fgColor-muted);
+}
+
+.promptDetails {
+  width: 100%;
+  interpolate-size: allow-keywords;
+}
+
+/* Animate the native details disclosure open/closed. */
+.promptDetails::details-content {
+  block-size: 0;
+  overflow: clip;
+  opacity: 0;
+  transition: block-size 0.25s ease, opacity 0.25s ease,
+    content-visibility 0.25s allow-discrete;
+}
+
+.promptDetails[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+}
+
+.promptSummary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin-top: 2px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fgColor-accent);
+}
+
+.promptSummary::-webkit-details-marker {
+  display: none;
+}
+
+.promptSummary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+
+.promptDetails[open] .promptSummary::before {
+  transform: rotate(90deg);
+}
+
+.promptEyebrow {
+  color: var(--fgColor-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.promptList {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  color: var(--fgColor-default);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.promptList li::marker {
+  color: var(--fgColor-accent);
+}
+
+.promptUpload {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-self: center;
+  flex: 1 1 0;
+  width: auto;
+  min-width: 320px;
+  max-width: 420px;
+}
+
+.promptAlert {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background-color: var(--bgColor-accent-muted);
+  border: 1px solid color-mix(in srgb, var(--fgColor-accent) 30%, var(--borderColor-default));
+  box-shadow: none;
+}
+
+.promptAlert svg {
+  flex-shrink: 0;
+  color: var(--fgColor-accent);
+}
+
+.promptAlertText {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--fgColor-default);
+}
+
+.promptTimeline {
+  margin: 8px 0 12px;
+}
+
+.promptTimeline [class*="TimelineBadge"] {
+  color: var(--fgColor-accent);
+}
+
+.promptTimeline [class*="TimelineBadge"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+.promptTimeline [class*="TimelineBody"] {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fgColor-default);
+}
+
+.promptReference {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fgColor-muted);
+}
+
+.promptFootnote {
+  color: var(--fgColor-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.controlsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.controlsGroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.sliderValue {
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-width: 44px;
+  flex-shrink: 0;
+}
+
+/* What-if controls: a label stacked above a row that pairs an input-styled
+   control with a Reset button. Both controls share the same dimensions so the
+   run-rate and entitlement fields line up cleanly. Each sits in its own card
+   so the boundary between the two controls is unmistakable. */
+.sliderField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--borderColor-default);
+  border-radius: 8px;
+  background: var(--bgColor-muted);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+/* Lift the active control: accent the border and add a soft focus ring so the
+   field the user is interacting with is clearly the one in focus. */
+.sliderField:focus-within {
+  border-color: var(--fgColor-accent);
+  background: var(--bgColor-default);
+  box-shadow: 0 0 0 3px var(--borderColor-accent-muted);
+}
+
+/* Small caption beneath each field describing the current effect, so the
+   controls explain themselves rather than reading as bare inputs. */
+.fieldHint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fgColor-muted);
+}
+
+.fieldRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Mirrors the Primer TextInput so the slider reads as a first-class field. */
+.sliderControl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 240px;
+  height: 32px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--borderColor-default);
+  border-radius: 6px;
+  background: var(--bgColor-default);
+}
+
+.sliderControl input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--fgColor-accent);
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+/* Keep stat cards a consistent height so the grid stays even across rows. */
+.statGrid > .card {
+  min-height: 108px;
+}
+
+/* Total tokens stat card: give the 2x2 breakdown grid a bit more breathing
+   room than the single-line stat cards next to it. */
+.tokenStatCard {
+  grid-column: span 2;
+}
+
+/* Users stat card: count on the left, a mini spend histogram on the right. */
+.usersCard {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 24px;
+  grid-column: span 2;
+}
+
+.usersCardMain {
+  flex-shrink: 0;
+}
+
+.usersCardChart {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 160px;
+  max-width: 320px;
+}
+
+.miniHistLabel {
+  color: var(--fgColor-muted);
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+/* Plot area: bars sit on a baseline with faint horizontal gridlines behind. */
+.miniHist {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 52px;
+  padding-bottom: 1px;
+  border-bottom: 1px solid var(--borderColor-default);
+  background-image: repeating-linear-gradient(
+    to top,
+    transparent,
+    transparent 16px,
+    var(--borderColor-muted) 16px,
+    var(--borderColor-muted) 17px
+  );
+}
+
+.miniHistBar {
+  flex: 1;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background-color: var(--bgColor-accent-emphasis);
+  transition: background-color 0.12s ease;
+}
+
+.miniHistBar:hover {
+  background-color: var(--fgColor-accent);
+}
+
+/* Mini x-axis: min / mid / max spend labels under the plot. */
+.miniHistAxis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--fgColor-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+
+.card {
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium, 6px);
+  background-color: var(--bgColor-default);
+  padding: 16px;
+}
+
+.cardLabel {
+  color: var(--fgColor-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.statValue {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.statSub {
+  color: var(--fgColor-muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* Muted secondary cost (e.g. USD) shown inline next to a primary value to keep
+   table rows compact. Rendered smaller, lighter and in brackets so it reads as
+   a subtle annotation rather than competing with the primary value. */
+.costInline {
+  color: var(--fgColor-muted);
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
+  margin-left: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.costInline::before {
+  content: "(";
+}
+
+.costInline::after {
+  content: ")";
+}
+
+.chartWrap {
+  width: 100%;
+  height: 360px;
+}
+
+.chartCard {
+  display: flex;
+  flex-direction: column;
+}
+
+.labelWithInfo {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Primer renders the tooltip inline inside the (often uppercase) label, so it
+   inherits text-transform/letter-spacing. Reset it to normal sentence case. */
+.labelWithInfo :global([role="tooltip"]) {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.infoButton {
+  color: var(--fgColor-muted);
+}
+
+/* Unstyled button used as a Tooltip trigger for non-interactive inline text
+   (e.g. token counts) - Primer's Tooltip requires an interactive child. */
+.tokenTrigger {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+
+/* Compact color-coded input/output/cached token annotation, e.g. next to a
+   model's token total in the breakdown table. Icons carry the meaning so the
+   labels stay out of the way of the numbers. */
+.tokenParts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+.tokenPart {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tokenPart svg {
+  flex-shrink: 0;
+}
+
+/* Small grid of labeled token-type totals shown under the "Total tokens"
+   stat card. Each type gets its own row so nothing wraps or truncates. */
+.tokenGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.tokenGridItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tokenGridItem svg {
+  flex-shrink: 0;
+}
+
+.tokenGridLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fgColor-muted);
+  font-size: 11px;
+}
+
+.tokenGridValue {
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fgColor-default);
+}
+
+.tableScroll {
+  overflow-x: auto;
+}
+
+/* Inline filter box shown in table card headers. */
+.tableSearch {
+  width: 220px;
+  max-width: 100%;
+}
+
+.tableEmpty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--fgColor-muted);
+  font-size: 13px;
+}
+
+.userTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.userTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fgColor-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 8px 12px;
+  background-color: var(--bgColor-default);
+  border-bottom: 1px solid var(--borderColor-default);
+}
+
+.userTable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--borderColor-muted);
+  vertical-align: top;
+}
+
+/* Zebra striping for flat tables. Hover gets a distinct shade so it reads over
+   both striped and unstriped rows. */
+.zebra tbody tr:nth-child(even) {
+  background-color: var(--bgColor-muted);
+}
+
+/* Explicit stripe for tables with interleaved detail rows (nth-child can't be
+   used there). Applied to alternating data rows by index. */
+.rowStripe {
+  background-color: var(--bgColor-muted);
+}
+
+.userTable tbody tr:hover {
+  background-color: var(--bgColor-muted);
+}
+
+.zebra tbody tr:hover {
+  background-color: var(--bgColor-neutral-muted);
+}
+
+.numCol {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.userName {
+  font-weight: 600;
+}
+
+.overBudgetIcon {
+  color: var(--fgColor-danger);
+  margin-right: 4px;
+  vertical-align: baseline;
+}
+
+/* Sortable header buttons */
+.sortBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fgColor-muted);
+  cursor: pointer;
+}
+
+.numCol .sortBtn {
+  flex-direction: row-reverse;
+}
+
+.sortBtn:hover {
+  color: var(--fgColor-default);
+}
+
+.sortActive {
+  color: var(--fgColor-accent);
+}
+
+.sortArrow {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Expand affordance */
+.expandCol {
+  width: 36px;
+  text-align: center;
+  padding-left: 8px !important;
+  padding-right: 0 !important;
+}
+
+.expandIcon {
+  display: inline-flex;
+  color: var(--fgColor-muted);
+}
+
+.clickableRow {
+  cursor: pointer;
+}
+
+.rowOpen,
+.rowOpen:hover {
+  background-color: var(--bgColor-accent-muted) !important;
+}
+
+.detailRow td {
+  padding: 0 !important;
+  background-color: var(--bgColor-inset);
+}
+
+.detailRow:hover {
+  background-color: var(--bgColor-inset) !important;
+}
+
+.detailPanel {
+  padding: 16px 16px 16px 44px;
+}
+
+/* One-line headline summarising the user's budget status at a glance, so the
+   most actionable fact doesn't require scanning three separate columns. */
+.detailBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.detailBanner strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.detailBannerOk {
+  background-color: var(--bgColor-success-muted, #d1f7c4);
+  color: var(--fgColor-success, #1a7f37);
+}
+
+.detailBannerDanger {
+  background-color: var(--bgColor-danger-muted, #ffebe9);
+  color: var(--fgColor-danger, #cf222e);
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(280px, 1.7fr);
+  background-color: var(--bgColor-default);
+  border: 1px solid var(--borderColor-default);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.detailGridWithBudget {
+  grid-template-columns: minmax(200px, 0.9fr) minmax(280px, 1.5fr) minmax(200px, 0.9fr);
+}
+
+@media (max-width: 760px) {
+  .detailGrid,
+  .detailGridWithBudget {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Section within the unified detail panel (Activity/Models/Budget). A single
+   shared border/background with dividers between sections - rather than
+   separately-bordered cards - keeps every section the same height and avoids
+   the "floating boxes of mismatched heights" look. */
+.detailSection {
+  padding: 14px 16px;
+  min-width: 0;
+}
+
+.detailSection:not(:last-child) {
+  border-right: 1px solid var(--borderColor-default);
+}
+
+@media (max-width: 760px) {
+  .detailSection:not(:last-child) {
+    border-right: none;
+    border-bottom: 1px solid var(--borderColor-default);
+  }
+}
+
+.detailHeading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fgColor-muted);
+  margin-bottom: 10px;
+}
+
+.detailList {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.detailList dt {
+  color: var(--fgColor-muted);
+}
+
+.detailList dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Model breakdown bars */
+.modelBars {
+  display: flex;
+  flex-direction: column;
+}
+
+.modelBars > div {
+  padding: 6px 0;
+}
+
+.modelBars > div:not(:last-child) {
+  border-bottom: 1px solid var(--borderColor-muted);
+}
+
+.modelBars > div:first-child {
+  padding-top: 0;
+}
+
+.modelBars > div:last-child {
+  padding-bottom: 0;
+}
+
+/* Fixed-width name/value columns so the track column lines up at the same
+   x-position on every row - a shared 1fr column can't do that on its own
+   because each row is its own grid and the auto-sized name/value text
+   differs per model. */
+.modelBarRow {
+  display: grid;
+  grid-template-columns: 96px 1fr 108px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.modelBarName {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modelBarTrack {
+  height: 8px;
+  border-radius: 4px;
+  background-color: var(--borderColor-muted);
+  overflow: hidden;
+}
+
+.modelBarFill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background-color: var(--fgColor-accent);
+}
+
+.modelBarVal {
+  white-space: nowrap;
+  text-align: right;
+  color: var(--fgColor-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Token breakdown shown on its own line under an auto-selected model, right
+   aligned under the AIC/share value so it doesn't compete for space inline. */
+.modelBarTokenRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.modelBarTokenBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fgColor-muted);
+}
+
+/* Budget utilisation cell */
+.utilCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+}
+
+.utilTrack {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background-color: var(--borderColor-muted);
+  overflow: hidden;
+}
+
+.utilFill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.utilPct {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+/* Labeled gauge rows in the per-user Budget card - reuses the same
+   track/fill visual as the table's Budget Used column so "at a glance"
+   reading is consistent between the row and its expanded detail. */
+.budgetGauges {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.budgetGaugeRow {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.budgetGaugeLabel {
+  font-size: 12px;
+  color: var(--fgColor-muted);
+}
+
+.modelTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Chart legend (Model Breakdown) */
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fgColor-muted);
+}
+
+.legendSwatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.modelDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--borderColor-muted);
+  flex-shrink: 0;
+}
+
+.cardHeaderRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.cardHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.dropzone {
+  border: 1px dashed var(--borderColor-default);
+  border-radius: 10px;
+  padding: 28px 24px;
+  text-align: center;
+  cursor: pointer;
+  background-color: var(--bgColor-default);
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+}
+
+.dropzone:hover {
+  transform: translateY(-1px);
+  border-color: var(--borderColor-accent-emphasis);
+}
+
+.dropzone:focus-visible {
+  outline: 2px solid var(--borderColor-accent-emphasis);
+  outline-offset: 2px;
+}
+
+.dropzoneActive {
+  border-color: var(--borderColor-accent-emphasis);
+  background-color: var(--bgColor-accent-muted);
+}
+
+.dropzoneIconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 14px;
+  border-radius: 999px;
+  color: var(--fgColor-accent);
+  background-color: var(--bgColor-accent-muted);
+}
+
+.dropzoneLabel {
+  margin: 0;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.dropzoneSubtext {
+  margin: 4px 0 0;
+  color: var(--fgColor-muted);
+  font-size: 13px;
+}
+
+.dropzoneActions {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.dropzoneButton {
+  align-self: center;
+}
+
+.uploaderCompact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Stack the primary and comparison (previous month) uploaders in the content
+   band so they read as two distinct slots rather than one busy row. */
+.bandUploaders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.uploaderFileLabel {
+  max-width: 100%;
+}
+
+.uploaderFileLabel span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--fgColor-muted);
+}
+
+.sidebarWrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 12px;
+  gap: 8px;
+}
+
+.sidebarHeading {
+  color: var(--group-color, var(--fgColor-muted));
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 8px 4px;
+}
+
+.toolGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.toolGroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.toolList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolItem {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--borderRadius-medium, 6px);
+  background: none;
+  font: inherit;
+  color: var(--fgColor-default);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.toolItem:hover:not(:disabled) {
+  background-color: var(--bgColor-muted);
+  transform: translateX(2px);
+}
+
+.toolItem:disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.toolItemLocked {
+  position: relative;
+  cursor: not-allowed;
+}
+
+/* Locked-for-report tools stay clickable (selecting one shows the upload
+   prompt) but keep the dimmed "disabled" look they had before. */
+.toolItemLocked .toolItem {
+  opacity: 0.55;
+}
+
+.toolItemLocked::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: calc(100% - 4px);
+  z-index: 20;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background-color: var(--bgColor-emphasis);
+  color: var(--fgColor-onEmphasis);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: var(--shadow-floating-small, 0 1px 3px rgba(31, 35, 40, 0.2));
+  opacity: 0;
+  transform: translateY(-3px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.toolItemLocked:hover::after,
+.toolItemLocked:focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toolItemActive,
+.toolItemActive:hover {
+  background-color: color-mix(in srgb, var(--group-color, #0969da) 12%, transparent);
+  border-color: color-mix(in srgb, var(--group-color, #0969da) 35%, transparent);
+}
+
+.toolItemActive::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background-color: var(--group-color, var(--fgColor-accent));
+  transform-origin: center;
+  animation: toolIndicatorIn 0.2s ease;
+}
+
+@keyframes toolIndicatorIn {
+  from {
+    transform: scaleY(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.toolIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--borderRadius-medium, 6px);
+  background-color: var(--bgColor-default);
+  border: 1px solid var(--borderColor-muted);
+  color: var(--group-color, var(--fgColor-muted));
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease, transform 0.18s ease;
+}
+
+.toolItemActive .toolIcon {
+  background-color: var(--group-color, var(--fgColor-accent));
+  border-color: var(--group-color, var(--fgColor-accent));
+  color: var(--fgColor-onEmphasis);
+  transform: scale(1.08);
+}
+
+.toolText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.toolLabel {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.toolItemActive .toolLabel {
+  color: var(--fgColor-accent);
+}
+
+.toolDesc {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--fgColor-muted);
+}
+
+.buildInfo {
+  margin-top: auto;
+  padding-top: 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--fgColor-muted);
+}
+
+.buildInfo a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.buildInfo a[href*="/commit/"] {
+  font-family: var(--fontStack-monospace, ui-monospace, monospace);
+}
+
+.buildInfoSep {
+  margin: 0 6px;
+}
+
+.buildInfo a:hover,
+.buildInfo a:focus-visible {
+  text-decoration-thickness: 2px;
+}
+
+.resources {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--borderColor-muted);
+}
+
+.resourceGroup {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+}
+
+.resourceSubheading {
+  color: var(--fgColor-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0 8px 4px;
+}
+
+.resourceItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px;
+  border-radius: var(--borderRadius-medium, 6px);
+  text-decoration: none;
+  color: var(--fgColor-default);
+  transition: background-color 0.12s ease;
+}
+
+.resourceItem:hover {
+  background-color: var(--bgColor-muted);
+}
+
+.resourceExternal {
+  margin-left: 4px;
+  color: var(--fgColor-muted);
+  vertical-align: baseline;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .promptCard {
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    padding: 20px;
+  }
+
+  .promptCopy {
+    align-items: center;
+    text-align: center;
+    max-width: 680px;
+  }
+
+  .promptSummary {
+    margin: 0 auto;
+  }
+
+  .promptUpload {
+    align-self: stretch;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+/* "vs last month" delta line shown inside a stat card when a previous-period
+   report has been added. Inherits the muted statSub sizing; the tone modifiers
+   recolour it. Rising usage is "danger" (more spend) to match the forecast tool. */
+.comparisonDelta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.deltaUp {
+  color: var(--fgColor-danger, #cf222e);
+}
+
+.deltaDown {
+  color: var(--fgColor-success, #1a7f37);
+}
+
+/* =========================================================================
+   Budget Setup Guide (guidance tool)
+   ========================================================================= */
+
+/* Responsive layout: single column by default; on wide screens the request
+   flow diagram moves into a sticky right-hand column while the guidance text
+   scrolls beside it. */
+.guidanceLayout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.guidanceMain {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.guidanceAside {
+  min-width: 0;
+}
+
+@media (min-width: 1200px) {
+  .guidanceLayout {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .guidanceMain {
+    flex: 1;
+  }
+
+  .guidanceAside {
+    width: 440px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 16px;
+  }
+}
+
+/* Shared section header used by Common use cases and References so the major
+   blocks read consistently and have room to breathe. */
+.sectionHeading {
+  font-size: 18px;
+  line-height: 1.25;
+  margin: 0 0 4px;
+}
+
+.sectionLead {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fgColor-muted);
+  margin: 0 0 16px;
+}
+
+/* "Start here" hero: a prominent, success-accented callout. */
+.guidanceHero {
+  border: 1px solid var(--borderColor-success-muted, #4ac26b66);
+  border-left: 4px solid var(--fgColor-success, #1a7f37);
+  border-radius: var(--borderRadius-medium, 6px);
+  background: linear-gradient(180deg, rgba(74, 194, 107, 0.08), var(--bgColor-default));
+  padding: 20px;
+}
+
+.guidanceHeroHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.guidanceHeroIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: var(--fgColor-success, #1a7f37);
+  background: rgba(74, 194, 107, 0.15);
+}
+
+.guidanceHeroTitle {
+  font-size: 20px;
+  line-height: 1.25;
+  margin-top: 6px;
+}
+
+.guidanceHeroLead {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fgColor-muted);
+  margin: 14px 0 16px;
+}
+
+/* Numbered "do this first" steps. */
+.stepList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.stepNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fgColor-onEmphasis, #fff);
+  background: var(--fgColor-success, #1a7f37);
+}
+
+.stepBody {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* Two side-by-side "remember this" callouts. */
+.calloutGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium, 6px);
+  background: var(--bgColor-default);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.callout svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.calloutInfo {
+  border-left: 4px solid var(--fgColor-accent, #0969da);
+}
+
+.calloutInfo svg {
+  color: var(--fgColor-accent, #0969da);
+}
+
+.calloutWarn {
+  border-left: 4px solid var(--fgColor-attention, #9a6700);
+  background: var(--bgColor-attention-muted, #fff8c5);
+}
+
+.calloutWarn svg {
+  color: var(--fgColor-attention, #9a6700);
+}
+
+/* React Flow diagram card. */
+.flowCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.flowWrap {
+  position: relative;
+  width: 100%;
+  height: 560px;
+  border: 1px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium, 6px);
+  background: var(--bgColor-muted);
+  overflow: hidden;
+}
+
+.flowLegend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  font-size: 12px;
+  color: var(--fgColor-muted);
+}
+
+.legendDot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: -8px;
+  vertical-align: middle;
+}
+
+/* Flow node: a plain GitHub-style card. Decision nodes stay neutral; only
+   outcome nodes carry a subtle coloured left accent. */
+.fnode {
+  width: 172px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--borderColor-default, #d1d9e0);
+  background: var(--bgColor-default, #ffffff);
+}
+
+.fnodeTitle {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--fgColor-default);
+}
+
+.fnodeSub {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--fgColor-muted);
+  margin-top: 2px;
+}
+
+.fnode_good {
+  border-left: 3px solid var(--fgColor-success, #1a7f37);
+}
+
+.fnode_warn {
+  border-left: 3px solid var(--fgColor-attention, #9a6700);
+}
+
+.fnode_bad {
+  border-left: 3px solid var(--fgColor-danger, #cf222e);
+}
+
+/* Start node: blue accent + an inline "live" dot next to the title to signal
+   the request entry point. */
+.fnode_start {
+  border-left: 3px solid var(--fgColor-accent, #0969da);
+}
+
+.startDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: var(--fgColor-accent, #0969da);
+  animation: startPulse 1.8s ease-out infinite;
+}
+
+@keyframes startPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(9, 105, 218, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(9, 105, 218, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(9, 105, 218, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startDot {
+    animation: none;
+  }
+}
+
+/* Use-case recipe cards. */
+.useCaseGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.useCase {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--borderColor-default);
+  border-top: 3px solid var(--borderColor-default);
+  border-radius: var(--borderRadius-medium, 6px);
+  background: var(--bgColor-default);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.useCase:hover {
+  box-shadow: var(--shadow-resting-medium, 0 3px 6px rgba(31, 35, 40, 0.1));
+}
+
+.useCaseFeatured {
+  border-top-color: var(--fgColor-success, #1a7f37);
+}
+
+.useCaseHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.useCaseIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: var(--fgColor-muted);
+  background: var(--bgColor-muted);
+}
+
+.useCaseTitle {
+  font-size: 15px;
+  line-height: 1.25;
+  flex: 1;
+  min-width: 0;
+}
+
+.useCaseSituation {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fgColor-muted);
+}
+
+.useCaseSteps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.useCaseStep {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.stepGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  border-radius: 6px;
+  color: var(--fgColor-muted);
+  background: var(--bgColor-muted);
+}
+
+.useCaseNote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fgColor-muted);
+  padding-top: 2px;
+}
+
+.useCaseNote svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--fgColor-accent, #0969da);
+}
+
+/* Control pills: a subtle footer summarising which budget controls a recipe uses. */
+.useCaseFooter {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding-top: 12px;
+  border-top: 1px solid var(--borderColor-muted, #d8dee4);
+}
+
+.chipLabel {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fgColor-muted);
+  margin-right: 2px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--fgColor-muted);
+  background: var(--bgColor-muted);
+}
+
+/* Sources list. */
+.sourceList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
