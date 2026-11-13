@@ -1,0 +1,134 @@
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import type { AppEnv } from "./types.js";
+import { authMiddleware } from "./middleware/auth.js";
+import { rateLimitMiddleware } from "./middleware/rate-limit.js";
+import {
+  requestBodyLimit,
+  validateRequestMiddleware,
+} from "./middleware/validate-request.js";
+import contentRoute from "./routes/content.js";
+import screenshotRoute from "./routes/screenshot.js";
+import pdfRoute from "./routes/pdf.js";
+import markdownRoute from "./routes/markdown.js";
+import snapshotRoute from "./routes/snapshot.js";
+import scrapeRoute from "./routes/scrape.js";
+import jsonRoute from "./routes/json.js";
+import linksRoute from "./routes/links.js";
+import crawlRoute from "./routes/crawl.js";
+import a11yRoute from "./routes/a11y.js";
+import clickRoute from "./routes/click.js";
+import typeRoute from "./routes/type.js";
+import evaluateRoute from "./routes/evaluate.js";
+import interactRoute from "./routes/interact.js";
+import submitFormRoute from "./routes/submit-form.js";
+
+const app = new Hono<AppEnv>();
+
+// ---------------------------------------------------------------------------
+// Global middleware
+// ---------------------------------------------------------------------------
+
+// CORS: wildcard origin is intentional for this API-style Worker.
+// All endpoints require Bearer token auth, so unauthenticated cross-origin
+// requests are rejected regardless. Teams needing tighter CORS should
+// replace "*" with their specific origin domain.
+app.use(
+  "*",
+  cors({
+    origin: "*",
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type"],
+    exposeHeaders: [
+      "X-Cache",
+      "Retry-After",
+      "X-RateLimit-Limit",
+      "X-RateLimit-Remaining",
+    ],
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Health check (no auth)
+// ---------------------------------------------------------------------------
+
+app.get("/health", (c) => {
+  const missing: string[] = [];
+  if (!c.env.CF_ACCOUNT_ID) missing.push("CF_ACCOUNT_ID");
+  if (!c.env.CF_API_TOKEN) missing.push("CF_API_TOKEN");
+  if (!c.env.API_KEYS) missing.push("API_KEYS");
+  if (!c.env.CACHE) missing.push("CACHE");
+  if (!c.env.RATE_LIMITER) missing.push("RATE_LIMITER");
+  if (!c.env.STORAGE) missing.push("STORAGE");
+  const ready = missing.length === 0;
+  return c.json({
+    status: ready ? "ok" : "degraded",
+    ready,
+    version: "2.1.0",
+    capabilities: {
+      interact: !!c.env.BROWSER,
+    },
+    ...(ready ? {} : { missing }),
+  }, ready ? 200 : 503);
+});
+
+// ---------------------------------------------------------------------------
+// Authenticated + rate-limited routes
+// ---------------------------------------------------------------------------
+
+const API_PATHS = [
+  // Read-only routes
+  "/content/*", "/screenshot/*", "/pdf/*", "/markdown/*", "/snapshot/*",
+  "/scrape/*", "/json/*", "/links/*", "/crawl/*", "/a11y/*",
+  // Interaction routes (require BROWSER binding)
+  "/click/*", "/type/*", "/evaluate/*", "/interact/*", "/submit-form/*",
+];
+
+// Authenticate and rate-limit first, then cap the body size and validate shared
+// request options, so unauthenticated or unknown requests never have their body
+// read. Hono caches the parsed body, so route handlers can read it again.
+for (const path of API_PATHS) {
+  app.use(path, authMiddleware, rateLimitMiddleware, requestBodyLimit, validateRequestMiddleware);
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+// Read-only
+app.route("/content", contentRoute);
+app.route("/screenshot", screenshotRoute);
+app.route("/pdf", pdfRoute);
+app.route("/markdown", markdownRoute);
+app.route("/snapshot", snapshotRoute);
+app.route("/scrape", scrapeRoute);
+app.route("/json", jsonRoute);
+app.route("/links", linksRoute);
+app.route("/crawl", crawlRoute);
+app.route("/a11y", a11yRoute);
+
+// Interaction
+app.route("/click", clickRoute);
+app.route("/type", typeRoute);
+app.route("/evaluate", evaluateRoute);
+app.route("/interact", interactRoute);
+app.route("/submit-form", submitFormRoute);
+
+// ---------------------------------------------------------------------------
+// 404 fallback
+// ---------------------------------------------------------------------------
+
+app.notFound((c) => {
+  return c.json({ error: "Not found", status: 404 }, 404);
+});
+
+// ---------------------------------------------------------------------------
+// Global error handler
+// ---------------------------------------------------------------------------
+
+app.onError((err, c) => {
+  console.error("Unhandled error:", err);
+  return c.json({ error: "Internal server error", status: 500 }, 500);
+});
+
+export default app;

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.egg-info/
+dist/
+.venv/
+*.pyc
+.pymon
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Cloudflare
+.wrangler/
+.dev.vars
+.mcp.json
+wrangler.toml
+wrangler.local.toml
+wrangler.toml.*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

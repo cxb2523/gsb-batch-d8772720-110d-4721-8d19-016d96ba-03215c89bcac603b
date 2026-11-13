@@ -1,0 +1,144 @@
+import { Hono } from "hono";
+import type { AppEnv } from "../types.js";
+import { validateUrl } from "../lib/validate-url.js";
+import {
+  withBrowser,
+  BlockedNavigationError,
+  BrowserBindingUnavailable,
+  performActionAndWaitForNavigation,
+  toBaseBody,
+} from "../lib/puppeteer.js";
+import {
+  boundedInteractionErrorMessage,
+  boundedPageState,
+  InteractionOutputLimitError,
+} from "../lib/output-limit.js";
+
+const app = new Hono<AppEnv>();
+
+app.post("/", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json({ error: "Invalid JSON body", status: 400 }, 400);
+  }
+
+  if (!body.url || typeof body.url !== "string") {
+    return c.json({ error: "Missing required field: url", status: 400 }, 400);
+  }
+
+  const urlCheck = validateUrl(body.url as string);
+  if (!urlCheck.valid) {
+    return c.json({ error: urlCheck.error, status: 400 }, 400);
+  }
+
+  if (!body.fields || typeof body.fields !== "object" || Array.isArray(body.fields)) {
+    return c.json({ error: "Missing required field: fields (object mapping selector → value)", status: 400 }, 400);
+  }
+
+  const fields = body.fields as Record<string, unknown>;
+  const submitSelector = body.submit_selector;
+  if (submitSelector !== undefined && (
+    typeof submitSelector !== "string" || submitSelector.trim().length === 0
+  )) {
+    return c.json({ error: "submit_selector must be a non-empty string", status: 400 }, 400);
+  }
+
+  // Validate fields count
+  const fieldEntries = Object.entries(fields);
+  if (fieldEntries.length > 50) {
+    return c.json({ error: "fields exceeds 50 entry limit", status: 400 }, 400);
+  }
+
+  // Validate selector lengths and value types
+  for (const [selector, value] of fieldEntries) {
+    if (selector.trim().length === 0) {
+      return c.json({ error: "Field selector must be a non-empty string", status: 400 }, 400);
+    }
+    if (selector.length > 500) {
+      return c.json({ error: "Field selector exceeds 500 character limit", status: 400 }, 400);
+    }
+    if (typeof value !== "string") {
+      return c.json({ error: `Field value for "${selector}" must be a string`, status: 400 }, 400);
+    }
+    if ((value as string).length > 10_000) {
+      return c.json({ error: `Field value for "${selector}" exceeds 10000 character limit`, status: 400 }, 400);
+    }
+  }
+  if (submitSelector && submitSelector.length > 500) {
+    return c.json({ error: "Submit selector exceeds 500 character limit", status: 400 }, 400);
+  }
+
+  try {
+    const result = await withBrowser(c.env, toBaseBody(body), async ({ page }) => {
+      // Fill each field: clear then type
+      for (const [selector, value] of fieldEntries) {
+        await page.click(selector, { clickCount: 3 });
+        await page.keyboard.press("Backspace");
+        await page.type(selector, value as string);
+      }
+
+      // Submit
+      if (submitSelector) {
+        await performActionAndWaitForNavigation(page, () => page.click(submitSelector), 10_000);
+      } else {
+        const submission = await performActionAndWaitForNavigation(
+          page,
+          () =>
+            page.evaluate(
+              `(() => {
+                const form = document.querySelector("form");
+                if (!(form instanceof HTMLFormElement)) {
+                  return { ok: false, error: "No form found on page" };
+                }
+
+                if (typeof form.requestSubmit === "function") {
+                  form.requestSubmit();
+                  return { ok: true, method: "requestSubmit" };
+                }
+
+                const submitter = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+                if (submitter instanceof HTMLElement) {
+                  submitter.click();
+                  return { ok: true, method: "click" };
+                }
+
+                return { ok: false, error: "Form submission requires a submit control" };
+              })()`
+            ),
+          10_000,
+        );
+
+        if (!submission || typeof submission !== "object" || (submission as { ok?: boolean }).ok !== true) {
+          const message =
+            typeof submission === "object" &&
+            submission !== null &&
+            "error" in submission &&
+            typeof submission.error === "string"
+              ? submission.error
+              : "Form submission failed";
+          throw new Error(message);
+        }
+      }
+
+      return boundedPageState(page);
+    });
+
+    return c.json(result);
+  } catch (err) {
+    if (err instanceof BrowserBindingUnavailable) {
+      return c.json({ error: boundedInteractionErrorMessage(err, "Browser unavailable"), status: 501 }, 501);
+    }
+    if (err instanceof BlockedNavigationError) {
+      return c.json({ error: boundedInteractionErrorMessage(err, "Navigation blocked"), status: 400 }, 400);
+    }
+    if (err instanceof InteractionOutputLimitError) {
+      return c.json({ error: boundedInteractionErrorMessage(err, "Interaction output failed"), status: 502 }, 502);
+    }
+    const message = boundedInteractionErrorMessage(err, "Form submission failed");
+    return c.json({ error: message, status: 500 }, 500);
+  }
+});
+
+export default app;
