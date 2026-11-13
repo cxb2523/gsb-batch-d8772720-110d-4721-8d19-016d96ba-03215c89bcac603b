@@ -252,11 +252,16 @@ class AsyncWebScraper:
         connect_timeout: float = 3.0,
         total_timeout: float = 10.0,
         rate_limit: float = 100.0,
+        max_contact_pages: Optional[int] = None,
     ):
         self._max_concurrent = max_concurrent
         self._max_per_host = max_per_host
         self._connect_timeout = connect_timeout
         self._total_timeout = total_timeout
+        # Default to the full contact-path table; clamp negative values to zero.
+        self._max_contact_pages = (
+            len(_CONTACT_PATHS) if max_contact_pages is None else max(0, max_contact_pages)
+        )
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._rate_limiter = AsyncLimiter(rate_limit, 1)  # rate_limit req/sec
@@ -312,10 +317,20 @@ class AsyncWebScraper:
         emails.update(self._extract_mailto(html))
         emails.update(self._extract_emails(html))
 
+        # Contact-page crawl is best-effort: a failure there must never discard the
+        # tech/CMS data already extracted from the homepage or turn scrape_one into
+        # an error. Every attempted page is still recorded in contact_pages.
+        contact_pages: List[Dict[str, Any]] = []
         if not emails:
             base = f"{urlparse(resp_url).scheme}://{urlparse(resp_url).hostname}"
-            contact_emails = await self._crawl_contact_pages(session, base, domain)
-            emails.update(contact_emails)
+            try:
+                contact_emails, contact_pages = await self._crawl_contact_pages(
+                    session, base, domain
+                )
+                emails.update(contact_emails)
+            except Exception as e:  # defensive: _crawl_contact_pages also traps per page
+                logger.debug("Contact page crawl failed for %s: %s", base, e)
+        data["contact_pages"] = contact_pages
 
         emails.update(self._extract_jsonld_emails(html))
         emails.update(self._decode_obfuscated_emails(html))
@@ -400,6 +415,7 @@ class AsyncWebScraper:
             "url": url,
             "status": "unknown",
             "emails": [],
+            "contact_pages": [],
             "tech_stack": [],
             "cms_detected": None,
             "ssl_valid": None,
@@ -550,11 +566,23 @@ class AsyncWebScraper:
         session: aiohttp.ClientSession,
         base_url: str,
         domain: str,
-    ) -> Set[str]:
-        """Layer 3: Crawl common contact page paths for emails."""
-        emails: Set[str] = set()
+    ) -> Tuple[Set[str], List[Dict[str, Any]]]:
+        """Layer 3: Crawl common contact page paths for emails.
 
-        for path in _CONTACT_PATHS:
+        Returns ``(emails, contact_pages)`` where ``contact_pages`` is one record
+        per attempted path in actual attempt order. Each record has ``path``,
+        ``status`` (e.g. ``ok``, ``http_404``, ``timeout``, ``connection_failed``,
+        ``error``) and ``emails_found`` (number of emails extracted on that page).
+        Records are appended before each request, so a page that was only reached
+        after a domain rate-limit wait — or whose request itself raised — is still
+        logged. Crawling stops after the first page that yields an email.
+        """
+        emails: Set[str] = set()
+        contact_pages: List[Dict[str, Any]] = []
+
+        for path in _CONTACT_PATHS[: self._max_contact_pages]:
+            record: Dict[str, Any] = {"path": path, "status": "error", "emails_found": 0}
+            contact_pages.append(record)
             try:
                 await self._rate_limiter.acquire()
                 await self._domain_rate_limit(domain)
@@ -564,17 +592,31 @@ class AsyncWebScraper:
                     allow_redirects=True,
                     max_redirects=3,
                 ) as resp:
-                    if resp.status == 200:
-                        body = await resp.content.read(_MAX_BODY_SIZE)
-                        html = body.decode("utf-8", errors="replace")
-                        emails.update(self._extract_mailto(html))
-                        emails.update(self._extract_emails(html))
-                        if emails:
-                            break  # Found emails, stop crawling
-            except Exception:
-                continue
+                    if resp.status != 200:
+                        record["status"] = f"http_{resp.status}"
+                        continue
 
-        return emails
+                    body = await resp.content.read(_MAX_BODY_SIZE)
+                    html = body.decode("utf-8", errors="replace")
+                    page_emails: Set[str] = set()
+                    page_emails.update(self._extract_mailto(html))
+                    page_emails.update(self._extract_emails(html))
+                    record["status"] = "ok"
+                    record["emails_found"] = len(page_emails)
+                    emails.update(page_emails)
+                    if emails:
+                        break  # Found emails, stop crawling
+            except asyncio.TimeoutError:
+                record["status"] = "timeout"
+            except aiohttp.ClientSSLError:
+                record["status"] = "connection_failed"
+            except aiohttp.ClientConnectorError:
+                record["status"] = "connection_failed"
+            except Exception as e:
+                logger.debug("Contact page %s failed: %s", urljoin(base_url, path), e)
+                record["status"] = "error"
+
+        return emails, contact_pages
 
     def _is_valid_email(self, email: str) -> bool:
         """Validate an extracted email address."""

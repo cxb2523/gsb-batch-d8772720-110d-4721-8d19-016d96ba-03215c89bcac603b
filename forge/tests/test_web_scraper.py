@@ -1,8 +1,12 @@
 """Tests for forge.tools.web_scraper (no network calls)."""
 
+import asyncio
+
+import aiohttp
 import pytest
 
 from forge.tools.web_scraper import (
+    _CONTACT_PATHS,
     AsyncWebScraper,
     WebScrapeTool,
     decode_cf_email,
@@ -393,3 +397,308 @@ class TestRankEmails:
 
     def test_empty(self):
         assert rank_emails([], "biz.com") == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: contact-page crawl recording (contact_pages) — fake session, no network
+# ---------------------------------------------------------------------------
+
+
+class _FakeContent:
+    """Minimal stand-in for an aiohttp response body stream."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def read(self, size: int = -1) -> bytes:
+        return self._body[:size] if size and size > 0 else self._body
+
+
+class _FakeResponse:
+    """Minimal stand-in for an aiohttp.ClientResponse supporting async context."""
+
+    def __init__(
+        self, status: int = 200, html: str = "", url: str = "https://biz.test/", headers=None
+    ):
+        self.status = status
+        self.url = url
+        self.headers = headers or {}
+        self.content = _FakeContent(html.encode("utf-8"))
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def _connection_failed_error() -> aiohttp.ClientConnectorError:
+    # aiohttp's ClientConnectorError requires (connection_key, os_error).
+    return aiohttp.ClientConnectorError(None, OSError("simulated connection refusal"))
+
+
+class FakeSession:
+    """Route table driven fake aiohttp session; records every path requested."""
+
+    def __init__(self, routes):
+        # routes maps path -> {"status": int, "html": str} OR an Exception instance
+        self._routes = routes
+        self.requested_paths = []
+        self.closed = False
+
+    def get(self, url, **kwargs):
+        from urllib.parse import urlparse
+
+        path = urlparse(url).path or "/"
+        self.requested_paths.append(path)
+        route = self._routes.get(path)
+        if route is None:
+            return _FakeResponse(status=404, url=url)
+        if isinstance(route, Exception):
+            return _RaisingContext(route)
+        return _FakeResponse(
+            status=route.get("status", 200),
+            html=route.get("html", ""),
+            url=url,
+            headers=route.get("headers", {}),
+        )
+
+
+class _RaisingContext:
+    """Async context manager whose __aenter__ raises, mimicking session.get failure."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def __aenter__(self):
+        raise self._exc
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+HOME_HTML_NO_EMAIL = """
+<!DOCTYPE html>
+<html>
+  <head><title>Acme Business</title></head>
+  <body>
+    <h1>Acme Business</h1>
+    <p>Welcome to our site. No contact details here.</p>
+  </body>
+</html>
+"""
+
+# Tech/CMS evidence delivered via header so the homepage text contains no token
+# that the broad email regex could misread as an email address.
+HOME_HEADERS = {"X-Powered-By": "WordPress/6.4"}
+
+HOME_HTML_WITH_EMAIL = (
+    '<html><body><a href="mailto:home@biz.test">Email us at home</a></body></html>'
+)
+
+CONTACT_HTML_WITH_MAILTO = (
+    '<html><body><h1>Contact</h1>'
+    '<a href="mailto:reach@biz.test">reach us</a></body></html>'
+)
+
+
+@pytest.fixture
+def patched_scraper():
+    """Scraper whose per-domain wait is removed so tests stay fast and deterministic."""
+    scraper = AsyncWebScraper()
+
+    async def _no_domain_wait(domain: str) -> None:
+        return None
+
+    scraper._domain_rate_limit = _no_domain_wait  # type: ignore[method-assign]
+    return scraper
+
+
+class TestMaxContactPages:
+    def test_default_uses_full_path_table(self):
+        scraper = AsyncWebScraper()
+        assert scraper._max_contact_pages == len(_CONTACT_PATHS)
+
+    def test_explicit_value_is_stored(self):
+        scraper = AsyncWebScraper(max_contact_pages=3)
+        assert scraper._max_contact_pages == 3
+
+    def test_negative_clamped_to_zero(self):
+        assert AsyncWebScraper(max_contact_pages=-2)._max_contact_pages == 0
+
+
+class TestContactPageRecording:
+    @pytest.mark.asyncio
+    async def test_timeout_404_then_email_records_all_three_in_order(self, patched_scraper):
+        scraper = patched_scraper
+        session = FakeSession(
+            {
+                "/": {
+                    "status": 200,
+                    "html": HOME_HTML_NO_EMAIL,
+                    "headers": HOME_HEADERS,
+                },
+                "/contact": asyncio.TimeoutError(),
+                "/contact-us": {"status": 404, "html": "not found"},
+                "/about": {"status": 200, "html": CONTACT_HTML_WITH_MAILTO},
+            }
+        )
+        # Inject the fake session so _get_session never builds a real one.
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        # Homepage extraction survived the contact-page hiccups.
+        assert result["status"] == "ok"
+        assert "wordpress" in result["tech_stack"]
+        assert result["cms_detected"] == "wordpress"
+        assert result["ssl_valid"] is True
+        assert result["status_code"] == 200
+
+        contact_pages = result["contact_pages"]
+        assert [page["path"] for page in contact_pages] == [
+            "/contact",
+            "/contact-us",
+            "/about",
+        ]
+        assert contact_pages[0]["status"] == "timeout"
+        assert contact_pages[0]["emails_found"] == 0
+        assert contact_pages[1]["status"] == "http_404"
+        assert contact_pages[1]["emails_found"] == 0
+        assert contact_pages[2]["status"] == "ok"
+        assert contact_pages[2]["emails_found"] == 1
+
+        # Stop-on-first-email: the fourth path was never attempted.
+        assert len(contact_pages) == 3
+        assert _CONTACT_PATHS[3] not in session.requested_paths
+        assert "reach@biz.test" in result["emails"]
+
+    @pytest.mark.asyncio
+    async def test_homepage_email_skips_contact_pages_entirely(self, patched_scraper):
+        scraper = patched_scraper
+        session = FakeSession(
+            {
+                "/": {"status": 200, "html": HOME_HTML_WITH_EMAIL},
+                "/contact": {"status": 200, "html": CONTACT_HTML_WITH_MAILTO},
+            }
+        )
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        assert result["contact_pages"] == []
+        # Only the homepage was requested; no contact path was touched.
+        assert session.requested_paths == ["/"]
+        assert "home@biz.test" in result["emails"]
+
+    @pytest.mark.asyncio
+    async def test_max_contact_pages_one_limits_attempts(self):
+        scraper = AsyncWebScraper(max_contact_pages=1)
+
+        async def _no_domain_wait(domain: str) -> None:
+            return None
+
+        scraper._domain_rate_limit = _no_domain_wait  # type: ignore[method-assign]
+        session = FakeSession(
+            {
+                "/": {"status": 200, "html": HOME_HTML_NO_EMAIL},
+                "/contact": {"status": 404, "html": "nope"},
+                "/contact-us": {"status": 200, "html": CONTACT_HTML_WITH_MAILTO},
+            }
+        )
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        assert len(result["contact_pages"]) == 1
+        assert result["contact_pages"][0]["path"] == "/contact"
+        assert result["contact_pages"][0]["status"] == "http_404"
+        assert session.requested_paths == ["/", "/contact"]
+        # Cap reached before the page carrying the email, so none are returned.
+        assert result["emails"] == []
+
+    @pytest.mark.asyncio
+    async def test_connection_failed_is_classified_and_recorded(self, patched_scraper):
+        scraper = patched_scraper
+        session = FakeSession(
+            {
+                "/": {"status": 200, "html": HOME_HTML_NO_EMAIL},
+                "/contact": _connection_failed_error(),
+                "/contact-us": {"status": 500, "html": "boom"},
+            }
+        )
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        pages = result["contact_pages"]
+        assert pages[0]["path"] == "/contact"
+        assert pages[0]["status"] == "connection_failed"
+        assert pages[1]["path"] == "/contact-us"
+        assert pages[1]["status"] == "http_500"
+        # Whole scrape still succeeds on the homepage.
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_recorded_as_error_and_does_not_break_scrape(
+        self, patched_scraper
+    ):
+        scraper = patched_scraper
+        session = FakeSession(
+            {
+                "/": {"status": 200, "html": HOME_HTML_NO_EMAIL},
+                "/contact": RuntimeError("something unexpected"),
+                "/contact-us": {"status": 200, "html": CONTACT_HTML_WITH_MAILTO},
+            }
+        )
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        pages = result["contact_pages"]
+        assert pages[0]["status"] == "error"
+        assert pages[0]["emails_found"] == 0
+        # Crawl continued on the next path and still found the email.
+        assert pages[1]["status"] == "ok"
+        assert "reach@biz.test" in result["emails"]
+        assert result["status"] == "ok"
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_all_paths_fail_returns_empty_emails_but_full_trail(self, patched_scraper):
+        scraper = patched_scraper
+        # Every contact path 404s; none of the 16 paths carries an email.
+        session = FakeSession({"/": {"status": 200, "html": HOME_HTML_NO_EMAIL}})
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        assert len(result["contact_pages"]) == len(_CONTACT_PATHS)
+        assert all(page["status"] == "http_404" for page in result["contact_pages"])
+        assert result["emails"] == []
+        # The site genuinely had no email — distinguishable from a broken scrape.
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_emails_found_counts_mailto_and_regex_emails_on_page(
+        self, patched_scraper
+    ):
+        scraper = patched_scraper
+        html = (
+            '<a href="mailto:a@biz.test">a</a>'
+            '<p>also reach b@biz.test anytime</p>'
+        )
+        session = FakeSession(
+            {
+                "/": {"status": 200, "html": HOME_HTML_NO_EMAIL},
+                "/contact": {"status": 200, "html": html},
+            }
+        )
+        scraper._session = session
+
+        result = await scraper.scrape_one("https://biz.test")
+
+        page = result["contact_pages"][0]
+        assert page["status"] == "ok"
+        assert page["emails_found"] == 2
+        assert set(result["emails"]) == {"a@biz.test", "b@biz.test"}
