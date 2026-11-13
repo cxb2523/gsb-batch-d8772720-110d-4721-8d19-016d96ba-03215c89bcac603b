@@ -28,6 +28,7 @@ server/            Node.js web server + data pipeline (the main codebase)
   index.js         Express app; renders the current theme from data/data.json
   data.mjs         Node data pipeline: fetches the latest block, rates, quotes,
                    fees, lightning, mempool blocks and writes data/data.json
+                   (including a collection summary of every request outcome)
   cron.sh          Entrypoint for cron: runs data.mjs, then screenshots the page
                    with headless firefox and converts with pngcrush
   helpers.mjs      ESM helpers (writeJSON, currency, sats2BTC) shared w/ views
@@ -52,9 +53,14 @@ README.md          Full jailbreak + setup walkthrough
   local Mempool instance when configured (`MEMPOOL_BASE_URL`), falling back to
   the public mempool.space otherwise. The block height comes from the Mempool
   API (`GET /api/v1/blocks/`); the newest block is stored in full.
+  Every request records its outcome (`success`, `http_error`, `timeout`,
+  `response_too_large`, `json_parse_error`, `network_error`) in
+  `data.json`'s `collectionSummary` (`startedAt`, `endpoints`,
+  `successCount`, `failureCount`).
 - `server/cron.sh` is meant to be scheduled (e.g. every 5 minutes). It runs
-  `data.mjs`, then captures `http://localhost:$DISPLAY_SERVER_PORT` with headless
-  Firefox at 600x800 and converts the PNG to greyscale with `pngcrush`.
+  `data.mjs`, prints the failed interfaces from `collectionSummary`, then
+  captures `http://localhost:$DISPLAY_SERVER_PORT` with headless Firefox at
+  600x800 and converts the PNG to greyscale with `pngcrush`.
 
 ## Commands
 
@@ -64,10 +70,13 @@ npm install
 cp .env.sample .env     # adapt settings
 npm start               # node index.js  (port 3030)
 ./cron.sh               # refresh data + regenerate display.png
+npm test                # node --test test/*.test.cjs
 ```
 
-There is no test suite and no lint/build tooling — verification is manual (view
-`http://localhost:3030/display.png` or a theme route in a browser).
+`npm test` runs the Node test runner over `server/test`: the cron pipeline
+tests use fake `node`/`firefox-esr`/`pngcrush` commands, and the collection
+summary tests run `data.mjs`/`cron.sh` against a local fake HTTP server, so
+nothing touches the public network.
 
 ## Environment configuration (`server/.env`)
 
@@ -78,6 +87,7 @@ Key variables (see `server/.env.sample` for all with comments):
 | `DISPLAY_SERVER_PORT`             | HTTP port (default `3030`)                                         |
 | `DISPLAY_THEME`                   | Default theme: `plain`, `onchain`, `lightning`, `mining`, `random` |
 | `MEMPOOL_BASE_URL`                | Use a local Mempool instance instead of mempool.space              |
+| `DATA_TIMEOUT_MS`                 | Per-request timeout for the data pipeline (default `15000`)        |
 | `DISPLAY_RATE1` / `DISPLAY_RATE2` | Fiat currencies to show (USD, EUR, GBP, CHF, CAD, AUD, JPY)        |
 
 ## Conventions
@@ -86,8 +96,9 @@ Key variables (see `server/.env.sample` for all with comments):
   templates, dotenv for config. CJS (`index.js`) and ESM (`helpers.mjs`) coexist,
   so `index.js` requires `helpers.mjs` via `require('./helpers.mjs')` — keep
   matching the existing mix where adding files.
-- **Data:** `data.mjs` is ESM and uses the global `fetch` to pull the JSON
-  from the Mempool and Bitcoin Quotes APIs and writes `data/data.json`.
+- **Data:** `data.mjs` is ESM and uses Node's `http`/`https` request API (with
+  a timeout and a response-size cap) to pull the JSON from the Mempool and
+  Bitcoin Quotes APIs and writes `data/data.json`.
 - **Shell:** server scripts use bash (`#!/bin/bash`); Kindle scripts are POSIX sh
   (`#!/bin/sh`) because they run on the e-reader.
 - All paths referenced in `index.js` (`data/data.json`, `public`, `data/display.png`,

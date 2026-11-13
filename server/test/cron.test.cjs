@@ -36,8 +36,7 @@ const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 const png = (label) => Buffer.concat([PNG_HEADER, Buffer.from(label)])
 const DATA_JSON = JSON.stringify({ block: { height: 875001 } })
 
-const nodeFake = () => `#!${process.execPath}
-const { spawnSync } = require('child_process')
+const nodeFake = () => `const { spawnSync } = require('child_process')
 const { writeFileSync, appendFileSync } = require('fs')
 const args = process.argv.slice(2)
 if (process.env.TEST_LOG) appendFileSync(process.env.TEST_LOG, 'node ' + JSON.stringify(args) + '\\n')
@@ -57,8 +56,7 @@ if (args[0] === '-e') {
 process.exit(0)
 `
 
-const browserFake = () => `#!${process.execPath}
-const { readFileSync, appendFileSync, writeFileSync } = require('fs')
+const browserFake = () => `const { readFileSync, appendFileSync, writeFileSync } = require('fs')
 const args = process.argv.slice(2)
 if (process.env.TEST_LOG) appendFileSync(process.env.TEST_LOG, 'firefox-esr ' + JSON.stringify(args) + '\\n')
 if (process.env.BROWSER_FAIL) {
@@ -66,11 +64,7 @@ if (process.env.BROWSER_FAIL) {
   process.exit(19)
 }
 if (process.env.BROWSER_HANG_MS) {
-  process.on('SIGTERM', () => {
-    if (process.env.TEST_LOG) appendFileSync(process.env.TEST_LOG, 'browser killed\\n')
-    process.exit(99)
-  })
-  // timer-based wait so the SIGTERM handler can actually run
+  // timer-based wait so the shim's TERM trap can actually run
   const until = Date.now() + Number(process.env.BROWSER_HANG_MS)
   const tick = () => {
     if (Date.now() < until) setTimeout(tick, 25)
@@ -91,8 +85,7 @@ if (process.env.BROWSER_COPY) {
 }
 `
 
-const converterFake = () => `#!${process.execPath}
-const { appendFileSync, writeFileSync } = require('fs')
+const converterFake = () => `const { appendFileSync, writeFileSync } = require('fs')
 const args = process.argv.slice(2)
 if (process.env.TEST_LOG) appendFileSync(process.env.TEST_LOG, 'pngcrush ' + JSON.stringify(args) + '\\n')
 const target = args[args.length - 1]
@@ -106,8 +99,7 @@ if (mode === 'invalid') {
 writeFileSync(target, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('fresh gray png')]))
 `
 
-const killallFake = () => `#!${process.execPath}
-const { appendFileSync } = require('fs')
+const killallFake = () => `const { appendFileSync } = require('fs')
 const args = process.argv.slice(1)
 if (process.env.TEST_LOG) appendFileSync(process.env.TEST_LOG, 'killall ' + JSON.stringify(args) + '\\n')
 process.exit(0)
@@ -118,6 +110,25 @@ const FAKES = {
   'firefox-esr': browserFake,
   pngcrush: converterFake,
   killall: killallFake,
+}
+
+// A `#!` line cannot carry a Windows path to node.exe (it contains spaces), so
+// the fakes are started through a small sh shim that execs node explicitly.
+// The browser shim stays in the foreground and traps SIGTERM itself, because
+// Windows cannot deliver a POSIX signal to the node child.
+const shim = (parent, tool) => {
+  const node = process.execPath.replace(/\\/g, '/')
+  const script = `${join(parent, tool + '.cjs')}`
+  const entry = `exec "${node}" "${script}" "$@"`
+  if (tool !== 'firefox-esr') return `#!/bin/sh\n${entry}\n`
+  return `#!/bin/sh
+"${node}" "${script}" "$@" &
+child=$!
+trap 'if [ -n "$TEST_LOG" ]; then echo "browser killed" >> "$TEST_LOG"; fi; kill -9 "$child" 2>/dev/null; exit 99' TERM
+wait "$child"
+status=$?
+exit $status
+`
 }
 
 function fixture(name = 'server') {
@@ -133,7 +144,8 @@ function fixture(name = 'server') {
   writeFileSync(join(dir, 'data', 'display.png'), 'previous display')
   writeFileSync(join(dir, 'data', 'screenshot.png'), 'previous screenshot')
   for (const [tool, fake] of Object.entries(FAKES)) {
-    writeFileSync(join(bin, tool), fake(), { mode: 0o755 })
+    writeFileSync(join(parent, tool + '.cjs'), fake())
+    writeFileSync(join(bin, tool), shim(parent, tool), { mode: 0o755 })
   }
   return { parent, dir, bin, log: join(parent, 'tools.log') }
 }
@@ -156,7 +168,7 @@ function cronEnv(f, env = {}) {
 }
 
 function runCron(f, env = {}, spawnTimeoutMs = 30000) {
-  const result = spawnSync(join(f.dir, 'cron.sh'), [], {
+  const result = spawnSync('bash', [join(f.dir, 'cron.sh')], {
     ...cronEnv(f, env),
     encoding: 'utf8',
     timeout: spawnTimeoutMs,
@@ -295,7 +307,10 @@ const { once } = require('node:events')
 
 function spawnCron(f, env = {}) {
   // stdio is ignored so orphaned children cannot keep the streams open
-  return spawn(join(f.dir, 'cron.sh'), [], { ...cronEnv(f, env), stdio: 'ignore' })
+  return spawn('bash', [join(f.dir, 'cron.sh')], {
+    ...cronEnv(f, env),
+    stdio: 'ignore',
+  })
 }
 
 test('a hung browser is killed after FIREFOX_TIMEOUT_SECONDS', () => {
@@ -311,7 +326,19 @@ test('a hung browser is killed after FIREFOX_TIMEOUT_SECONDS', () => {
   assert.deepEqual(leftovers, [])
 })
 
-test('a run is skipped while another update is still in progress', async () => {
+// flock-based serialization only exists where flock is installed; the test
+// below skips otherwise, matching cron.sh's own feature check
+const HAS_FLOCK = (() => {
+  const { execFileSync } = require('node:child_process')
+  try {
+    execFileSync('which', ['flock'], { encoding: 'utf8' })
+    return true
+  } catch {
+    return false
+  }
+})()
+
+test('a run is skipped while another update is still in progress', { skip: !HAS_FLOCK && 'flock not installed' }, async () => {
   const f = fixture()
   const a = spawnCron(f, { BROWSER_HANG_MS: '60000', FIREFOX_TIMEOUT_SECONDS: '10' })
   const deadline = Date.now() + 10000

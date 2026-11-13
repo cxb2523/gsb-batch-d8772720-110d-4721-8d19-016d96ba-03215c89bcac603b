@@ -42,40 +42,77 @@ const isLocalUrl = (url) => {
 const insecure = isLocalUrl(mempoolBase)
 
 const MAX_BYTES = 5 * 1024 * 1024 // safety cap on response size
-const TIMEOUT_MS = 15000
+const configuredTimeout = Number(process.env.DATA_TIMEOUT_MS)
+const TIMEOUT_MS =
+  Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout
+    : 15000
 
-const get = (url, insecure = false) =>
-  new Promise((resolve) => {
+// Every request records how it ended. The collection summary written to
+// data/data.json is built from these records, so operators can tell which
+// interfaces were missing in a round instead of only seeing null fields.
+// Outcomes: success, http_error (non-2xx), timeout, response_too_large,
+// json_parse_error, network_error.
+const requests = []
+
+const get = (name, url, insecure = false) => {
+  // reserve the slot up front so the summary keeps the call order, not the
+  // (possibly very different) order in which the responses arrive
+  const record = { name, outcome: 'pending' }
+  requests.push(record)
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (outcome, value, status) => {
+      if (settled) return
+      settled = true
+      record.outcome = outcome
+      if (Number.isFinite(status)) record.status = status
+      resolve(value ?? null)
+    }
+
     const mod = url.startsWith('https:') ? httpsRequest : httpRequest
-    const req = mod(url, { rejectUnauthorized: !insecure }, (res) => {
-      const chunks = []
-      let size = 0
-      res.on('data', (chunk) => {
-        size += chunk.length
-        if (size > MAX_BYTES) {
-          resolve(null)
-          return res.destroy()
-        }
-        chunks.push(chunk)
+    let req
+    try {
+      req = mod(url, { rejectUnauthorized: !insecure }, (res) => {
+        const status = res.statusCode
+        const chunks = []
+        let size = 0
+        res.on('data', (chunk) => {
+          size += chunk.length
+          if (size > MAX_BYTES) {
+            finish('response_too_large', null, status)
+            return res.destroy()
+          }
+          chunks.push(chunk)
+        })
+        res.on('error', () => finish('network_error', null, status))
+        res.on('end', () => {
+          if (status < 200 || status >= 300) {
+            return finish('http_error', null, status)
+          }
+          try {
+            finish('success', JSON.parse(Buffer.concat(chunks).toString()), status)
+          } catch {
+            finish('json_parse_error', null, status)
+          }
+        })
       })
-      res.on('error', () => resolve(null))
-      res.on('end', () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) return resolve(null)
-        try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString()))
-        } catch {
-          resolve(null)
-        }
-      })
-    })
+    } catch {
+      finish('network_error')
+      return
+    }
     req.setTimeout(TIMEOUT_MS, () => {
-      resolve(null)
+      finish('timeout')
       req.destroy()
     })
-    req.on('error', () => resolve(null))
+    req.on('error', () => finish('network_error'))
     req.end()
   })
-const mempool = (path) => get(`${mempoolBase}/api/v1/${path}`, insecure)
+}
+const mempool = (path) => get(path, `${mempoolBase}/api/v1/${path}`, insecure)
+const quoteUrl =
+  process.env.BITCOIN_QUOTES_URL || 'https://www.bitcoin-quotes.com/quotes/random.json'
 
 const now = new Date()
 const date =
@@ -96,6 +133,7 @@ const wantsOnchain = isRandomTheme || ['onchain'].includes(theme)
 const wantsMining = isRandomTheme || ['mining'].includes(theme)
 const wantsQuote = isRandomTheme || ['plain'].includes(theme)
 
+const startedAt = new Date().toISOString()
 const [
   block,
   prices,
@@ -108,6 +146,7 @@ const [
   lightningCountries,
   quote,
 ] = await Promise.all([
+  // the block height always comes from the first record of /blocks
   mempool('blocks').then((blocks) => blocks?.[0] ?? null),
   mempool('prices'),
   // /fees/precise exists only on newer Mempool versions; older ones only
@@ -121,9 +160,7 @@ const [
   wantsMining ? mempool('difficulty-adjustment') : Promise.resolve(null),
   wantsLn ? mempool('lightning/statistics/latest') : Promise.resolve(null),
   wantsLn ? mempool('lightning/nodes/countries') : Promise.resolve(null),
-  wantsQuote
-    ? get('https://www.bitcoin-quotes.com/quotes/random.json')
-    : Promise.resolve(null),
+  wantsQuote ? get('quote', quoteUrl) : Promise.resolve(null),
 ])
 
 const rateOf = (code) => {
@@ -132,6 +169,14 @@ const rateOf = (code) => {
 }
 
 const rates = [DISPLAY_RATE1, DISPLAY_RATE2].filter(Boolean).map(rateOf)
+
+const failed = requests.filter((r) => r.outcome !== 'success')
+const summary = {
+  startedAt,
+  endpoints: requests,
+  successCount: requests.length - failed.length,
+  failureCount: failed.length,
+}
 
 const data = {
   date,
@@ -145,6 +190,7 @@ const data = {
   lightning,
   lightningCountries: lightningCountries?.slice(0, 3),
   pools: pools?.pools.slice(0, 5),
+  collectionSummary: summary,
 }
 
 writeJSON('data/data', data)

@@ -82,6 +82,15 @@ in progress makes the next run skip instead of racing it. The headless Firefox
 call is capped by `FIREFOX_TIMEOUT_SECONDS` (default 120). Failed runs exit
 nonzero and keep the previously generated `display.png`.
 
+Every `cron.sh` run that produces data prints a collection summary line, e.g.
+`Collection failures: 2 - prices (timeout), mining/pools/1w (http_error 500)`.
+The same per-interface outcomes (`success`, `http_error`, `timeout`,
+`response_too_large`, `json_parse_error`, `network_error`), the round's start
+time and the success/failure counts are stored in `data/data.json` under
+`collectionSummary`, so a partial outage is visible instead of only showing up
+as empty fields. A round without a block height still aborts before rendering
+and keeps the previous image.
+
 ### Docker (optional)
 
 The repository ships a [Dockerfile](server/Dockerfile) that bundles the server,

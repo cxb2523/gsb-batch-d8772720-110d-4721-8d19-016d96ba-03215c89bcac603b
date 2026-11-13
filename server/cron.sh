@@ -34,6 +34,36 @@ fi
 # generate data
 node data.mjs || { echo "Data update failed - keeping previous display" >&2; exit 1; }
 
+# report which interfaces failed this round (data.mjs records the outcome of
+# every request in collectionSummary, so a partial outage is visible even
+# though the page still renders with null fields)
+node -e '
+  const fs = require("fs")
+  const log = (line) => process.stdout.write(line + "\n")
+  try {
+    const summary = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+      ?.collectionSummary
+    if (!summary) {
+      log("Collection failures: unknown - no collection summary")
+      process.exit(0)
+    }
+    const failed = (summary.endpoints || []).filter(
+      (entry) => entry.outcome !== "success",
+    )
+    const count = Number.isFinite(summary.failureCount)
+      ? summary.failureCount
+      : failed.length
+    const names = failed
+      .map((entry) => `${entry.name} (${entry.outcome}${Number.isFinite(entry.status) ? ` ${entry.status}` : ""})`)
+      .join(", ")
+    log(
+      `Collection failures: ${count} - ${names || "all interfaces succeeded"}`,
+    )
+  } catch {
+    log("Collection failures: unknown - no collection summary")
+  }
+' "$json"
+
 # read the block height from the generated data: a missing or invalid block
 # means the data pipeline is broken, so don't render from stale data
 height=$(node -e '
