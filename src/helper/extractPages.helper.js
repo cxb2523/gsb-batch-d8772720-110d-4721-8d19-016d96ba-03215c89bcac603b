@@ -37,6 +37,27 @@ import { fetchWithMirror } from "./mirror.helper.js";
  *   const $page2 = await extractPages("/filter?keyword=one-piece", 2);
  */
 const extractPages = async (url, page = 1) => {
+  const { $ } = await extractPagesWithOutcome(url, page);
+  return $;
+};
+
+// ---- FEATURE: Paginated fetcher that also returns the collection outcome ----
+/**
+ * Same resilient fetch as `extractPages`, but additionally returns the
+ * verifiable collection outcome produced by `fetchWithMirror`. The requested
+ * page number is stamped onto the outcome so a failed multi-page scrape can
+ * name the exact page that upstream rejected (e.g. `failedPage: 3`), and the
+ * same stamp is attached to a thrown error's `error.collection`.
+ *
+ * @param {string} url - Base URL path to fetch
+ * @param {number} [page=1] - Page number to fetch (1-indexed)
+ * @returns {Promise<{$: CheerioAPI, collection: object}>}
+ *
+ * @example
+ *   const { $, collection } = await extractPagesWithOutcome(path, 3);
+ *   // collection.failedPage === 3 when page 3 is rejected upstream
+ */
+const extractPagesWithOutcome = async (url, page = 1) => {
   try {
     // NOTE: Extract path from full URL if needed (e.g., "https://anikototv.to/filter" -> "/filter")
     let path = url;
@@ -50,16 +71,22 @@ const extractPages = async (url, page = 1) => {
         if (match) path = match[1];
       }
     }
-    
+
     const separator = path.includes("?") ? "&" : "?";
     const fullPath = page > 1 ? `${path}${separator}page=${page}` : path;
-    const { data } = await fetchWithMirror(fullPath);
-    const $ = cheerio.load(data);
-    return $;
+    const result = await fetchWithMirror(fullPath);
+    const $ = cheerio.load(result.data);
+    const collection = { ...result.collection, page, failedPage: null };
+    return { $, collection };
   } catch (error) {
+    // NOTE: Stamp the page that failed onto the outcome carried by the error
+    if (error.collection) {
+      error.collection.page = page;
+      error.collection.failedPage = page;
+    }
     throw error;
   }
 };
 
-export { extractPages };
+export { extractPages, extractPagesWithOutcome };
 // ══════════════════════════════════════════════════════════════ END: extractPages.helper.js

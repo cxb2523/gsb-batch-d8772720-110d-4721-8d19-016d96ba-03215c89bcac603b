@@ -131,12 +131,16 @@ async function fetchViaFlareSolverr(url, options = {}) {
  * Fetch a URL with automatic proxy fallback when direct requests fail.
  * Tries direct first, then falls back to configured proxies.
  *
+ * The resolved value includes an `attempts` array naming every channel that
+ * was actually tried, in order (e.g. ["direct", "scraperapi", "direct-retry"])
+ * so upstream callers can report the real proxy chain instead of guessing.
+ *
  * @param {string} url - Target URL
  * @param {Object} options - Request options
  * @param {Object} options.requestHeaders - Custom headers for direct request
  * @param {number} options.timeout - Request timeout (default: 15000ms)
  * @param {string} options.returnType - Response type: "text" or "json"
- * @returns {Promise<{data: string, proxy: string}>}
+ * @returns {Promise<{data: string, proxy: string, attempts: string[]}>}
  */
 async function fetchWithProxy(url, options = {}) {
   const {
@@ -145,8 +149,12 @@ async function fetchWithProxy(url, options = {}) {
     returnType = "text",
   } = options;
 
+  // NOTE: Appended in actual attempt order — the audit trail of the proxy chain
+  const attempts = [];
+
   // 1. Try direct request first
   try {
+    attempts.push("direct");
     const response = await axios.get(url, {
       headers: requestHeaders,
       timeout,
@@ -163,7 +171,7 @@ async function fetchWithProxy(url, options = {}) {
         throw new Error("Cloudflare challenge detected");
       }
 
-      return { data, proxy: "direct" };
+      return { data, proxy: "direct", attempts };
     }
   } catch (error) {
     // If ScraperAPI or FlareSolverr configured, try them
@@ -176,7 +184,9 @@ async function fetchWithProxy(url, options = {}) {
   if (SCRAPER_API_KEY) {
     try {
       console.log(`[PROXY] Trying ScraperAPI for: ${url}`);
-      return await fetchViaScraperApi(url, { timeout, returnType });
+      attempts.push("scraperapi");
+      const result = await fetchViaScraperApi(url, { timeout, returnType });
+      return { ...result, attempts };
     } catch (error) {
       console.log(`[PROXY] ScraperAPI failed: ${error.message}`);
     }
@@ -186,7 +196,9 @@ async function fetchWithProxy(url, options = {}) {
   if (FLARESOLVERR_URL) {
     try {
       console.log(`[PROXY] Trying FlareSolverr for: ${url}`);
-      return await fetchViaFlareSolverr(url, { timeout, returnType });
+      attempts.push("flaresolverr");
+      const result = await fetchViaFlareSolverr(url, { timeout, returnType });
+      return { ...result, attempts };
     } catch (error) {
       console.log(`[PROXY] FlareSolverr failed: ${error.message}`);
     }
@@ -194,13 +206,14 @@ async function fetchWithProxy(url, options = {}) {
 
   // 4. All methods failed — try direct one more time with higher timeout
   try {
+    attempts.push("direct-retry");
     const response = await axios.get(url, {
       headers: requestHeaders,
       timeout: timeout * 2,
       responseType: returnType === "text" ? "text" : "json",
     });
 
-    return { data: response.data, proxy: "direct-retry" };
+    return { data: response.data, proxy: "direct-retry", attempts };
   } catch (error) {
     throw new Error(`All fetch methods failed for ${url}: ${error.message}`);
   }

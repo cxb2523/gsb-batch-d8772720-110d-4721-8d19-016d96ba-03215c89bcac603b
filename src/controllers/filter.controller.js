@@ -19,6 +19,11 @@
 import { extractFilter } from "../extractors/filter.extractor.js";
 import { getCache, setCache, TTL } from "../helper/cache.helper.js";
 import { addPaginationMeta } from "../helper/pagination.helper.js";
+import {
+  buildCollectionOutcome,
+  buildCachedCollectionOutcome,
+  extractCollection,
+} from "../helper/collectionOutcome.helper.js";
 
 // ══════════════════════════════════════════════════════════════
 // CONTROLLER: FILTER
@@ -28,6 +33,11 @@ import { addPaginationMeta } from "../helper/pagination.helper.js";
 /**
  * Handles GET /api/filter requests. Returns filtered anime list
  * based on provided query parameters.
+ *
+ * Every response (including cache hits) carries a top-level
+ * `collectionOutcome` with the verifiable scrape chain — mirror used, proxy
+ * channel, mirror attempt order, terminal upstream faults and the page that
+ * failed. The legacy `success`/`results`/`pagination` shape is unchanged.
  *
  * @param {object} req - Express request object
  * @param {string} req.query.genre - Genre filter (optional)
@@ -42,7 +52,7 @@ import { addPaginationMeta } from "../helper/pagination.helper.js";
  *
  * @example
  *   GET /api/filter?genre=action&year=2024&type=tv
- *   Response: { success: true, results: { anime, pagination, ... } }
+ *   Response: { success: true, results: { anime, pagination, ... }, collectionOutcome: {...} }
  * NOTE: The cache key uses JSON.stringify of all params for unique caching
  */
 const getFilter = async (req, res, next) => {
@@ -52,16 +62,24 @@ const getFilter = async (req, res, next) => {
     const cacheKey = `filter_${JSON.stringify(params, Object.keys(params).sort())}`;
     const cached = getCache(cacheKey);
     if (cached) {
-      return res.json({ success: true, results: cached });
+      // NOTE: Replay the stored scrape trace but mark it as a cache hit so
+      // nobody treats the old mirror data as a freshly observed fetch.
+      return res.json({
+        success: true,
+        results: cached.results,
+        collectionOutcome: buildCachedCollectionOutcome(cached.collectionOutcome),
+      });
     }
     // Normalize array params to strings
     if (Array.isArray(params.genre)) params.genre = params.genre.join(",");
     if (Array.isArray(params.type)) params.type = params.type.join(",");
     if (Array.isArray(params.status)) params.status = params.status.join(",");
-    const data = await extractFilter(params);
-    const response = addPaginationMeta(data, page);
-    setCache(cacheKey, response, TTL.genres);
-    res.json({ success: true, results: response });
+    const extracted = await extractFilter(params);
+    const { payload, collection } = extractCollection(extracted);
+    const response = addPaginationMeta(payload, page);
+    const collectionOutcome = buildCollectionOutcome(collection);
+    setCache(cacheKey, { results: response, collectionOutcome }, TTL.genres);
+    res.json({ success: true, results: response, collectionOutcome });
   } catch (error) {
     next(error);
   }

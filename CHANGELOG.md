@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Collection Outcome (`collectionOutcome`)**: `GET /api/search` and `GET /api/filter` now return a top-level `collectionOutcome` object making every scrape auditable — the mirror domain that actually served the document (`mirror`), the proxy channel that delivered it (`proxy`: `direct` / `scraperapi` / `flaresolverr` / `direct-retry`), every mirror contacted in order (`mirrorAttempts`), the proxy fallback chain (`proxyAttempts`), and whether the scrape stopped on a terminal upstream client fault (`terminated`, `terminalStatus`, `terminalReason`). All values are observed from the `fetchWithMirror` / `fetchWithProxy` return values; nothing is reconstructed. The legacy `success` / `results` / `pagination` shape is unchanged, so existing consumers are unaffected
+- **Page-Level Failure Attribution**: `collectionOutcome.page` / `failedPage` name the exact page an upstream rejection occurred on — a failing `page=3` reports `"failedPage": 3` instead of a generic error. Terminal 400/404 answers keep their status code and JSON body (never 500/HTML) and carry the same outcome on the error envelope
+- **Cache Provenance**: cached search/filter responses now include `collectionOutcome.fromCache=true` while preserving the original scrape trace, so stale mirror data is never mistaken for a fresh fetch (the LRU entry stores `{ results, collectionOutcome }`)
+- **Hermetic Outcome Test Suite**: `npm run test:outcome` runs 14 Node built-in-test cases with zero external network — `tests/collectionOutcome.test.js` drives the real server against a local fake upstream (success, mirror fallback, terminal 400 + page-3 404, cache hit, on both endpoints) and `tests/proxyAttempts.test.js` mocks the axios boundary to verify the `direct → scraperapi → flaresolverr → direct-retry` channel order; helpers live in `tests/helpers/` (`fakeUpstream.js`, `testServer.js`, `axiosMock.preload.js`)
+- **OpenAPI**: new `CollectionOutcome` schema component referenced by the `/search` and `/filter` operation descriptions
+
+### Changed
+- **Mirror/Proxy Instrumentation**: `fetchWithMirror` resolves with (and rejects errors carrying) a `collection` trace of the full attempt chain; `fetchWithProxy` returns an `attempts` array of every proxy channel tried; new `extractPagesWithOutcome` helper stamps the requested/failed page onto that trace while the original `extractPages` signature is preserved for the other extractors
+- **Docs**: `docs/endpoints.md` documents the `collectionOutcome` contract (success, cache-hit and terminal-error shapes); `docs/testing.md` documents the hermetic outcome suite
+
 ## [2.6.1] - 2026-10-24
 
 ### Added

@@ -17,7 +17,7 @@
 
 import * as cheerio from "cheerio";
 import { URLS } from "../configs/dataUrl.js";
-import { extractPages } from "../helper/extractPages.helper.js";
+import { extractPagesWithOutcome } from "../helper/extractPages.helper.js";
 import { countPages } from "../helper/countPages.helper.js";
 import { fetchWithMirror } from "../helper/mirror.helper.js";
 
@@ -30,19 +30,25 @@ import { fetchWithMirror } from "../helper/mirror.helper.js";
  * Searches anikototv.to for anime matching the given keyword and returns
  * paginated results with full metadata including episode counts and genres.
  *
+ * The returned `collection` object is the verifiable outcome of the scrape:
+ * the mirror that served the page, proxy channel, mirror attempt order and
+ * any terminal upstream rejection — straight from fetchWithMirror, never
+ * reconstructed by this extractor.
+ *
  * @param {string} keyword - The search query string
  * @param {number} [page=1] - Page number for pagination
- * @returns {Promise<Object>} Object with totalPages count and data array of results
+ * @returns {Promise<Object>} Object with totalPages count, data array of results and collection outcome
  *
  * @example
  *   const results = await extractSearchResults("naruto", 1);
  *   console.log(results.totalPages); // total available pages
  *   console.log(results.data[0].title); // first result title
+ *   console.log(results.collection.mirror); // mirror that actually served the page
  */
 const extractSearchResults = async (keyword, page = 1) => {
   try {
     const url = `${URLS.search}?keyword=${encodeURIComponent(keyword)}`;
-    const $ = await extractPages(url, page);
+    const { $, collection } = await extractPagesWithOutcome(url, page);
     const totalPages = countPages($);
 
     const results = [];
@@ -79,7 +85,7 @@ const extractSearchResults = async (keyword, page = 1) => {
       }
     });
 
-    return { totalPages, data: results };
+    return { totalPages, data: results, collection };
   } catch (error) {
     throw error;
   }

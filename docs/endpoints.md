@@ -68,6 +68,61 @@ Use the `page` query parameter to navigate: `?page=2`
 
 **Endpoints with flat arrays (no pagination):** `/api/spotlight`, `/api/trending`, `/api/top-ten`, `/api/suggestions`, `/api/recently-updated`, `/api/completed`, `/api/upcoming`, `/api/top-rankings`, `/api/mirrors`, `/api/schedule`
 
+### Collection outcome (`/api/search` and `/api/filter`)
+
+Both collection endpoints add a top-level `collectionOutcome` field that makes every scrape auditable. The legacy `success`, `results` and `pagination` fields are unchanged, so existing consumers are unaffected. Every value comes straight from the `fetchWithMirror` / `fetchWithProxy` return values — nothing is reconstructed or guessed.
+
+```json
+{
+  "success": true,
+  "results": { "totalPages": 4, "data": [/* ... */], "pagination": { /* ... */ } },
+  "collectionOutcome": {
+    "fromCache": false,
+    "mirror": "https://anikototv.to",
+    "proxy": "direct",
+    "mirrorAttempts": ["https://anikototv.to", "https://anikoto.cz"],
+    "proxyAttempts": [],
+    "terminated": false,
+    "terminalStatus": null,
+    "terminalReason": null,
+    "page": 1,
+    "failedPage": null
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `fromCache` | `true` when the payload was replayed from the in-memory cache instead of freshly scraped. The original scrape trace stays attached for provenance, so stale mirror data is never mistaken for a new fetch |
+| `mirror` | Mirror domain that actually served the document (`null` if every mirror failed) |
+| `proxy` | Channel that delivered the bytes: `direct`, `scraperapi`, `flaresolverr`, `direct-retry`, or `null` |
+| `mirrorAttempts` | Every mirror domain contacted, in the exact order it was tried |
+| `proxyAttempts` | Proxy channels tried inside the proxy fallback, in order (empty for a direct success) |
+| `terminated` | `true` when the chain stopped on a terminal upstream client fault (HTTP 400/404 or a structured upstream 4xx body) |
+| `terminalStatus` / `terminalReason` | The terminal status code and the reason recorded for the stop |
+| `page` / `failedPage` | Page this outcome describes; `failedPage` names the rejected page (e.g. a failing `page=3` reports `"failedPage": 3` rather than a generic error) |
+
+Terminal upstream rejections keep their original status (`400`/`404` — never `500` or HTML) and carry the same field on the error body:
+
+```json
+{
+  "success": false,
+  "message": "Endpoint not found: /filter?keyword=naruto&page=3",
+  "collectionOutcome": {
+    "fromCache": false,
+    "mirror": "https://anikototv.to",
+    "proxy": null,
+    "mirrorAttempts": ["https://anikototv.to"],
+    "proxyAttempts": [],
+    "terminated": true,
+    "terminalStatus": 404,
+    "terminalReason": "Endpoint not found: /filter?keyword=naruto&page=3",
+    "page": 3,
+    "failedPage": 3
+  }
+}
+```
+
 ---
 
 ## GET /

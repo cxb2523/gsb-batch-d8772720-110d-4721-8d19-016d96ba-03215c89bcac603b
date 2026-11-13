@@ -20,6 +20,11 @@
 import { extractSearchResults, extractSearchSuggestions } from "../extractors/search.extractor.js";
 import { getCache, setCache, TTL } from "../helper/cache.helper.js";
 import { addPaginationMeta } from "../helper/pagination.helper.js";
+import {
+  buildCollectionOutcome,
+  buildCachedCollectionOutcome,
+  extractCollection,
+} from "../helper/collectionOutcome.helper.js";
 
 // ══════════════════════════════════════════════════════════════
 // CONTROLLER: SEARCH RESULTS
@@ -30,6 +35,12 @@ import { addPaginationMeta } from "../helper/pagination.helper.js";
  * Handles GET /api/search requests with keyword and optional page.
  * Returns paginated search results from the source site.
  *
+ * Every response (including cache hits) carries a top-level
+ * `collectionOutcome` describing the real scrape chain: the mirror that
+ * served the page, the proxy channel, the order mirrors were tried and any
+ * terminal upstream rejection. The legacy `success`/`results` shape is
+ * untouched so existing consumers keep working.
+ *
  * @param {object} req - Express request object
  * @param {object} res - Express response object
  * @param {Function} next - Express next middleware function
@@ -37,7 +48,7 @@ import { addPaginationMeta } from "../helper/pagination.helper.js";
  *
  * @example
  *   GET /api/search?keyword=naruto&page=2
- *   Response: { success: true, results: { anime, ... } }
+ *   Response: { success: true, results: { anime, ... }, collectionOutcome: {...} }
  *
  * @throws {400} If 'keyword' query parameter is missing
  */
@@ -50,12 +61,20 @@ const getSearchResults = async (req, res, next) => {
     const cacheKey = `search_${keyword}_${page}`;
     const cached = getCache(cacheKey);
     if (cached) {
-      return res.json({ success: true, results: cached });
+      // NOTE: Cached payload keeps its original scrape trace, but is explicitly
+      // stamped fromCache so stale mirror info is never read as a fresh fetch.
+      return res.json({
+        success: true,
+        results: cached.results,
+        collectionOutcome: buildCachedCollectionOutcome(cached.collectionOutcome),
+      });
     }
-    const data = await extractSearchResults(keyword, page);
-    const response = addPaginationMeta(data, page);
-    setCache(cacheKey, response, TTL.search);
-    res.json({ success: true, results: response });
+    const extracted = await extractSearchResults(keyword, page);
+    const { payload, collection } = extractCollection(extracted);
+    const response = addPaginationMeta(payload, page);
+    const collectionOutcome = buildCollectionOutcome(collection);
+    setCache(cacheKey, { results: response, collectionOutcome }, TTL.search);
+    res.json({ success: true, results: response, collectionOutcome });
   } catch (error) {
     next(error);
   }

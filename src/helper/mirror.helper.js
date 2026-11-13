@@ -157,9 +157,15 @@ const inflightFetches = new Map();
  * the first promise. Deduplication is limited to text responses — shared HTML
  * is read-only, whereas JSON objects must not be handed to two callers.
  *
+ * Every resolved value and every thrown error carries a `collection` object —
+ * the verifiable outcome of the fetch (mirrors tried in order, the mirror
+ * that actually answered, which proxy channel delivered the bytes, and any
+ * terminal upstream client fault). Callers never have to reconstruct the
+ * chain from logs.
+ *
  * @param {string} path - URL path to fetch
  * @param {object} options - Additional options
- * @returns {Promise<{data: string, mirror: string, proxy: string}>}
+ * @returns {Promise<{data: string, mirror: string, proxy: string, collection: object}>}
  */
 async function fetchWithMirror(path, options = {}) {
   const returnType = options.returnType || "text";
@@ -183,8 +189,8 @@ async function fetchWithMirror(path, options = {}) {
 }
 
 async function fetchFromMirrors(path, options = {}) {
-  const { 
-    timeout = 15000, 
+  const {
+    timeout = 15000,
     retries = 2,
     returnType = "text",
     headers: customHeaders = {},
@@ -196,9 +202,31 @@ async function fetchFromMirrors(path, options = {}) {
 
   let lastError = null;
 
+  // ---- FEATURE: Verifiable collection outcome ----
+  // NOTE: Every field below is observed, never invented — mirrorAttempts is
+  // appended in actual request order, mirror/proxy come straight from the
+  // successful return values, and terminal* fields are only set on the
+  // structured/HTTP client-fault branches below.
+  const collection = {
+    path,
+    fromCache: false,
+    mirror: null,
+    proxy: null,
+    mirrorAttempts: [],
+    proxyAttempts: [],
+    terminated: false,
+    terminalStatus: null,
+    terminalReason: null,
+  };
+  const recordMirror = (mirrorUrl) => {
+    if (!collection.mirrorAttempts.includes(mirrorUrl)) {
+      collection.mirrorAttempts.push(mirrorUrl);
+    }
+  };
+
   // Try cached working mirror first
   const mirrorsToTry = [];
-  
+
   if (workingMirror && !failedMirrors.has(workingMirror)) {
     mirrorsToTry.push(workingMirror);
   }
@@ -219,7 +247,9 @@ async function fetchFromMirrors(path, options = {}) {
   // Try direct requests first
   for (const mirror of mirrorsToTry) {
     const url = buildUrl(path, mirror);
-    
+    recordMirror(mirror);
+    collection.mirror = mirror;
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const response = await axios.get(url, {
@@ -265,10 +295,13 @@ async function fetchFromMirrors(path, options = {}) {
             setCache(MIRROR_CACHE_KEY, mirror, MIRROR_CACHE_TTL);
             console.log(`[MIRROR] Switched to: ${mirror}`);
           }
-          return { 
+          collection.mirror = mirror;
+          collection.proxy = "direct";
+          return {
             data: response.data,
             mirror,
-            proxy: "direct"
+            proxy: "direct",
+            collection,
           };
         }
 
@@ -303,7 +336,12 @@ async function fetchFromMirrors(path, options = {}) {
 
     // NOTE: Terminal errors (bad slug, invalid id, missing route) repeat on
     // every mirror — bail out of the mirror loop instead of paying for the rest
-    if (lastError?.terminal) break;
+    if (lastError?.terminal) {
+      collection.terminated = true;
+      collection.terminalStatus = lastError.status || 404;
+      collection.terminalReason = lastError.message;
+      break;
+    }
 
     // NOTE: Only mark mirror as failed for connection errors / upstream
     // outages — never for terminal client-fault answers
@@ -313,10 +351,13 @@ async function fetchFromMirrors(path, options = {}) {
     }
   }
 
-  // NOTE: Terminal answer reached — surface it with its own status code
+  // NOTE: Terminal answer reached — surface it with its own status code and
+  // the observed collection outcome so callers can see exactly which mirror
+  // rejected the request and why the chain stopped.
   if (lastError?.terminal) {
     const err = new Error(lastError.message);
     err.status = lastError.status || 404;
+    err.collection = collection;
     throw err;
   }
 
@@ -330,10 +371,14 @@ async function fetchFromMirrors(path, options = {}) {
           buildUrl(path, mirrorsToTry[0]),
           { requestHeaders, timeout: timeout * 2, returnType }
         );
+        collection.proxyAttempts = proxyResult.attempts || [proxyResult.proxy];
+        collection.proxy = proxyResult.proxy;
+        collection.mirror = mirrorsToTry[0];
         return {
           data: proxyResult.data,
           mirror: mirrorsToTry[0],
           proxy: proxyResult.proxy,
+          collection,
         };
       } catch (proxyError) {
         console.log(`[MIRROR] Proxy also failed: ${proxyError.message}`);
@@ -341,7 +386,14 @@ async function fetchFromMirrors(path, options = {}) {
     }
   }
 
-  throw new Error(`All mirrors failed. Last error: ${lastError?.message}`);
+  // NOTE: No mirror or proxy could serve the document. The outcome object
+  // rides on the error so controllers can still report the full attempt chain
+  // instead of a bare "all mirrors failed" message.
+  collection.terminated = false;
+  collection.terminalReason = lastError?.message || "All mirrors failed";
+  const exhausted = new Error(`All mirrors failed. Last error: ${lastError?.message}`);
+  exhausted.collection = collection;
+  throw exhausted;
 }
 
 // ---- FEATURE: Mirror Status Reporter ----

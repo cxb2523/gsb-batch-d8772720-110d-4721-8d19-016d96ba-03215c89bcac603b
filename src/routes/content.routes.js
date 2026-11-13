@@ -34,6 +34,7 @@ import {
   validateQueryParam,
 } from "../middleware/validation.middleware.js";
 import { validateSlug, validateQueryWord } from "../helper/validation.helper.js";
+import { toErrorCollectionOutcome } from "../helper/collectionOutcome.helper.js";
 
 // ══════════════════════════════════════════════════════════════
 // ROUTE REGISTRATION
@@ -97,7 +98,14 @@ const contentRoutes = (app, { jsonError }) => {
       try {
         await getSearchResults(req, res, next);
       } catch (error) {
-        jsonError(res, error.message, error.status || 500);
+        // NOTE: Terminal upstream faults keep their 4xx status and JSON body;
+        // the collection outcome explains where the chain stopped
+        const collectionOutcome = toErrorCollectionOutcome(error);
+        res.status(error.status || 500).json({
+          success: false,
+          message: error.message,
+          ...(collectionOutcome ? { collectionOutcome } : {}),
+        });
       }
     }
   );
@@ -172,7 +180,14 @@ const contentRoutes = (app, { jsonError }) => {
     try {
       await getFilter(req, res, next);
     } catch (error) {
-      jsonError(res, error.message, error.status || 500);
+      // NOTE: Terminal upstream faults keep their 4xx status and JSON body;
+      // the collection outcome (incl. failedPage) explains where it stopped
+      const collectionOutcome = toErrorCollectionOutcome(error);
+      res.status(error.status || 500).json({
+        success: false,
+        message: error.message,
+        ...(collectionOutcome ? { collectionOutcome } : {}),
+      });
     }
   });
 

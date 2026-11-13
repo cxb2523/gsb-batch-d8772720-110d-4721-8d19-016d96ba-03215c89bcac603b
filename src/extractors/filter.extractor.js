@@ -19,7 +19,7 @@
 import { URLS } from "../configs/dataUrl.js";
 import { GENRE_IDS, TYPE_IDS, STATUS_IDS, RATING_IDS, SORT_IDS, SOURCE_IDS, SEASON_IDS } from "../configs/ids.config.js";
 import { countPages } from "../helper/countPages.helper.js";
-import { extractPages } from "../helper/extractPages.helper.js";
+import { extractPagesWithOutcome } from "../helper/extractPages.helper.js";
 
 // ══════════════════════════════════════════════════════════════
 // FILTER EXTRACTOR
@@ -46,12 +46,13 @@ import { extractPages } from "../helper/extractPages.helper.js";
  * @param {number} [params.epMax] - Maximum episode count filter
  * @param {boolean} [params.excludeWatchlist=false] - Exclude watchlisted anime
  * @param {number} [params.page=1] - Page number for pagination
- * @returns {Promise<Object>} Object with totalPages count and data array of results
+ * @returns {Promise<Object>} Object with totalPages count, data array of results and collection outcome
  *
  * @example
  *   const filtered = await extractFilter({ genre: "action", type: "tv", page: 1 });
  *   console.log(filtered.totalPages);
  *   console.log(filtered.data[0].title);
+ *   console.log(filtered.collection.mirrorAttempts); // mirrors tried, in order
  *
  * @example
  *   // Advanced filter with episode range
@@ -150,7 +151,7 @@ const extractFilter = async (params) => {
 
     // NOTE: The filter URL is built by appending query params to the search base URL
     const filterUrl = `${URLS.search}?${queryParams.toString()}`;
-    const $ = await extractPages(filterUrl, params.page || 1);
+    const { $, collection } = await extractPagesWithOutcome(filterUrl, params.page || 1);
     const totalPages = countPages($);
 
     const results = [];
@@ -182,7 +183,7 @@ const extractFilter = async (params) => {
       }
     });
 
-    return { totalPages, data: results };
+    return { totalPages, data: results, collection };
   } catch (error) {
     throw error;
   }

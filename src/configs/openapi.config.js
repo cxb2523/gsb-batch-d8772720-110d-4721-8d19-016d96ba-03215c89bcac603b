@@ -101,6 +101,7 @@ const PATHS = {
   // ── Search ──────────────────────────────────────────────
   "/search": getOp("Search anime", ["Search"], {
     params: [queryParam("keyword", "Search keyword (required)", { type: "string" }, "naruto", true), pageParam()],
+    description: "Responses include a top-level `collectionOutcome` object (mirror used, proxy channel, mirror attempt order, terminal upstream faults and failed page); cache hits set `collectionOutcome.fromCache=true`.",
   }),
   "/search/suggest": getOp("Search autocomplete suggestions", ["Search"], {
     params: [queryParam("keyword", "Search keyword (required)", { type: "string" }, "nar", true)],
@@ -257,7 +258,7 @@ const PATHS = {
 
   // ── Filter ──────────────────────────────────────────────
   "/filter": getOp("Advanced filter", ["Filter"], {
-    description: "Combines keyword, genre, type, status, rating and sort parameters.",
+    description: "Combines keyword, genre, type, status, rating and sort parameters. Responses include a top-level `collectionOutcome` object (mirror used, proxy channel, mirror attempt order, terminal upstream faults and failed page); cache hits set `collectionOutcome.fromCache=true`.",
     params: [
       queryParam("keyword", "Search keyword", { type: "string" }, "naruto"),
       queryParam("genre", "Genre slug", { type: "string" }, "action"),
@@ -346,6 +347,57 @@ const COMPONENTS = {
         itemsPerPage: { type: "integer", example: 30 },
         hasNext: { type: "boolean", example: true },
         hasPrev: { type: "boolean", example: false },
+      },
+    },
+    CollectionOutcome: {
+      type: "object",
+      description:
+        "Verifiable scrape outcome carried by GET /search and GET /filter (success, cache-hit and terminal-4xx responses). Every field is observed from fetchWithMirror/fetchWithProxy — nothing is inferred. On a terminal upstream rejection the same object is attached to the error body alongside success:false.",
+      properties: {
+        fromCache: {
+          type: "boolean",
+          description: "true when the payload was replayed from the in-memory cache rather than freshly scraped; the stored mirror trace is still attached for provenance.",
+          example: false,
+        },
+        mirror: {
+          type: "string",
+          nullable: true,
+          description: "Mirror domain that actually served the document (null when every mirror failed).",
+          example: "https://anikototv.to",
+        },
+        proxy: {
+          type: "string",
+          nullable: true,
+          enum: ["direct", "scraperapi", "flaresolverr", "direct-retry", null],
+          description: "Channel that delivered the bytes.",
+          example: "direct",
+        },
+        mirrorAttempts: {
+          type: "array",
+          items: { type: "string" },
+          description: "Mirror domains contacted, in the exact order they were tried.",
+          example: ["https://anikototv.to", "https://anikoto.cz"],
+        },
+        proxyAttempts: {
+          type: "array",
+          items: { type: "string", enum: ["direct", "scraperapi", "flaresolverr", "direct-retry"] },
+          description: "Proxy channels tried inside the proxy fallback, in order (empty for a direct success).",
+          example: [],
+        },
+        terminated: {
+          type: "boolean",
+          description: "true when the chain stopped on a terminal upstream client fault (HTTP 400/404 or a structured upstream 4xx body).",
+          example: false,
+        },
+        terminalStatus: { type: "integer", nullable: true, example: 404 },
+        terminalReason: { type: "string", nullable: true, example: "Endpoint not found: /filter?keyword=x&page=3" },
+        page: { type: "integer", description: "Page this outcome describes.", example: 3 },
+        failedPage: {
+          type: "integer",
+          nullable: true,
+          description: "Page rejected by the upstream (null on success); makes a failing page=3 explicit instead of a generic error.",
+          example: 3,
+        },
       },
     },
   },

@@ -179,6 +179,7 @@ FLARESOLVERR_URL=http://your-flaresolverr-host:8191
 - **Keyword search** with pagination (`/api/search`)
 - **Search suggestions** for autocomplete (`/api/search/suggest`)
 - **Advanced filtering** — genre, type, status, rating, sort, season, year
+- **Verifiable collection outcome** — `/api/search` and `/api/filter` return `collectionOutcome` (mirror used, proxy channel, mirror attempt order, terminal upstream faults, failed page; cache hits are marked `fromCache: true`)
 - **AZ List** alphabetical browsing (`/api/az-list/:letter`)
 - **Random anime** discovery (`/api/random`)
 - **Top 10 rankings** day/week/month (`/api/top-ten`)
@@ -2431,7 +2432,8 @@ CMD ["node", "server.js"]
 |:---|:---|:---|
 | `npm run dev` | 🔥 Start development server | Runs on `localhost:4444` |
 | `npm start` | 🚀 Start production server | `node server.js` |
-| `npm test` | 🧪 Run tests | Placeholder |
+| `npm test` | 🧪 Run integration tests | Hits the local server when available, otherwise the live API |
+| `npm run test:outcome` | 🔍 Run hermetic collection-outcome tests | Local fake upstream, no external sites — covers success, mirror fallback, terminal 4xx and cache hits |
 
 ---
 

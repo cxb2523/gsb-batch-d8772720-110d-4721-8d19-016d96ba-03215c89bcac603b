@@ -10,6 +10,25 @@ node test.js
 
 No external test framework required — just Node.js native `fetch`.
 
+### Collection-outcome tests (hermetic, no external sites)
+
+```bash
+npm run test:outcome
+```
+
+Node's built-in test runner exercises the `collectionOutcome` field on
+`/api/search` and `/api/filter` against a **local fake upstream** — no real
+anikototv.to, ScraperAPI or FlareSolverr host is ever contacted:
+
+- `tests/collectionOutcome.test.js` — spawns the real Express server as a child
+  process with `MIRROR_DOMAINS` pointed at a loopback fake server, covering
+  success, mirror fallback, terminal 4xx (400 + page-3 404 with `failedPage`)
+  and cache-hit (`fromCache=true`) scenarios for both endpoints
+- `tests/proxyAttempts.test.js` — unit-tests the proxy fallback chain
+  (`direct` → `scraperapi` → `flaresolverr` → `direct-retry`) with the axios
+  boundary mocked through `tests/helpers/axiosMock.preload.js`, asserting the
+  real channel order that feeds `proxyAttempts`
+
 ## Auto-Detection
 
 The test suite automatically detects which API to use:

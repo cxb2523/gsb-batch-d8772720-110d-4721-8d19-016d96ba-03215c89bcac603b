@@ -42,6 +42,7 @@ import { createRateLimiter } from "./src/middleware/rateLimit.middleware.js";
 import { requestTimeout } from "./src/middleware/timeout.middleware.js";
 import { runWithCacheScope } from "./src/helper/cache.helper.js";
 import { jsonResponse, jsonError } from "./src/helper/response.helper.js";
+import { toErrorCollectionOutcome } from "./src/helper/collectionOutcome.helper.js";
 
 // ══════════════════════════════════════════════════════════════
 // SERVER CONFIGURATION
@@ -164,9 +165,13 @@ app.use((err, req, res, next) => {
   if (err.type === 'entity.too.large') {
     return res.status(413).json({ success: false, message: "Request entity too large" });
   }
+  // NOTE: Upstream scrape failures carry a verifiable collection trace —
+  // include it on the error body (terminal 4xx stays 4xx, never 500/HTML)
+  const collectionOutcome = toErrorCollectionOutcome(err);
   res.status(err.status || 500).json({
     success: false,
-    message: process.env.NODE_ENV === 'production' ? "Internal server error" : err.message
+    message: process.env.NODE_ENV === 'production' ? "Internal server error" : err.message,
+    ...(collectionOutcome ? { collectionOutcome } : {}),
   });
 });
 
