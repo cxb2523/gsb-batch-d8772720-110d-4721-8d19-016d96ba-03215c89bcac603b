@@ -60,31 +60,42 @@ The examples below use the installed `reader` command; from a clone without inst
 
 ```
 $ reader -h
-usage: reader [-h] [-f {json,html,md,txt}] [-w BODY_WIDTH] [-t FORMAT] source
+usage: reader [-h] [-b MANIFEST] [-f {json,html,md,txt}] [-w BODY_WIDTH]
+              [-t FORMAT]
+              [source]
 
-Get a cleaner version of a web page for reading purposes. Fetches a URL (or reads local HTML) and
-extracts the main content and metadata via trafilatura (https://trafilatura.readthedocs.io/),
-outputting the document as JSON, Markdown, plain-text, or HTML.
+Get a cleaner version of a web page for reading purposes. Fetches a URL (or
+reads local HTML) and extracts the main content and metadata via trafilatura
+(https://trafilatura.readthedocs.io/), outputting the document as JSON,
+Markdown, plain-text, or HTML. A manifest of sources can be processed in one
+batch, where each source succeeds or fails on its own.
 
 positional arguments:
-  source                URL to fetch and parse, or path to a local HTML file (use "-" to read HTML
-                        from stdin)
+  source                URL to fetch and parse, or path to a local HTML file
+                        (use "-" to read HTML from stdin)
 
 options:
   -h, --help            show this help message and exit
+  -b, --batch MANIFEST  read sources from MANIFEST (one per line; blank lines
+                        and '#' comments ignored) and process all of them,
+                        reporting each source's outcome; incompatible with a
+                        source argument (default: None)
   -f, --format {json,html,md,txt}
                         output format (default: json)
   -w, --body-width BODY_WIDTH
-                        character offset at which to hard-wrap lines of markdown and plain-text
-                        content (default: None)
+                        character offset at which to hard-wrap lines of
+                        markdown and plain-text content (default: None)
   -t, --table-format FORMAT
-                        tabulate format for data tables in plain-text content (one of: asciidoc,
-                        colon_grid, double_grid, double_outline, fancy_grid, fancy_outline,
-                        github, grid, heavy_grid, heavy_outline, html, jira, latex,
-                        latex_booktabs, latex_longtable, latex_raw, mediawiki, mixed_grid,
-                        mixed_outline, moinmoin, orgtbl, outline, pipe, plain, presto, pretty,
-                        psql, rounded_grid, rounded_outline, rst, simple, simple_grid,
-                        simple_outline, textile, tsv, unsafehtml, youtrack) (default: simple)
+                        tabulate format for data tables in plain-text content
+                        (one of: asciidoc, colon_grid, double_grid,
+                        double_outline, fancy_grid, fancy_outline, github,
+                        grid, heavy_grid, heavy_outline, html, jira, latex,
+                        latex_booktabs, latex_longtable, latex_raw, mediawiki,
+                        mixed_grid, mixed_outline, moinmoin, orgtbl, outline,
+                        pipe, plain, presto, pretty, psql, rounded_grid,
+                        rounded_outline, rst, simple, simple_grid,
+                        simple_outline, textile, tsv, unsafehtml, youtrack)
+                        (default: simple)
 ```
 
 When wrapping markdown, lines whose markup would break if split across lines (headings, table rows, horizontal rules, and fenced code blocks) are left intact, and long tokens such as URLs are never split.
@@ -101,6 +112,81 @@ Shelbyville        12,654
 Rendered tables are never disturbed by `-w` line-wrapping, regardless of the chosen table format.
 
 The source can be a URL (fetched by trafilatura), a local HTML file, or `-` to read HTML from stdin — so you can also feed it pages saved locally or fetched by other tools (`curl`, a headless browser, etc.).
+
+### Batch reading from a manifest
+
+Reading a dozen articles one at a time is slow and fragile: a single unreachable URL or an unextractable page aborts the run and discards the successes before it. `--batch` takes a manifest instead and keeps going:
+
+```
+$ reader --batch sources.txt
+```
+
+The manifest is plain text with one source per line, in the same forms as the `source` argument (URL, local HTML path, or `-`). Blank lines and lines beginning with `#` are ignored; `-` may appear once and only as the sole source in a batch.
+
+```
+# sources.txt
+https://www.paulgraham.com/greatwork.html
+https://www.gnu.org/philosophy/free-sw.en.html
+./saved/notes.html
+```
+
+Every entry is attempted, in manifest order, and every entry ends in a checkable outcome: a `success` carries the entire `ParseResult`, while a `failure` carries the same labeled reason a single-source run would print — `[FETCH ERROR - No response]`, `[HTTP ERROR 404 - Not Found]`, `[FETCH ERROR - empty response]`, `[PARSE ERROR - failed to extract content]`, `[FILE ERROR - No such file or directory]` — so it is clear whether to retry or fix the manifest. No failure aborts the batch and nothing is silently skipped.
+
+The default output is one JSON report covering the whole batch:
+
+```json
+{
+  "results": [
+    {
+      "source": "https://www.paulgraham.com/greatwork.html",
+      "status": "success",
+      "error": null,
+      "result": { "title": "How to Do Great Work", "content": { ... }, ... }
+    },
+    {
+      "source": "https://www.example.com/missing",
+      "status": "failure",
+      "error": "HTTP ERROR 404 - Not Found",
+      "result": null
+    }
+  ],
+  "total": 2,
+  "succeeded": 1,
+  "failed": 1,
+  "conclusion": "partial failure"
+}
+```
+
+`conclusion` is one of `all succeeded`, `all failed`, or `partial failure`. An unreadable, empty, or malformed manifest is reported as `[MANIFEST ERROR - ...]` and exits 2; a batch that ran exits 1 when anything failed and 0 when everything succeeded, so scripts can tell a clean run from a dirty one without parsing the output.
+
+The other formats render each success with that formatter and show failures as their labeled reason, closing with the same overall conclusion:
+
+```
+=== https://www.paulgraham.com/greatwork.html [success] ===
+
+title: How to Do Great Work
+...
+
+=== https://www.example.com/missing [failure: HTTP ERROR 404 - Not Found] ===
+
+=== batch: 2 total, 1 succeeded, 1 failed - partial failure ===
+```
+
+As a library, `batch(manifest, body_width, table_format)` returns the report as a dict (the `BatchReport` type), and `read_manifest(path)` exposes the parsed source list. `reader.read()` and `reader.load_html()` raise a `ReaderError` instead of exiting, which is what makes per-source recovery possible; `main()` keeps its exit-on-failure behavior.
+
+`batch()` raises `ManifestError` only for problems with the list itself — unreadable file, no sources after comments and blanks, an unsupported URL scheme, or a misplaced `-`. Per-source problems never raise: they become `failure` entries. A source that trips an unexpected exception (a parser crash, say) is recorded as `UNEXPECTED ERROR - <type>: <message>` rather than taking the rest of the batch down with it.
+
+```python
+from reader import batch
+
+report = batch("sources.txt", 80)
+for item in report["results"]:
+    if item["status"] == "success":
+        print(item["result"]["title"], item["result"]["word_count"])
+    else:
+        print(item["source"], "->", item["error"])
+print(report["conclusion"])
+```
 
 ## Examples
 

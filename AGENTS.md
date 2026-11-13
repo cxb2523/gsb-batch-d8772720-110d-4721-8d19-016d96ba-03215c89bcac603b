@@ -11,6 +11,18 @@
 - `cli()` is the console-script entry point (argparse + printing);
   `main()` is the library API and returns a `ParseResult` dict. Keep the
   two separate — importing `reader` must not parse `sys.argv`.
+- Failure has three layers, deliberately: `load_html()`/`extract()`/
+  `read()` raise `ReaderError` (message is the `fail()` label),
+  `main()` turns that into the exiting `fail()` behavior that existing
+  callers rely on, and `batch()` records it per source so one bad entry
+  cannot abort a manifest run. Keep `fail()`'s label style
+  (`FETCH ERROR - ...`, `HTTP ERROR ...`, `PARSE ERROR - ...`,
+  `FILE ERROR - ...`) when adding new error paths — batch output
+  embeds those labels verbatim.
+- `--batch` output is one JSON report when `-f json` (the default), so
+  scripted consumers of the single-source JSON are unaffected; other
+  formats interleave per-source headings. It exits 2 for manifest
+  problems, 1 for a batch that ran with failures, and 0 for a clean run.
 - Because `[build-system]` exists, `uv sync` installs the project itself
   in editable mode, so `uv run reader` / `.venv/bin/reader` exercise the
   real entry point. Verify a packaging change end to end:

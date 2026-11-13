@@ -2,7 +2,9 @@
 
 Fetches a URL (or reads local HTML) and extracts the main content and
 metadata via trafilatura (https://trafilatura.readthedocs.io/),
-outputting the document as JSON, Markdown, plain-text, or HTML.
+outputting the document as JSON, Markdown, plain-text, or HTML.  A
+manifest of sources can be processed in one batch, where each source
+succeeds or fails on its own.
 """
 
 import json
@@ -11,7 +13,7 @@ import sys
 import textwrap
 from copy import deepcopy
 from http.client import responses
-from typing import ClassVar, NoReturn, Protocol, TypedDict
+from typing import ClassVar, Literal, NoReturn, Protocol, TypedDict
 
 from lxml import etree
 from lxml.etree import Element, _Element  # pyright: ignore[reportPrivateUsage]
@@ -71,6 +73,25 @@ class ParseResult(TypedDict):
     filedate: str | None
     content: Content
     word_count: int
+
+
+class BatchItem(TypedDict):
+    """The outcome for one source in a manifest batch"""
+
+    source: str
+    status: Literal["success", "failure"]
+    error: str | None
+    result: ParseResult | None
+
+
+class BatchReport(TypedDict):
+    """All outcomes of a manifest batch, in order, plus the overall verdict"""
+
+    results: list[BatchItem]
+    total: int
+    succeeded: int
+    failed: int
+    conclusion: Literal["all succeeded", "all failed", "partial failure"]
 
 
 class Formatter(Protocol):
@@ -199,10 +220,58 @@ def wrap(text: str, width: int | None, markdown: bool = False) -> str:
     return "\n".join(lines)
 
 
+class ReaderError(Exception):
+    """A recoverable, per-source failure, labeled in fail()'s style
+
+    The exception's message is the label text fail() would print,
+    e.g. "FETCH ERROR - No response", so batch callers can report it
+    without the process exiting.
+    """
+
+
+class ManifestError(Exception):
+    """A batch manifest that cannot be read, parsed, or is malformed"""
+
+
 def fail(error: str, source: str) -> NoReturn:
     """Print a labeled error for source to stderr and exit"""
     print(f"[{error}] {source}", file=sys.stderr)
     sys.exit(1)
+
+
+def error_detail(err: OSError | UnicodeDecodeError) -> str:
+    """The human-readable part of a file access error"""
+    if isinstance(err, UnicodeDecodeError):
+        return f"could not decode as {err.encoding}"
+    return err.strerror or str(err)
+
+
+def load_html(source: str) -> tuple[str, str | None]:
+    """Load HTML from a URL, local file, or stdin, raising on failure
+
+    source: a URL (http/https), a file path, or '-' for stdin
+
+    Returns an (html, url) tuple; url is None for local sources.
+    Raises ReaderError with a fail()-style label when the source
+    cannot be fetched or read.
+    """
+    if source.startswith(("http://", "https://")):
+        response = fetch_response(source, decode=True)
+        if response is None:
+            raise ReaderError("FETCH ERROR - No response")
+        if not 200 <= response.status < 300:
+            reason = responses.get(response.status, "Unknown")
+            raise ReaderError(f"HTTP ERROR {response.status} - {reason}")
+        if not response.html:
+            raise ReaderError("FETCH ERROR - empty response")
+        return response.html, source
+    if source == "-":
+        return sys.stdin.read(), None
+    try:
+        with open(source, mode="r") as f:
+            return f.read(), None
+    except (OSError, UnicodeDecodeError) as err:
+        raise ReaderError(f"FILE ERROR - {error_detail(err)}") from err
 
 
 def load(source: str) -> tuple[str, str | None]:
@@ -211,24 +280,13 @@ def load(source: str) -> tuple[str, str | None]:
     source: a URL (http/https), a file path, or '-' for stdin
 
     Returns an (html, url) tuple; url is None for local sources.
+    Exits with a labeled error on failure; load_html() raises
+    ReaderError instead, for callers that must recover.
     """
-    if source.startswith(("http://", "https://")):
-        response = fetch_response(source, decode=True)
-        if response is None:
-            fail("FETCH ERROR - No response", source)
-        if not 200 <= response.status < 300:
-            reason = responses.get(response.status, "Unknown")
-            fail(f"HTTP ERROR {response.status} - {reason}", source)
-        if not response.html:
-            fail("FETCH ERROR - empty response", source)
-        return response.html, source
-    if source == "-":
-        return sys.stdin.read(), None
     try:
-        with open(source, mode="r") as f:
-            return f.read(), None
-    except OSError as err:
-        fail(f"FILE ERROR - {err.strerror}", source)
+        return load_html(source)
+    except ReaderError as err:
+        fail(str(err), source)
 
 
 WHITESPACE = re.compile(r"\s+")
@@ -409,20 +467,21 @@ def restore_tables(text: str, tables: list[str]) -> str:
     return text
 
 
-def main(
-    source: str, body_width: int | None, table_format: str = "simple"
+def extract(
+    html: str,
+    url: str | None,
+    body_width: int | None,
+    table_format: str = "simple",
 ) -> ParseResult:
-    """Extract a web page's content and metadata as a dict
+    """Extract content and metadata from HTML, raising on failure
 
-    source: URL, HTML file path, or '-' (stdin) to fetch and parse
+    html: the document to parse
+    url: the document's URL, or None for local sources
     body_width: int (line hard-wrap length for markdown/plain-text)
     table_format: tabulate format name for plain-text data tables
 
-    The result dict contains trafilatura's document metadata plus the
-    extracted content as HTML ('content.html'), Markdown
-    ('content.markdown'), and plain-text ('content.text').
+    Raises ReaderError when no content can be extracted.
     """
-    html, url = load(source)
     doc = bare_extraction(
         html,
         url=url,
@@ -432,7 +491,7 @@ def main(
         include_images=True,
     )
     if doc is None or isinstance(doc, dict):
-        fail("PARSE ERROR - failed to extract content", source)
+        raise ReaderError("PARSE ERROR - failed to extract content")
     unwrap_layout_tables(doc.body)
     unwrap_layout_tables(doc.commentsbody)
     markdown = "\n".join(
@@ -485,16 +544,180 @@ def main(
     )
 
 
+def read(
+    source: str, body_width: int | None, table_format: str = "simple"
+) -> ParseResult:
+    """Load and parse one source, raising ReaderError on failure
+
+    source: URL, HTML file path, or '-' (stdin) to fetch and parse
+    body_width: int (line hard-wrap length for markdown/plain-text)
+    table_format: tabulate format name for plain-text data tables
+    """
+    html, url = load_html(source)
+    return extract(html, url, body_width, table_format)
+
+
+def main(
+    source: str, body_width: int | None, table_format: str = "simple"
+) -> ParseResult:
+    """Extract a web page's content and metadata as a dict
+
+    source: URL, HTML file path, or '-' (stdin) to fetch and parse
+    body_width: int (line hard-wrap length for markdown/plain-text)
+    table_format: tabulate format name for plain-text data tables
+
+    The result dict contains trafilatura's document metadata plus the
+    extracted content as HTML ('content.html'), Markdown
+    ('content.markdown'), and plain-text ('content.text').
+
+    Exits with a labeled error if the source cannot be read or parsed;
+    use batch() to process many sources without aborting on the first
+    failure, or read()/load_html() to handle the error as an exception.
+    """
+    try:
+        return read(source, body_width, table_format)
+    except ReaderError as err:
+        fail(str(err), source)
+
+
+# a manifest source is a URL, a local file path, or '-' for stdin
+URL_PATTERN = re.compile(r"^https?://")
+
+
+def read_manifest(path: str) -> list[str]:
+    """Read sources from a batch manifest, raising ManifestError
+
+    path: the manifest file; one source per line, blank lines and lines
+    starting with '#' are ignored.
+
+    The source rules are those of single-source reads, with stdin
+    ('-') allowed only as the sole source of a batch.
+    """
+    try:
+        # utf-8-sig tolerates the BOM some Windows editors add
+        with open(path, mode="r", encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError) as err:
+        # also covers the manifest being a directory or empty path
+        raise ManifestError(f"MANIFEST ERROR - {error_detail(err)}") from err
+    sources: list[str] = []
+    for number, line in enumerate(lines, 1):
+        source = line.strip()
+        if not source or source.startswith("#"):
+            continue
+        if "://" in source and not URL_PATTERN.match(source):
+            scheme = source.split("://", 1)[0]
+            message = f"MANIFEST ERROR - line {number}: unsupported URL scheme {scheme!r}"
+            raise ManifestError(message)
+        sources.append(source)
+    if not sources:
+        raise ManifestError("MANIFEST ERROR - no sources")
+    if sources.count("-") > 1:
+        raise ManifestError("MANIFEST ERROR - stdin ('-') may appear only once")
+    if "-" in sources and len(sources) > 1:
+        raise ManifestError(
+            "MANIFEST ERROR - stdin ('-') must be the only source in a batch"
+        )
+    return sources
+
+
+def batch(
+    manifest: str, body_width: int | None, table_format: str = "simple"
+) -> BatchReport:
+    """Extract every source in a manifest, isolating failures
+
+    manifest: path to a file listing sources (see read_manifest())
+    body_width: int (line hard-wrap length for markdown/plain-text)
+    table_format: tabulate format name for plain-text data tables
+
+    Sources are read in manifest order.  Each gets a BatchItem with a
+    status and, on success, the full ParseResult; a failing source
+    records the same labeled reason single-source runs print, and never
+    aborts the batch.  The results and conclusion are returned as a
+    BatchReport.
+
+    Raises ManifestError if the manifest is unreadable, empty, or
+    malformed; per-source failures do not raise.
+    """
+    sources = read_manifest(manifest)
+    results: list[BatchItem] = []
+    for source in sources:
+        try:
+            result = read(source, body_width, table_format)
+        except ReaderError as err:
+            results.append(
+                BatchItem(source=source, status="failure", error=str(err), result=None)
+            )
+        except Exception as err:  # noqa: BLE001 - one bad source must not abort the batch
+            # an unexpected parser crash on one page must not lose the rest
+            results.append(
+                BatchItem(
+                    source=source,
+                    status="failure",
+                    error=f"UNEXPECTED ERROR - {type(err).__name__}: {err}",
+                    result=None,
+                )
+            )
+        else:
+            results.append(
+                BatchItem(source=source, status="success", error=None, result=result)
+            )
+    succeeded = sum(item["status"] == "success" for item in results)
+    failed = len(results) - succeeded
+    conclusion: Literal["all succeeded", "all failed", "partial failure"]
+    if not failed:
+        conclusion = "all succeeded"
+    elif not succeeded:
+        conclusion = "all failed"
+    else:
+        conclusion = "partial failure"
+    return BatchReport(
+        results=results,
+        total=len(results),
+        succeeded=succeeded,
+        failed=failed,
+        conclusion=conclusion,
+    )
+
+
+def batch_format(report: BatchReport, format_name: str) -> str:
+    """Render a batch report for terminal consumption
+
+    In JSON (the default) the whole report is one document, preserving
+    each entry's source, status, error, and full result.  Other formats
+    render each success with the requested formatter, headed by its
+    source and status, and show failures as their labeled reason alone,
+    then close with the overall conclusion.
+    """
+    if format_name == "json":
+        return json.dumps(report, ensure_ascii=False)
+    fmt = Format.formatter[format_name]
+    blocks: list[str] = []
+    for item in report["results"]:
+        if item["status"] == "success" and item["result"] is not None:
+            blocks.append(f"=== {item['source']} [success] ===")
+            blocks.append(fmt(item["result"]))
+        else:
+            blocks.append(f"=== {item['source']} [failure: {item['error']}] ===")
+    summary = (
+        f"{report['total']} total, {report['succeeded']} succeeded, "
+        f"{report['failed']} failed - {report['conclusion']}"
+    )
+    blocks.append(f"=== batch: {summary} ===")
+    return "\n\n".join(blocks)
+
+
 def cli() -> None:
     """Parse command-line arguments, then print the formatted document
 
     This is the ``reader`` console-script entry point; library users
-    should call main() instead.
+    should call main() instead, or batch() for many sources.
     """
     import argparse
 
     class Args(argparse.Namespace):
-        source: str = ""
+        source: str | None = None
+        batch: str | None = None
         format: str = "json"
         body_width: int | None = None
         table_format: str = "simple"
@@ -504,9 +727,22 @@ def cli() -> None:
     )
     _ = parser.add_argument(
         "source",
+        nargs="?",
+        default=argparse.SUPPRESS,  # Args.source's None default keeps it optional
         help=(
             "URL to fetch and parse, or path to a local HTML file "
             '(use "-" to read HTML from stdin)'
+        ),
+    )
+    _ = parser.add_argument(
+        "-b",
+        "--batch",
+        metavar="MANIFEST",
+        default=None,
+        help=(
+            "read sources from MANIFEST (one per line; blank lines and "
+            "'#' comments ignored) and process all of them, reporting "
+            "each source's outcome; incompatible with a source argument"
         ),
     )
     _ = parser.add_argument(
@@ -538,12 +774,20 @@ def cli() -> None:
         ),
     )
     args = parser.parse_args(namespace=Args())
-    obj = main(
-        args.source,
-        args.body_width,
-        args.table_format,
-    )
-    print(Format.formatter[args.format](obj))
+    if args.batch is not None:
+        if args.source is not None:
+            _ = parser.error("a source argument cannot be combined with --batch")
+        try:
+            report = batch(args.batch, args.body_width, args.table_format)
+        except ManifestError as err:
+            print(f"[{err}] {args.batch}", file=sys.stderr)
+            sys.exit(2)
+        print(batch_format(report, args.format))
+        # non-zero so shell pipelines can tell a clean batch from a dirty one
+        sys.exit(0 if report["failed"] == 0 else 1)
+    if args.source is None:
+        _ = parser.error("a source is required (or use --batch MANIFEST)")
+    print(Format.formatter[args.format](main(args.source, args.body_width, args.table_format)))
 
 
 if __name__ == "__main__":
