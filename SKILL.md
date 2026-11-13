@@ -15,7 +15,36 @@ Use this skill to search Google, scrape any URL, or fetch YouTube subtitles via 
 
 **Authentication:** Set `DECODO_AUTH_TOKEN` (Basic auth token from Decodo Dashboard → Scraping APIs) in your environment or in a `.env` file in the repo root.
 
-**Errors:** On failure the script writes a JSON error to stderr and exits with code 1.
+**Errors:** Every failure carries a stable, machine-readable `error_category` (single-task mode writes `{"error", "error_category", "details"?}` JSON to stderr and exits 1; batch mode embeds it per item). Categories:
+
+| `error_category`          | Meaning                                                                     |
+|---------------------------|-----------------------------------------------------------------------------|
+| `missing_credentials`     | `DECODO_AUTH_TOKEN` is not set                                              |
+| `invalid_parameters`      | Unknown target, missing/mismatched `query`/`url`, `geo`/`locale` on a non-`google_search` target, malformed batch JSON |
+| `request_failed`          | Transport error or HTTP status outside 2xx (`details.status_code` when known) |
+| `invalid_response`        | Response body is not valid JSON                                             |
+| `response_structure_error`| JSON parsed but `results[0].content` or an expected inner field is missing  |
+
+All parameter and credential checks run **before any network request**, so invalid combinations never hit the API.
+
+---
+
+## Batch entry point
+
+For automation, submit an ordered list of tasks with `--batch-file PATH` (use `-` for stdin). Input is a JSON array of task objects, or an object with a `tasks` array. Each task contains `target` plus the `query` or `url` that target requires; `geo`/`locale` are optional and only apply to `google_search`.
+
+One task failing never aborts the others. The command prints one summary JSON — each item shows its original `index`, `target`, `status` (`success`/`failed`), and either the actual scrape `result` or `error` + `error_category`; the document also reports `total`, `succeeded`, and `failed`. Exit code is `0` only when all tasks succeed, and `1` if any task failed (or input/credentials were invalid).
+
+```bash
+cat tasks.json | python3 tools/scrape.py --batch-file -
+```
+```json
+[
+  {"target": "google_search", "query": "best laptops 2025", "geo": "US"},
+  {"target": "universal", "url": "https://example.com"},
+  {"target": "amazon_search", "query": "laptop"}
+]
+```
 
 ---
 

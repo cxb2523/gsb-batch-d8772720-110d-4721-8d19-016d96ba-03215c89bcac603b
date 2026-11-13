@@ -112,6 +112,65 @@ Fetch a Reddit subreddit listing (use the subreddit URL):
 ```
 python3 tools/scrape.py --target reddit_subreddit --url "https://www.reddit.com/r/nba/"
 ```
+
+### Batch mode (automation entry point)
+For reliable use from automated pipelines, submit an ordered list of tasks in one call. Every task is validated **before any network request**, one task's failure never interrupts the others, and the run ends with a single machine-readable summary plus an exit code that distinguishes all-success from partial failure.
+
+Pass a JSON file (or `-` to read JSON from stdin). The input is either a bare array of task objects or an object with a `tasks` array:
+```json
+[
+  {"target": "google_search", "query": "best laptops 2025", "geo": "US", "locale": "en"},
+  {"target": "universal", "url": "https://example.com/article"},
+  {"target": "amazon_search", "query": "laptop"},
+  {"target": "youtube_subtitles", "query": "dFu9aKJoqGg"},
+  {"target": "reddit_post", "url": "https://www.reddit.com/r/nba/comments/17jrqc5/x/"},
+  {"target": "reddit_subreddit", "url": "https://www.reddit.com/r/nba/"},
+  {"target": "amazon", "url": "https://www.amazon.com/dp/B09H74FXNW"}
+]
+```
+```
+python3 tools/scrape.py --batch-file tasks.json
+# or: cat tasks.json | python3 tools/scrape.py --batch-file -
+```
+
+Each task needs `target` plus the argument that target requires:
+- `query` targets: `google_search`, `amazon_search`, `youtube_subtitles`
+- `url` targets: `universal`, `amazon`, `reddit_post`, `reddit_subreddit`
+- `geo` / `locale` are optional and only valid for `google_search`; supplying them for any other target is an `invalid_parameters` error.
+
+The summary is one JSON document. Every item carries its original `index`, `target`, a `status` of `success` or `failed`, and either the actual scrape `result` or a stable `error_category` with a human-readable `error`:
+```json
+{
+  "results": [
+    {"index": 0, "target": "universal", "status": "success", "result": "# Markdown..."},
+    {"index": 1, "target": "amazon", "status": "failed",
+     "error": "Scraper API returned HTTP 503", "error_category": "request_failed",
+     "details": {"status_code": 503}}
+  ],
+  "total": 2,
+  "succeeded": 1,
+  "failed": 1
+}
+```
+
+**Exit codes:** `0` when every task succeeded, `1` when at least one failed (or the batch input itself / credentials are invalid).
+
+**Stable error categories** (single-task mode prints the same `error_category` field on stderr):
+
+| `error_category`          | Meaning                                                              |
+|---------------------------|----------------------------------------------------------------------|
+| `missing_credentials`     | `DECODO_AUTH_TOKEN` is not set (checked before any request)          |
+| `invalid_parameters`      | Unknown target, missing/mismatched `query`/`url`, bad `geo`/`locale`, malformed batch JSON |
+| `request_failed`          | Transport error or HTTP status outside the 2xx range                 |
+| `invalid_response`        | Response body could not be parsed as JSON                            |
+| `response_structure_error`| JSON parsed but `results[0].content` (or an expected inner field) is missing |
+
+## Tests
+The suite under `tests/` uses in-memory fake HTTP responses and blocks raw socket creation, so it never reaches the real network or consumes real credentials. It covers success for all seven targets, missing-field / non-JSON / non-2xx responses, every pre-request validation path, batch isolation and exit codes, and CLI subprocess runs:
+```
+python -I -m unittest discover -s tests -v
+```
+
 ## Related resources
 [Decodo Web Scraping API documentation](https://help.decodo.com/docs/web-scraping-api-introduction)
 
