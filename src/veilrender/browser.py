@@ -1,0 +1,1201 @@
+"""Browser lifecycle management.
+
+Supports a single local browser (default) or a pool of remote workers
+via CDP (Chromium) or Playwright protocol (Firefox/Camoufox).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import glob
+import json
+import logging
+import os
+import random
+import subprocess
+import time
+import urllib.request
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from typing import Any, Literal
+
+from patchright.async_api import Browser, BrowserContext, Page, async_playwright
+
+from veilrender.config import settings
+from veilrender.egress_proxy import EgressProxy
+from veilrender.filters import load_blocklist, make_route_handler
+
+logger = logging.getLogger(__name__)
+
+
+class QueueFullError(Exception):
+    """Raised when the request queue depth limit is reached."""
+
+
+WaitUntil = Literal["commit", "domcontentloaded", "load", "networkidle"]
+
+CDP_PORT = 9222
+OBSCURA_CDP_PORT = 9223
+
+_TIER_LABELS: dict[int, str] = {0: "alpha", 1: "beta"}
+
+_CLOAKBROWSER_DEFAULT_DIR = os.path.expanduser("~/.cloakbrowser")
+_OBSCURA_DEFAULT_DIR = os.path.expanduser("~/.obscura")
+_OBSCURA_DEFAULT_VERSION = "0.2.2"
+_OBSCURA_GITHUB_BASE = "https://github.com/h4ckf0r0day/obscura/releases/download"
+
+_CLOAKBROWSER_PYPI_URL = "https://pypi.org/pypi/cloakbrowser/json"
+
+
+def _resolve_chromium_version() -> str:
+    """Resolve CloakBrowser's Chromium version from the PyPI wheel."""
+    import re
+    import zipfile
+    from io import BytesIO
+
+    pypi = _fetch_json(_CLOAKBROWSER_PYPI_URL, timeout=30)
+    whl_url = next(u["url"] for u in pypi["urls"] if u["filename"].endswith(".whl"))
+    whl_data = urllib.request.urlopen(whl_url, timeout=60).read()
+    with zipfile.ZipFile(BytesIO(whl_data)) as zf:
+        for name in zf.namelist():
+            if name.endswith("config.py"):
+                content = zf.read(name).decode()
+                m = re.search(r'CHROMIUM_VERSION\s*=\s*"([^"]+)"', content)
+                if m:
+                    return m.group(1)
+    raise RuntimeError("Could not resolve CloakBrowser Chromium version")
+
+
+def _detect_platform() -> str:
+    """Detect platform string for CloakBrowser download URL."""
+    import platform as _platform
+
+    machine = _platform.machine().lower()
+    system = _platform.system().lower()
+    if system == "linux":
+        arch = "x64" if machine in ("x86_64", "amd64") else "arm64"
+        return f"linux-{arch}"
+    if system == "darwin":
+        arch = "arm64" if machine == "arm64" else "x64"
+        return f"mac-{arch}"
+    raise RuntimeError(f"Unsupported platform: {system}-{machine}")
+
+
+def _download_browser_binary() -> str:
+    """Download CloakBrowser binary from cloakbrowser.dev (or mirror)."""
+    import tarfile
+
+    version = _resolve_chromium_version()
+    plat = _detect_platform()
+    gh_url = f"https://github.com/CloakHQ/cloakbrowser/releases/download/chromium-v{version}/cloakbrowser-{plat}.tar.gz"
+    mirror = os.environ.get("CLOAKBROWSER_MIRROR", "")
+    url = f"{mirror}/{gh_url}" if mirror else gh_url
+    dest_dir = os.path.join(_CLOAKBROWSER_DEFAULT_DIR, f"chromium-{version}")
+    binary = os.path.join(dest_dir, "chrome")
+
+    if os.path.isfile(binary):
+        logger.info("Binary already exists at %s", binary)
+        return binary
+
+    logger.info("Downloading CloakBrowser %s (%s)...", version, plat)
+    os.makedirs(dest_dir, exist_ok=True)
+    tmp = os.path.join(dest_dir, ".download.tar.gz")
+    try:
+        urllib.request.urlretrieve(url, tmp)
+        with tarfile.open(tmp, "r:gz") as tf:
+            tf.extractall(dest_dir)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+    if os.path.isfile(binary):
+        os.chmod(binary, 0o755)
+    logger.info("Downloaded CloakBrowser %s to %s", version, binary)
+    return binary
+
+
+def _find_browser_binary() -> str:
+    """Locate a CloakBrowser (or compatible) Chromium binary.
+
+    Search order:
+    1. CLOAKBROWSER_BINARY env var
+    2. ~/.cloakbrowser/*/chrome (pre-downloaded or Docker-installed)
+    3. Auto-download from cloakbrowser.dev
+    """
+    env_path = os.environ.get("CLOAKBROWSER_BINARY")
+    if env_path:
+        if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+            logger.info("Using browser binary from CLOAKBROWSER_BINARY: %s", env_path)
+            return env_path
+        raise FileNotFoundError(
+            f"CLOAKBROWSER_BINARY={env_path} not found or not executable"
+        )
+
+    candidates = sorted(
+        glob.glob(f"{_CLOAKBROWSER_DEFAULT_DIR}/*/chrome"), reverse=True
+    )
+    if candidates:
+        logger.info("Found browser binary: %s", candidates[0])
+        return candidates[0]
+
+    return _download_browser_binary()
+
+
+def _detect_obscura_platform() -> str:
+    """Detect platform string for Obscura download URL."""
+    import platform as _platform
+
+    machine = _platform.machine().lower()
+    system = _platform.system().lower()
+    if system == "linux":
+        arch = "x86_64" if machine in ("x86_64", "amd64") else "aarch64"
+        return f"{arch}-linux"
+    if system == "darwin":
+        arch = "aarch64" if machine == "arm64" else "x86_64"
+        return f"{arch}-macos"
+    raise RuntimeError(f"Unsupported platform for Obscura: {system}-{machine}")
+
+
+def _download_obscura_binary(version: str | None = None) -> str:
+    """Download Obscura binary from GitHub releases (stealth variant)."""
+    import tarfile
+
+    version = version or os.environ.get("OBSCURA_VERSION", _OBSCURA_DEFAULT_VERSION)
+    plat = _detect_obscura_platform()
+    gh_url = f"{_OBSCURA_GITHUB_BASE}/v{version}/obscura-{plat}-stealth.tar.gz"
+    mirror = os.environ.get("OBSCURA_MIRROR", "")
+    url = f"{mirror}/{gh_url}" if mirror else gh_url
+    dest_dir = os.path.join(_OBSCURA_DEFAULT_DIR, f"v{version}")
+    binary = os.path.join(dest_dir, "obscura")
+
+    if os.path.isfile(binary):
+        logger.info("Obscura binary already exists at %s", binary)
+        return binary
+
+    logger.info("Downloading Obscura %s (%s)...", version, plat)
+    os.makedirs(dest_dir, exist_ok=True)
+    tmp = os.path.join(dest_dir, ".download.tar.gz")
+    try:
+        urllib.request.urlretrieve(url, tmp)
+        with tarfile.open(tmp, "r:gz") as tf:
+            tf.extractall(dest_dir, filter="data")
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+    if os.path.isfile(binary):
+        os.chmod(binary, 0o755)
+    logger.info("Downloaded Obscura %s to %s", version, binary)
+    return binary
+
+
+def _find_obscura_binary() -> str:
+    """Locate the Obscura binary.
+
+    Search order:
+    1. OBSCURA_BINARY env var
+    2. ~/.obscura/*/obscura (pre-downloaded)
+    3. Auto-download from GitHub releases
+    """
+    env_path = os.environ.get("OBSCURA_BINARY")
+    if env_path:
+        if os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+            logger.info("Using Obscura binary from OBSCURA_BINARY: %s", env_path)
+            return env_path
+        raise FileNotFoundError(
+            f"OBSCURA_BINARY={env_path} not found or not executable"
+        )
+
+    candidates = sorted(glob.glob(f"{_OBSCURA_DEFAULT_DIR}/*/obscura"), reverse=True)
+    if candidates:
+        logger.info("Found Obscura binary: %s", candidates[0])
+        return candidates[0]
+
+    return _download_obscura_binary()
+
+
+def _get_stealth_args() -> list[str]:
+    """Get stealth launch arguments for CloakBrowser."""
+    fingerprint = random.randint(10000, 99999)
+    return [
+        "--no-sandbox",
+        f"--fingerprint={fingerprint}",
+        "--fingerprint-platform=linux",
+    ]
+
+
+def _fetch_json(url: str, timeout: int = 2) -> Any:
+    """Fetch and parse JSON from a URL (blocking)."""
+    resp = urllib.request.urlopen(url, timeout=timeout)
+    return json.loads(resp.read())
+
+
+def _count_cdp_pages(http_base: str, timeout: int = 2) -> int:
+    """Count open page targets via CDP /json endpoint."""
+    try:
+        targets = _fetch_json(f"{http_base}/json", timeout)
+        if isinstance(targets, list):
+            return sum(1 for t in targets if t.get("type") == "page")
+    except Exception:
+        pass
+    return -1
+
+
+def _ws_to_http(endpoint: str) -> str:
+    """Convert a ws(s):// URL to http(s):// for CDP HTTP API."""
+    if endpoint.startswith("wss://"):
+        return "https://" + endpoint[6:]
+    if endpoint.startswith("ws://"):
+        return "http://" + endpoint[5:]
+    return endpoint
+
+
+def _resolve_to_ip(endpoint: str) -> str:
+    """Replace hostname with IP in a CDP endpoint URL.
+
+    Chromium's CDP HTTP API rejects Host headers that aren't IP
+    addresses or ``localhost``. This resolves the hostname to an IP
+    so connections from Docker containers (where the Host header
+    would be e.g. ``browser-worker:9222``) work correctly.
+    """
+    import socket
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(endpoint)
+    host = parsed.hostname
+    if not host or host in ("localhost", "127.0.0.1", "::1"):
+        return endpoint
+    try:
+        float(host.replace(".", "").replace(":", ""))
+        return endpoint
+    except ValueError:
+        pass
+    try:
+        ip = socket.gethostbyname(host)
+        new_netloc = f"{ip}:{parsed.port}" if parsed.port else ip
+        return urlunparse(parsed._replace(netloc=new_netloc))
+    except socket.gaierror:
+        return endpoint
+
+
+# ---------------------------------------------------------------------------
+# Worker base interface
+# ---------------------------------------------------------------------------
+
+
+class _BaseWorker:
+    """Common interface for local and remote browser workers."""
+
+    endpoint: str = "unknown"
+    worker_type: str = "unknown"
+    tier: int = 1
+    force_wait_until: WaitUntil | None = None
+
+    def __init__(self, max_concurrent: int) -> None:
+        self.max_concurrent = max_concurrent
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self.healthy = False
+        self._stuck_since: float | None = None
+        self._last_active: int = 0
+        # Set by BrowserManager before start(): browser-level proxy used by
+        # engines whose startup can be configured (LocalWorker, ObscuraWorker).
+        self.proxy_url: str | None = None
+
+    async def start(self) -> None:
+        raise NotImplementedError
+
+    def _mark_started(self) -> None:
+        """Restore ``healthy`` after a start when there is nothing to attest.
+
+        With the egress proxy disabled there is no canary to run, and in
+        single-worker mode there is no health loop to run one later, so a
+        self-restart must mark itself usable or the worker stays dead until
+        the process restarts. With enforcement enabled ``BrowserManager`` owns
+        ``healthy`` and sets it only after a canary proves the proxy is in the
+        path.
+        """
+        if not settings.egress_proxy:
+            self.healthy = True
+
+    async def stop(self) -> None:
+        raise NotImplementedError
+
+    async def ensure_ready(self) -> Browser:
+        raise NotImplementedError
+
+    async def get_cdp_url(self) -> str | None:
+        raise NotImplementedError
+
+    @property
+    def is_alive(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def active(self) -> int:
+        return self.max_concurrent - self._semaphore._value
+
+    @property
+    def available(self) -> int:
+        return self._semaphore._value
+
+    async def browser_page_count(self) -> int:
+        """Query actual open page count from the browser via CDP."""
+        return -1
+
+    @asynccontextmanager
+    async def get_page(
+        self,
+        *,
+        viewport_width: int | None = None,
+        viewport_height: int | None = None,
+        device_scale_factor: float | None = None,
+        color_scheme: str | None = None,
+        route_handler: Callable | None = None,
+        browser_proxy: dict[str, str] | None = None,
+    ) -> AsyncIterator[tuple[BrowserContext, Page]]:
+        async with self._semaphore:
+            browser = await self.ensure_ready()
+            context: BrowserContext | None = None
+            try:
+                context_kwargs: dict[str, Any] = {
+                    "accept_downloads": False,
+                    "viewport": {
+                        "width": viewport_width or settings.viewport_width,
+                        "height": viewport_height or settings.viewport_height,
+                    },
+                    "user_agent": None,
+                }
+                if device_scale_factor is not None:
+                    context_kwargs["device_scale_factor"] = device_scale_factor
+                if color_scheme is not None:
+                    context_kwargs["color_scheme"] = color_scheme
+                if browser_proxy is not None:
+                    context_kwargs["proxy"] = browser_proxy
+                context = await browser.new_context(**context_kwargs)
+                page = await context.new_page()
+                if route_handler:
+                    await page.route("**/*", route_handler)
+                yield context, page
+            finally:
+                if context:
+                    await context.close()
+
+
+# ---------------------------------------------------------------------------
+# Local worker — spawns a Chromium process on this machine
+# ---------------------------------------------------------------------------
+
+
+class LocalWorker(_BaseWorker):
+    """Browser worker backed by a local Chromium process."""
+
+    def __init__(self, cdp_port: int, max_concurrent: int) -> None:
+        super().__init__(max_concurrent)
+        self.cdp_port = cdp_port
+        self.endpoint = "local"
+        self.worker_type = "cdp"
+        self._playwright = None
+        self._browser: Browser | None = None
+        self._chrome_proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+        self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        executable_path = _find_browser_binary()
+        stealth_args = _get_stealth_args()
+
+        chrome_args = [
+            executable_path,
+            "--headless",
+            f"--remote-debugging-port={self.cdp_port}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            # All HTTP(S) traffic goes through the egress proxy; keep QUIC and
+            # non-proxied WebRTC UDP from becoming a direct network path.
+            "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            *stealth_args,
+        ]
+        if self.proxy_url:
+            # Browser-level proxy covers contexts this process does not create
+            # itself, such as targets opened over the /cdp endpoint.
+            chrome_args.extend(
+                [
+                    f"--proxy-server={self.proxy_url}",
+                    "--proxy-bypass-list=<-loopback>",
+                ]
+            )
+        chrome_args.append("about:blank")
+
+        self._chrome_proc = subprocess.Popen(
+            chrome_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+        cdp_url = f"http://127.0.0.1:{self.cdp_port}"
+        for _ in range(30):
+            try:
+                urllib.request.urlopen(f"{cdp_url}/json/version", timeout=1)
+                break
+            except Exception:
+                await asyncio.sleep(0.5)
+        else:
+            stderr = (
+                self._chrome_proc.stderr.read().decode()
+                if self._chrome_proc.stderr
+                else ""
+            )
+            raise RuntimeError(
+                f"Chromium CDP not ready after 15s. stderr: {stderr[:500]}"
+            )
+
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+        logger.info(
+            "Local browser started (CloakBrowser %s, CDP on :%d)",
+            executable_path,
+            self.cdp_port,
+        )
+        self._mark_started()
+
+    async def stop(self) -> None:
+        self.healthy = False
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        if self._chrome_proc:
+            self._chrome_proc.terminate()
+            try:
+                self._chrome_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._chrome_proc.kill()
+            self._chrome_proc = None
+
+    async def ensure_ready(self) -> Browser:
+        async with self._lock:
+            chrome_dead = (
+                self._chrome_proc is None or self._chrome_proc.poll() is not None
+            )
+            browser_dead = self._browser is None or not self._browser.is_connected()
+            if chrome_dead or browser_dead:
+                logger.warning("Local browser not connected, restarting...")
+                self.healthy = False
+                await self.stop()
+                await self.start()
+            assert self._browser is not None
+            return self._browser
+
+    async def get_cdp_url(self) -> str | None:
+        await self.ensure_ready()
+        try:
+            data = await asyncio.to_thread(
+                _fetch_json,
+                f"http://127.0.0.1:{self.cdp_port}/json/version",
+            )
+            ws_url = data.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+        except Exception:
+            logger.debug("Failed to get CDP WebSocket URL", exc_info=True)
+        return f"ws://127.0.0.1:{self.cdp_port}"
+
+    async def browser_page_count(self) -> int:
+        return await asyncio.to_thread(
+            _count_cdp_pages, f"http://127.0.0.1:{self.cdp_port}"
+        )
+
+    @property
+    def is_alive(self) -> bool:
+        return self._browser is not None and self._browser.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# Obscura worker — spawns a local Obscura process
+# ---------------------------------------------------------------------------
+
+
+class ObscuraWorker(_BaseWorker):
+    """Browser worker backed by a local Obscura process."""
+
+    tier = 0
+    force_wait_until = "load"
+
+    def __init__(self, cdp_port: int, max_concurrent: int) -> None:
+        super().__init__(max_concurrent)
+        self.cdp_port = cdp_port
+        self.endpoint = "obscura-local"
+        self.worker_type = "cdp"
+        self._playwright = None
+        self._browser: Browser | None = None
+        self._proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+        self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        executable_path = _find_obscura_binary()
+
+        obscura_args = [
+            executable_path,
+            "serve",
+            f"--port={self.cdp_port}",
+            "--stealth",
+        ]
+        if self.proxy_url:
+            obscura_args.append(f"--proxy={self.proxy_url}")
+
+        self._proc = subprocess.Popen(
+            obscura_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+        cdp_url = f"http://127.0.0.1:{self.cdp_port}"
+        for _ in range(30):
+            try:
+                urllib.request.urlopen(f"{cdp_url}/json/version", timeout=1)
+                break
+            except Exception:
+                if self._proc.poll() is not None:
+                    stderr = (
+                        self._proc.stderr.read().decode() if self._proc.stderr else ""
+                    )
+                    raise RuntimeError(
+                        f"Obscura exited prematurely. stderr: {stderr[:500]}"
+                    )
+                await asyncio.sleep(0.5)
+        else:
+            stderr = self._proc.stderr.read().decode() if self._proc.stderr else ""
+            raise RuntimeError(
+                f"Obscura CDP not ready after 15s. stderr: {stderr[:500]}"
+            )
+
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+        logger.info(
+            "Obscura browser started (%s, CDP on :%d)",
+            executable_path,
+            self.cdp_port,
+        )
+        self._mark_started()
+
+    async def stop(self) -> None:
+        self.healthy = False
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        if self._proc:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
+
+    async def ensure_ready(self) -> Browser:
+        async with self._lock:
+            proc_dead = self._proc is None or self._proc.poll() is not None
+            browser_dead = self._browser is None or not self._browser.is_connected()
+            if proc_dead or browser_dead:
+                logger.warning("Obscura not connected, restarting...")
+                self.healthy = False
+                await self.stop()
+                await self.start()
+            assert self._browser is not None
+            return self._browser
+
+    async def get_cdp_url(self) -> str | None:
+        await self.ensure_ready()
+        try:
+            data = await asyncio.to_thread(
+                _fetch_json,
+                f"http://127.0.0.1:{self.cdp_port}/json/version",
+            )
+            ws_url = data.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+        except Exception:
+            logger.debug("Failed to get Obscura CDP WebSocket URL", exc_info=True)
+        return f"ws://127.0.0.1:{self.cdp_port}"
+
+    async def browser_page_count(self) -> int:
+        return await asyncio.to_thread(
+            _count_cdp_pages, f"http://127.0.0.1:{self.cdp_port}"
+        )
+
+    @property
+    def is_alive(self) -> bool:
+        return self._browser is not None and self._browser.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# Remote worker — connects to an external CDP endpoint
+# ---------------------------------------------------------------------------
+
+
+class RemoteWorker(_BaseWorker):
+    """Browser worker backed by a remote CDP endpoint."""
+
+    def __init__(self, endpoint: str, max_concurrent: int) -> None:
+        super().__init__(max_concurrent)
+        self.endpoint = endpoint
+        self.worker_type = "cdp"
+        self._playwright = None
+        self._browser: Browser | None = None
+        self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        self._playwright = await async_playwright().start()
+        resolved = _resolve_to_ip(self.endpoint)
+        self._browser = await self._playwright.chromium.connect_over_cdp(resolved)
+        ctx = await self._browser.new_context()
+        page = await ctx.new_page()
+        await page.close()
+        await ctx.close()
+        logger.info("Connected to remote browser at %s (verified)", self.endpoint)
+        self._mark_started()
+
+    async def stop(self) -> None:
+        self.healthy = False
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+
+    async def ensure_ready(self) -> Browser:
+        async with self._lock:
+            if self._browser is None or not self._browser.is_connected():
+                logger.warning(
+                    "Remote browser %s disconnected, reconnecting...", self.endpoint
+                )
+                self.healthy = False
+                await self.stop()
+                await self.start()
+            assert self._browser is not None
+            return self._browser
+
+    def _http_base(self) -> str:
+        return _ws_to_http(_resolve_to_ip(self.endpoint))
+
+    async def get_cdp_url(self) -> str | None:
+        await self.ensure_ready()
+        try:
+            data = await asyncio.to_thread(
+                _fetch_json, f"{self._http_base()}/json/version"
+            )
+            ws_url = data.get("webSocketDebuggerUrl")
+            if ws_url:
+                return ws_url
+        except Exception:
+            logger.debug("Failed to get CDP URL for %s", self.endpoint, exc_info=True)
+        if self.endpoint.startswith(("ws://", "wss://")):
+            return self.endpoint
+        return None
+
+    async def browser_page_count(self) -> int:
+        return await asyncio.to_thread(_count_cdp_pages, self._http_base())
+
+    @property
+    def is_alive(self) -> bool:
+        return self._browser is not None and self._browser.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# Playwright-protocol worker — for Firefox/Camoufox
+# ---------------------------------------------------------------------------
+
+
+class PlaywrightWorker(_BaseWorker):
+    """Browser worker connected via Playwright protocol (Firefox/Camoufox)."""
+
+    def __init__(self, endpoint: str, max_concurrent: int) -> None:
+        super().__init__(max_concurrent)
+        self.endpoint = endpoint
+        self.worker_type = "playwright"
+        self._playwright = None
+        self._browser: Browser | None = None
+        self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.firefox.connect(self.endpoint)
+        ctx = await self._browser.new_context()
+        page = await ctx.new_page()
+        await page.close()
+        await ctx.close()
+        logger.info(
+            "Connected to Playwright/Firefox browser at %s (verified)", self.endpoint
+        )
+        self._mark_started()
+
+    async def stop(self) -> None:
+        self.healthy = False
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+
+    async def ensure_ready(self) -> Browser:
+        async with self._lock:
+            if self._browser is None or not self._browser.is_connected():
+                logger.warning(
+                    "Playwright browser %s disconnected, reconnecting...",
+                    self.endpoint,
+                )
+                self.healthy = False
+                await self.stop()
+                await self.start()
+            assert self._browser is not None
+            return self._browser
+
+    async def get_cdp_url(self) -> str | None:
+        return None
+
+    async def browser_page_count(self) -> int:
+        if self._browser and self._browser.is_connected():
+            return sum(len(c.pages) for c in self._browser.contexts)
+        return -1
+
+    @property
+    def is_alive(self) -> bool:
+        return self._browser is not None and self._browser.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# BrowserManager — pool coordinator
+# ---------------------------------------------------------------------------
+
+
+class BrowserManager:
+    """Manages browser workers — local or remote pool.
+
+    When ``VEILRENDER_WORKERS`` is not set, spawns a single local
+    Chromium process (identical to pre-pool behavior). When set,
+    connects to remote workers via CDP or Playwright protocol.
+    """
+
+    def __init__(self) -> None:
+        if settings.workers:
+            self._workers: list[_BaseWorker] = []
+            for protocol, endpoint in settings.workers:
+                if protocol == "playwright":
+                    self._workers.append(
+                        PlaywrightWorker(endpoint, settings.worker_max_concurrent)
+                    )
+                elif protocol == "obscura":
+                    if settings.egress_proxy and not settings.obscura_remote_proxied:
+                        logger.error(
+                            "Not using remote Obscura worker %s: its traffic "
+                            "cannot be enforced by the egress proxy. Start it "
+                            "with --proxy pointing at this instance and set "
+                            "VEILRENDER_OBSCURA_REMOTE_PROXIED=true.",
+                            endpoint,
+                        )
+                        continue
+                    w = RemoteWorker(endpoint, settings.worker_max_concurrent)
+                    w.tier = 0
+                    self._workers.append(w)
+                else:
+                    self._workers.append(
+                        RemoteWorker(endpoint, settings.worker_max_concurrent)
+                    )
+            self._is_local = False
+        elif settings.obscura_enabled:
+            self._workers = [
+                ObscuraWorker(OBSCURA_CDP_PORT, settings.obscura_max_concurrent),
+                LocalWorker(CDP_PORT, settings.max_concurrent),
+            ]
+            # Multi-worker mode: need health loop even though both are local
+            self._is_local = False
+        else:
+            self._workers = [LocalWorker(CDP_PORT, settings.max_concurrent)]
+            self._is_local = True
+
+        self._health_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._queue_depth: int = 0
+        self._egress_proxy: EgressProxy | None = None
+
+        self._blocklist = (
+            load_blocklist(settings.blocked_domains_extra)
+            if settings.resource_filter
+            else frozenset()
+        )
+        # The route handler enforces both ad/tracker filtering and the SSRF
+        # destination guard, so it is always installed: an empty blocklist
+        # disables filtering only, never the security check.
+        self._route_handler = make_route_handler(self._blocklist)
+
+    async def start(self) -> None:
+        # The proxy starts first: every worker is configured to use it, and
+        # Obscura can only be pointed at it at process launch.
+        if settings.egress_proxy:
+            self._egress_proxy = EgressProxy.from_settings()
+            await self._egress_proxy.start()
+            for w in self._workers:
+                if isinstance(w, ObscuraWorker):
+                    w.proxy_url = self._egress_proxy.obscura_proxy_url
+                elif isinstance(w, LocalWorker):
+                    w.proxy_url = self._egress_proxy.server_url
+            if self._egress_proxy.advertised_host_is_loopback and any(
+                isinstance(w, (RemoteWorker, PlaywrightWorker)) for w in self._workers
+            ):
+                logger.warning(
+                    "Remote workers cannot reach the egress proxy at %s; set "
+                    "VEILRENDER_EGRESS_ADVERTISE (and "
+                    "VEILRENDER_EGRESS_PROXY_TOKEN when the bind is not "
+                    "loopback)",
+                    self._egress_proxy.server_url,
+                )
+        else:
+            logger.warning(
+                "Egress proxy disabled (VEILRENDER_EGRESS_PROXY=false): "
+                "outbound destinations are not enforced"
+            )
+
+        for w in self._workers:
+            try:
+                await w.start()
+            except Exception:
+                logger.error("Failed to start worker %s", w.endpoint, exc_info=True)
+                w.healthy = False
+            else:
+                # A started worker is not trusted until it proves that its
+                # traffic reaches the egress proxy.
+                w.healthy = await self._verify_worker(w)
+                if not w.healthy and self._egress_proxy is not None:
+                    logger.error(
+                        "Worker %s did not route traffic through the egress "
+                        "proxy; marking it unhealthy",
+                        w.endpoint,
+                    )
+        healthy_count = sum(1 for w in self._workers if w.healthy)
+        if healthy_count == 0:
+            logger.warning("0 of %d workers healthy at startup", len(self._workers))
+        # The loop reconnects dead workers and re-attests the egress path, so
+        # it also runs in single-worker mode when enforcement is enabled.
+        if not self._is_local or self._egress_proxy is not None:
+            self._health_task = asyncio.create_task(self._health_loop())
+
+    async def _verify_worker(self, worker: _BaseWorker) -> bool:
+        """Attest that a worker's traffic actually reaches the egress proxy.
+
+        Canary navigations use a ``.invalid`` hostname, so the browser can
+        only deliver them to the proxy by forwarding them. The proxy refuses
+        each token on receipt, before DNS, which distinguishes a proxied
+        browser from one that resolves the name itself. Both plain HTTP and
+        CONNECT (HTTPS) are checked, and local engines are additionally
+        checked through their browser-level proxy (the path used by /cdp).
+        """
+        proxy = self._egress_proxy
+        if proxy is None:
+            return True
+
+        try:
+            browser = await worker.ensure_ready()
+        except Exception:
+            logger.warning(
+                "Egress canary could not run for %s",
+                worker.endpoint,
+                exc_info=True,
+            )
+            return False
+
+        # Obscura ignores per-context proxy settings and is configured at
+        # launch; every other engine takes the context proxy.
+        context_proxy = (
+            None if isinstance(worker, ObscuraWorker) else proxy.playwright_proxy()
+        )
+        if not await self._run_canary(browser, context_proxy):
+            return False
+
+        # Local engines also run a browser-level proxy, which covers contexts
+        # created outside BrowserManager (the /cdp endpoint). Verify that
+        # path only when no auth is required: Chromium's --proxy-server does
+        # not carry credentials.
+        if isinstance(worker, (LocalWorker, ObscuraWorker)) and proxy.token is None:
+            if context_proxy is None:
+                return True  # Obscura's canary already used the launch proxy
+            return await self._run_canary(browser, None)
+        return True
+
+    async def _run_canary(
+        self,
+        browser: Browser,
+        context_proxy: dict[str, str] | None,
+    ) -> bool:
+        """Run plain-HTTP and CONNECT canaries in a fresh context."""
+        proxy = self._egress_proxy
+        if proxy is None:
+            return True
+        for scheme in ("http", "https"):
+            url, token = proxy.canary_url(scheme)
+            context: BrowserContext | None = None
+            try:
+                context_kwargs: dict[str, Any] = {}
+                if context_proxy is not None:
+                    context_kwargs["proxy"] = context_proxy
+                context = await browser.new_context(**context_kwargs)
+                page = await context.new_page()
+                try:
+                    await page.goto(url, wait_until="commit", timeout=8000)
+                except Exception:
+                    pass  # a refusal may surface as a navigation error
+                if not await proxy.wait_canary(token, timeout=2.0):
+                    return False
+            except Exception:
+                logger.warning(
+                    "Egress canary (%s) could not run", scheme, exc_info=True
+                )
+                return False
+            finally:
+                proxy.discard_canary(token)
+                if context is not None:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+        return True
+
+    async def stop(self) -> None:
+        if self._health_task:
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except asyncio.CancelledError:
+                pass
+            self._health_task = None
+        for w in self._workers:
+            await w.stop()
+        if self._egress_proxy is not None:
+            await self._egress_proxy.stop()
+            self._egress_proxy = None
+        logger.info("Browser stopped")
+
+    async def _health_loop(self) -> None:
+        interval = settings.worker_health_interval
+        stuck_threshold = settings.timeout * 2 / 1000
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            for w in self._workers:
+                try:
+                    alive = w.is_alive
+                    if not alive and w.healthy:
+                        logger.warning("Worker %s went unhealthy", w.endpoint)
+                        w.healthy = False
+                    elif not alive and not w.healthy:
+                        logger.info("Attempting reconnect to %s", w.endpoint)
+                        try:
+                            await w.ensure_ready()
+                            # Reconnection is not enough: attest the egress
+                            # path again before the worker can be selected.
+                            w.healthy = await self._verify_worker(w)
+                        except Exception:
+                            logger.debug("Reconnect failed for %s", w.endpoint)
+                    elif alive and not w.healthy:
+                        if await self._verify_worker(w):
+                            w.healthy = True
+                            logger.info("Worker %s recovered", w.endpoint)
+                        else:
+                            logger.error(
+                                "Worker %s is alive but does not route through "
+                                "the egress proxy; keeping it disabled",
+                                w.endpoint,
+                            )
+
+                    # Stuck detection: active slots not changing for too long
+                    cur_active = w.active
+                    if w.healthy and cur_active > 0:
+                        if cur_active != w._last_active:
+                            w._stuck_since = now
+                            w._last_active = cur_active
+                        elif w._stuck_since and now - w._stuck_since > stuck_threshold:
+                            logger.warning(
+                                "Worker %s stuck (%d slots occupied for %.0fs), restarting",
+                                w.endpoint,
+                                cur_active,
+                                now - w._stuck_since,
+                            )
+                            await w.stop()
+                            try:
+                                await w.start()
+                            except Exception:
+                                logger.error(
+                                    "Failed to restart stuck worker %s",
+                                    w.endpoint,
+                                    exc_info=True,
+                                )
+                            w.healthy = await self._verify_worker(w)
+                            if not w.healthy and self._egress_proxy is not None:
+                                logger.error(
+                                    "Restarted worker %s does not route "
+                                    "through the egress proxy; marking it "
+                                    "unhealthy",
+                                    w.endpoint,
+                                )
+                            w._stuck_since = None
+                            w._last_active = 0
+                    else:
+                        w._stuck_since = None
+                        w._last_active = 0
+                except Exception:
+                    logger.debug("Health check error for %s", w.endpoint, exc_info=True)
+
+    def _pick_worker(self, *, min_tier: int = 0) -> _BaseWorker:
+        healthy = [w for w in self._workers if w.healthy and w.tier >= min_tier]
+        if not healthy:
+            raise RuntimeError("No healthy browser workers available")
+        return min(healthy, key=lambda w: (w.tier, -w.available))
+
+    def has_fallback_tier(self, current_tier: int) -> bool:
+        """Check if any healthy worker exists at a higher tier."""
+        return any(w.healthy and w.tier > current_tier for w in self._workers)
+
+    @property
+    def min_healthy_tier(self) -> int | None:
+        """Return the lowest tier among healthy workers, or None."""
+        healthy_tiers = [w.tier for w in self._workers if w.healthy]
+        return min(healthy_tiers) if healthy_tiers else None
+
+    @property
+    def active_pages(self) -> int:
+        return sum(w.active for w in self._workers)
+
+    @property
+    def is_browser_alive(self) -> bool:
+        return any(w.is_alive for w in self._workers)
+
+    @property
+    def has_remote_workers(self) -> bool:
+        """Whether the pool contains browsers this process cannot launch."""
+        return any(
+            isinstance(w, (RemoteWorker, PlaywrightWorker)) for w in self._workers
+        )
+
+    @property
+    def egress_proxy(self) -> EgressProxy | None:
+        """The enforcing egress proxy, or None when it is disabled."""
+        return self._egress_proxy
+
+    @property
+    def total_capacity(self) -> int:
+        return sum(w.max_concurrent for w in self._workers if w.healthy)
+
+    @property
+    def queue_depth(self) -> int:
+        """Number of requests waiting for or holding a browser slot."""
+        return self._queue_depth
+
+    async def worker_stats(self) -> list[dict]:
+        result = []
+        for i, w in enumerate(self._workers):
+            browser_pages = await w.browser_page_count() if w.healthy else -1
+            result.append(
+                {
+                    "index": i,
+                    "type": w.worker_type,
+                    "endpoint": w.endpoint,
+                    "tier": w.tier,
+                    "healthy": w.healthy,
+                    "active": w.active,
+                    "browser_pages": browser_pages,
+                    "max_concurrent": w.max_concurrent,
+                    "is_alive": w.is_alive,
+                }
+            )
+        return result
+
+    def tier_stats(self) -> list[dict]:
+        """Aggregate active/capacity per tier for dashboard rings."""
+        tiers: dict[int, dict] = {}
+        for w in self._workers:
+            entry = tiers.setdefault(
+                w.tier, {"tier": w.tier, "active": 0, "capacity": 0}
+            )
+            entry["active"] += w.active
+            if w.healthy:
+                entry["capacity"] += w.max_concurrent
+            entry["label"] = _TIER_LABELS.get(w.tier, "unknown")
+        return sorted(tiers.values(), key=lambda s: s["tier"])
+
+    async def get_cdp_url(
+        self, worker_index: int | None = None, *, min_tier: int = 1
+    ) -> str | None:
+        if settings.egress_proxy and self.has_remote_workers:
+            logger.warning(
+                "/cdp is unavailable while remote workers are configured: "
+                "only contexts created by VeilRender are proxied on them"
+            )
+            return None
+        if worker_index is not None and 0 <= worker_index < len(self._workers):
+            w = self._workers[worker_index]
+            if w.healthy and w.worker_type == "cdp":
+                return await w.get_cdp_url()
+            return None
+        cdp_workers = [
+            w
+            for w in self._workers
+            if w.healthy and w.worker_type == "cdp" and w.tier >= min_tier
+        ]
+        if not cdp_workers:
+            return None
+        w = max(cdp_workers, key=lambda w: w.available)
+        return await w.get_cdp_url()
+
+    @asynccontextmanager
+    async def get_page(
+        self,
+        *,
+        viewport_width: int | None = None,
+        viewport_height: int | None = None,
+        device_scale_factor: float | None = None,
+        color_scheme: str | None = None,
+        min_tier: int = 0,
+    ) -> AsyncIterator[tuple[BrowserContext, Page, str, WaitUntil | None]]:
+        if settings.max_queue > 0 and self._queue_depth >= settings.max_queue:
+            raise QueueFullError("Request queue depth limit reached")
+        self._queue_depth += 1
+        try:
+            worker = self._pick_worker(min_tier=min_tier)
+            engine_label = _TIER_LABELS.get(worker.tier, "unknown")
+            async with worker.get_page(
+                viewport_width=viewport_width,
+                viewport_height=viewport_height,
+                device_scale_factor=device_scale_factor,
+                color_scheme=color_scheme,
+                route_handler=self._route_handler,
+                browser_proxy=(
+                    self._egress_proxy.playwright_proxy()
+                    if self._egress_proxy is not None
+                    else None
+                ),
+            ) as (ctx, page):
+                yield ctx, page, engine_label, worker.force_wait_until
+        finally:
+            self._queue_depth -= 1
+
+
+browser_manager = BrowserManager()

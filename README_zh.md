@@ -1,0 +1,325 @@
+# VeilRender
+
+[![PyPI version](https://img.shields.io/pypi/v/veilrender?color=green)](https://pypi.org/project/veilrender/)
+[![GitHub release](https://img.shields.io/github/v/release/Oaklight/veilrender?color=green)](https://github.com/Oaklight/veilrender/releases/latest)
+[![CI](https://github.com/Oaklight/veilrender/actions/workflows/ci.yml/badge.svg)](https://github.com/Oaklight/veilrender/actions/workflows/ci.yml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/oaklight/veilrender?color=blue)](https://hub.docker.com/r/oaklight/veilrender)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+
+**中文** | [English](README_en.md)
+
+具备反检测能力的无头浏览器渲染 API —— 支持通过 Docker 或 pip 自托管部署。
+
+VeilRender 接受一个 URL，使用反检测 Chromium 浏览器返回完整渲染后的页面内容（HTML、Markdown、readability 提取的正文）。专为 fetch 工具在遇到 JavaScript 渲染页面或反爬页面时失败的场景而设计。
+
+![仪表盘](assets/dashboard.png)
+
+## 特性
+
+- **反检测渲染** —— [CloakBrowser](https://github.com/CloakHQ/CloakBrowser)（71 项 C++ 指纹补丁）+ [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)（Playwright 反检测分支）
+- **多种输出格式** —— 原始 HTML、Markdown、readability 提取的正文
+- **截图功能** —— 全页、视口或元素截图；支持 PNG/JPEG 格式及质量/缩放控制
+- **水平扩展** —— 网关 + 远程浏览器工作节点池，支持健康检查和自动重连
+- **混合浏览器后端** —— Chromium（CDP）和 Firefox/Camoufox（Playwright 协议）可在同一池中共存
+- **Prometheus 指标** —— `/metrics` 端点提供延迟百分位、每工作节点状态指标
+- **仪表盘** —— `/` 路径展示实时统计，支持国际化（en/zh），含 SVG 容量仪表
+- **广告/追踪器拦截** —— 来自 [StevenBlack/hosts](https://github.com/StevenBlack/hosts) 的 82k 域名黑名单
+- **渲染缓存** —— L1 内存缓存 + L2 S3 兼容存储（R2、Oracle、AWS）
+- **CDP 代理** —— 通过 `/cdp` 直接 WebSocket 访问浏览器
+- **零外部依赖**（除 `patchright` 外）—— HTTP 服务器、S3 客户端、HTML 解析均为内置模块
+
+## 快速开始
+
+### Docker（推荐）
+
+```bash
+# 单实例模式，内置 CloakBrowser
+docker run -p 7860:7860 -e VEILRENDER_API_TOKEN=your-secret oaklight/veilrender:latest
+
+# 仅网关模式（不含浏览器，336MB）
+docker run -p 7860:7860 oaklight/veilrender:gateway
+```
+
+### pip
+
+```bash
+pip install veilrender
+veilrender  # 在 :7860 启动，首次运行时自动下载 CloakBrowser 二进制文件
+```
+
+### Docker Compose —— 工作节点池
+
+```yaml
+# docker-compose.yaml
+services:
+  veilrender:
+    image: oaklight/veilrender:gateway
+    ports: ["7860:7860"]
+    environment:
+      - VEILRENDER_WORKERS=cdp://browser-worker:9222
+  browser-worker:
+    image: cloakhq/cloakbrowser
+    command: ["cloakserve"]
+```
+
+更多 compose 示例（包括 Chromium + Camoufox 混合池）请参阅 `deploy/` 目录。
+
+## API
+
+### GET /health
+
+```json
+{"status": "ok"}
+```
+
+### POST /render
+
+渲染 URL 并返回页面内容。
+
+```bash
+curl -X POST http://localhost:7860/render \
+  -H "Authorization: Bearer your-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "formats": ["html", "readability", "markdown"]}'
+```
+
+请求体：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `url` | string | *（必填）* | 要渲染的 URL |
+| `formats` | string[] | `["html"]` | 输出格式：`html`、`readability`、`markdown` |
+| `wait_until` | string | `"load"` | Playwright 等待策略：`load`、`domcontentloaded`、`networkidle` |
+
+### POST /screenshot
+
+捕获截图（PNG 或 JPEG）。
+
+请求体：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `url` | string | *（必填）* | 要截图的 URL |
+| `format` | string | `"png"` | 图片格式：`png`、`jpeg` |
+| `quality` | int | — | JPEG 质量 0–100（仅 `jpeg` 格式） |
+| `full_page` | bool | `false` | 捕获完整可滚动页面 |
+| `scale` | float | — | 设备像素比（如 `2` 表示 Retina） |
+| `selector` | string | — | CSS 选择器，截取特定元素 |
+| `clip` | object | — | 截取区域：`{"x": N, "y": N, "width": N, "height": N}` |
+| `color_scheme` | string | — | `"light"`、`"dark"` 或 `"no-preference"` |
+| `wait_for` | string | — | 截图前等待的 CSS 选择器 |
+| `transparent` | bool | `false` | 透明背景（仅 PNG） |
+| `wait_until` | string | `"networkidle"` | Playwright 等待策略 |
+| `timeout` | int | — | 超时时间（毫秒） |
+| `viewport_width` | int | — | 视口宽度（像素） |
+| `viewport_height` | int | — | 视口高度（像素） |
+
+```bash
+# 默认 PNG 截图
+curl -X POST http://localhost:7860/screenshot \
+  -H "Authorization: Bearer your-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}' -o screenshot.png
+
+# JPEG 格式并指定质量
+curl -X POST http://localhost:7860/screenshot \
+  -H "Authorization: Bearer your-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "format": "jpeg", "quality": 80}' \
+  -o screenshot.jpg
+
+# 元素截图
+curl -X POST http://localhost:7860/screenshot \
+  -H "Authorization: Bearer your-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com", "selector": "#main-content"}' \
+  -o element.png
+```
+
+### GET /metrics
+
+Prometheus 格式的指标输出，包括运行时间、请求计数器、缓存统计、延迟摘要（p50/p95）以及每工作节点的健康状态指标。
+
+### GET /stats
+
+仪表盘实时数据的 JSON API（由仪表盘 UI 轮询获取）。
+
+### WS /cdp
+
+直接连接浏览器的 CDP WebSocket 代理。支持 `?worker=N` 参数指定池中的特定工作节点。默认关闭（设置 `VEILRENDER_CDP_ENABLED=true` 启用）；原始 CDP 客户端可以创建绕过出站代理的上下文。
+
+## 配置
+
+所有设置通过 `VEILRENDER_*` 环境变量配置：
+
+### 核心配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VEILRENDER_API_TOKEN` | *（无）* | Bearer 认证令牌。未设置时禁用认证 |
+| `VEILRENDER_PORT` | `7860` | 服务端口 |
+| `VEILRENDER_HOST` | `0.0.0.0` | 绑定地址 |
+| `VEILRENDER_TIMEOUT` | `30000` | 页面加载超时时间（毫秒） |
+| `VEILRENDER_VIEWPORT_WIDTH` | `1280` | 浏览器视口宽度 |
+| `VEILRENDER_VIEWPORT_HEIGHT` | `720` | 浏览器视口高度 |
+| `VEILRENDER_MAX_CONCURRENT` | `5` | 最大并发页面数（单实例模式） |
+
+### 工作节点池
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VEILRENDER_WORKERS` | *（无）* | 逗号分隔的工作节点端点（启用池模式） |
+| `VEILRENDER_WORKER_MAX_CONCURRENT` | `5` | 每工作节点的页面并发数 |
+| `VEILRENDER_WORKER_HEALTH_INTERVAL` | `10` | 健康检查间隔（秒） |
+| `VEILRENDER_EGRESS_BIND` | `127.0.0.1` | 出站代理绑定地址（池模式使用 `0.0.0.0`） |
+| `VEILRENDER_EGRESS_PORT` | `0` | 出站代理端口（`0` = 临时端口；池模式需固定端口） |
+| `VEILRENDER_EGRESS_ADVERTISE` | *（无）* | 提供给浏览器的代理 URL（如 `http://gateway:7870`） |
+| `VEILRENDER_EGRESS_PROXY_TOKEN` | *（无）* | 代理 Basic 认证密码；非回环绑定时必填 |
+| `VEILRENDER_UPSTREAM_PROXY` | *（无）* | 可选的上游代理（`http`、`https`、`socks5`） |
+| `VEILRENDER_UPSTREAM_PIN_IP` | `true` | 向上游代理发送已验证的 IP 而不是主机名 |
+| `VEILRENDER_CDP_ENABLED` | `false` | 启用原始 `/cdp` 端点（可绕过代理——仅限可信操作者） |
+
+工作节点端点格式：
+- `cdp://host:9222` 或 `http://host:9222` —— Chromium CDP 工作节点
+- `playwright://host:1234/ws-path` —— Firefox/Camoufox Playwright 工作节点
+- `playwrights://host:1234/ws-path` —— TLS Playwright 工作节点
+
+> **出站请求策略：**所有浏览器的 HTTP(S)/WebSocket 流量都经由进程内出站代理访问网络，该代理拒绝全局地址空间之外的目标，包括每一跳重定向。单实例部署默认监听回环地址，无需额外配置；池模式部署需要让工作节点容器能够访问它（见下方池模式示例）。流量未到达代理的工作节点会在启动时被禁用。原始 `/cdp` 端点默认关闭（设置 `VEILRENDER_CDP_ENABLED=true` 启用）。WebRTC/QUIC UDP 不经过代理；远程工作节点所需的浏览器参数见 [SECURITY.md](SECURITY.md)。池模式下若导航出现代理或隧道错误，请确认工作节点容器能访问 `VEILRENDER_EGRESS_ADVERTISE`，且 `VEILRENDER_EGRESS_PROXY_TOKEN` 一致。
+
+### 浏览器二进制文件
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CLOAKBROWSER_BINARY` | *（自动）* | 自定义浏览器二进制文件路径 |
+| `CLOAKBROWSER_MIRROR` | *（无）* | GitHub 镜像 URL，适用于中国大陆网络环境（如 `https://ghfast.top`） |
+
+二进制文件检测顺序：环境变量 → `~/.cloakbrowser/*/chrome` → 从 GitHub Releases 自动下载。
+
+### 缓存与存储
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VEILRENDER_CACHE_ENABLED` | `false` | 启用渲染缓存 |
+| `VEILRENDER_CACHE_TTL` | `86400` | 缓存 TTL（秒） |
+| `VEILRENDER_RESOURCE_FILTER` | `true` | 渲染时拦截广告/追踪器 |
+| `VEILRENDER_S3_ENDPOINT` | *（无）* | L2 缓存的 S3 端点 |
+| `VEILRENDER_S3_ACCESS_KEY` | *（无）* | S3 访问密钥 |
+| `VEILRENDER_S3_SECRET_KEY` | *（无）* | S3 密钥 |
+
+## 部署模式
+
+### 单实例模式（完整镜像，1.07GB）
+
+内置 CloakBrowser —— 最简单的部署方式，无外部依赖。
+
+```bash
+docker run -p 7860:7860 -e VEILRENDER_API_TOKEN=secret oaklight/veilrender:latest
+```
+
+### 网关 + 工作节点池（网关镜像，336MB）
+
+浏览器容器独立扩展。网关通过最少连接数策略路由请求。
+
+```yaml
+services:
+  veilrender:
+    image: oaklight/veilrender:gateway
+    environment:
+      - VEILRENDER_WORKERS=cdp://worker1:9222,cdp://worker2:9222
+      - VEILRENDER_EGRESS_BIND=0.0.0.0
+      - VEILRENDER_EGRESS_PORT=7870
+      - VEILRENDER_EGRESS_ADVERTISE=http://veilrender:7870
+      - VEILRENDER_EGRESS_PROXY_TOKEN=${VEILRENDER_EGRESS_PROXY_TOKEN:?请设置一个随机令牌}
+
+  worker1:
+    image: cloakhq/cloakbrowser
+    command: ["cloakserve"]
+
+  worker2:
+    image: cloakhq/cloakbrowser
+    command: ["cloakserve"]
+```
+
+### 混合池（Chromium + Camoufox）
+
+双引擎反检测：CloakBrowser 应对 Chromium 指纹检测站点，Camoufox 应对 Firefox 指纹检测站点。
+
+```yaml
+services:
+  veilrender:
+    image: oaklight/veilrender:gateway
+    environment:
+      - VEILRENDER_WORKERS=cdp://chromium:9222,playwright://camoufox:1234/ws
+      - VEILRENDER_EGRESS_BIND=0.0.0.0
+      - VEILRENDER_EGRESS_PORT=7870
+      - VEILRENDER_EGRESS_ADVERTISE=http://veilrender:7870
+      - VEILRENDER_EGRESS_PROXY_TOKEN=${VEILRENDER_EGRESS_PROXY_TOKEN:?请设置一个随机令牌}
+
+  chromium:
+    image: cloakhq/cloakbrowser
+    command: ["cloakserve"]
+
+  camoufox:
+    build: deploy/Dockerfile.camoufox
+```
+
+### 本地浏览器网关（使用你的 cookies）
+
+将网关连接到你的桌面浏览器，利用已有的登录会话渲染需要认证的页面。启动带 CDP 的 Chromium：
+
+```bash
+chromium --remote-debugging-port=9333
+```
+
+然后启动网关容器：
+
+```bash
+docker run --rm --network host \
+  -e VEILRENDER_PORT=7880 \
+  -e VEILRENDER_WORKERS=http://127.0.0.1:9333 \
+  oaklight/veilrender:gateway
+```
+
+现在向 `localhost:7880` 发送 `POST /render` 请求，就像你已登录的浏览器一样渲染页面 —— 包括认证页面、Cloudflare 挑战等。
+
+> **提示**：可以创建一个带 CDP 参数的 Chromium 桌面快捷方式，方便需要时从应用菜单启动。详见 [AGENTS.md](AGENTS.md)。
+
+> **注意**：只有 Chromium 系浏览器支持 CDP。Firefox/Waterfox 无法使用此方式（缺少 Playwright 所需的 Juggler 协议）。如需 Firefox 系反检测渲染，请使用 Camoufox 工作节点。
+
+## Docker 镜像
+
+| 标签 | 大小 | 内容 |
+|------|------|------|
+| `latest` / `0.4.0` | 1.07GB | 完整版 —— Patchright + CloakBrowser |
+| `gateway` | 336MB | 仅网关 —— 不含浏览器二进制文件 |
+
+本地构建：
+```bash
+make build          # 完整镜像
+make build-gateway  # 网关镜像
+```
+
+## 开发
+
+```bash
+# 环境搭建
+pip install -e ".[dev]"
+
+# 本地运行
+make dev            # 在 :7860 启动
+
+# 代码检查与类型检查
+make lint           # ruff check --fix && ruff format
+make typecheck      # ty check
+
+# 开发环境部署
+make deploy-dev SSH_TARGET=oaklight.buttercup
+```
+
+## 社区
+
+欢迎通过 [GitHub Issues](https://github.com/Oaklight/veilrender/issues) 或 [LINUX DO](https://linux.do/) 社区参与项目讨论。
+
+## 许可证
+
+MIT

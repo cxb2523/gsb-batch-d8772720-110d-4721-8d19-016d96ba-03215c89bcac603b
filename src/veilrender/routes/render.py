@@ -1,0 +1,270 @@
+"""Page rendering endpoint."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+
+from veilrender._vendor.httpserver import App, JSONResponse, Request, Response
+from veilrender._vendor.readability import extract as readability_extract
+from veilrender._vendor.soup import Soup
+from veilrender import stats
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
+
+from veilrender.auth import verify_token
+from veilrender.browser import QueueFullError, browser_manager
+from veilrender.ratelimit import check_rate_limit
+from veilrender.config import settings
+from veilrender.models import (
+    LinkInfo,
+    PageMetadata,
+    RenderContent,
+    RenderRequest,
+    RenderResponse,
+)
+from veilrender.storage import storage_manager
+from veilrender.url_validator import URLValidationError, validate_url
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_links(html: str, base_url: str) -> list[LinkInfo]:
+    """Extract links from HTML using zerodep soup."""
+    links: list[LinkInfo] = []
+    try:
+        soup = Soup(html)
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "")
+            text = a.get_text(strip=True)
+            if href and not href.startswith(("#", "javascript:")):
+                links.append(LinkInfo(url=href, text=text))
+    except Exception:
+        logger.debug("Failed to extract links", exc_info=True)
+    return links
+
+
+def _html_to_markdown(html: str) -> str:
+    """Simple HTML to Markdown conversion using readability text output.
+
+    This is a lightweight conversion: we extract readable content and
+    return the plain-text representation, which is sufficient for LLM
+    consumption. For full-fidelity HTML→Markdown, a dedicated converter
+    (like markdownify) would be needed.
+    """
+    try:
+        result = readability_extract(html)
+        return result.text
+    except Exception:
+        # Fallback: strip tags and return raw text
+        return re.sub(r"<[^>]+>", "", html)
+
+
+def register(app: App) -> None:
+    """Register render routes on the app."""
+
+    @app.post("/render")
+    async def render(request: Request) -> Response:
+        verify_token(request)
+
+        rate_limit_response = check_rate_limit(request)
+        if rate_limit_response is not None:
+            return rate_limit_response
+
+        try:
+            data = request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        if "url" not in data:
+            return JSONResponse({"error": "Missing 'url' field"}, status_code=400)
+
+        req = RenderRequest.from_dict(data)
+
+        # Validate URL before any processing
+        try:
+            validate_url(req.url)
+        except URLValidationError as exc:
+            return JSONResponse({"error": f"URL rejected: {exc!s}"}, status_code=400)
+
+        timeout = req.timeout or settings.timeout
+        stats.render.requests += 1
+        t0 = time.monotonic()
+
+        # Check cache before rendering
+        cache_key: str | None = None
+        if storage_manager.enabled:
+            cache_key = storage_manager.make_key(req.url, req.formats, req.wait_until)
+            cached = await storage_manager.get(cache_key)
+            if cached is not None:
+                elapsed = (time.monotonic() - t0) * 1000
+                stats.render.cache_hits += 1
+                stats.render.record_success(elapsed)
+                return JSONResponse(cached)
+            stats.render.cache_misses += 1
+
+        async def _do_render(
+            *,
+            min_tier: int = 0,
+            tier_timeout: int | None = None,
+            capture_partial: bool = False,
+        ) -> tuple[int, str, str, str, str, bool]:
+            t = tier_timeout or timeout
+            async with browser_manager.get_page(min_tier=min_tier) as (
+                ctx,
+                page,
+                engine,
+                force_wu,
+            ):
+                effective_wu = force_wu or req.wait_until
+                partial = False
+                try:
+                    response = await page.goto(
+                        req.url,
+                        wait_until=effective_wu,
+                        timeout=t,
+                    )
+                    status_code = response.status if response else 0
+                except (TimeoutError, PlaywrightTimeoutError):
+                    if not capture_partial:
+                        raise
+                    partial = True
+                    status_code = 0
+                    logger.warning(
+                        "Goto timed out for %s, capturing partial content",
+                        req.url,
+                    )
+                title = await page.title()
+                final_url = page.url
+                html = await page.content()
+                return status_code, title, final_url, html, engine, partial
+
+        async def _render_pipeline() -> tuple[int, str, str, str, str, bool]:
+            if browser_manager.has_fallback_tier(0):
+                tier0_timeout = min(settings.obscura_timeout, timeout)
+                tier0_task = asyncio.create_task(_do_render(tier_timeout=tier0_timeout))
+                try:
+                    return await asyncio.wait_for(
+                        tier0_task, timeout=tier0_timeout / 1000
+                    )
+                except Exception as first_exc:
+                    logger.warning(
+                        "Tier-0 render slow/failed for %s: %s, falling back to tier-1",
+                        req.url,
+                        type(first_exc).__name__,
+                    )
+                    if not tier0_task.done():
+                        tier0_task.cancel()
+                    return await _do_render(min_tier=1, capture_partial=True)
+            return await _do_render(capture_partial=True)
+
+        try:
+            (
+                status_code,
+                title,
+                final_url,
+                html,
+                engine,
+                partial,
+            ) = await asyncio.wait_for(
+                _render_pipeline(), timeout=settings.request_deadline
+            )
+        except QueueFullError:
+            elapsed = (time.monotonic() - t0) * 1000
+            stats.render.record_failure(elapsed)
+            return JSONResponse(
+                {"error": "Server overloaded, try again later"},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
+        except TimeoutError:
+            elapsed = (time.monotonic() - t0) * 1000
+            stats.render.record_failure(elapsed)
+            logger.error("Render deadline exceeded for %s (%.0fms)", req.url, elapsed)
+            return JSONResponse(
+                {"error": "Render timed out"},
+                status_code=504,
+            )
+        except Exception as exc:
+            elapsed = (time.monotonic() - t0) * 1000
+            exc_str = str(exc)
+            if "Download is starting" in exc_str:
+                return JSONResponse(
+                    {"error": "URL triggers a file download, not a renderable page"},
+                    status_code=400,
+                )
+            if "blockedbyclient" in exc_str or "ERR_BLOCKED_BY_CLIENT" in exc_str:
+                stats.render.record_failure(elapsed)
+                logger.warning("Navigation blocked by outbound policy for %s", req.url)
+                return JSONResponse(
+                    {"error": "Destination blocked by outbound request policy"},
+                    status_code=400,
+                )
+            stats.render.record_failure(elapsed)
+            logger.error("Render failed for %s: %s", req.url, exc)
+            return JSONResponse(
+                {"error": f"Render failed: {exc_str}"},
+                status_code=502,
+            )
+
+        # Re-check where the navigation actually ended up. The submitted URL is
+        # validated up front, but a redirect can land somewhere else entirely,
+        # and the body returned below comes from wherever it landed.
+        try:
+            validate_url(final_url)
+        except URLValidationError as exc:
+            elapsed = (time.monotonic() - t0) * 1000
+            stats.render.record_failure(elapsed)
+            logger.warning("Rejected redirect destination %s: %s", final_url, exc)
+            return JSONResponse(
+                {"error": f"Redirect destination rejected: {exc!s}"},
+                status_code=400,
+            )
+
+        # Build content based on requested formats
+        content = RenderContent()
+
+        if "html" in req.formats:
+            content.html = html
+
+        if "readability" in req.formats:
+            try:
+                rd = readability_extract(html, url=final_url)
+                content.readability = rd.text
+            except Exception:
+                logger.debug("Readability extraction failed", exc_info=True)
+                content.readability = None
+
+        if "markdown" in req.formats:
+            content.markdown = _html_to_markdown(html)
+
+        # Extract links
+        links = _extract_links(html, final_url)
+
+        result = RenderResponse(
+            content=content,
+            metadata=PageMetadata(
+                title=title,
+                url=final_url,
+                status_code=status_code,
+                partial=partial,
+            ),
+            links=links,
+        )
+
+        elapsed = (time.monotonic() - t0) * 1000
+        stats.render.record_success(elapsed)
+
+        # Store to cache
+        result_dict = result.to_dict()
+        if cache_key is not None:
+            try:
+                await storage_manager.put(cache_key, result_dict)
+            except Exception:
+                logger.debug("Cache store failed", exc_info=True)
+
+        headers = {}
+        if settings.render_engine_header:
+            headers["X-Render-Engine"] = engine
+        return JSONResponse(result_dict, headers=headers or None)
