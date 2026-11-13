@@ -17,6 +17,19 @@ import type { FirecrawlFetchFormat, FirecrawlProxy } from './fetch-provider.ts'
 export { FIRECRAWL_DEFAULT_BASE_URL, FIRECRAWL_PROVIDER_ID } from './http.ts'
 export { FirecrawlFetchProvider, assertFetchableUrl, buildScrapeBody, mapScrapeResponse } from './fetch-provider.ts'
 export type { FirecrawlFetchFormat, FirecrawlFetchProviderOptions, FirecrawlProxy } from './fetch-provider.ts'
+export {
+  DEFAULT_BATCH_FETCH_CONCURRENCY,
+  fetchBatch,
+  isBatchFetchComplete,
+} from './batch-fetch.ts'
+export type {
+  BatchFetchAborted,
+  BatchFetchFailure,
+  BatchFetchOptions,
+  BatchFetchResult,
+  BatchFetchStatus,
+  BatchFetchSuccess,
+} from './batch-fetch.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'web-fetch-firecrawl'

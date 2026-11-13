@@ -21,6 +21,17 @@ import type { FirecrawlSearchSource } from './search-provider.ts'
 export { FIRECRAWL_DEFAULT_BASE_URL, FIRECRAWL_PROVIDER_ID } from './http.ts'
 export { FirecrawlSearchProvider, buildSearchBody, mapNewsResult, mapSearchResponse, mapWebResult } from './search-provider.ts'
 export type { FirecrawlSearchProviderOptions, FirecrawlSearchSource } from './search-provider.ts'
+// Batch retrieval is a fetch capability; re-exported from the package root as
+// well so callers on either entry share one implementation and vocabulary.
+export { DEFAULT_BATCH_FETCH_CONCURRENCY, fetchBatch, isBatchFetchComplete } from './batch-fetch.ts'
+export type {
+  BatchFetchAborted,
+  BatchFetchFailure,
+  BatchFetchOptions,
+  BatchFetchResult,
+  BatchFetchStatus,
+  BatchFetchSuccess,
+} from './batch-fetch.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'web-search-firecrawl'

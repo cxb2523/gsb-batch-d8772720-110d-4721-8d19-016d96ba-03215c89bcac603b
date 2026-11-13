@@ -241,6 +241,40 @@ carrying Firecrawl's own error code where it has one (`SCRAPE_DNS_RESOLUTION_ERR
 HTTP redirects on API requests are rejected before the `Location` target is
 contacted, so the API key can never be forwarded to another origin.
 
+### Batch fetching (programmatic)
+
+The model-facing tool stays single-page, but the fetch package entry also
+exports a `fetchBatch` helper for code that needs many pages at once. It runs
+each URL through the same `FirecrawlFetchProvider` path and settles every entry
+independently — one failed or cancelled URL never becomes a batch-level throw:
+
+```ts
+import { fetchBatch, isBatchFetchComplete } from '@firecrawl/dsh-firecrawl/fetch'
+
+const results = await fetchBatch(provider, urls, {
+  concurrency: 3,                 // positive integer; defaults to 3
+  signals: [abortSignal],        // signals[i] cancels only urls[i]
+})
+
+if (!isBatchFetchComplete(results)) {
+  // at least one entry failed or was aborted
+}
+```
+
+Results come back in input order, one per URL, each discriminated by `status`:
+
+| `status` | Fields |
+| --- | --- |
+| `success` | `finalUrl`, `statusCode`, `body`, `truncated` (a non-2xx page is still a success) |
+| `failure` | `errorCode: 'WEB_PROVIDER_ERROR'`, `errorMessage` |
+| `aborted` | `errorCode: 'WEB_ABORTED'`, `errorMessage` |
+
+An invalid URL (non-`http`/`https`, over-long, or credential-carrying) settles
+as a failure entry and makes **no** network request, using the same admission
+check as the single-page path. A non-integer or non-positive `concurrency`
+rejects the whole call before any entry starts. No new model-visible tool is
+registered and the single-page `web_fetch` behavior is unchanged.
+
 ## Development
 
 ```sh
