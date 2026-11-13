@@ -757,17 +757,22 @@ result = crawl(
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `url` | str | required | Starting URL |
-| `max_pages` | int | 50 | Maximum pages to crawl |
+| `url` | str | required | Starting URL (empty string raises `ValueError`) |
+| `max_pages` | int | 50 | Maximum pages to fetch; queued URLs beyond the limit are recorded as `not_attempted` |
 | `delay` | float | 0.5 | Delay between requests |
 | `on_page` | callable | None | Progress callback |
+| `fetcher` | callable | None | Replacement `url -> raw HTML` fetch function, called at most once per URL (useful for testing/custom transports) |
 
 Returns `CrawlResult`:
 - `result.pages` — list of `ScrapeResult` (url, content, status)
-- `result.failed` — list of failed pages
+- `result.failed` — list of failed pages (fetch exceptions and empty-content pages)
+- `result.outcomes` — one `PageOutcome` per known URL with `url`, `status` (`success` / `failed` / `not_attempted`), `reason`, `error_type`, `chars` (extracted characters) and `new_links` (newly discovered same-domain links)
 - `result.total_pages` — total scraped
 - `result.total_failed` — total failed
+- `result.total_not_attempted` — URLs queued but never fetched
 - `result.to_text()` — all content as single text string
+
+Each URL is fetched exactly once: the raw HTML from that single request produces both the page text and its outgoing links, so no retry request is made to mine links after a failure.
 
 ---
 
