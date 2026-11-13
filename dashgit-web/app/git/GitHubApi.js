@@ -209,19 +209,30 @@ const gitHubApi = {
     if (token == "") //returns empty model if no token provider to avoid api call errors
       return gitHubAdapter.statuses2model(provider, {}, graphqlV2);
     let gqlresponse = {};
+    let pagination = null;
     try {
       // check how many repositories must be updated, this info will be used to construct the query
       let updateReqs = await this.getStatusesUpdateRequirements(provider, userSpecRepos, updateSince, graphqlV2);
+      if (updateReqs.error != null) // the scope could not be narrowed, the full scope is used instead
+        log.debug(provider.uid, `${updateReqs.error} The full scope will be used.`);
       if (updateReqs.maxProjects == 0 && updateReqs.otherRepos == "") {
         log.debug(provider.uid, `No projects to update, since: "${updateSince}":`);
         return gitHubAdapter.statuses2model(provider, {}, graphqlV2);
       }
       gqlresponse = await gitHubGraphql.graphQlWithPagination(provider, updateReqs.maxProjects, provider.graphql.pageSize, updateReqs.otherRepos, true, updateSince == "", graphqlV2);
+      pagination = gqlresponse.pagination;
       log.debug(provider.uid, `Statuses graphql response, maxProjects: ${updateReqs.maxProjects} and "${updateReqs.otherRepos}", since: "${updateSince}":`, gqlresponse);
     } catch (error) {
       console.error("GitHub GraphQL api call failed");
       console.error(error);
       wiController.updateStatusesOnError("GitHub GraphQL api call failed. Message: " + error, provider.uid);
+    }
+    // A page failed, but the pages collected before it are kept and still converted to a model:
+    // inform the user about the failure and continue with the partial response
+    if (pagination?.error != null) {
+      console.error(`GitHub GraphQL api call failed at page ${pagination.failed_page}: ${pagination.error}`);
+      wiController.updateStatusesOnError(`GitHub GraphQL api call failed at page ${pagination.failed_page}. Message: ${pagination.error}
+        Collected ${pagination.collected} repositories, ${pagination.remaining} remaining.`, provider.uid);
     }
     // Conversion to the model requires a previous postprocessing to get the user specified repositories (if any)
     gqlresponse = gitHubAdapter.postprocessGraphQl(gqlresponse);
@@ -229,15 +240,27 @@ const gitHubApi = {
     return model;
   },
 
-  //Gets number of repositories and other user specified that require update
+  //Gets number of repositories and other user specified that require update.
+  //When the scope can't be determined because a page of the query failed, returns the full scope and the error.
   getStatusesUpdateRequirements: async function (provider, userSpecRepos, updateSince, graphqlV2) {
-    let updateReqs = { maxProjects: provider.graphql.maxProjects, otherRepos: userSpecRepos };
+    let updateReqs = { maxProjects: provider.graphql.maxProjects, otherRepos: userSpecRepos, error: null };
     if (updateSince == "")
       return updateReqs;
 
     const t0 = Date.now();
-    let gqlresponse0 = await gitHubGraphql.graphQlWithPagination(provider, provider.graphql.maxProjects, provider.graphql.maxProjects, updateReqs.otherRepos, false, false, graphqlV2);
-    log.debug(provider.uid, `Statuses graphql response, time to get update reqs [${Date.now() - t0}ms]:`, gqlresponse0);
+    let gqlresponse0 = {};
+    try {
+      gqlresponse0 = await gitHubGraphql.graphQlWithPagination(provider, provider.graphql.maxProjects, provider.graphql.maxProjects, updateReqs.otherRepos, false, false, graphqlV2);
+      log.debug(provider.uid, `Statuses graphql response, time to get update reqs [${Date.now() - t0}ms]:`, gqlresponse0);
+    } catch (error) {
+      updateReqs.error = "GitHub GraphQL api call to get the update requirements failed. Message: " + error;
+      return updateReqs;
+    }
+    if (gqlresponse0.pagination?.error != null) {
+      // an incomplete scope would miss the repositories of the pages not collected: use the full scope
+      updateReqs.error = `The query of the update requirements failed at page ${gqlresponse0.pagination.failed_page}. Message: ${gqlresponse0.pagination.error}`;
+      return updateReqs;
+    }
     updateReqs.maxProjects = gitHubAdapter.getNumReposToUpdate(gqlresponse0, updateReqs.maxProjects, updateSince);
     updateReqs.otherRepos = gitHubAdapter.getUserReposToUpdate(gqlresponse0, updateSince);
     return updateReqs;

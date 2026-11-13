@@ -35,7 +35,9 @@ import { login } from "./login/Login.js"
  *   The display check if this is the current view populates it with the cached model.
  * 
  * - Paginated status updates (GitHub): for every page except the last, the api invokes updateStatusesForPage that
- *   directly displyay the partial model without using the cache. 
+ *   directly displays the partial model without using the cache. If a page fails, the pagination stops but the
+ *   pages collected before it are still submitted (partial update) and returned to be cached, see
+ *   gitHubGraphql.graphQlWithPagination.
  * 
  * Error control:
  * - Error processing: Each error detected logs the error and raises an alert with the message to the view.
