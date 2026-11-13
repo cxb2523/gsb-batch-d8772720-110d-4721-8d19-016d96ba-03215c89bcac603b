@@ -168,6 +168,24 @@ Optional:
 }
 ```
 
+### Execution records
+
+Every request through this handler leaves a structured record: request URL,
+whether a proxy was used and its source (`request.meta` vs. not configured),
+redirect count and final URL, response status code, and the outcome
+(`success`/`exception`, with the exception type on failure). Records go to a
+pluggable collector; the default (`LoggingDownloadRecordCollector`) only writes
+a log line per request and never changes the crawl result. To collect records
+elsewhere, set `CURL_CFFI_RECORD_COLLECTOR` to the dotted path of a no-argument
+callable returning a `DownloadRecordCollector` (see
+`handlers/curl_cffi_records.py`; tests use the in-memory collector there).
+
+```json
+{
+  "CURL_CFFI_RECORD_COLLECTOR": "my_pkg.collectors.JsonlDownloadRecordCollector"
+}
+```
+
 ## Sitemap spider
 
 Sitemap mode works with **either** format: add `"USE_SITEMAP": true` to a `sections` config's `settings` (recommended), or to a legacy `rules` + `callbacks` config. The sitemap enumerates URLs; your sections/rules still do the extraction. See [sitemap.md](sitemap.md). Basic (legacy form shown):
