@@ -1,0 +1,751 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import weakref
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack, suppress
+from typing import Any, cast
+
+from camouflare import challenge as _challenge
+from camouflare import navigation as _navigation
+from camouflare import solution as _solution
+from camouflare.captcha import CaptchaProvider, NoCaptchaProvider
+from camouflare.challenge import (
+    ChallengeSolveError,
+    RequestTimeoutError,
+    Sleep,
+)
+from camouflare.challenge import (
+    content_is_hard_block as _content_is_hard_block,
+)
+from camouflare.challenge import (
+    content_state as _content_state,
+)
+from camouflare.challenge import (
+    solve_challenge as _solve_challenge,
+)
+from camouflare.challenge import (
+    wait_for_challenge_cleared as _wait_for_challenge_cleared,
+)
+from camouflare.challenge import (
+    wait_requested as _wait_requested,
+)
+from camouflare.cleanup import CleanupSupervisor
+from camouflare.errors import CamouflareError, V1ErrorCode
+from camouflare.limits import ResourceLimitError, ResourceLimits
+from camouflare.metrics import record_browser_transport_error, record_challenge, record_timeout
+from camouflare.models import V1Request, V1Response
+from camouflare.navigation import active_resource_limits
+from camouflare.protocols import (
+    BrowserContextLike,
+    MainFrameResponseHolder,
+    PageLike,
+    ResponseLike,
+    RouteLike,
+)
+from camouflare.solution import (
+    collect_solution as _collect_solution,
+)
+from camouflare.solution import (
+    navigation_error_message as _navigation_error_message,
+)
+from camouflare.solution import (
+    response_text_or_page_content as _response_text_or_page_content,
+)
+from camouflare.solution import (
+    safe_page_content as _safe_page_content,
+)
+from camouflare.solution import (
+    safe_page_title as _safe_page_title,
+)
+from camouflare.timer import TimeoutTimer
+
+MEDIA_PATTERNS = (
+    "**/*.{png,jpg,jpeg,gif,webp,bmp,svg,ico,avif}",
+    "**/*.{css,woff,woff2,ttf,otf,eot}",
+)
+
+logger = logging.getLogger(__name__)
+
+# Kept as module aliases for compatibility with existing integrations and tests
+# that patch the private direct-HTTP seam. New code should import navigation.
+ALLOWED_URL_SCHEMES = _navigation.ALLOWED_URL_SCHEMES
+DOMCONTENTLOADED_NAVIGATION_TIMEOUT_MS = _navigation.DOMCONTENTLOADED_NAVIGATION_TIMEOUT_MS
+RawResponse = _navigation.RawResponse
+_ACTIVE_LIMITS = _navigation._ACTIVE_LIMITS
+_direct_http_get = _navigation._direct_http_get
+_clean_url = _navigation.clean_url
+_is_timeout_error = _navigation.is_timeout_error
+_post_with_context_request = _navigation.post_with_context_request
+_raw_response_from_api_response = _navigation.raw_response_from_api_response
+_set_default_header = _navigation.set_default_header
+_should_try_direct_get_after_navigation_timeout = (
+    _navigation.should_try_direct_get_after_navigation_timeout
+)
+_should_try_direct_get_first = _navigation.should_try_direct_get_first
+_target_request_headers = _navigation.target_request_headers
+_try_direct_http_get_after_navigation_timeout = (
+    _navigation.try_direct_http_get_after_navigation_timeout
+)
+_try_direct_http_get_first = _navigation.try_direct_http_get_first
+_wait_networkidle_best_effort = _navigation.wait_networkidle_best_effort
+
+CHALLENGE_CLEAR_POLL_MS = _challenge.CHALLENGE_CLEAR_POLL_MS
+CHALLENGE_MARKERS = _challenge.CHALLENGE_MARKERS
+CHALLENGE_TITLES = _challenge.CHALLENGE_TITLES
+_challenge_state = _challenge.challenge_state
+_content_has_challenge_markers = _challenge.content_has_challenge_markers
+_title_is_challenge = _challenge.title_is_challenge
+
+BEST_EFFORT_BROWSER_ERROR_MARKERS = _solution.BEST_EFFORT_BROWSER_ERROR_MARKERS
+_html_title = _solution.html_title
+_is_best_effort_browser_error = _solution.is_best_effort_browser_error
+_log_best_effort_collection_failure = _solution.log_best_effort_collection_failure
+_page_url = _solution.page_url
+_response_charset = _solution.response_charset
+_response_url = _solution.response_url
+_safe_context_cookies = _solution.safe_context_cookies
+_safe_user_agent = _solution.safe_user_agent
+_should_return_raw_response_body = _solution.should_return_raw_response_body
+
+# Routes are attached to persistent contexts at most once. Weak ownership avoids
+# extending a browser context's lifetime just because media blocking was used.
+_media_routes: weakref.WeakKeyDictionary[BrowserContextLike, list[tuple[str, Any]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+async def solve_request(
+    request: V1Request,
+    *,
+    context: BrowserContextLike,
+    page: PageLike,
+    captcha_provider: CaptchaProvider | None = None,
+    limits: ResourceLimits | None = None,
+    allow_direct_http_fallback: bool = True,
+    allow_direct_http_first: bool = True,
+    sleep: Sleep = asyncio.sleep,
+    cleanup_supervisor: CleanupSupervisor | None = None,
+    cleanup_timeout_seconds: float = 10,
+    timer: TimeoutTimer | None = None,
+) -> V1Response:
+    """Solve one FlareSolverr-compatible request using an existing page/context.
+
+    ``timer`` carries a caller's absolute ``maxTimeout`` deadline, such as a /v1
+    command's, so the challenge reserve returns a partial solution before that
+    caller's own supervisor fires. Without one, the budget starts here.
+    """
+    provider = captcha_provider or NoCaptchaProvider()
+    active_limits = limits or ResourceLimits()
+    supervisor = cleanup_supervisor or CleanupSupervisor(timeout_seconds=cleanup_timeout_seconds)
+    stack = AsyncExitStack()
+    body_failed = False
+    with active_resource_limits(active_limits):
+        try:
+            prepare = getattr(provider, "prepare", None)
+            if prepare is not None:
+                await stack.enter_async_context(prepare(page=page))
+            return await _run_solve(
+                request,
+                context=context,
+                page=page,
+                provider=provider,
+                limits=active_limits,
+                allow_direct_http_fallback=allow_direct_http_fallback,
+                allow_direct_http_first=allow_direct_http_first,
+                sleep=sleep,
+                timer=timer,
+            )
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            try:
+                await supervisor.run(
+                    stack.aclose(),
+                    kind="captcha",
+                    timeout_seconds=cleanup_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if body_failed:
+                    logger.warning(
+                        "Ignoring captcha cleanup error while unwinding a failed request.",
+                        exc_info=True,
+                    )
+                else:
+                    logger.warning("Ignoring captcha cleanup error.", exc_info=True)
+
+
+async def _run_solve(
+    request: V1Request,
+    *,
+    context: BrowserContextLike,
+    page: PageLike,
+    provider: CaptchaProvider,
+    limits: ResourceLimits,
+    allow_direct_http_fallback: bool = True,
+    allow_direct_http_first: bool = True,
+    sleep: Sleep = asyncio.sleep,
+    timer: TimeoutTimer | None = None,
+) -> V1Response:
+    post_state = _PostRequestState()
+    try:
+        return await _run_solve_inner(
+            request,
+            context=context,
+            page=page,
+            provider=provider,
+            limits=limits,
+            post_state=post_state,
+            allow_direct_http_fallback=allow_direct_http_fallback,
+            allow_direct_http_first=allow_direct_http_first,
+            sleep=sleep,
+            timer=timer,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if not post_state.started:
+            raise
+        if isinstance(exc, CamouflareError) and exc.request_outcome_unknown and not exc.retryable:
+            raise
+        raise _post_request_failure(exc) from exc
+
+
+class _PostRequestState:
+    def __init__(self) -> None:
+        self.started = False
+
+    def mark_started(self) -> None:
+        self.started = True
+
+
+def _post_request_failure(exc: Exception) -> CamouflareError:
+    if isinstance(exc, CamouflareError):
+        return CamouflareError(
+            str(exc),
+            error_code=exc.error_code,
+            retryable=False,
+            request_outcome_unknown=True,
+            fallback_used=exc.fallback_used,
+            solution=exc.solution,
+        )
+    if isinstance(exc, ResourceLimitError):
+        error_code = V1ErrorCode.RESOURCE_LIMIT_EXCEEDED
+    elif _is_best_effort_browser_error(exc):
+        error_code = V1ErrorCode.BROWSER_TRANSPORT_CLOSED
+    elif _is_timeout_error(exc):
+        error_code = V1ErrorCode.NAVIGATION_TIMEOUT
+    elif _solution.is_target_unreachable_error(exc):
+        error_code = V1ErrorCode.TARGET_UNREACHABLE
+    else:
+        error_code = V1ErrorCode.INTERNAL_ERROR
+    return CamouflareError(
+        str(exc),
+        error_code=error_code,
+        retryable=False,
+        request_outcome_unknown=True,
+    )
+
+
+async def _run_solve_inner(
+    request: V1Request,
+    *,
+    context: BrowserContextLike,
+    page: PageLike,
+    provider: CaptchaProvider,
+    limits: ResourceLimits,
+    post_state: _PostRequestState,
+    allow_direct_http_fallback: bool = True,
+    allow_direct_http_first: bool = True,
+    sleep: Sleep = asyncio.sleep,
+    timer: TimeoutTimer | None = None,
+) -> V1Response:
+    timer = timer if timer is not None else TimeoutTimer(request.max_timeout)
+    inspect_response_content = not request.return_only_cookies
+    response: Any = None
+    final_response: MainFrameResponseHolder = {"value": None}
+    turnstile_token = None
+
+    _track_main_frame_responses(page, final_response)
+    try:
+        target_user_agent = request.target_user_agent()
+        if target_user_agent:
+            await page.set_extra_http_headers({"User-Agent": target_user_agent})
+        await _install_user_agent_override(page, target_user_agent)
+        await _apply_media_blocking(context, bool(request.disable_media))
+        if request.cookies:
+            await context.add_cookies(request.cookies)
+    except Exception as exc:
+        logger.exception(
+            "Unexpected request setup error.",
+            extra={"error_code": V1ErrorCode.INTERNAL_ERROR.value},
+        )
+        content = await _safe_page_content(page, limits) if inspect_response_content else ""
+        return V1Response(
+            status="error",
+            message=f"Request setup failed: {exc}",
+            error_code=V1ErrorCode.INTERNAL_ERROR,
+            retryable=False,
+            solution=await _collect_solution(
+                request,
+                context=context,
+                page=page,
+                page_response=None,
+                content=content,
+                turnstile_token=turnstile_token,
+                limits=limits,
+            ),
+        )
+
+    navigation_error: Exception | None = None
+    try:
+        if request.cmd == "request.post":
+            response = await _submit_post(
+                context,
+                page,
+                request,
+                timer,
+                limits,
+                on_request_started=post_state.mark_started,
+            )
+        else:
+            response = await _navigate_get(
+                page,
+                request,
+                timer,
+                limits,
+                allow_direct_http_fallback=allow_direct_http_fallback,
+                allow_direct_http_first=allow_direct_http_first,
+            )
+    except ResourceLimitError:
+        raise
+    except Exception as exc:
+        response = _empty_error_response(exc, final_response)
+        if response is None:
+            navigation_error = exc
+    if (exc := navigation_error) is not None:
+        domain_error = exc if isinstance(exc, CamouflareError) else None
+        timed_out = _is_timeout_error(exc)
+        transport_closed = _is_best_effort_browser_error(exc)
+        unreachable = (
+            domain_error is None
+            and not timed_out
+            and not transport_closed
+            and _solution.is_target_unreachable_error(exc)
+        )
+        if timed_out:
+            record_timeout("navigation")
+        if transport_closed and request.cmd == "request.post":
+            _emit_browser_transport_error(exc, phase="navigation")
+        if unreachable:
+            logger.warning(
+                "Target unreachable during navigation.",
+                extra={"error": _solution.browser_error_name(exc)},
+            )
+        elif domain_error is None and not timed_out and not transport_closed:
+            logger.error(
+                "Unexpected navigation error.",
+                extra={"error_code": V1ErrorCode.INTERNAL_ERROR.value},
+                exc_info=exc,
+            )
+        content = await _safe_page_content(page, limits) if inspect_response_content else ""
+        return V1Response(
+            status="error",
+            message=_navigation_error_message(exc, page=page, page_response=response),
+            error_code=(
+                domain_error.error_code
+                if domain_error is not None
+                else V1ErrorCode.BROWSER_TRANSPORT_CLOSED
+                if transport_closed
+                else V1ErrorCode.NAVIGATION_TIMEOUT
+                if timed_out
+                else V1ErrorCode.TARGET_UNREACHABLE
+                if unreachable
+                else V1ErrorCode.INTERNAL_ERROR
+            ),
+            retryable=(
+                False
+                if post_state.started
+                else domain_error.retryable
+                if domain_error is not None
+                else request.cmd == "request.get" and (transport_closed or timed_out or unreachable)
+            ),
+            request_outcome_unknown=(
+                (post_state.started or domain_error.request_outcome_unknown)
+                if domain_error is not None
+                else post_state.started
+            ),
+            solution=await _collect_solution(
+                request,
+                context=context,
+                page=page,
+                page_response=response,
+                content=content,
+                turnstile_token=turnstile_token,
+                limits=limits,
+            ),
+        )
+
+    fallback_used = True if getattr(response, "fallback_used", False) else None
+    await _wait_networkidle_best_effort(page, timer)
+    initial_response = _effective_response(response, final_response)
+    initial_status = _response_status(initial_response)
+    state = await _challenge_state(
+        page,
+        limits,
+        include_content=inspect_response_content,
+        status=initial_status,
+    )
+    if state != "blocked":
+        # A buffered direct/API response leaves the browser page blank.
+        buffered = await _buffered_response_text(initial_response)
+        if buffered is not None and _content_is_hard_block(buffered, status=initial_status):
+            state = "blocked"
+    detected = state == "present"
+    record_challenge("detected" if detected else "not_detected")
+    if detected:
+        await _apply_media_blocking(context, False)
+        try:
+            turnstile_token = await _solve_challenge(
+                provider, page=page, request=request, timer=timer
+            )
+        except ChallengeSolveError as exc:
+            if "timed out" in str(exc).lower():
+                record_timeout("challenge")
+                record_challenge("timeout")
+            else:
+                record_challenge("failed")
+            content = await _safe_page_content(page, limits) if inspect_response_content else ""
+            return V1Response(
+                status="error",
+                message=str(exc),
+                error_code=V1ErrorCode.CHALLENGE_FAILED,
+                retryable=False,
+                request_outcome_unknown=post_state.started,
+                fallback_used=fallback_used,
+                solution=await _collect_solution(
+                    request,
+                    context=context,
+                    page=page,
+                    page_response=response,
+                    content=content,
+                    turnstile_token=turnstile_token,
+                    limits=limits,
+                ),
+            )
+        cleared = await _wait_for_challenge_cleared(
+            page,
+            timer,
+            limits=limits,
+            sleep=sleep,
+            include_content=inspect_response_content,
+        )
+        if not cleared:
+            record_challenge("failed")
+            content = await _safe_page_content(page, limits) if inspect_response_content else ""
+            return V1Response(
+                status="error",
+                message="Challenge remained after solving attempt.",
+                error_code=V1ErrorCode.CHALLENGE_FAILED,
+                retryable=False,
+                request_outcome_unknown=post_state.started,
+                fallback_used=fallback_used,
+                solution=await _collect_solution(
+                    request,
+                    context=context,
+                    page=page,
+                    page_response=response,
+                    content=content,
+                    turnstile_token=turnstile_token,
+                    limits=limits,
+                ),
+            )
+
+    if state != "blocked" and request.wait_in_seconds and request.wait_in_seconds > 0:
+        try:
+            await _wait_requested(request.wait_in_seconds, sleep=sleep, timer=timer)
+        except RequestTimeoutError as exc:
+            record_timeout("collection")
+            content = await _safe_page_content(page, limits) if inspect_response_content else ""
+            return V1Response(
+                status="error",
+                message=str(exc),
+                error_code=V1ErrorCode.REQUEST_TIMEOUT,
+                retryable=request.cmd == "request.get",
+                request_outcome_unknown=post_state.started,
+                fallback_used=fallback_used,
+                solution=await _collect_solution(
+                    request,
+                    context=context,
+                    page=page,
+                    page_response=response,
+                    content=content,
+                    turnstile_token=turnstile_token,
+                    limits=limits,
+                ),
+            )
+
+    effective_response = _effective_response(response, final_response)
+    effective_status = _response_status(effective_response)
+    content = ""
+    if inspect_response_content:
+        content = await _response_text_or_page_content(page, effective_response, limits)
+        if state != "blocked":
+            state = _content_state(content, status=effective_status)
+            if state == "cleared" and _title_is_challenge(await _safe_page_title(page)):
+                state = "present"
+    elif state != "blocked":
+        state = await _challenge_state(
+            page,
+            limits,
+            include_content=False,
+            status=effective_status,
+        )
+        if state not in ("blocked", "present"):
+            buffered = await _buffered_response_text(effective_response)
+            if buffered is not None:
+                state = _content_state(buffered, status=effective_status)
+    if state == "blocked":
+        if detected:
+            record_challenge("failed")
+        return V1Response(
+            status="error",
+            message="Target returned a bot/WAF block page.",
+            error_code=V1ErrorCode.TARGET_BLOCKED,
+            retryable=False,
+            request_outcome_unknown=post_state.started,
+            fallback_used=fallback_used,
+            solution=await _collect_solution(
+                request,
+                context=context,
+                page=page,
+                page_response=effective_response,
+                content=content,
+                turnstile_token=turnstile_token,
+                limits=limits,
+            ),
+        )
+    if state == "present":
+        if detected:
+            record_challenge("failed")
+        return V1Response(
+            status="error",
+            message="Challenge remained after solving attempt.",
+            error_code=V1ErrorCode.CHALLENGE_FAILED,
+            retryable=False,
+            request_outcome_unknown=post_state.started,
+            fallback_used=fallback_used,
+            solution=await _collect_solution(
+                request,
+                context=context,
+                page=page,
+                page_response=effective_response,
+                content=content,
+                turnstile_token=turnstile_token,
+                limits=limits,
+            ),
+        )
+
+    if detected:
+        record_challenge("solved")
+    return V1Response(
+        status="ok",
+        message="Challenge solved!" if detected else "Challenge not detected!",
+        fallback_used=fallback_used,
+        solution=await _collect_solution(
+            request,
+            context=context,
+            page=page,
+            page_response=effective_response,
+            content=content,
+            turnstile_token=turnstile_token,
+            limits=limits,
+        ),
+    )
+
+
+def _effective_response(response: Any, final_response: MainFrameResponseHolder) -> Any:
+    """Return the response whose document the request will report.
+
+    A buffered direct/API response is authoritative; a browser navigation reports
+    the latest main-frame response, which may follow a cleared challenge.
+    """
+    if getattr(response, "raw_body", False):
+        return response
+    return final_response["value"] or response
+
+
+def _response_status(response: Any) -> int | None:
+    status = getattr(response, "status", None)
+    return status if isinstance(status, int) else None
+
+
+def _empty_error_response(
+    exc: Exception,
+    final_response: MainFrameResponseHolder,
+) -> _navigation.RawResponse | None:
+    """Return the empty-bodied 4xx/5xx response a failed Firefox navigation reported.
+
+    Firefox refuses to render such a document and fails ``goto``, but the target did
+    answer: report it like any other upstream error status, with an empty body.
+    """
+    upstream = final_response["value"]
+    status = _response_status(upstream)
+    if status is None or status < 400 or not _solution.is_empty_error_response_error(exc):
+        return None
+    return _navigation.RawResponse(
+        url=_response_url(upstream),
+        status=status,
+        headers=dict(getattr(upstream, "headers", {}) or {}),
+        body="",
+    )
+
+
+async def _buffered_response_text(response: Any) -> str | None:
+    """Read a buffered direct/API response body without touching the page."""
+    if not getattr(response, "raw_body", False):
+        return None
+    text_reader = getattr(response, "text", None)
+    if not callable(text_reader):
+        return None
+    try:
+        return await cast(Callable[[], Awaitable[str]], text_reader)()
+    except Exception:
+        logger.warning(
+            "Failed to inspect buffered raw response for challenge or block markers.",
+            exc_info=True,
+        )
+        return None
+
+
+def _emit_browser_transport_error(exc: Exception, *, phase: str) -> None:
+    record_browser_transport_error(phase)
+    logger.warning(
+        "Browser transport error.",
+        extra={
+            "phase": phase,
+            "error_type": type(exc).__name__,
+            "browser_state": None,
+            "slot_uses": None,
+            "slot_active_contexts": None,
+            "retire_reason": None,
+            "fallback_used": False,
+        },
+    )
+
+
+async def _navigate_get(
+    page: PageLike,
+    request: V1Request,
+    timer: TimeoutTimer,
+    limits: ResourceLimits,
+    *,
+    allow_direct_http_fallback: bool = True,
+    allow_direct_http_first: bool = True,
+) -> Any:
+    return await _navigation.navigate_get(
+        page,
+        request,
+        timer,
+        limits,
+        allow_direct_http_fallback=allow_direct_http_fallback,
+        allow_direct_http_first=allow_direct_http_first,
+        direct_http_get=_direct_http_get,
+    )
+
+
+async def _submit_post(
+    context: BrowserContextLike,
+    page: PageLike,
+    request: V1Request,
+    timer: TimeoutTimer,
+    limits: ResourceLimits,
+    *,
+    on_request_started: Callable[[], None] | None = None,
+) -> Any:
+    return await _navigation.submit_post(
+        context,
+        page,
+        request,
+        timer,
+        limits,
+        on_request_started=on_request_started,
+    )
+
+
+async def _apply_media_blocking(context: BrowserContextLike, enabled: bool) -> None:
+    installed = _media_routes.get(context)
+    if enabled:
+        if installed is not None:
+            return
+
+        async def abort(route: RouteLike) -> None:
+            await route.abort()
+
+        handlers: list[tuple[str, Any]] = []
+        for pattern in MEDIA_PATTERNS:
+            await context.route(pattern, abort)
+            handlers.append((pattern, abort))
+        _media_routes[context] = handlers
+        return
+
+    if installed is None:
+        return
+    unroute = getattr(context, "unroute", None)
+    if unroute is not None:
+        for pattern, handler in installed:
+            with suppress(Exception):
+                await unroute(pattern, handler)
+    del _media_routes[context]
+
+
+def _track_main_frame_responses(
+    page: PageLike,
+    holder: MainFrameResponseHolder,
+) -> None:
+    on = getattr(page, "on", None)
+    if on is None:
+        return
+
+    def record(response: ResponseLike) -> None:
+        try:
+            request = response.request  # type: ignore[attr-defined]
+            if request.is_navigation_request() and response.frame == page.main_frame:  # type: ignore[attr-defined]
+                holder["value"] = response
+        except Exception:
+            return
+
+    on("response", record)
+
+
+async def _install_user_agent_override(page: PageLike, user_agent: str | None) -> None:
+    if not user_agent:
+        return
+    add_init_script = getattr(page, "add_init_script", None)
+    if add_init_script is None:
+        return
+
+    serialized = json.dumps(user_agent)
+    await add_init_script(
+        f"""
+(() => {{
+  const userAgent = {serialized};
+  try {{
+    if (typeof window.setNavigatorUserAgent === "function") {{
+      window.setNavigatorUserAgent(userAgent);
+    }}
+  }} catch (_) {{}}
+  try {{
+    Object.defineProperty(Navigator.prototype, "userAgent", {{
+      get: () => userAgent,
+      configurable: true,
+    }});
+  }} catch (_) {{}}
+}})();
+"""
+    )

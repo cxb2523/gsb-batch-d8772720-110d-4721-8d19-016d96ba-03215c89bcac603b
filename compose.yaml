@@ -1,0 +1,26 @@
+services:
+  camouflare:
+    build: .
+    image: ${CAMOUFLARE_IMAGE:-docker.io/mehmetcansahin/camouflare:2.2.0}
+    ports:
+      - "127.0.0.1:8191:8191"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: "2gb"
+    mem_limit: "4g"
+    pids_limit: 1024
+    stop_grace_period: 45s
+    environment:
+      LOG_LEVEL: INFO
+      LOG_FORMAT: "json"
+      CAMOUFLARE_API_TOKEN: ${CAMOUFLARE_API_TOKEN:?Set CAMOUFLARE_API_TOKEN}
+      HEADLESS: virtual
+      POOL_MIN_BROWSERS: "2"
+      POOL_MAX_BROWSERS: "2"
+      POOL_MAX_CONTEXTS_PER_BROWSER: "1"
+      POOL_ACQUIRE_TIMEOUT_MS: "10000"
+      CLEANUP_TIMEOUT_SECONDS: "10"
+      READINESS_TIMEOUT_MS: "15000"
+      PROMETHEUS_ENABLED: "true"

@@ -1,0 +1,454 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
+
+from camouflare.cleanup import CleanupSupervisor
+from camouflare.errors import CamouflareError, SessionCapacityError, V1ErrorCode
+from camouflare.metrics import record_session_event, set_session_snapshot
+from camouflare.protocols import AsyncCleanup, BrowserContextLike
+
+logger = logging.getLogger(__name__)
+
+
+class SessionUnavailableError(CamouflareError):
+    """The targeted session closed, or is closing, before this command could use it.
+
+    Raised before any page exists, so no target request was sent: GET and POST are
+    both safe to retry, and the retry gets a fresh session once cleanup settles.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            error_code=V1ErrorCode.SESSION_NOT_FOUND,
+            retryable=True,
+        )
+
+
+class SessionCleanupError(CamouflareError):
+    """A removed session's manager-owned cleanup failed or exceeded its deadline.
+
+    The session has already left the registry and its id is released, and no
+    target request was sent, so the command is safe to retry.
+    """
+
+    def __init__(self, *, timed_out: bool) -> None:
+        super().__init__(
+            "The session was removed, but its cleanup exceeded the cleanup timeout."
+            if timed_out
+            else "The session was removed, but its cleanup failed.",
+            error_code=(V1ErrorCode.REQUEST_TIMEOUT if timed_out else V1ErrorCode.INTERNAL_ERROR),
+            retryable=True,
+        )
+
+
+@dataclass
+class Session:
+    session_id: str
+    context: BrowserContextLike
+    proxy: dict[str, str] | None = None
+    ttl_seconds: int | None = None
+    created_at: float = field(default_factory=time.monotonic)
+    last_used_at: float = field(default_factory=time.monotonic)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    on_close: AsyncCleanup | None = None
+    # Number of in-flight requests that have checked out this session and may be
+    # about to acquire ``lock``. Incremented synchronously the moment a request
+    # takes the session (before it awaits the lock), so prune/rotation can tell a
+    # just-woken lock waiter apart from a truly idle session -- ``lock.locked()``
+    # briefly reports False in the gap between release and the waiter resuming.
+    in_use: int = 0
+
+    def expired(self) -> bool:
+        if self.ttl_seconds is None:
+            return False
+        return time.monotonic() - self.created_at >= self.ttl_seconds
+
+    def touch(self) -> None:
+        self.last_used_at = time.monotonic()
+
+    async def close(self) -> None:
+        if self.on_close is not None:
+            await self.on_close()
+            return
+        await self.context.close()
+
+
+@dataclass(frozen=True)
+class SessionSnapshot:
+    """Immutable summary of session state for metrics and operational checks."""
+
+    active: int
+    in_use: int
+    closing: int
+    max_sessions: int
+
+
+@dataclass(frozen=True)
+class _ClosingSession:
+    """A session whose cleanup is owned by the manager, not its caller."""
+
+    session: Session
+    task: asyncio.Task[None]
+    reason: str
+
+
+@dataclass
+class _PendingCreation:
+    """Same-id builds; settled when a winner registers or the last build ends."""
+
+    builders: int = 0
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class SessionManager:
+    def __init__(
+        self,
+        *,
+        max_sessions: int,
+        default_ttl_seconds: int,
+        cleanup_timeout_seconds: float = 10,
+        cleanup_supervisor: CleanupSupervisor | None = None,
+    ) -> None:
+        if cleanup_timeout_seconds <= 0:
+            raise ValueError("cleanup timeout must be greater than zero")
+        self._max_sessions = max_sessions
+        self._default_ttl_seconds = default_ttl_seconds
+        self._cleanup_timeout_seconds = cleanup_timeout_seconds
+        self._cleanup = cleanup_supervisor or CleanupSupervisor(
+            timeout_seconds=cleanup_timeout_seconds
+        )
+        self._sessions: dict[str, Session] = {}
+        self._closing: dict[str, _ClosingSession] = {}
+        self._creations: dict[str, _PendingCreation] = {}
+        self._lock = asyncio.Lock()
+        self._closed = False
+
+    def snapshot(self) -> SessionSnapshot:
+        closing_sessions = [closing.session for closing in self._closing.values()]
+        return SessionSnapshot(
+            active=len(self._sessions),
+            in_use=sum(session.in_use for session in self._sessions.values())
+            + sum(session.in_use for session in closing_sessions),
+            closing=len(self._closing),
+            max_sessions=self._max_sessions,
+        )
+
+    def mark_in_use(self, session: Session) -> None:
+        session.in_use += 1
+        self._publish_metrics()
+
+    def mark_released(self, session: Session) -> None:
+        if session.in_use <= 0:
+            raise RuntimeError("Session in-use accounting underflow.")
+        session.in_use -= 1
+        self._publish_metrics()
+
+    def _publish_metrics(self) -> None:
+        snapshot = self.snapshot()
+        set_session_snapshot(
+            active=snapshot.active,
+            in_use=snapshot.in_use,
+            closing=snapshot.closing,
+        )
+
+    def register_or_get(
+        self,
+        session_id: str,
+        context: BrowserContextLike,
+        *,
+        proxy: dict[str, str] | None = None,
+        on_close: AsyncCleanup | None = None,
+        ttl_seconds: int | None = None,
+    ) -> tuple[Session, bool]:
+        """Atomically register a session, or return the existing one if the id is taken.
+
+        The check-and-insert runs without awaiting, so two concurrent callers that
+        both built a context for the same new id cannot both win: the first inserts,
+        the second gets ``(existing, False)`` and is expected to discard its context.
+        """
+        if self._closed:
+            raise RuntimeError("Session manager is closed.")
+        existing = self._sessions.get(session_id)
+        if existing is not None:
+            return existing, False
+        self.raise_if_closing(session_id)
+        if len(self._sessions) + len(self._closing) >= self._max_sessions:
+            record_session_event("rejected")
+            raise SessionCapacityError()
+        session = Session(
+            session_id=session_id,
+            context=context,
+            proxy=proxy,
+            ttl_seconds=self._default_ttl_seconds if ttl_seconds is None else ttl_seconds,
+            on_close=on_close,
+        )
+        self._sessions[session_id] = session
+        pending = self._creations.get(session_id)
+        if pending is not None:
+            pending.settled.set()
+        record_session_event("created")
+        self._publish_metrics()
+        return session, True
+
+    def register_existing(
+        self,
+        session_id: str,
+        context: BrowserContextLike,
+        *,
+        proxy: dict[str, str] | None = None,
+        on_close: AsyncCleanup | None = None,
+        ttl_seconds: int | None = None,
+    ) -> Session:
+        session, created = self.register_or_get(
+            session_id, context, proxy=proxy, on_close=on_close, ttl_seconds=ttl_seconds
+        )
+        if not created:
+            raise RuntimeError("Session already exists.")
+        return session
+
+    def get(self, session_id: str) -> Session | None:
+        return self._sessions.get(session_id)
+
+    def list_ids(self) -> list[str]:
+        return sorted(self._sessions)
+
+    def is_closing(self, session_id: str) -> bool:
+        """Return whether an id is reserved by an in-progress cleanup."""
+
+        return session_id in self._closing
+
+    def raise_if_closing(self, session_id: str) -> None:
+        """Reject an id whose previous session still owns an in-progress cleanup."""
+
+        if session_id in self._closing:
+            raise SessionUnavailableError(
+                "The session is still closing; retry after its cleanup finishes."
+            )
+
+    @contextmanager
+    def creating(self, session_id: str) -> Iterator[None]:
+        """Mark an in-flight context build for ``session_id``.
+
+        Leave the block when the build fails, or immediately before registering its
+        context without awaiting, so a same-id caller rejected for persistent
+        capacity can wait for the real outcome in ``wait_for_creation``.
+        """
+
+        pending = self._creations.get(session_id)
+        if pending is None:
+            pending = self._creations[session_id] = _PendingCreation()
+        pending.builders += 1
+        try:
+            yield
+        finally:
+            pending.builders -= 1
+            if pending.builders == 0:
+                if self._creations.get(session_id) is pending:
+                    del self._creations[session_id]
+                pending.settled.set()
+
+    async def wait_for_creation(self, session_id: str, *, timeout: float) -> Session | None:
+        """Return the session a concurrent same-id build registers, if any.
+
+        Returns as soon as a winner registers, or once every build ends without
+        one, and never waits longer than ``timeout`` seconds. The caller must not
+        itself be inside ``creating`` for the same id.
+        """
+
+        existing = self._sessions.get(session_id)
+        if existing is not None:
+            return existing
+        pending = self._creations.get(session_id)
+        if pending is not None and timeout > 0:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(pending.settled.wait(), timeout=timeout)
+        return self._sessions.get(session_id)
+
+    async def prune_expired(
+        self,
+        *,
+        exclude: str | None = None,
+        wait_for_cleanup: bool = True,
+    ) -> list[str]:
+        """Remove expired idle sessions and start their manager-owned cleanup.
+
+        Callers that only need registry pruning can opt out of waiting so one
+        cancellation-resistant physical close does not delay unrelated work. Session
+        ids and capacity remain reserved by closing tombstones until cleanup finishes.
+        """
+
+        async with self._lock:
+            if self._closed:
+                return []
+            expired_ids = [
+                session_id
+                for session_id, session in self._sessions.items()
+                if session_id != exclude
+                and session.expired()
+                and session.in_use == 0
+                and not session.lock.locked()
+            ]
+            expired_sessions = [self._sessions.pop(session_id) for session_id in expired_ids]
+            closing = [
+                self._start_closing_unlocked(session, reason="expired")
+                for session in expired_sessions
+            ]
+            self._publish_metrics()
+        for _session in expired_sessions:
+            record_session_event("expired")
+        # All expired cleanups are started before waiting for any one of them.
+        # Shielding preserves manager ownership if the reaper itself is cancelled.
+        if closing and wait_for_cleanup:
+            await asyncio.gather(
+                *(asyncio.shield(item.task) for item in closing),
+                return_exceptions=True,
+            )
+        return sorted(expired_ids)
+
+    async def evict_if_current(self, session: Session) -> bool:
+        """Quarantine an unusable session without waiting for physical cleanup.
+
+        Identity matching prevents a late failure from evicting a replacement that
+        reused the same id. The close task acquires ``session.lock`` itself, so this
+        method is safe to call while the failing request still owns that lock.
+        """
+
+        async with self._lock:
+            if self._sessions.get(session.session_id) is not session:
+                return False
+            self._sessions.pop(session.session_id)
+            self._start_closing_unlocked(session, reason="error")
+            self._publish_metrics()
+        record_session_event("error")
+        return True
+
+    async def destroy(self, session_id: str | None) -> bool:
+        if not session_id:
+            return False
+        async with self._lock:
+            session = self._sessions.pop(session_id, None)
+            if session is not None:
+                closing = self._start_closing_unlocked(session, reason="destroyed")
+            else:
+                closing = self._closing.get(session_id)
+            self._publish_metrics()
+        if closing is None:
+            return False
+        # The manager-owned task keeps running if this request is cancelled, and a
+        # retry attaches to that same task instead of starting overlapping cleanup.
+        # Waiting (instead of awaiting the task) propagates only this caller's own
+        # cancellation; a failed cleanup becomes a typed error below.
+        await asyncio.wait({closing.task})
+        if closing.task.cancelled():
+            raise SessionCleanupError(timed_out=False)
+        error = closing.task.exception()
+        if error is not None:
+            raise SessionCleanupError(timed_out=isinstance(error, TimeoutError)) from error
+        return True
+
+    async def close(self) -> None:
+        async with self._lock:
+            self._closed = True
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            pending = list(self._closing.values())
+            pending.extend(
+                self._start_closing_unlocked(session, reason="destroyed") for session in sessions
+            )
+            self._publish_metrics()
+        if pending:
+            # Do not transfer task ownership to the caller: shutdown deadlines may
+            # cancel this coroutine, but each cleanup remains tracked to completion.
+            await asyncio.gather(
+                *(asyncio.shield(item.task) for item in pending),
+                return_exceptions=True,
+            )
+
+    def _start_closing_unlocked(self, session: Session, *, reason: str) -> _ClosingSession:
+        existing = self._closing.get(session.session_id)
+        if existing is not None:
+            return existing
+        task = asyncio.create_task(
+            self._close_session(session),
+            name="camouflare-session-close",
+        )
+        closing = _ClosingSession(session=session, task=task, reason=reason)
+        self._closing[session.session_id] = closing
+        task.add_done_callback(
+            lambda completed, session_id=session.session_id: self._closing_done(
+                session_id, completed
+            )
+        )
+        return closing
+
+    async def _close_session(self, session: Session) -> None:
+        # Wait for an in-flight request to leave the shared context before closing
+        # it. Requests queued behind the remover will observe that the session is no
+        # longer registered and must not use the context.
+        async with session.lock:
+            task = self._cleanup.start(
+                session.close(),
+                kind="session",
+                timeout_seconds=self._cleanup_timeout_seconds,
+            )
+            group = self._cleanup.group_for(task)
+            error: BaseException | None = None
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError as exc:
+                error = exc
+            else:
+                if task.cancelled():
+                    # The supervisor cancels cleanup at its hard deadline. Report
+                    # that as a timeout instead of cancelling this manager task.
+                    error = TimeoutError(
+                        f"Session cleanup exceeded {self._cleanup_timeout_seconds:g} seconds."
+                    )
+                else:
+                    error = task.exception()
+            # A timed-out parent may have spawned context/browser/proxy cleanup.
+            # Keep the session id and capacity tombstone until that whole physical
+            # cleanup group has actually stopped.
+            await self._cleanup.wait_for_group(group)
+            if error is not None:
+                raise error
+
+    def _closing_done(self, session_id: str, task: asyncio.Task[None]) -> None:
+        closing = self._closing.get(session_id)
+        if closing is None or closing.task is not task:
+            # Still consume the result if a future implementation replaces a task.
+            self._consume_cleanup_result(session_id, task, reason="unknown")
+            return
+        self._closing.pop(session_id, None)
+        succeeded = self._consume_cleanup_result(session_id, task, reason=closing.reason)
+        if succeeded and closing.reason == "destroyed":
+            record_session_event("destroyed")
+        self._publish_metrics()
+
+    @staticmethod
+    def _consume_cleanup_result(
+        session_id: str,
+        task: asyncio.Task[None],
+        *,
+        reason: str,
+    ) -> bool:
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            error = asyncio.CancelledError()
+        if error is None:
+            return True
+        record_session_event("error")
+        logger.error(
+            "Failed to close session (%s): %s",
+            reason,
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        return False
