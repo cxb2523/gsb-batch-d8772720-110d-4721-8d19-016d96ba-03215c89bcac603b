@@ -16,9 +16,11 @@ import {
   Scale,
   ShieldCheck,
   Star,
+  TriangleAlert,
   Trophy,
 } from "lucide-react";
 import { Avatar } from "@/components/layout/avatar";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -30,6 +32,7 @@ import {
 } from "@/components/cards";
 import { useTranslation } from "@/components/providers/language-provider";
 import { getCountryCode, detectCountry } from "@/lib/geo";
+import type { MissingDataInfo } from "@/lib/github";
 import countriesData from "@/data/countries.json";
 import type { UserResult } from "../types";
 import { getSignalMetricEntries } from "../signal-metrics";
@@ -45,9 +48,10 @@ type Props = {
   user: UserResult;
   location?: string | null;
   countryParam?: string | null;
+  missingData?: MissingDataInfo[];
 };
 
-export function UserProfileClient({ user, location, countryParam }: Props) {
+export function UserProfileClient({ user, location, countryParam, missingData }: Props) {
   const { t } = useTranslation();
   const searchParams = useSearchParams();
   const { copied, copy } = useClipboardCopy();
@@ -123,6 +127,14 @@ export function UserProfileClient({ user, location, countryParam }: Props) {
 
   // Signal stats entries for transparency
   const signalEntries = getSignalMetricEntries(user.signals, t);
+
+  // Partial-collection notice: which contribution parts failed to load and why
+  const missingParts = missingData ?? [];
+  const missingPartLabels = missingParts.map((item) => t(`profile.partialData.part.${item.part}`));
+  const retryAfterSeconds = missingParts
+    .map((item) => item.retryAfterSeconds)
+    .filter((value): value is number => typeof value === "number" && value > 0)
+    .sort((a, b) => a - b)[0];
 
   const totalRawSum = Math.max(
     1,
@@ -338,6 +350,30 @@ export function UserProfileClient({ user, location, countryParam }: Props) {
           </div>
         </div>
       </section>
+
+      {/* ── Partial Data Notice (non-blocking) ──────────────────────── */}
+      {missingParts.length > 0 ? (
+        <Alert className="border-amber-500/40 bg-amber-500/5 [&>svg]:text-amber-500">
+          <TriangleAlert />
+          <AlertTitle>{t("profile.partialData.title")}</AlertTitle>
+          <AlertDescription>
+            <p>{t("profile.partialData.description", { parts: missingPartLabels.join(", ") })}</p>
+            <ul className="list-disc space-y-0.5 ps-4">
+              {missingParts.map((item) => (
+                <li key={`${user.username}-missing-${item.part}`}>
+                  {t(`profile.partialData.part.${item.part}`)}:{" "}
+                  {t(`profile.partialData.kind.${item.kind}`)}
+                </li>
+              ))}
+            </ul>
+            <p>
+              {retryAfterSeconds
+                ? t("profile.partialData.retryAfter", { seconds: retryAfterSeconds })
+                : t("profile.partialData.retryLater")}
+            </p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {/* ── Score Cards Grid ────────────────────────────────────────── */}
       <section className="space-y-3">

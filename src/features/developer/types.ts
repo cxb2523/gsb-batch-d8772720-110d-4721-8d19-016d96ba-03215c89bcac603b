@@ -1,4 +1,5 @@
 import type { ScoringExplanations, ScoringSignals } from "@/features/scoring";
+import type { MissingDataInfo } from "@/lib/github";
 import type { BaseDeveloper } from "@/types/models";
 
 export type UserResult = BaseDeveloper & {
@@ -93,4 +94,10 @@ export type UserResult = BaseDeveloper & {
 export type UserProfileResponse = {
   user: UserResult;
   location: string | null;
+  /**
+   * Present when parts of the GitHub collection (pull requests, issues or
+   * discussions) failed and were degraded to empty sets. The score is still
+   * computed, but these parts may be undercounted rather than truly zero.
+   */
+  missingData?: MissingDataInfo[];
 };

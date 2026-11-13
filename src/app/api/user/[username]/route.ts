@@ -20,9 +20,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ user
   const selectedLanguages = parseSelectedLanguagesFromSearchParams(searchParams);
 
   try {
-    const { user, location } = await getUserProfile(trimmed, selectedLanguages);
+    const { user, location, missingData } = await getUserProfile(trimmed, selectedLanguages);
     return NextResponse.json(
-      { success: true, user, location },
+      {
+        success: true,
+        user,
+        location,
+        ...(missingData && missingData.length > 0 ? { missingData } : {}),
+      },
       {
         headers: {
           "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=86400",

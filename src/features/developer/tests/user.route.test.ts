@@ -211,6 +211,114 @@ describe("GET /api/user/[username]", () => {
     expect(response.status).toBe(429);
   });
 
+  test("surfaces missingData when contribution sub-queries failed", async () => {
+    const rawUser = {
+      ...makeUser("octocat", "The Octocat"),
+      pullRequests: [],
+      issues: [],
+      missingParts: [
+        {
+          part: "pullRequests",
+          kind: "SECONDARY_RATE_LIMIT",
+          retriable: true,
+          retryAfterSeconds: 60,
+          reason: "You have exceeded a secondary rate limit",
+        },
+        {
+          part: "issues",
+          kind: "TIMEOUT",
+          retriable: true,
+          reason: "GitHub timed out",
+        },
+      ],
+    };
+    mocks.getUserData.mockResolvedValueOnce({
+      data: rawUser,
+      metrics: {
+        duration: 100,
+        errors: [
+          {
+            part: "pullRequests",
+            reason: "You have exceeded a secondary rate limit",
+            kind: "SECONDARY_RATE_LIMIT",
+            retriable: true,
+            retryAfterSeconds: 60,
+          },
+        ],
+      },
+    });
+    mocks.calculateUserScore.mockReturnValueOnce(makeScore(40));
+
+    const request = new Request("http://localhost/api/user/octocat");
+    const response = await GET(request, {
+      params: Promise.resolve({ username: "octocat" }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      success: boolean;
+      user: { username: string; finalScore: number };
+      missingData?: { part: string; kind: string; retriable: boolean }[];
+    };
+
+    // Score is still computed and returned...
+    expect(body.success).toBe(true);
+    expect(body.user.finalScore).toBe(40);
+    // ...but the missing parts are reported, not silently treated as zero
+    expect(body.missingData).toHaveLength(2);
+    expect(body.missingData?.[0]).toMatchObject({
+      part: "pullRequests",
+      kind: "SECONDARY_RATE_LIMIT",
+      retriable: true,
+    });
+    expect(body.missingData?.[1]).toMatchObject({ part: "issues", kind: "TIMEOUT" });
+  });
+
+  test("omits missingData when the collection is complete", async () => {
+    const rawUser = makeUser("octocat", "The Octocat");
+    mocks.getUserData.mockResolvedValueOnce({
+      data: rawUser,
+      metrics: { duration: 100, errors: [] },
+    });
+    mocks.calculateUserScore.mockReturnValueOnce(makeScore(40));
+
+    const request = new Request("http://localhost/api/user/octocat");
+    const response = await GET(request, {
+      params: Promise.resolve({ username: "octocat" }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { success: boolean; missingData?: unknown };
+    expect(body.success).toBe(true);
+    expect(body.missingData).toBeUndefined();
+  });
+
+  test("getUserProfile propagates missingParts from the collection layer", async () => {
+    const rawUser = {
+      ...makeUser("octocat", "The Octocat"),
+      missingParts: [
+        {
+          part: "discussions",
+          kind: "NETWORK",
+          retriable: true,
+          reason: "connection reset",
+        },
+      ],
+    };
+    mocks.getUserData.mockResolvedValueOnce({
+      data: rawUser,
+      metrics: { duration: 50, errors: [] },
+    });
+    mocks.calculateUserScore.mockReturnValueOnce(makeScore(55));
+
+    const result = await getUserProfile("octocat");
+
+    expect(result.user.finalScore).toBe(55);
+    expect(result.missingData).toEqual([
+      expect.objectContaining({ part: "discussions", kind: "NETWORK" }),
+    ]);
+  });
+
   test("returns 400 when username is empty", async () => {
     const request = new Request("http://localhost/api/user/");
     const response = await GET(request, {

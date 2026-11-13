@@ -4,12 +4,28 @@ import {
   type CacheConfig,
   type CacheStore,
 } from "@/lib/cache";
-import { GitHubGraphQLClient } from "./github-graphql-client";
-import type { DiscussionNode, GitHubUserData, IssueNode, PullRequestNode, RepoNode } from "./types";
+import { GitHubApiError, GitHubGraphQLClient, type GitHubErrorKind } from "./github-graphql-client";
+import type {
+  DiscussionNode,
+  GitHubDataPart,
+  GitHubUserData,
+  IssueNode,
+  MissingDataInfo,
+  PullRequestNode,
+  RepoNode,
+} from "./types";
+
+export type UserFetchErrorInfo = {
+  part: string;
+  reason: string;
+  kind?: GitHubErrorKind;
+  retriable?: boolean;
+  retryAfterSeconds?: number;
+};
 
 export type UserFetchMetrics = {
   duration: number;
-  errors: { part: string; reason: string }[];
+  errors: UserFetchErrorInfo[];
 };
 
 type Logger = Pick<Console, "info" | "warn">;
@@ -335,6 +351,9 @@ function isGitHubUserData(value: unknown): value is GitHubUserData {
   if (candidate.discussions !== undefined && !Array.isArray(candidate.discussions)) {
     return false;
   }
+  if (candidate.missingParts !== undefined && !Array.isArray(candidate.missingParts)) {
+    return false;
+  }
 
   return true;
 }
@@ -354,6 +373,59 @@ function toDiscussionNode(item: RawDiscussionNode): DiscussionNode {
     url: item.url,
     comments: item.comments,
     repository: item.repository,
+  };
+}
+
+function toRetryAfterSeconds(error: GitHubApiError): number | undefined {
+  if (error.retryAfterMs !== undefined) {
+    return Math.max(1, Math.ceil(error.retryAfterMs / 1000));
+  }
+  if (error.rateLimit.retryAfterSeconds && error.rateLimit.retryAfterSeconds > 0) {
+    return error.rateLimit.retryAfterSeconds;
+  }
+  return undefined;
+}
+
+function classifyFetchError(error: unknown): {
+  kind: GitHubErrorKind;
+  retriable: boolean;
+  retryAfterSeconds?: number;
+  reason: string;
+} {
+  if (error instanceof GitHubApiError) {
+    return {
+      kind: error.kind,
+      retriable: error.retriable,
+      retryAfterSeconds: toRetryAfterSeconds(error),
+      reason: error.message,
+    };
+  }
+  return {
+    kind: "UNKNOWN",
+    retriable: false,
+    reason: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function toFetchErrorInfo(part: string, error: unknown): UserFetchErrorInfo {
+  const classified = classifyFetchError(error);
+  return {
+    part,
+    reason: classified.reason,
+    kind: classified.kind,
+    retriable: classified.retriable,
+    retryAfterSeconds: classified.retryAfterSeconds,
+  };
+}
+
+function toMissingDataInfo(part: GitHubDataPart, error: unknown): MissingDataInfo {
+  const classified = classifyFetchError(error);
+  return {
+    part,
+    kind: classified.kind,
+    retriable: classified.retriable,
+    retryAfterSeconds: classified.retryAfterSeconds,
+    reason: classified.reason,
   };
 }
 
@@ -378,7 +450,7 @@ async function fetchUserDataFromGitHub(
   const externalDiscussionQuery = `author:${username} -user:${username}`;
 
   const startTime = performance.now();
-  const fetchErrors: { part: string; reason: string }[] = [];
+  const fetchErrors: UserFetchErrorInfo[] = [];
 
   const repoCount = parseCountEnv(
     process.env.GITHUB_REPO_COUNT,
@@ -451,28 +523,16 @@ async function fetchUserDataFromGitHub(
   ]);
 
   if (userResult.status === "rejected") {
-    fetchErrors.push({
-      part: "user",
-      reason: userResult.reason?.message ?? String(userResult.reason),
-    });
+    fetchErrors.push(toFetchErrorInfo("user", userResult.reason));
   }
   if (prResult.status === "rejected") {
-    fetchErrors.push({
-      part: "pullRequests",
-      reason: prResult.reason?.message ?? String(prResult.reason),
-    });
+    fetchErrors.push(toFetchErrorInfo("pullRequests", prResult.reason));
   }
   if (issuesResult.status === "rejected") {
-    fetchErrors.push({
-      part: "issues",
-      reason: issuesResult.reason?.message ?? String(issuesResult.reason),
-    });
+    fetchErrors.push(toFetchErrorInfo("issues", issuesResult.reason));
   }
   if (discussionsResult.status === "rejected") {
-    fetchErrors.push({
-      part: "discussions",
-      reason: discussionsResult.reason?.message ?? String(discussionsResult.reason),
-    });
+    fetchErrors.push(toFetchErrorInfo("discussions", discussionsResult.reason));
   }
 
   if (userResult.status === "rejected") {
@@ -488,6 +548,20 @@ async function fetchUserDataFromGitHub(
   const issues = issuesResult.status === "fulfilled" ? issuesResult.value : [];
   const discussions = discussionsResult.status === "fulfilled" ? discussionsResult.value : [];
 
+  // Contribution sub-queries that failed are degraded to empty collections,
+  // but the failure classification travels with the result so callers can
+  // distinguish "no contributions" from "not fetched this time".
+  const missingParts: MissingDataInfo[] = [];
+  if (prResult.status === "rejected") {
+    missingParts.push(toMissingDataInfo("pullRequests", prResult.reason));
+  }
+  if (issuesResult.status === "rejected") {
+    missingParts.push(toMissingDataInfo("issues", issuesResult.reason));
+  }
+  if (discussionsResult.status === "rejected") {
+    missingParts.push(toMissingDataInfo("discussions", discussionsResult.reason));
+  }
+
   const duration = performance.now() - startTime;
 
   const userData: GitHubUserData = {
@@ -499,6 +573,7 @@ async function fetchUserDataFromGitHub(
     pullRequests,
     issues: issues.map(toIssueNode),
     discussions: discussions.map(toDiscussionNode),
+    ...(missingParts.length > 0 ? { missingParts } : {}),
   };
 
   const metrics: UserFetchMetrics = {

@@ -115,7 +115,7 @@ export default async function UserProfilePage({ params, searchParams }: Props) {
     );
   }
 
-  const { user, location } = profileData;
+  const { user, location, missingData } = profileData;
   const displayName = user.name?.trim() || user.username;
 
   const profilePageSchema = {
@@ -199,7 +199,12 @@ export default async function UserProfilePage({ params, searchParams }: Props) {
       <JsonLd data={profilePageSchema} />
       <JsonLd data={breadcrumbSchema} />
 
-      <UserProfileClient user={user} location={location} countryParam={countryParam} />
+      <UserProfileClient
+        user={user}
+        location={location}
+        countryParam={countryParam}
+        missingData={missingData}
+      />
     </div>
   );
 }

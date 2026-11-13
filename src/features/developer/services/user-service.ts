@@ -132,6 +132,9 @@ export async function getUserProfile(
   const response: UserProfileResponse = {
     user,
     location: data.location ?? null,
+    ...(data.missingParts && data.missingParts.length > 0
+      ? { missingData: data.missingParts }
+      : {}),
   };
 
   // Warm Redis profile cache and persist canonical scores to DB after response
