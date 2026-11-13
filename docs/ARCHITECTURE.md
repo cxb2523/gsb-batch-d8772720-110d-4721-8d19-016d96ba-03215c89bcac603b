@@ -1,0 +1,489 @@
+# Backend Architecture
+
+## Startup Sequence
+
+On every process start, the lifespan runs three steps in order:
+
+```
+1. migrate_db()      apply all pending Alembic migrations to head
+2. seed_cities()     upsert cities from data/cities.json into the cities table
+3. scheduler.start() register and start all background jobs
+```
+
+`seed_cities` is idempotent. It checks for an existing slug before inserting, so it is safe to run on every restart.
+
+## API Endpoints
+
+All endpoints are public with no authentication. Base path: `/`
+
+### Jobs `/jobs`
+
+| Method | Path             | Description                                                    |
+| ------ | ---------------- | -------------------------------------------------------------- |
+| `GET`  | `/jobs`          | Paginated job list with optional filters and cursor pagination |
+| `GET`  | `/jobs/facets`   | Per-option job counts for every filter dimension               |
+| `GET`  | `/jobs/{job_id}` | Full job detail by ID (active jobs only)                       |
+
+#### Shared job filters
+
+`app/routers/_filters.py` defines `JobFilters`, a FastAPI dependency read by `/jobs`, `/jobs/facets`, `/companies`, `/companies/{slug}/jobs`, `/search`, `/map/companies` and `/map/cities`. A filter means the same thing on every surface, so the map, the list and the facet counts cannot disagree.
+
+The city and the `posted_within` cutoff are resolved once per request, not once per `apply()` call: `/jobs/facets` applies the same filter set eight times, and `canonicalize_city` can fall through to a fuzzy match. One cutoff also keeps every facet count on the same window.
+
+| Parameter          | Repeatable | Notes                                                                   |
+| ------------------ | ---------- | ----------------------------------------------------------------------- |
+| `city`             | no         | Resolved through `canonicalize_city`, so aliases work                   |
+| `country_code`     | no         | ISO-2, upper-cased                                                      |
+| `region`           | no         | e.g. `south_asia`                                                       |
+| `role_category`    | yes        | OR within the dimension, AND across dimensions                          |
+| `role`             | yes        | Alias merged into `role_category`, kept for existing map/search callers |
+| `role_subcategory` | yes        |                                                                         |
+| `seniority`        | yes        |                                                                         |
+| `job_type`         | yes        | `fulltime`, `parttime`, `contract`, `internship`                        |
+| `ats_type`         | yes        | Source filter: `greenhouse`, `ycombinator`, `workday`...                |
+| `work_mode`        | yes        | `remote`, `hybrid`, `onsite`                                            |
+| `is_remote`        | no         | Legacy two-state filter, kept for compatibility; `work_mode` wins       |
+| `posted_within`    | no         | Days, 1-365; excludes jobs with no known posted date                    |
+| `q`                | no         | Full-text over title, snippet, and role, or a company name match        |
+
+Repeated values are lower-cased, deduped and capped at 25 values of 100 characters each before reaching an `IN` clause; `q` is capped at 200. `work_mode` matches on `is_remote` plus `remote_type != 'hybrid'`, so an unknown or missing `remote_type` still counts as remote.
+
+An unrecognized `work_mode` is dropped, since it is a closed vocabulary. An unrecognized `role_category` simply matches nothing, since that column is free text and new categories need no migration. Both degrade without an error.
+
+`JobFilters.without(*dimensions)` returns a copy with dimensions cleared. The map layers use it to drop `city`, `country_code` and `region`, which already constrain the pin's own location.
+
+Every job-listing surface reads only jobs whose company is also active, so `/jobs`, `/jobs/facets`, `/search`, `/companies` and the map always describe the same set. A job detail for a deactivated company returns 404.
+
+#### Pagination and sorting
+
+`sort` is `recent` (default) or `relevance`. Recency uses keyset pagination: pass `cursor` (returned as `next_cursor`) for pages ordered by `posted_at DESC NULLS LAST, id DESC`. Undated jobs sort last and `posted_at < :cursor` never matches NULL, so the cursor predicate admits `posted_at IS NULL` explicitly. Without it every undated job was unreachable past the first cursor page.
+
+`relevance` ranks by `ts_rank_cd` over the tsvector the GIN index is built on. Keysets cannot express that ordering, so relevance pages by offset and returns `next_cursor: null`. The response echoes the `sort` applied, which falls back to `recent` for an unknown value or for `relevance` with no `q`.
+
+The first page (no cursor) returns `total`; cursor pages do not recompute it.
+
+#### Facets
+
+`GET /jobs/facets` accepts the same filters and returns `{total, ats_type[], role_category[], seniority[], job_type[], work_mode[], country_code[], city[]}`, each a list of `{value, count, parent}`. `parent` is the ISO-2 country for `city` buckets and null elsewhere, which is what the Location section uses to nest cities under their country.
+
+Counting is disjunctive: each dimension is counted with every other filter applied but its own selection ignored, so selecting one source still shows what the other sources hold. `country_code` and `city` form one location dimension, so both ignore `city` and `country_code` together and a selected city still lists every country. All dimensions and the total ship as one `UNION ALL`, so the panel costs a single round trip however many filters are active.
+
+### Companies `/companies`
+
+| Method | Path                     | Description                                  |
+| ------ | ------------------------ | -------------------------------------------- |
+| `GET`  | `/companies`             | Paginated company list with job counts       |
+| `GET`  | `/companies/{slug}`      | Full company profile (active companies only) |
+| `GET`  | `/companies/{slug}/jobs` | Paginated jobs for a specific company        |
+
+Company-level filters: `industry`, `stage`, `ats_type` (repeatable), `has_errors` (boolean, filters by `crawl_error` presence), `limit`, `offset`
+
+Open-role filters: `q`, `city`, `country_code`, `region`, `role_category`, `seniority`, `job_type`, `work_mode`, `is_remote`, `posted_within`. These run against the job-count subquery, not the company row, so `job_count` reflects them. When any is set the join becomes inner and companies with no matching open role drop out, instead of listing with a count of zero.
+
+`/companies/{slug}/jobs` accepts the full shared job filter set.
+
+### Search `/search`
+
+| Method | Path      | Description                                           |
+| ------ | --------- | ----------------------------------------------------- |
+| `GET`  | `/search` | Search across jobs and companies in a single response |
+
+Accepts the full shared job filter set, so it gained `q`, multi-select, `work_mode` and `posted_within`. Adds `industry`, a company attribute. The previous parameters (`city`, `role`, `country_code`, `region`, `is_remote`) all still work.
+
+Response fields: `companies[]`, `jobs[]`, `total_companies`, `total_jobs`.
+
+### Cities `/cities`
+
+| Method | Path             | Description                                          |
+| ------ | ---------------- | ---------------------------------------------------- |
+| `GET`  | `/cities`        | Paginated city list with live job and company counts |
+| `GET`  | `/cities/{slug}` | Single city detail                                   |
+
+Filters: `region`, `country_code`, `limit`, `offset`
+
+### Map `/map`
+
+| Method | Path                            | Description                                                |
+| ------ | ------------------------------- | ---------------------------------------------------------- |
+| `GET`  | `/map/companies`                | Company pins with coordinates and job counts for the globe |
+| `GET`  | `/map/cities`                   | City cluster pins with aggregated job and company counts   |
+| `GET`  | `/map/companies/{slug}/offices` | Distinct office locations derived from active jobs         |
+
+Viewport filters: `lat_min`, `lat_max` (range: -90 to 90), `lng_min`, `lng_max` (range: -180 to 180)
+
+Both pin endpoints accept the full shared job filter set, so the map narrows with the same query and filters as the results list. Searching `rust` leaves only the cities holding matching jobs, and a pin's `job_count` is the count the panel would list. `region` and `country_code` constrain the pin's own resolved location, not its jobs. `city` is ignored, since a city pin is what selecting that city would return.
+
+`map_companies` returns one pin per company per city where it is hiring, placed at the job location with that city’s job count. This uses the same definition as map_cities’s company_count, so both always agree for a viewport. The frontend pads the requested bounds by 0.05° to ensure city-centroid pins remain visible when zooming into neighbourhoods.
+
+### Stats `/stats`
+
+| Method | Path     | Description                   |
+| ------ | -------- | ----------------------------- |
+| `GET`  | `/stats` | Aggregate platform statistics |
+
+Response fields: `total_companies` (active), `total_jobs` (all-time), `active_jobs`, `total_cities`, `cities_with_jobs`, `role_categories`, `top_cities`, `top_regions`, `ats_breakdown`.
+
+### Payments `/payments`
+
+| Method | Path               | Description                            |
+| ------ | ------------------ | -------------------------------------- |
+| `POST` | `/payments/orders` | Create a Razorpay order for a donation |
+| `POST` | `/payments/verify` | Verify Razorpay payment signature      |
+
+Requires `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` in the environment. The `key_id` is returned from `/payments/orders` and used by the frontend to initialize Razorpay Checkout. Signature verification uses HMAC-SHA256 over `order_id|payment_id` with `compare_digest` for constant-time comparison.
+
+### Meta
+
+| Method | Path      | Description                         |
+| ------ | --------- | ----------------------------------- |
+| `GET`  | `/health` | Health check                        |
+| `GET`  | `/`       | API metadata and endpoint reference |
+
+## Background Jobs
+
+All jobs run in-process via APScheduler. No separate worker is needed.
+
+| Job ID               | Interval | Function         | Description                                                    |
+| -------------------- | -------- | ---------------- | -------------------------------------------------------------- |
+| `ingest_all`         | 15 min   | `run_ingestion`  | Crawls the `INGEST_BATCH_SIZE` stalest companies, oldest-first |
+| `enrich_pending`     | 12 h     | `run_enrichment` | Enriches companies with null or stale `enriched_at`            |
+| `discover_companies` | 24 h     | `run_discovery`  | Seeds new companies from ingesters that implement `discover()` |
+
+Companies enter the index two ways: `discover()`, which crawls the YC directory or reads `data/companies_{ats}.json`, and `scripts/probe.py`, which tests existing slugs against the slug-addressed ATS and upgrades whichever answers. `probe()` requires at least one posting, since several ATS answer 200 with an empty list for a slug they do not have.
+
+Ingestion is a rotating queue, not a full sweep: each tick takes the 25 least recently crawled companies, so a tick that fails only loses its own slice. Companies covered per day is `(1440 / INGEST_INTERVAL_MINUTES) * INGEST_BATCH_SIZE`, or 2400 at the defaults. Each job holds a Postgres advisory lock, so only one replica runs it at a time.
+
+## Ingestion Pipeline
+
+Each ATS subclass implements `fetch_raw`, `extract_job_id`, and `build_job`, and optionally `hydrate`. `BaseIngester` handles dedup, deactivation, geo-lookup, error recording, and the scheduler integration.
+
+A failed crawl still advances `last_crawled_at`. The company keeps its `crawl_error` and drops to the back of the rotating queue, so a board that has gone away is retried once per rotation instead of on every tick.
+
+Jobs are never hard-deleted. A SHA-256 hash of `ats_type:slug:job_id` is stored as `dedup_hash` on insert. On each crawl, any job whose hash was not seen in the latest response is marked `is_active=False`.
+
+### Flow per company
+
+```
+1. _resolve_company()
+   Look up company by ats_slug + ats_type.
+   Create a stub record if not found.
+
+2. _fetch_company_geo()  [Clearbit autocomplete]
+   Populate company HQ: city, country_code, region, lat/lng, logo_url.
+   Only runs if company.latitude is not already set.
+
+3. fetch_raw()  [ATS API]
+   Call the provider-specific list endpoint to get raw job dicts.
+
+4. Split by dedup_hash, one pass over the list payload:
+   a. extract_job_id()   stable ATS-side ID
+   b. make_hash()        SHA-256 of "ats_type:slug:job_id" -> dedup_hash
+   c. hash exists        collect for a chunked last_seen_at bulk update
+   d. hash is new        collect for hydration
+   e. hash repeated      counted once
+
+5. hydrate()  [ATS API, new postings only]
+   Second request per job for ATS whose list payload lacks the
+   description or posted date. No-op by default.
+
+6. For each new posting:
+   build_job() -> normalize -> insert
+   Blocked locations are dropped and excluded from the seen set.
+
+7. Deactivate jobs whose dedup_hash was not seen in this crawl.
+   Sets is_active=False, last_seen_at=now.
+
+8. _backfill_company_hq()
+   If the company still has no city, derive it from the most common
+   city across its active jobs.
+```
+
+Step 4 runs before step 5 on purpose. `build_job` is only ever called for new postings, so hydrating the whole board meant discarding almost every detail response once a board was seeded. Splitting first makes detail cost track how much the board changed, not how large it is.
+
+### Normalization
+
+Raw location strings like `"Bengaluru, KA"`, `"New York, NY (Hybrid)"`, or `"Remote / London"` are resolved to canonical fields by the normalizer.
+
+**Location**: `canonicalize_city` tries alias lookup, exact match, substring match, then fuzzy match via rapidfuzz WRatio (cutoff 90). Falls back to Nominatim if `GEOCODE_UNKNOWN_CITIES` is enabled. Remote and hybrid detection runs via regex on the raw string and is never overwritten by city resolution.
+
+Boards often prefix the place with a country or region (`US - Foster City, CA`, `Brazil - Sao Paulo`). When the whole string and its first comma segment both fail, each remaining segment is tried on its own. Segments are matched exactly, never as substrings, so a short alias cannot match inside an unrelated word.
+
+Anything still unresolved falls back to the company HQ, which is what puts a bare `Remote` on the company's pin. The fallback is skipped when the string names a country of its own: `Bogota, Colombia` at a company headquartered in Austin resolves to Colombia with no city, instead of becoming an Austin job. A city the table does not hold still inherits the HQ when the country agrees.
+
+**Role**: title and department matched against `role_patterns.json` to produce `role_category` and `role_subcategory`. Retries against the first 400 chars of description if the title yields no match.
+
+Patterns are evaluated in order; first match wins. More specific subcategories are listed before broad catch-alls, e.g. `healthcare.medtech` (`biomedical engineer`) appears before `engineering.general` (`engineer`) to prevent misclassification. The `role_category` column is a free-text `String(100)` with no enum constraint; new categories require only a `role_patterns.json` entry and no migration.
+
+| `role_category` | Subcategories                                                                                                                                                                                                                                                                                                          |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engineering`   | `backend`, `frontend`, `fullstack`, `mobile`, `data`, `ml`, `devops`, `security`, `qa`, `embedded`, `general`                                                                                                                                                                                                          |
+| `data`          | `scientist`, `analyst`, `bi`                                                                                                                                                                                                                                                                                           |
+| `design`        | `ux`, `ui`, `product`, `graphic`, `general`                                                                                                                                                                                                                                                                            |
+| `product`       | `manager`, `owner`, `general`                                                                                                                                                                                                                                                                                          |
+| `marketing`     | `growth`, `content`, `brand`, `general`                                                                                                                                                                                                                                                                                |
+| `sales`         | `ae`, `sdr`, `csm`, `general`                                                                                                                                                                                                                                                                                          |
+| `operations`    | `general`                                                                                                                                                                                                                                                                                                              |
+| `finance`       | `general`                                                                                                                                                                                                                                                                                                              |
+| `legal`         | `general`                                                                                                                                                                                                                                                                                                              |
+| `hr`            | `recruiting`, `general`                                                                                                                                                                                                                                                                                                |
+| `support`       | `general`                                                                                                                                                                                                                                                                                                              |
+| `research`      | `general`                                                                                                                                                                                                                                                                                                              |
+| `healthcare`    | `clinical` (nurses, doctors, surgeons, therapists, GPs, dentists, physiotherapists, pharmacists, paramedics, and all clinical specialties), `medtech` (biomedical engineers, medical devices), `pharma` (clinical trials, regulatory affairs, pharmacovigilance), `informatics` (health IT, EHR, clinical informatics) |
+| `hospitality`   | `culinary` (chefs, cooks, bakers, baristas, sommeliers, kitchen staff), `general` (waiters, hotel staff, concierge, catering, restaurant management, front of house)                                                                                                                                                   |
+| `other`         | `general` (fallback when no pattern matches)                                                                                                                                                                                                                                                                           |
+
+**Seniority**: title matched against `seniority_patterns.json`. Defaults to `mid`.
+
+**Closed vocabularies**: `job_type` is one of `fulltime`, `parttime`, `contract`, `internship`; `remote_type` is one of `onsite`, `hybrid`, `fully-remote`. Workday, Rippling, and MCF read a local map before the normalizer, so those maps must hold canonical values. `TestJobTypeVocabulary` asserts it.
+
+**Tech stack**: title and description scanned for whole-word matches against `tech_keywords.json`.
+
+```
+normalize_location(location_raw)
+    canonicalize_city()      exact match, alias, substring, fuzzy (rapidfuzz WRatio >= 90)
+    Nominatim geocoder       fallback when GEOCODE_UNKNOWN_CITIES=true
+    remote/hybrid detection  regex patterns on the raw location string
+
+classify_role(title, description, department)
+    role_category + role_subcategory   matched against role_patterns.json
+
+classify_seniority(title)
+    seniority level                    matched against seniority_patterns.json
+
+extract_tech_stack(title, description)
+    tech_stack[]                       matched against tech_keywords.json
+
+normalize_job_type(raw_type)
+    job_type                           mapped via job_type_map in tech_keywords.json
+
+strip_html() + make_snippet()
+    description_snippet                plain text, max 500 chars
+```
+
+### ATS providers
+
+**Ashby**: `GET https://api.ashbyhq.com/posting-api/job-board/{slug}`. Returns a JSON object with a `jobs` array. Job ID is the Ashby UUID. Location is sourced from the `locationName` field.
+
+**Greenhouse**: `GET /boards/{slug}/jobs?content=true`. Returns a flat list of job objects with HTML content, location, and department. Job ID is the Greenhouse numeric `id`.
+
+**Lever**: `GET /postings/{slug}?mode=json`. Returns a flat JSON array of postings. Job ID is the Lever UUID. Job type is derived from the `commitment` category field.
+
+**Y Combinator**: `GET /v0.1/companies?q={slug}` on `api.ycombinator.com` (no auth). Since `workatastartup.com` does not expose job listings via a public API, the ingester creates one representative job per hiring company. The job title comes from `oneLiner`, the description from`longDescription`, and the source URL points to the company's Work at a Startup page.`build_job` backfills missing company metadata, and `fetch_raw` returns `[]` when `isHiring` is false to deactivate the job automatically. `is_remote` is set when `regions` contains `"Fully Remote"`.
+
+**Workday**: `POST /wday/cxs/{tenant}/{board}/jobs` on `{tenant}.{wd}.myworkdayjobs.com` (no auth). The board is addressed by three per-customer values, so `ats_slug` packs them as `tenant:wdN:board` and `WorkdayIngester` overrides `_resolve_company` to keep `Company.slug` equal to the bare tenant. Paging is offset-based with a hard `limit` of 20. `total` appears only on the first response, and offsets past the end wrap back to page 0, so the loop also stops when a page contributes no new `externalPath`. Each posting is followed by `GET /wday/cxs/{tenant}/{board}{externalPath}` for the description, `timeType`, and `startDate`. Dedup uses `bulletFields[0]`, the requisition number.
+
+**Teamtailor**: `GET https://{slug}.teamtailor.com/jobs.json` (no auth), the career site's public JSON Feed. It is used instead of `api.teamtailor.com/v1/jobs`, which requires a per-company token. Each item embeds a schema.org `JobPosting` under `_jobposting`, and geo comes from its `jobLocation[].address` (`addressLocality` plus an ISO-2 `addressCountry`). The feed is unpaginated and complete, so soft-deactivation is safe against it.
+
+**Rippling**: `GET https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs` (no auth) returns a bare, unpaginated list. `GET .../jobs/{uuid}` adds the description (split into `company` and `role` HTML), `employmentType`, and `createdOn`. `employmentType.label` holds the machine code and `employmentType.id` the human label, the reverse of the usual convention.
+
+### Location blocking
+
+Jobs with `country_code = IL` or a city matching `israel`, `tel aviv`, `haifa`, `beer sheva`, or `jerusalem` are skipped at insertion time and never written to the database.
+
+The check runs on the resolved `country_code`, so it only fires once one is known. Ingesters that receive a country display name instead of an ISO code (Workday, Rippling) resolve it with `get_country_code_for_name` before the Job is built, so postings in unlisted cities are matched on country instead of passing through with `country_code = None`.
+
+## Enrichment Pipeline
+
+Processes companies where `enriched_at IS NULL` or where `enriched_at` is older than `ENRICH_REFRESH_DAYS` days (default 90), ordered oldest-first. Re-enrichment refreshes all fields.
+
+Wikidata provides structured facts: founders, key investors, total funding, funding stage, business model, headcount range, and social profile handles. Wikipedia provides the long-form company description. Social links from Wikidata are merged with any existing `social_links` instead of overwriting them.
+
+All external calls use a shared `httpx.AsyncClient` with `ENRICHMENT_BOT_AGENT` as the User-Agent. `ENRICHMENT_STEP_DELAY` runs between each API call to avoid rate limits.
+
+### Flow per company
+
+```
+1. wikidata.search_company()      search by company name to get Wikidata QID
+2. wikidata.fetch_company_data()  fetch founders, investors, funding,
+                                  social links, business model, headcount
+3. wikipedia.fetch_summary()      fetch description from Wikipedia REST API
+4. Merge results into Company record
+5. Set enriched_at = now
+```
+
+## Database
+
+Three tables: `companies`, `jobs`, `cities`. Companies are the root entity. Jobs belong to a company via `company_id`. Cities are a static reference table populated at startup and never written to by ingestion.
+
+External links (`companies.logo_url`, `companies.website`, the values in `companies.social_links`, and `jobs.source_url`) accept absolute http(s) URLs only. Validators in `app/models.py` drop anything else on write, so a `javascript:` or `data:` value from a feed never reaches an API client. A dropped `source_url` is stored as an empty string, and the UI hides the apply link.
+
+### Connection
+
+- Driver: psycopg2 (sync)
+- Pool: `pool_size=5`, `max_overflow=10`, `pool_timeout=30s`, `pool_recycle=600s`. One connection is pinned by the scheduler advisory lock for the length of every ingest tick.
+- `pool_pre_ping=True`: validates connections before use, required for Neon serverless
+- Sessions: context manager via `get_session()` with explicit rollback on exception
+
+### Table: `companies`
+
+One record per company. `ats_type` and `ats_slug` identify which ATS board to crawl. Location fields are populated by Clearbit geo lookup on first ingest or backfilled from the most common job city. Enrichment fields are populated by the enrichment pipeline.
+
+| Column              | Type           | Notes                             |
+| ------------------- | -------------- | --------------------------------- |
+| `id`                | `String` PK    | UUID v4                           |
+| `name`              | `String(255)`  | Required                          |
+| `slug`              | `String(255)`  | Unique, indexed                   |
+| `logo_url`          | `String(500)`  |                                   |
+| `description`       | `Text`         |                                   |
+| `website`           | `String(500)`  |                                   |
+| `city`              | `String(255)`  | HQ city                           |
+| `country`           | `String(255)`  |                                   |
+| `country_code`      | `String(2)`    | ISO-2, indexed                    |
+| `region`            | `String(50)`   | e.g. `south_asia`                 |
+| `latitude`          | `Float`        |                                   |
+| `longitude`         | `Float`        |                                   |
+| `industry`          | `JSONB`        | Array of industry tags            |
+| `stage`             | `String(50)`   | e.g. `series_a`                   |
+| `founded_year`      | `Integer`      |                                   |
+| `ats_type`          | `String(50)`   | e.g. `ycombinator`                |
+| `ats_slug`          | `String(255)`  | ATS board identifier              |
+| `last_crawled_at`   | `DateTime(tz)` |                                   |
+| `crawl_error`       | `String(500)`  | Last error message                |
+| `is_active`         | `Boolean`      |                                   |
+| `wikidata_id`       | `String(20)`   | Wikidata QID                      |
+| `enriched_at`       | `DateTime(tz)` | Null if not yet enriched          |
+| `founders`          | `JSONB`        |                                   |
+| `key_investors`     | `JSONB`        |                                   |
+| `total_funding_usd` | `BigInteger`   |                                   |
+| `funding_stage`     | `String(50)`   |                                   |
+| `business_model`    | `String(50)`   |                                   |
+| `headcount_range`   | `String(50)`   |                                   |
+| `benefits`          | `JSONB`        |                                   |
+| `office_address`    | `String(500)`  |                                   |
+| `social_links`      | `JSONB`        | Keys: `twitter`, `linkedin`, etc. |
+
+### Table: `jobs`
+
+One record per job posting. `location_raw` preserves the original ATS string. All structured location, role, seniority, and tech fields are produced by the normalization pipeline. `dedup_hash` is the upsert key. Jobs are soft-deleted by setting `is_active=False`.
+
+| Column                | Type           | Notes                                               |
+| --------------------- | -------------- | --------------------------------------------------- |
+| `id`                  | `String` PK    | UUID v4                                             |
+| `company_id`          | `String` FK    | References `companies.id`                           |
+| `title`               | `String(500)`  | Required                                            |
+| `description`         | `Text`         | Raw HTML from ATS                                   |
+| `description_snippet` | `String(600)`  | Plain text, max 500 chars                           |
+| `location_raw`        | `String(500)`  | Original location string from ATS                   |
+| `city`                | `String(255)`  | Canonical city name                                 |
+| `country`             | `String(255)`  |                                                     |
+| `country_code`        | `String(2)`    | ISO-2                                               |
+| `region`              | `String(50)`   | e.g. `middle_east`                                  |
+| `latitude`            | `Float`        |                                                     |
+| `longitude`           | `Float`        |                                                     |
+| `is_remote`           | `Boolean`      |                                                     |
+| `remote_type`         | `String(50)`   | `onsite`, `hybrid`, or `fully-remote`               |
+| `role_category`       | `String(100)`  | e.g. `engineering`, `design`                        |
+| `role_subcategory`    | `String(100)`  | e.g. `backend`, `mobile`                            |
+| `seniority`           | `String(50)`   | `junior`, `mid`, `senior`, `lead`                   |
+| `job_type`            | `String(50)`   | `fulltime`, `contract`, etc.                        |
+| `department`          | `String(255)`  | Raw department string from ATS                      |
+| `tech_stack`          | `JSONB`        | Array of matched tech keywords                      |
+| `source_url`          | `String(1000)` | ATS job listing URL                                 |
+| `ats_type`            | `String(50)`   |                                                     |
+| `ats_job_id`          | `String(255)`  | ATS-side stable job ID                              |
+| `dedup_hash`          | `String(64)`   | SHA-256, unique; used for upsert logic              |
+| `posted_at`           | `DateTime(tz)` |                                                     |
+| `first_seen_at`       | `DateTime(tz)` | Set on first insert                                 |
+| `last_seen_at`        | `DateTime(tz)` | Updated on every crawl that sees the job            |
+| `is_active`           | `Boolean`      | Set to false when job disappears from the ATS board |
+
+### Table: `cities`
+
+Reference data loaded from `data/cities.json` at startup. Used by the cities and map endpoints. The normalizer reads city metadata from the same JSON file directly, not from this table.
+
+| Column         | Type          | Notes                       |
+| -------------- | ------------- | --------------------------- |
+| `id`           | `String` PK   | UUID v4                     |
+| `name`         | `String(255)` | Canonical city name         |
+| `slug`         | `String(255)` | Unique, URL-safe ASCII slug |
+| `country`      | `String(255)` |                             |
+| `country_code` | `String(2)`   |                             |
+| `region`       | `String(50)`  |                             |
+| `latitude`     | `Float`       |                             |
+| `longitude`    | `Float`       |                             |
+
+### Indexes
+
+Every user-facing job query filters `is_active = TRUE`, so the three composite partial indexes (`city_role`, `region_role`, `country_role`) are preferred over plain single-column indexes. Those serve the `total` count; `ix_jobs_active_recent` serves the page itself.
+
+`ix_jobs_active_recent` is declared descending on purpose. An ascending index cannot satisfy `ORDER BY posted_at DESC NULLS LAST, id DESC`, so the planner used to scan every active job and sort it to return twenty rows. Matching the order turns the first page into a twenty-row index read, and the same index covers the `posted_within` range.
+
+#### companies
+
+| Index                       | Columns              | Type                 |
+| --------------------------- | -------------------- | -------------------- |
+| `companies_slug_key`        | `slug`               | Unique constraint    |
+| `ix_companies_country_code` | `country_code`       | B-tree               |
+| `ix_companies_city_country` | `city, country_code` | B-tree               |
+| `ix_companies_region`       | `region`             | B-tree               |
+| `ix_companies_industry_gin` | `industry`           | GIN (JSONB contains) |
+
+#### jobs
+
+| Index                         | Columns                                   | Condition          | Purpose                          |
+| ----------------------------- | ----------------------------------------- | ------------------ | -------------------------------- |
+| `jobs_dedup_hash_key`         | `dedup_hash`                              |                    | Unique constraint; upsert lookup |
+| `ix_jobs_is_active`           | `is_active`                               |                    | Global active-job count queries  |
+| `ix_jobs_seniority`           | `seniority`                               |                    | Seniority filter                 |
+| `ix_jobs_company_active`      | `company_id, is_active`                   |                    | Per-company job queries          |
+| `ix_jobs_active_city_role`    | `city, role_category`                     | `is_active = TRUE` | Primary filter for job listings  |
+| `ix_jobs_active_region_role`  | `region, role_category`                   | `is_active = TRUE` | Region-filtered listings         |
+| `ix_jobs_active_country_role` | `country_code, role_category`             | `is_active = TRUE` | Country-filtered listings        |
+| `ix_jobs_active_recent`       | `posted_at DESC NULLS LAST, id DESC`      | `is_active = TRUE` | List order and cursor pages      |
+| `ix_jobs_active_remote`       | `is_remote`                               | `is_active = TRUE` | Remote-only filter queries       |
+| `ix_jobs_fts_gin`             | `tsvector(title, snippet, role_category)` | `is_active = TRUE` | GIN; full-text search            |
+
+#### cities
+
+| Index             | Columns | Type              |
+| ----------------- | ------- | ----------------- |
+| `cities_slug_key` | `slug`  | Unique constraint |
+
+## Caching
+
+Cache headers are set on read-heavy endpoints called repeatedly with identical parameters: single-key detail lookups (a job, a company, a city, an office list), plus map pan/zoom and page-load stats. `/jobs`, `/jobs/facets`, `/companies`, `/companies/{slug}/jobs` and `/search` accept the full shared filter set, so their cache key space is unbounded and they are not cached.
+
+| Endpoint                            | max-age | stale-while-revalidate |
+| ----------------------------------- | ------- | ---------------------- |
+| `GET /stats`                        | 300s    | 60s                    |
+| `GET /cities`                       | 300s    | 60s                    |
+| `GET /cities/{slug}`                | 300s    | 60s                    |
+| `GET /jobs/{id}`                    | 120s    | 30s                    |
+| `GET /companies/{slug}`             | 120s    | 30s                    |
+| `GET /map/cities`                   | 120s    | 30s                    |
+| `GET /map/companies`                | 120s    | 30s                    |
+| `GET /map/companies/{slug}/offices` | 120s    | 30s                    |
+
+No CDN is deployed. These headers apply browser-level HTTP caching only.
+
+## Configuration
+
+Settings are loaded from `.env` via `pydantic-settings`. All values have defaults for local development.
+
+| Variable                     | Default                                                | Description                                           |
+| ---------------------------- | ------------------------------------------------------ | ----------------------------------------------------- |
+| `DATABASE_URL`               | `postgresql://localhost/jobdex`                        | PostgreSQL connection string                          |
+| `DB_ECHO`                    | `false`                                                | Log all SQL statements                                |
+| `DB_POOL_SIZE`               | `5`                                                    | SQLAlchemy pool size                                  |
+| `DB_MAX_OVERFLOW`            | `10`                                                   | Max overflow connections                              |
+| `DB_POOL_TIMEOUT`            | `30`                                                   | Connection acquisition timeout in seconds             |
+| `DB_POOL_RECYCLE`            | `600`                                                  | Connection max lifetime in seconds                    |
+| `HTTP_TIMEOUT`               | `30.0`                                                 | Timeout for ATS HTTP requests                         |
+| `CRAWL_DELAY`                | `0.3`                                                  | Delay between company crawls in seconds               |
+| `HTTP_RETRY_ATTEMPTS`        | `3`                                                    | Retries per ATS request                               |
+| `HTTP_RETRY_MIN_WAIT`        | `2.0`                                                  | First backoff wait in seconds                         |
+| `HTTP_RETRY_MAX_WAIT`        | `30.0`                                                 | Backoff ceiling in seconds                            |
+| `INGEST_INTERVAL_MINUTES`    | `15`                                                   | Ingestion tick interval                               |
+| `INGEST_BATCH_SIZE`          | `25`                                                   | Companies per tick; `0` crawls everything at once     |
+| `ENRICH_INTERVAL_HOURS`      | `12`                                                   | Enrichment job interval                               |
+| `DISCOVER_INTERVAL_HOURS`    | `24`                                                   | Discovery job interval                                |
+| `GEOCODE_UNKNOWN_CITIES`     | `false`                                                | Enable Nominatim fallback for unrecognized cities     |
+| `GEOCODE_USER_AGENT`         | `JobDex/1.0 (+https://github.com/areebahmeddd/jobdex)` | User-agent string for Nominatim requests              |
+| `ENRICHMENT_BOT_AGENT`       | `JobDex/1.0 (+https://github.com/areebahmeddd/jobdex)` | User-agent string for Wikidata and Wikipedia requests |
+| `ENRICHMENT_REQUEST_TIMEOUT` | `15.0`                                                 | Timeout for enrichment HTTP requests                  |
+| `ENRICHMENT_STEP_DELAY`      | `0.5`                                                  | Delay between enrichment API calls in seconds         |
+| `ENRICH_REFRESH_DAYS`        | `90`                                                   | Age at which a company is re-enriched                 |
+| `ALLOWED_ORIGINS`            | see `config.py`                                        | CORS allowlist                                        |
+| `RAZORPAY_KEY_ID`            | empty                                                  | Razorpay key; payments are disabled when unset        |
+| `RAZORPAY_KEY_SECRET`        | empty                                                  | Razorpay secret; payments are disabled when unset     |
+| `DEBUG`                      | `false`                                                | FastAPI debug mode                                    |

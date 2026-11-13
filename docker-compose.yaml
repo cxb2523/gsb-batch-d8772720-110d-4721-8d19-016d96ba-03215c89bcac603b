@@ -1,0 +1,64 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile.backend
+    env_file:
+      - ./backend/.env
+    # Loopback only, so outside traffic has to go through Caddy.
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped
+
+  #   # Note: deployed to Cloudflare Pages in production.
+  #   # Uncomment to run locally during development.
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: ../docker/Dockerfile.frontend
+  #   ports:
+  #     - "3000:80"
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+  caddy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.caddy
+    ports:
+      - "80:80"
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  #   # Note: Legacy nginx service, replaced by Caddy.
+  # nginx:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile.nginx
+  #   ports:
+  #     - "80:80"
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+volumes:
+  caddy_data:

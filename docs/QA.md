@@ -1,0 +1,900 @@
+﻿# JobDex Backend: Deep-Dive Q&A
+
+Each question includes exact code references and a verdict with notes on open issues.
+
+## Bugs & Investigations
+
+### Q1: Is cron clashing with manual? `[FIXED]`
+
+#### What exists
+
+APScheduler registers three jobs in [`backend/app/scheduler.py`](../backend/app/scheduler.py):
+
+```python
+scheduler.add_job(
+    _run_locked,
+    "interval",
+    minutes=settings.INGEST_INTERVAL_MINUTES,
+    args=["ingest", LOCK_INGEST, run_ingestion],
+    id="ingest_all",
+    max_instances=1,
+)
+scheduler.add_job(
+    _run_locked,
+    "interval",
+    hours=settings.ENRICH_INTERVAL_HOURS,
+    args=["enrich", LOCK_ENRICH, run_enrichment],
+    id="enrich_pending",
+    max_instances=1,
+)
+scheduler.add_job(
+    _run_locked,
+    "interval",
+    hours=settings.DISCOVER_INTERVAL_HOURS,
+    args=["discover", LOCK_DISCOVER, run_discovery],
+    id="discover_companies",
+    max_instances=1,
+)
+```
+
+`_run_locked` wraps each job in a Postgres advisory lock before calling `run_ingestion`/`run_enrichment`/`run_discovery` (see the Verdict below). `max_instances=1` only prevented the APScheduler trigger from firing the same job twice inside one process; it never covered a manual script running the same function outside the scheduler, which is the gap the lock closes.
+
+#### The actual risk
+
+If you run `python scripts/ingest.py --all` while the scheduler's `ingest_all` is mid-run:
+
+1. Both processes independently load the same company list from the DB.
+2. Both call `ingest(ats_slug, db)` for the same company.
+3. Both execute `fetch_raw` against the ATS, causing **double HTTP traffic** to the ATS.
+4. Both walk the same raw jobs and try to `db.add(job)`.
+5. The `dedup_hash` unique constraint on the `jobs` table catches duplicate inserts and raises `IntegrityError`.
+6. That `IntegrityError` is caught by the bare `except Exception` in the per-job loop in `base.py` and silently counted as an error.
+
+```python
+# backend/app/ingestion/base.py
+except Exception as exc:  # noqa: BLE001
+    msg = f"Error on job id={raw.get('id', '?')}: {exc}"
+    logger.warning(msg)
+    result.errors.append(msg)
+```
+
+So it won't crash, but you'll see spurious error counts in logs and the `company.crawl_error` might get set from the outer exception path.
+
+#### Verdict
+
+**Fixed.** Every scheduled job and `scripts/ingest.py --all` now wrap their run in a Postgres advisory lock (`LOCK_INGEST`/`LOCK_ENRICH`/`LOCK_DISCOVER` in `database.py`, `_run_locked` in `scheduler.py`). A second runner sees the lock already held and skips instead of racing. `scripts/ingest.py` also refuses to start at all if it can reach a live server, unless `--force` is passed.
+
+### Q2: What happens if cron runs and finds the same data? `[FIXED]`
+
+#### The exact flow
+
+From [`backend/app/ingestion/base.py`](../backend/app/ingestion/base.py):
+
+```python
+active_hashes: set[str] = {row.dedup_hash for row in existing_rows if row.is_active}
+seen_hashes: set[str] = set()
+
+for raw in raw_jobs:
+    job_id = self.extract_job_id(raw)
+    dedup_hash = self.make_hash(slug, job_id)
+    seen_hashes.add(dedup_hash)
+
+    if dedup_hash in existing_hash_to_id:
+        db.query(Job).filter(Job.id == existing_hash_to_id[dedup_hash]).update(
+            {"last_seen_at": now, "is_active": True},
+            synchronize_session=False,
+        )
+        result.updated_jobs += 1
+    else:
+        # new job - insert
+        ...
+
+expired = active_hashes - seen_hashes
+if expired:
+    db.query(Job).filter(Job.dedup_hash.in_(expired)).update(
+        {"is_active": False}, synchronize_session=False
+    )
+```
+
+So for **identical data**:
+
+- Every existing job gets an `UPDATE SET last_seen_at = now, is_active = true` (O(n) writes per crawl, even on unchanged data).
+- `result.updated_jobs` is incremented for each.
+- No new inserts happen.
+- No deactivations happen (expired = empty set).
+
+This is a **heartbeat** pattern: `last_seen_at` acts as a liveness timestamp. If the ATS stops returning a job, `last_seen_at` stops updating and `expired` eventually marks it inactive.
+
+#### The actual "skip?" question
+
+There is **no skip**. Every job seen in the ATS response always triggers an `UPDATE`, even if nothing changed. This is by design to keep `last_seen_at` current. The trade-off is N UPDATE statements per crawl for N jobs, even on unchanged data.
+
+#### Verdict
+
+**Correct, and by design.** The heartbeat approach is clean and simple for this scale. The cost is N writes per run per company; for 200 jobs, that's 200 indexed UPDATE statements, which Postgres handles trivially.
+
+**Potential improvement for scale:** Add a condition to the UPDATE to skip if `last_seen_at` was already set today:
+
+```python
+db.query(Job).filter(
+    Job.id == existing_hash_to_id[dedup_hash],
+    Job.last_seen_at < today_start,  # only update if stale
+).update({"last_seen_at": now, "is_active": True}, synchronize_session=False)
+```
+
+This halves write pressure when re-running within the same day, but adds complexity. At current scale it's not needed.
+
+### Q3: Error handling? `[FIXED]`
+
+#### Layer 1: Per-job parse errors (base.py)
+
+```python
+# backend/app/ingestion/base.py
+for raw in raw_jobs:
+    try:
+        job_id = self.extract_job_id(raw)
+        ...
+        job = self.build_job(raw, company, slug)
+        ...
+    except (KeyError, ValueError, TypeError, AttributeError, IndexError) as exc:
+        msg = f"Error on job id={raw.get('id', '?')}: {exc}"
+        logger.warning(msg)
+        result.errors.append(msg)
+```
+
+Catches data errors (missing keys, bad values, type mismatches). Programmer errors bubble up. Loop continues, error is appended to `IngestResponse.errors`. **One bad job doesn't kill the whole company crawl.**
+
+#### Layer 2: HTTP errors (base.py)
+
+```python
+except httpx.HTTPStatusError as exc:
+    msg = f"HTTP {exc.response.status_code} from {self.ats_type} board '{slug}'"
+    logger.error(msg)
+    result.errors.append(msg)
+    company.crawl_error = msg
+    db.commit()
+    return result
+except httpx.RequestError as exc:
+    msg = f"Network error from {self.ats_type} board '{slug}': {exc}"
+    logger.error(msg)
+    company.crawl_error = msg
+    db.commit()
+    return result
+```
+
+Differentiates HTTP status errors (4xx/5xx) from network errors (timeout, DNS). Stores the last error on the company record. **Good distinction.** The `crawl_error` field is surfaced via the `/companies?has_errors=true` filter.
+
+#### Layer 3: Per-company errors (scheduler.py)
+
+```python
+# backend/app/scheduler.py
+try:
+    with get_session() as db:
+        result = await ingester.ingest(ats_slug, db)
+    total_new += result.new_jobs
+    ...
+except Exception as exc:
+    logger.warning(f"[scheduler] ingest failed for {slug}: {exc}")
+    errors += 1
+```
+
+If `ingest()` raises (beyond the HTTP error handlers, e.g. a DB error), the scheduler catches it, logs a warning, and moves to the next company. **One bad company doesn't stop the entire run.**
+
+#### Layer 4: Session rollback (database.py)
+
+```python
+# backend/app/database.py
+@contextmanager
+def get_session():
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+```
+
+Any unhandled exception inside a `with get_session()` block rolls back the transaction. **Correct and clean.**
+
+#### What's missing / problems
+
+1. ~~**No retry logic.**~~ **[FIXED]** `_fetch_raw_with_retry()` in `base.py` wraps `fetch_raw` with tenacity exponential backoff (min 2s, max 30s, 3 attempts) and retries on HTTP 429/5xx and network errors.
+2. **No circuit breaker.** If an ATS API is down for days, every cron run still tries every company on that ATS and collects errors. Deferred; overkill at current scale.
+3. ~~**`crawl_error` is invisible.**~~ **[FIXED]** The `/companies?has_errors=true` filter exposes companies with a non-null `crawl_error` field.
+4. ~~**`noqa: BLE001` (blind exception).**~~ **[FIXED]** Narrowed to `except (KeyError, ValueError, TypeError, AttributeError, IndexError)`, so programmer errors now bubble up correctly.
+5. ~~**Discovery uses `logger.error`, ingestion uses `logger.warning`**~~ **[FIXED]** Both now use `logger.warning` for gracefully-handled per-item failures.
+
+### Q4: Are the time intervals logically correct? `[FIXED]`
+
+From [`backend/app/config.py`](../backend/app/config.py):
+
+```python
+INGEST_INTERVAL_MINUTES: int = 15
+INGEST_BATCH_SIZE: int = 25
+ENRICH_INTERVAL_HOURS: int = 12
+DISCOVER_INTERVAL_HOURS: int = 24
+```
+
+And the delays:
+
+```python
+CRAWL_DELAY: float = 0.3  # Between companies in ingestion
+ENRICHMENT_STEP_DELAY: float = 0.5  # Between API calls in enrichment
+```
+
+#### Analysis per interval
+
+**Ingest: 15min tick, 25-company batch ✓** **[UPDATED]**
+Ingestion moved from a single interval covering every company to a rotating queue: each tick crawls the 25 least recently crawled companies (`order_by(last_crawled_at.asc().nullsfirst())`), so new companies get crawled on the next tick and the rest cycle through continuously. Coverage per day is `(1440 / 15) * 25`, comfortably ahead of the company count, so no board goes stale for more than a few hours even without the old fixed-interval sweep.
+
+**Enrich: 12h ✓** **[FIXED]**
+The enrichment scheduler now uses `or_(enriched_at IS NULL, enriched_at < cutoff)` where `cutoff = now - ENRICH_REFRESH_DAYS` (default 90 days). Companies are re-enriched when stale, and the run exits early with a `"nothing pending"` log when all companies are fresh, ending the perpetual no-op.
+
+**Discover: 24h ✓**
+New companies don't appear on YC's hiring list that frequently. 24h is appropriate. Discovery is idempotent (slug check before insert), so running it more often would just increase the `skipped` count.
+
+**CRAWL_DELAY: 0.3s ✓ (for now)**
+0.3s between companies is polite to the ATS APIs. However, this is a global delay: if you have 50 Greenhouse companies back-to-back, you're hammering `boards-api.greenhouse.io` with requests 0.3s apart. A per-ATS delay or a per-domain rate limiter would be more respectful.
+
+**ENRICHMENT_STEP_DELAY: 0.5s ✓**
+0.5s between Wikidata and Wikipedia calls is appropriate given their rate-limit policies.
+
+#### Verdict
+
+**Intervals are correct.** ~~The logical bug is the enrichment scheduler becoming a permanent no-op.~~ **[FIXED]** Option A was implemented: enrichment re-runs for companies where `enriched_at < now - 90 days`.
+
+```python
+# Option A (implemented): re-enrich companies older than ENRICH_REFRESH_DAYS
+.filter(
+    Company.is_active.is_(True),
+    or_(
+        Company.enriched_at.is_(None),
+        Company.enriched_at < (datetime.now(UTC) - timedelta(days=settings.ENRICH_REFRESH_DAYS))
+    )
+)
+```
+
+```python
+# Option B (not used): run once then remove the job
+scheduler.add_job(
+    run_enrichment, "interval", hours=12, id="enrich_pending", max_instances=1
+)
+# Add a check in run_enrichment: if slugs is empty, scheduler.remove_job("enrich_pending")
+```
+
+## Architecture & Design
+
+### Q1: Is DB data deduplicated or repeated?
+
+#### The dedup mechanism
+
+In [`backend/app/models.py`](../backend/app/models.py):
+
+```python
+dedup_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+```
+
+This is a database-level `UNIQUE` constraint (Alembic generates it from `unique=True`), not just an application-level check.
+
+The hash is computed in [`backend/app/ingestion/base.py`](../backend/app/ingestion/base.py):
+
+```python
+def make_hash(self, slug: str, job_id: str) -> str:
+    return hashlib.sha256(f"{self.ats_type}:{slug}:{job_id}".encode()).hexdigest()
+```
+
+So `dedup_hash = SHA-256("greenhouse:airbnb:12345")`. All three components (ATS type, company slug, job ID) are embedded, making it globally unique across ATS providers.
+
+#### What happens on each crawl
+
+```python
+# backend/app/ingestion/base.py
+existing_rows = (
+    db.query(Job.dedup_hash, Job.id, Job.is_active)
+    .filter(Job.company_id == company.id, Job.dedup_hash.isnot(None))
+    .all()
+)
+existing_hash_to_id: dict[str, str] = {row.dedup_hash: row.id for row in existing_rows}
+```
+
+The ingester loads all existing hashes for the company **before** the loop. New hashes → INSERT; known hashes → UPDATE `last_seen_at` only. This means for a company with 200 jobs that are all unchanged, you get 200 `UPDATE` statements touching only a timestamp, with no duplicates inserted.
+
+#### Potential duplication gap
+
+Company records can be duplicated if `_resolve_company` creates a stub using `slug` that doesn't match `ats_slug`:
+
+```python
+# backend/app/ingestion/base.py
+company = (
+    db.query(Company)
+    .filter(Company.ats_slug == slug, Company.ats_type == self.ats_type)
+    .first()
+)
+if company is None:
+    company = db.query(Company).filter(Company.slug == slug).first()
+if company is None:
+    company = Company(name=..., slug=slug, ats_type=..., ats_slug=slug)
+```
+
+If the same real-world company was discovered under slug `"acme-corp"` by YC (with `ats_type="ycombinator"`) and later ingested via Greenhouse (with `slug="acme"`, `ats_type="greenhouse"`), they'd create two separate Company rows. The `Company.slug` unique constraint would only prevent exact slug collisions. **Cross-ATS deduplication at the company level does not exist.**
+
+#### Verdict
+
+**Job-level deduplication is solid and DB-enforced.** Company-level cross-ATS deduplication is absent by design: each ATS provider has its own slug namespace. For the current scope (one ATS per company) this is fine. If you ever onboard a company on multiple ATS types, a manual merge or canonical-company concept would be needed.
+
+### Q2: How is pagination happening? Offset vs cursor?
+
+#### Jobs endpoint: Hybrid
+
+[`backend/app/routers/jobs.py`](../backend/app/routers/jobs.py) implements both modes simultaneously:
+
+**Cursor (keyset) pagination:**
+
+```python
+def _encode_cursor(posted_at: datetime | None, job_id: str) -> str:
+    payload = {"p": posted_at.isoformat() if posted_at else "", "i": job_id}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+# In the route:
+if cursor:
+    decoded = _decode_cursor(cursor)
+    if decoded:
+        cursor_posted_at, cursor_id = decoded
+        query = query.filter(
+            or_(
+                Job.posted_at < cursor_posted_at,
+                and_(Job.posted_at == cursor_posted_at, Job.id < cursor_id),
+                Job.posted_at.is_(None),  # added later; see the note below
+            )
+        )
+    rows = (
+        query.order_by(Job.posted_at.desc().nullslast(), Job.id.desc())
+        .limit(limit)
+        .all()
+    )
+    total = None  # not computed for cursor pages
+```
+
+**Offset pagination:**
+
+```python
+else:
+    total = query.count()
+    rows = query.order_by(Job.posted_at.desc().nullslast(), Job.id.desc()).offset(offset).limit(limit).all()
+```
+
+The cursor is a Base64-encoded JSON of `{p: posted_at_iso, i: job_id}`.
+
+> **Correction `[FIXED]`.** This section originally claimed the cursor handled `NULL posted_at` by treating it as the lowest value via `nullslast`. It did not. `nullslast` sorts undated jobs last, but `posted_at < :cursor` never matches `NULL`, so the first cursor page whose last row had a date returned an empty next page and every undated job was unreachable. 1,497 active jobs were affected. The predicate now admits `posted_at IS NULL` explicitly.
+
+**Other endpoints (companies, cities, search):** Offset only.
+
+#### Problems
+
+1. **`total = None` when using cursor.** The response schema allows `total: int | None`, which is correct, but the client gets no indication of the full dataset size on cursor pages. Standard for keyset but worth documenting.
+2. **Both `cursor` and `offset` can be passed simultaneously.** When `cursor` is present, `offset` is ignored entirely but still accepted without error. The response returns `offset: None` in cursor mode, which could confuse a client that passed `offset=40`.
+3. **No stable sort guarantee for offset mode.** If new jobs are inserted between page 1 and page 2 fetches (offset=0 and offset=20), the page 2 result will be shifted, causing duplicates or skipped rows. The cursor mode solves this; the offset mode doesn't.
+4. **Search endpoint runs 3 separate queries**: `query.count()` for total jobs, `query.with_entities(func.count(func.distinct(Job.company_id)))` for total companies, then the paged `.offset().limit()`. These are three round trips without a transaction wrapping them; counts could be inconsistent with the page result.
+5. **`limit` upper bound is 100** for jobs/companies, but 200 for cities. Inconsistency.
+
+#### Verdict
+
+Cursor pagination on jobs is well-implemented and the hybrid approach is pragmatic. The search endpoint's triple-query pattern is a performance smell at scale.
+
+> **Correction `[FIXED]`.** This originally credited `ix_jobs_active_posted` for the cursor path. That index was ascending and could not satisfy `ORDER BY posted_at DESC NULLS LAST, id DESC`, so every page scanned all active jobs and sorted them to return twenty rows. It was replaced by `ix_jobs_active_recent`, declared in that order.
+
+### Q3: Are there safe checks before insertion or on startup?
+
+#### Startup sequence
+
+[`backend/app/main.py`](../backend/app/main.py):
+
+```python
+async def lifespan(app: FastAPI):
+    migrate_db()  # 1. Alembic upgrade head
+    seed_cities()  # 2. Upsert cities from cities.json
+    scheduler.start()  # 3. Start background jobs
+```
+
+**`migrate_db()`** runs `alembic upgrade head` on every startup:
+
+```python
+# backend/app/database.py
+def migrate_db() -> None:
+    from alembic.config import Config
+    from alembic import command
+
+    cfg = Config(str(BASE_DIR / "alembic.ini"))
+    command.upgrade(cfg, "head")
+```
+
+This is safe. If migrations are already at head, Alembic is a no-op. **Good practice.**
+
+**`seed_cities()`** has an existence check per city:
+
+```python
+# backend/app/startup.py
+if not db.query(City).filter(City.slug == slug).first():
+    db.add(City(...))
+```
+
+Idempotent but uses an **N+1 pattern**: one SELECT per city in `cities.json`. If you have 500 cities, that's 500 individual SELECT queries before the batch INSERT. At startup this is a minor cost, but it's worth noting.
+
+#### Before insertion checks
+
+**Company resolution (`_resolve_company`):**
+
+```python
+# backend/app/ingestion/base.py
+company = (
+    db.query(Company)
+    .filter(Company.ats_slug == slug, Company.ats_type == self.ats_type)
+    .first()
+)
+if company is None:
+    company = db.query(Company).filter(Company.slug == slug).first()
+if company is None:
+    company = Company(...)
+    db.add(company)
+    db.flush()
+```
+
+Two-stage lookup before creating a stub. Safe.
+
+**Job deduplication:**
+
+```python
+existing_hash_to_id: dict[str, str] = {row.dedup_hash: row.id for row in existing_rows}
+```
+
+Pre-flight hash map built from DB before the insert loop. Backed by a DB-level unique constraint as last resort.
+
+**Location blocking:**
+
+```python
+if is_blocked_location(job.country_code, job.city):
+    logger.info(
+        f"[{self.ats_type}] '{slug}' skipping blocked location: {job.city}, {job.country_code}"
+    )
+    seen_hashes.discard(dedup_hash)
+    continue
+```
+
+Checked after `build_job()` but before `db.add(job)`. Note: `seen_hashes.discard(dedup_hash)` is important; it prevents previously-active blocked jobs from being deactivated incorrectly.
+
+**Geo-fetch guard:**
+
+```python
+if not company.latitude:
+    geo = await _fetch_company_geo(company.name)
+```
+
+Only calls Clearbit if `latitude` is not set. Prevents re-fetching on every crawl. **Good.**
+
+#### What's missing
+
+1. **`seed_cities()` N+1:** Should bulk-load existing slugs first then do a set-difference:
+
+   ```python
+   existing_slugs = {r.slug for r in db.query(City.slug).all()}
+   new_cities = [
+       City(...)
+       for name, info in city_data.items()
+       if _slugify(name) not in existing_slugs
+   ]
+   db.bulk_save_objects(new_cities)
+   ```
+
+2. **No schema validation of ATS responses.** `fetch_raw()` returns raw dicts and `build_job()` uses `.get()` with defaults everywhere, which is fine for resilience, but a missing required field like `raw["id"]` (used in `extract_job_id`) will raise a `KeyError` caught by the per-job except clause. A Pydantic model for the raw ATS response would provide better error messages.
+3. **No health check for DB connection before scheduler starts.** If the DB is briefly unavailable at startup, `migrate_db()` raises and the app crashes. This is actually fine (fail-fast is correct), but there's no retry.
+
+### Q4: What happens with 10+ ATS? Is Kafka/queue needed?
+
+#### Current architecture
+
+[`backend/app/scheduler.py`](../backend/app/scheduler.py):
+
+```python
+async def run_ingestion() -> None:
+    with get_session() as db:
+        targets = [
+            (company.ats_type, company.ats_slug, company.slug)
+            for company in db.query(Company)
+            .filter(Company.is_active.is_(True), Company.ats_type.isnot(None))
+            .order_by(Company.last_crawled_at.asc().nullsfirst())
+            .all()
+        ]
+
+    for ats_type, ats_slug, slug in targets:
+        ingester = INGESTERS.get(ats_type)
+        ...
+        result = await ingester.ingest(ats_slug, db)
+        ...
+        await asyncio.sleep(settings.CRAWL_DELAY)  # 0.3s
+```
+
+This is **fully sequential**: one company at a time, 0.3s delay between each. Even though this is `async`, there's no concurrency: each `ingest()` is `await`ed to completion before the next starts.
+
+#### Time math
+
+For N companies with average ATS latency of 1s and `CRAWL_DELAY=0.3s`:
+
+- 50 companies → ~65 seconds per run ✓
+- 200 companies → ~4.3 minutes per run ✓
+- 500 companies → ~10.8 minutes per run (within 6h window) ✓
+- 5000 companies → ~1.8 hours per run (still within 6h window, barely) ⚠
+- 20,000 companies → ~7.2 hours (**exceeds the 6h interval**) ✗
+
+#### The 12 ATS providers
+
+All 12 ingesters are registered in `INGESTERS` (Ashby, Greenhouse, Lever, SmartRecruiters, Workable, Workday, Rippling, YCombinator, Recruitee, Teamtailor, PyjamaHR, MCF). `run_ingestion` processes them all sequentially based on `last_crawled_at`, regardless of which ATS they belong to. So having more ATS types doesn't change the sequential model; you'd just have more total companies.
+
+Per-company cost is not uniform, and Workday is the outlier. It caps `limit` at 20 and carries no description in the list payload, so a full board costs `ceil(n/20)` list requests plus `n` detail requests. A measured run against NVIDIA's board (2000 jobs, the largest observed) took ~6 minutes on its own. The estimates above do not model this, so count each enterprise Workday board as roughly 100 ordinary companies when sizing the interval.
+
+#### Kafka/queue needed?
+
+**Not at current scale.** For hundreds of companies across 4-10 ATS types, the sequential async model is fine. The `order_by(last_crawled_at.asc().nullsfirst())` ensures no company is permanently starved.
+
+**Where it breaks down:**
+
+- If you scale to thousands of companies and need results fresher than 6h
+- If ATS APIs become rate-limited (currently no per-ATS rate limiting; all companies on the same ATS are requested in rapid succession)
+- If you need parallel processing across multiple server instances
+
+#### Realistic improvement path
+
+**Step 1 (current scale):** Add per-ATS concurrency with `asyncio.Semaphore`:
+
+```python
+sem = asyncio.Semaphore(3)  # 3 concurrent requests per ATS
+
+
+async def ingest_with_sem(ingester, slug, sem):
+    async with sem:
+        async with get_session() as db:
+            return await ingester.ingest(slug, db)
+
+
+tasks = [
+    ingest_with_sem(INGESTERS[ats_type], slug, sem) for ats_type, slug, _ in targets
+]
+results = await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+**Step 2 (at scale):** Move to a task queue (Celery + Redis or ARQ), but this adds significant operational complexity. Only justified at 1000+ companies.
+
+**Kafka is overkill** for this use case. It's designed for high-throughput event streaming, not scheduled polling of 12 ATS APIs.
+
+### Q5: What is ingestion doing vs discover vs enrich?
+
+These three pipelines are completely separate and serve different purposes:
+
+#### Discovery (`run_discovery` → `ingester.discover()`)
+
+**What:** Seeds the DB with new **Company** records.
+
+**When:** Every 24h, or manually via `python scripts/discover.py`.
+
+**How:**
+
+```python
+# backend/app/scheduler.py
+for ats_name, ingester in INGESTERS.items():
+    stubs = await ingester.discover()
+    for stub in stubs:
+        existing = db.query(Company).filter(Company.slug == stub.slug).first()
+        if existing:
+            skipped += 1
+            continue
+        db.add(stub)
+        db.commit()
+        added += 1
+```
+
+Only **YCombinator** implements `discover()` meaningfully: it paginates `api.ycombinator.com/v0.1/companies?isHiring=true` to get all hiring companies. Ashby, Greenhouse, Lever return an empty list (no bulk-discovery API exists for them). Companies manually added to the DB or via the probe/discover scripts also become discoverable.
+
+**Output:** Company stub records with basic info (name, slug, location, ATS metadata). No jobs yet.
+
+#### Ingestion (`run_ingestion` → `ingester.ingest()`)
+
+**What:** Fetches actual **Job** listings for known companies.
+
+**When:** Every 6h, or manually via `python scripts/ingest.py`.
+
+**How:** For each active company with an `ats_type`:
+
+1. Calls the ATS API to get current job listings
+2. Normalizes location, role, seniority, tech stack
+3. Upserts jobs using `dedup_hash`
+4. Deactivates jobs no longer in the ATS response
+5. Updates `company.last_crawled_at`
+
+**Output:** Job records, company location data, `last_crawled_at` timestamp.
+
+#### Enrichment (`run_enrichment` → `enrich_company()`)
+
+**What:** Adds structured metadata to **Company** records from Wikidata + Wikipedia.
+
+**When:** Every 12h. Processes companies where `enriched_at IS NULL` or older than 90 days (`ENRICH_REFRESH_DAYS`).
+
+**How:**
+
+```python
+# backend/app/enrichment/runner.py
+qid = await wikidata.search_company(client, company.name)
+wikidata_data = await wikidata.fetch_company_data(client, qid)
+about = await wikipedia.find_summary(client, company.name, wikidata_qid=qid)
+# Merges: founders, investors, social links, headcount, founded_year, description
+company.enriched_at = datetime.now(UTC)
+db.commit()
+```
+
+**Output:** Company fields filled: `description`, `founded_year`, `founders`, `social_links`, `headcount_range`, `industry`, `wikidata_id`, `enriched_at`.
+
+#### The intended flow
+
+```
+Discovery (24h)
+  → Creates Company stubs from YC hiring list
+
+Ingestion (6h)
+  → Fetches jobs for each known Company
+  → Backfills Company HQ from job locations (Clearbit or job-derived)
+
+Enrichment (12h, one-time)
+  → Adds deep metadata to Company records from Wikidata/Wikipedia
+```
+
+Discovery and Enrichment are about **companies**. Ingestion is about **jobs**. They are independent and can run in any order.
+
+### Q6: Are all relevant places logging, or did we overdo it?
+
+#### What's logged
+
+| Location               | Level     | What                                                              |
+| ---------------------- | --------- | ----------------------------------------------------------------- |
+| `main.py` lifespan     | `info`    | App start/stop, version                                           |
+| `scheduler.py`         | `info`    | Each run start, final summary (new/updated/errors)                |
+| `scheduler.py`         | `warning` | Per-company ingest failure                                        |
+| `scheduler.py`         | `warning` | Per-ATS discovery failure                                         |
+| `ingestion/base.py`    | `info`    | Company created, raw jobs count, deactivation count, done summary |
+| `ingestion/base.py`    | `debug`   | Geocode success                                                   |
+| `ingestion/base.py`    | `error`   | HTTP status and network errors                                    |
+| `ingestion/base.py`    | `warning` | Per-job parse error                                               |
+| `ingestion/base.py`    | `info`    | Blocked location skip                                             |
+| `startup.py`           | `info`    | City seed count                                                   |
+| `enrichment/runner.py` | `info`    | Start, no Wikidata found, done with field count                   |
+| `database.py`          | `info`    | Migrations applied                                                |
+
+#### Assessment
+
+**Generally well-calibrated.** The key events are logged at appropriate levels:
+
+- Scheduler summaries at `info` are useful for monitoring
+- HTTP errors at `error` will trigger alerts in most log aggregators
+- Per-job parse failures at `warning` won't flood production logs under normal conditions
+- Geocoding at `debug` is correctly noisy-but-suppressable
+
+**Overlogged:**
+
+- `logger.info(f"[{self.ats_type}] '{slug}' -> {len(raw_jobs)} raw jobs")` + `logger.info(f"[{self.ats_type}] '{slug}' done - ...")` produce two info lines per company. For 200 companies, that's 400 info lines per ingestion run. Fine for development but noisy in production without log filtering.
+- `logger.info` for blocked location skips; these could be `debug` since they're expected and frequent.
+
+**Underlogged:**
+
+- No request ID / correlation ID; tracing a company through scheduler to DB in a log aggregator is not possible
+- No timing logs (how long did ingesting company X take?)
+- Router endpoints have zero logging; no way to audit what queries are hitting the DB
+
+**Not over-engineered:** No unnecessary trace/span logging. `DEBUG` is used sparingly. No structured JSON logging is set up (Loguru is text-format by default), but adding that would be a one-liner change to the Loguru config.
+
+### Q7: Are operations idempotent and atomic?
+
+#### Idempotency analysis
+
+| Operation          | Idempotent? | Mechanism                                                                  |
+| ------------------ | ----------- | -------------------------------------------------------------------------- |
+| `seed_cities()`    | ✓ Full      | Slug existence check before insert                                         |
+| `run_discovery()`  | ✓ Full      | Slug existence check before insert                                         |
+| `run_ingestion()`  | ✓ Effective | Dedup hash + unique constraint; UPDATEs are idempotent (same values)       |
+| `run_enrichment()` | ✓ Partial   | `enriched_at IS NULL` filter; re-running for same company writes same data |
+| Job deactivation   | ✓ Full      | `UPDATE is_active=False` on same set is idempotent                         |
+
+**Discovery batching (single session per ATS):**
+
+```python
+# backend/app/scheduler.py
+stub_slugs = [s.slug for s in stubs]
+with get_session() as db:
+    existing_slugs = {
+        row.slug
+        for row in db.query(Company.slug).filter(Company.slug.in_(stub_slugs)).all()
+    }
+    new_stubs = [s for s in stubs if s.slug not in existing_slugs]
+    for stub in new_stubs:
+        db.add(stub)
+    db.commit()
+added += len(new_stubs)
+skipped += len(stubs) - len(new_stubs)
+```
+
+The slug check and all inserts for one ATS happen inside a **single session**. The `IN` query fetches all existing slugs at once, new stubs are filtered in Python, and the entire batch is committed atomically. A theoretical race remains (another process inserting a slug between the `IN` query and `db.commit()`), but it is now a narrow window across a single batch commit instead of two separate sessions per company.
+
+#### Atomicity analysis
+
+**Per-company ingestion:**
+
+```python
+# backend/app/scheduler.py
+with get_session() as db:
+    result = await ingester.ingest(ats_slug, db)
+```
+
+The entire ingest for one company (all job inserts + updates + deactivations + company update + `db.commit()`) happens within a single `get_session()` context. If anything fails before `db.commit()`, the `except Exception: db.rollback()` in `get_session()` rolls back all changes for that company atomically. **Correct.**
+
+**Per-company enrichment:**
+
+```python
+# backend/app/scheduler.py
+with get_session() as db:
+    await enrich_company(slug, db)
+```
+
+Same pattern; atomic per company. If the Wikidata SPARQL call succeeds but Wikipedia fails, the already-fetched Wikidata fields won't be committed (good). However, `db.commit()` is called inside `enrich_company` itself:
+
+```python
+# backend/app/enrichment/runner.py
+company.enriched_at = datetime.now(UTC)
+db.commit()
+db.refresh(company)
+```
+
+This means the session is committed inside the function, not by the caller. If you add logic after `await enrich_company(slug, db)` that needs to be in the same transaction, it can't be. Minor architecture concern for future extensibility.
+
+**Seed cities:**
+
+```python
+# backend/app/startup.py
+with get_session() as db:
+    added = 0
+    for name, info in city_data.items():
+        if not db.query(City).filter(City.slug == slug).first():
+            db.add(City(...))
+            added += 1
+    db.commit()
+```
+
+All cities are inserted in a single transaction. If one fails (e.g., an ORM error), all are rolled back. Correct.
+
+#### Race condition in discovery
+
+Discovery narrows the check-then-act window by batching all inserts for one ATS into a single session (see the batching note above). A concurrent process inserting the same slug between the `IN` check and `db.commit()` would produce an `IntegrityError` on the unique `slug` constraint, which would roll back the entire batch for that ATS and be logged by the outer `try/except`. For further hardening, the insert could use `INSERT ... ON CONFLICT DO NOTHING` via `sqlalchemy.dialects.postgresql.insert(...).on_conflict_do_nothing()`.
+
+### Q8: How is searching and DB ops working?
+
+#### Full-text search (`/jobs?q=`)
+
+```python
+# backend/app/routers/jobs.py
+if q:
+    query = query.filter(
+        text(
+            "to_tsvector('english',"
+            " coalesce(jobs.title,'') || ' ' ||"
+            " coalesce(jobs.description_snippet,'') || ' ' ||"
+            " coalesce(jobs.role_category,''))"
+            " @@ websearch_to_tsquery('english', :q)"
+        ).bindparams(q=q)
+    )
+```
+
+This uses PostgreSQL's native FTS with `websearch_to_tsquery` (supports quoted phrases, `AND`, `OR`, `-` negation). The GIN index defined in the model:
+
+```python
+# backend/app/models.py
+Index(
+    "ix_jobs_fts_gin",
+    text(
+        "to_tsvector('english', coalesce(title,'') || ' ' || coalesce(description_snippet,'') || ' ' || coalesce(role_category,''))"
+    ),
+    postgresql_using="gin",
+    postgresql_where=text("is_active = TRUE"),
+)
+```
+
+**This index is a partial index** (only active jobs) matching the query filter. However, the `to_tsvector` in the query must be **exactly identical** to the one in the index definition for PostgreSQL to use the index. They are currently identical, so the FTS index will be used. ✓
+
+#### Search endpoint (`/search`): structural inefficiency
+
+```python
+# backend/app/routers/search.py
+total_jobs = query.count()
+total_companies_count = (
+    query.with_entities(func.count(func.distinct(Job.company_id))).scalar() or 0
+)
+paged_rows = query.order_by(Job.posted_at.desc()).offset(offset).limit(limit).all()
+```
+
+Three separate DB round trips for the same query with different projections. On a large dataset with complex filters, this is expensive. Can be collapsed to two trips using a window function or a CTE, but for the current scale it's fine.
+
+#### Filter pattern: industry JSONB search
+
+```python
+# backend/app/routers/companies.py
+if industry:
+    base = base.filter(Company.industry.cast(JSONB).contains([industry.lower()]))
+```
+
+`Company.industry` is already of type `JSONB` in the ORM (`Mapped[list[str] | None] = mapped_column(JSONB)`), so `.cast(JSONB)` is redundant but harmless. The `contains([industry.lower()])` translates to `industry @> '["fintech"]'::jsonb`, which uses the GIN index:
+
+```python
+(Index("ix_companies_industry_gin", "industry", postgresql_using="gin"),)
+```
+
+✓ This is correct and efficient.
+
+#### Map endpoint
+
+> **Correction `[FIXED]`.** This section originally described a `DISTINCT ON (company_id)` subquery that placed one pin per company at its HQ. That disagreed with `/map/cities`, which counts companies by where their jobs are, so a viewport over Kuala Lumpur reported 10 companies and drew none. `map_companies` now groups active jobs by `(company, city, lat, lng)` inside the viewport and returns one pin per group. No subquery, and the two endpoints share one definition of "company here".
+
+#### DB connection pool
+
+```python
+# backend/app/config.py
+DB_POOL_SIZE: int = 2
+DB_MAX_OVERFLOW: int = 3
+```
+
+Max 5 simultaneous connections. For a single-process API this is adequate since each request holds a connection only for the duration of one route handler. Under concurrent load (e.g., 20 simultaneous requests), requests beyond the 5th will wait up to `DB_POOL_TIMEOUT=30s`. This is the tightest resource constraint in the system.
+
+#### Index coverage summary
+
+| Filter                          | Index used                    |
+| ------------------------------- | ----------------------------- |
+| `is_active = TRUE`              | All partial indexes           |
+| `city + role_category`          | `ix_jobs_active_city_role`    |
+| `region + role_category`        | `ix_jobs_active_region_role`  |
+| `country_code + role_category`  | `ix_jobs_active_country_role` |
+| `is_remote`                     | `ix_jobs_active_remote`       |
+| FTS (`q=`)                      | `ix_jobs_fts_gin`             |
+| `posted_at` (sort/cursor)       | `ix_jobs_active_recent`       |
+| `company_id + is_active`        | `ix_jobs_company_active`      |
+| `companies.slug`                | built-in unique index         |
+| `companies.industry` JSONB      | `ix_companies_industry_gin`   |
+| `companies.city + country_code` | `ix_companies_city_country`   |
+
+Coverage is comprehensive. Notable gaps:
+
+- **`Job.seniority`** has a simple index (`index=True`) but no partial index on `is_active=TRUE`, so `seniority` filters scan all jobs including inactive ones before the `is_active` filter is applied (minor inefficiency).
+- **Combined filters** like `city + seniority` or `role + is_remote` have no composite partial index. PostgreSQL will use bitmap AND across the relevant partial indexes, which is usually fine.
+
+#### Overall DB ops quality
+
+The ORM usage is clean and correct. `synchronize_session=False` on bulk UPDATEs is correctly used (the session is committed after and the objects aren't accessed again). `db.flush()` before `_backfill_company_hq` is correct (ensures the company ID is available for the sub-query). Relationships use `lazy="select"` (explicit N+1 avoidance is handled by manually joining in queries instead of relying on relationship loading).
+
+## Summary Table
+
+### Bugs & Investigations
+
+| #   | Question             | Status                                                | Severity           |
+| --- | -------------------- | ----------------------------------------------------- | ------------------ |
+| 1   | Cron vs manual clash | Fixed: advisory lock serializes scheduler and scripts | None               |
+| 2   | Same data on re-run  | Updates `last_seen_at` only, no skipping              | None (intentional) |
+| 3   | Error handling       | Good layering; retry and visibility fixes applied     | Low                |
+| 4   | Time intervals       | Fixed: enrichment re-runs after 90 days               | None               |
+
+### Architecture & Design
+
+| #   | Question                         | Status                                                      | Severity   |
+| --- | -------------------------------- | ----------------------------------------------------------- | ---------- |
+| 1   | Deduplication                    | Solid at job level via SHA-256 + DB constraint              | None       |
+| 2   | Pagination                       | Hybrid cursor/offset; search has 3 separate count queries   | Low        |
+| 3   | Startup checks                   | Safe; seed_cities has N+1 pattern                           | Low        |
+| 4   | 10+ ATS scaling                  | Sequential is fine now; needs semaphore at 500+ companies   | Low-Medium |
+| 5   | Ingestion vs Discovery vs Enrich | Clean separation; clearly defined roles                     | None       |
+| 6   | Logging                          | Well-calibrated; missing correlation IDs and timing         | Low        |
+| 7   | Idempotency & atomicity          | Good; discovery's check-then-act race is narrow and guarded | Low        |
+| 8   | Search & DB ops                  | FTS index correct; pool size tight; index coverage good     | Low        |

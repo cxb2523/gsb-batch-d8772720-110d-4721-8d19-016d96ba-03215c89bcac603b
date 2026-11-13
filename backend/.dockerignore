@@ -1,0 +1,25 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# tests
+tests/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# environment
+.env
+.env.example
+
+# tooling
+.ruff_cache/
+.mypy_cache/
+.pre-commit-config.yaml
+.dockerignore
+
+# not copied by Dockerfile
+scripts/
+README.md

@@ -1,0 +1,360 @@
+import re
+
+import httpx2 as httpx
+from loguru import logger
+from rapidfuzz import fuzz
+from rapidfuzz import process as fuzz_process
+
+from app.config import settings
+from app.ingestion.normalizer._loader import _load
+
+_cities_cfg = _load("cities.json")
+
+_CITY_DATA: dict[str, dict] = _cities_cfg["cities"]
+_CITY_ALIASES: dict[str, str] = {k.lower(): v for k, v in _cities_cfg["aliases"].items()}
+_REGIONS_MAP: dict[str, list] = _cities_cfg["regions"]
+
+# City names for fuzzy matching.
+_CITY_NAMES: list[str] = list(_CITY_DATA.keys())
+
+# Per-process geocode cache.
+_geocode_cache: dict[str, tuple | None] = {}
+
+# Remote/hybrid detection patterns.
+_REMOTE_PATTERNS = [
+    r"\bremote\b",
+    r"\bwork from home\b",
+    r"\bwfh\b",
+    r"\banywhere\b",
+    r"\bglobal\b",
+    r"\bdistributed\b",
+    r"\bworldwide\b",
+]
+_HYBRID_PATTERNS = [r"\bhybrid\b", r"\bflexible location\b", r"\bpartially remote\b"]
+
+# Locations permanently excluded from the index.
+_BLOCKED_COUNTRY_CODES: frozenset[str] = frozenset({"IL"})
+_BLOCKED_CITY_SUBSTRINGS: tuple[str, ...] = (
+    "israel",
+    "tel aviv",
+    "haifa",
+    "beer sheva",
+    "jerusalem",
+)
+
+
+# Country name -> ISO-2, derived from the city table. Some ATS report a country name
+# but no code (Workday, Rippling), which would otherwise leave the job without a region.
+_COUNTRY_NAME_TO_CODE: dict[str, str] = {
+    data["country"].lower(): data["country_code"]
+    for data in _CITY_DATA.values()
+    if data.get("country") and data.get("country_code")
+}
+
+# Long-form and alternate names that ATS use but the city table does not carry.
+_COUNTRY_NAME_ALIASES: dict[str, str] = {
+    "united states of america": "US",
+    "usa": "US",
+    "u.s.a.": "US",
+    "us": "US",
+    "united kingdom of great britain and northern ireland": "GB",
+    "great britain": "GB",
+    "uk": "GB",
+    "england": "GB",
+    "scotland": "GB",
+    "wales": "GB",
+    "northern ireland": "GB",
+    "the netherlands": "NL",
+    "holland": "NL",
+    "republic of korea": "KR",
+    "korea, republic of": "KR",
+    "czechia": "CZ",
+    "viet nam": "VN",
+    "turkiye": "TR",
+    "türkiye": "TR",
+    "uae": "AE",
+    "hong kong sar": "HK",
+    "hong kong s.a.r.": "HK",
+    "taiwan, province of china": "TW",
+    "republic of ireland": "IE",
+}
+
+
+def get_city_data() -> dict[str, dict]:
+    """Return the full city metadata dictionary keyed by canonical city name."""
+    return _CITY_DATA
+
+
+def get_country_code_for_name(name: str | None) -> str | None:
+    """Return the ISO-2 code for a country name, or None if it is not recognized."""
+    if not name:
+        return None
+    key = name.strip().lower()
+    return _COUNTRY_NAME_TO_CODE.get(key) or _COUNTRY_NAME_ALIASES.get(key)
+
+
+def canonicalize_city(name: str) -> str | None:
+    """Return the canonical city name for the input string, or None if unrecognized."""
+    lowered = name.lower().strip()
+    if lowered in _CITY_ALIASES:
+        return _CITY_ALIASES[lowered]
+    for city_name in _CITY_DATA:
+        if city_name.lower() == lowered:
+            return city_name
+    # Partial: input is a substring of a known city or vice-versa
+    for city_name in _CITY_DATA:
+        if lowered in city_name.lower() or city_name.lower() in lowered:
+            return city_name
+    # First segment: alias and exact-name checks.
+    first_part = name.split(",")[0].strip()
+    first_lower = first_part.lower()
+    if first_lower != lowered:
+        if first_lower in _CITY_ALIASES:
+            return _CITY_ALIASES[first_lower]
+        for city_name in _CITY_DATA:
+            if city_name.lower() == first_lower:
+                return city_name
+    return _fuzzy_match_city(first_part)
+
+
+def get_region_for_country(country_code: str) -> str | None:
+    """Return the region identifier for the given ISO-2 country code, or None if not mapped."""
+    for region, codes in _REGIONS_MAP.items():
+        if country_code.upper() in codes:
+            return region
+    return None
+
+
+def is_blocked_location(country_code: str | None, city: str | None) -> bool:
+    """Return True if the resolved location is in a permanently excluded country or city."""
+    if country_code and country_code.upper() in _BLOCKED_COUNTRY_CODES:
+        return True
+    if city:
+        city_lower = city.lower()
+        return any(sub in city_lower for sub in _BLOCKED_CITY_SUBSTRINGS)
+    return False
+
+
+def normalize_location(
+    location_raw: str,
+    fallback_city: str | None = None,
+    fallback_country_code: str | None = None,
+) -> dict:
+    """Resolve a raw location string to a normalized dict with city, coordinates, and remote flags."""
+    result: dict = {
+        "city": None,
+        "country": None,
+        "country_code": None,
+        "region": None,
+        "latitude": None,
+        "longitude": None,
+        "is_remote": False,
+        "remote_type": "onsite",
+    }
+
+    raw = (location_raw or "").strip()
+    lowered = raw.lower()
+
+    is_hybrid = any(re.search(p, lowered) for p in _HYBRID_PATTERNS)
+    is_remote = any(re.search(p, lowered) for p in _REMOTE_PATTERNS)
+
+    if is_hybrid:
+        result["is_remote"] = True
+        result["remote_type"] = "hybrid"
+    elif is_remote and not _has_known_city(lowered):
+        result["is_remote"] = True
+        result["remote_type"] = "fully-remote"
+        return _apply_fallback(result, raw, fallback_city, fallback_country_code)
+    elif is_remote:
+        result["is_remote"] = True
+        result["remote_type"] = "hybrid"
+
+    canonical = _CITY_ALIASES.get(lowered)
+    if canonical and canonical in _CITY_DATA:
+        return {**result, **_city_fields(canonical)}
+
+    for city_name in _CITY_DATA:
+        if city_name.lower() == lowered:
+            return {**result, **_city_fields(city_name)}
+
+    for city_name in _CITY_DATA:
+        if city_name.lower() in lowered:
+            return {**result, **_city_fields(city_name)}
+
+    first_part = raw.split(",")[0].strip()
+    first_lower = first_part.lower()
+    canonical = _CITY_ALIASES.get(first_lower)
+    if canonical and canonical in _CITY_DATA:
+        return {**result, **_city_fields(canonical)}
+    for city_name in _CITY_DATA:
+        if city_name.lower() == first_lower:
+            return {**result, **_city_fields(city_name)}
+
+    # Boards prefix the place with a country ("Brazil - Sao Paulo"). Exact match only,
+    # so a short alias cannot hit inside an unrelated word.
+    for segment in _segments(raw):
+        canonical = _CITY_ALIASES.get(segment)
+        if canonical and canonical in _CITY_DATA:
+            return {**result, **_city_fields(canonical)}
+        for city_name in _CITY_DATA:
+            if city_name.lower() == segment:
+                return {**result, **_city_fields(city_name)}
+
+    # Fuzzy: first segment before geocoding.
+    matched = _fuzzy_match_city(first_part)
+    if matched:
+        return {**result, **_city_fields(matched)}
+
+    if settings.GEOCODE_UNKNOWN_CITIES and raw:
+        geo = _geocode(raw)
+        if geo:
+            lat, lng, cc, country = geo
+            region = get_region_for_country(cc)
+            return {
+                **result,
+                "city": first_part or raw,
+                "country": country,
+                "country_code": cc,
+                "region": region,
+                "latitude": lat,
+                "longitude": lng,
+            }
+
+    return _apply_fallback(result, raw, fallback_city, fallback_country_code)
+
+
+# Private helpers
+
+
+def _segments(raw: str) -> list[str]:
+    """Split a location into lowercase parts on the separators boards use."""
+    parts = re.split(r"[,\-/|()]| – | — ", raw)
+    return [p.strip().lower() for p in parts if p.strip()]
+
+
+def _detected_country_code(raw: str) -> str | None:
+    """Return the ISO-2 code the raw string names, if it names one."""
+    for segment in _segments(raw):
+        code = get_country_code_for_name(segment)
+        if code:
+            return code
+    return None
+
+
+def _apply_fallback(
+    result: dict, raw: str, fallback_city: str | None, fallback_country_code: str | None
+) -> dict:
+    """Fill unresolved fields from the company HQ, unless the string names another country.
+
+    Right for a bare "Remote", wrong for "Bogota, Colombia" at an Austin company. When
+    the string names its own country, that country wins and the city is left empty.
+    """
+    detected = _detected_country_code(raw)
+    if detected and detected != fallback_country_code:
+        result["country_code"] = detected
+        result["region"] = get_region_for_country(detected)
+        return result
+
+    _apply_city(result, fallback_city)
+    if not result["country_code"] and fallback_country_code:
+        result["country_code"] = fallback_country_code
+        result["region"] = get_region_for_country(fallback_country_code)
+    return result
+
+
+def _fuzzy_match_city(text: str, score_cutoff: int = 90) -> str | None:
+    """Return the closest city name for the input, or None if below score_cutoff."""
+    if not text:
+        return None
+    result = fuzz_process.extractOne(
+        text,
+        _CITY_NAMES,
+        scorer=fuzz.WRatio,
+        score_cutoff=score_cutoff,
+    )
+    return result[0] if result else None
+
+
+def _normalize_region(region: str | None) -> str | None:
+    """Convert a region name to a lowercase underscore-separated identifier."""
+    if not region:
+        return None
+    return region.lower().replace(" ", "_")
+
+
+def _city_fields(city_name: str) -> dict:
+    """Return the full location field dict for a known city name."""
+    d = _CITY_DATA[city_name]
+    return {
+        "city": city_name,
+        "country": d["country"],
+        "country_code": d["country_code"],
+        "region": _normalize_region(d.get("region")),
+        "latitude": d["lat"],
+        "longitude": d["lng"],
+    }
+
+
+def _has_known_city(text: str) -> bool:
+    """Return True if any known city name appears in the given text."""
+    for city_name in _CITY_DATA:
+        if city_name.lower() in text:
+            return True
+    return False
+
+
+def _apply_city(result: dict, city_name: str | None) -> None:
+    """Populate location fields in result from the city data store if the city is known."""
+    if city_name and city_name in _CITY_DATA:
+        d = _CITY_DATA[city_name]
+        result.update(
+            city=city_name,
+            country=d["country"],
+            country_code=d["country_code"],
+            region=_normalize_region(d.get("region")),
+            latitude=d["lat"],
+            longitude=d["lng"],
+        )
+
+
+def _geocode(location: str) -> tuple | None:
+    """Query Nominatim for coordinates of a location string, caching results per process.
+
+    Only a genuine "no match" is cached. A network or parse failure returns None without
+    caching, so a transient Nominatim outage doesn't turn into a permanent miss for the
+    rest of the process.
+    """
+    key = location.lower().strip()
+    if key in _geocode_cache:
+        return _geocode_cache[key]
+    try:
+        r = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": location,
+                "format": "json",
+                "limit": 1,
+                "addressdetails": 1,
+            },
+            headers={"User-Agent": settings.GEOCODE_USER_AGENT},
+            timeout=8.0,
+        )
+        data = r.json()
+    except Exception as exc:
+        logger.debug(f"[geocode] failed for '{location}': {exc}")
+        return None
+
+    if not data:
+        _geocode_cache[key] = None
+        return None
+
+    item = data[0]
+    lat = float(item["lat"])
+    lng = float(item["lon"])
+    address = item.get("address", {})
+    cc = address.get("country_code", "").upper()
+    country = address.get("country", "")
+    result = (lat, lng, cc, country)
+    _geocode_cache[key] = result
+    logger.debug(f"[geocode] '{location}' -> {result}")
+    return result
