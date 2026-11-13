@@ -16,7 +16,7 @@ from base_api.modules.static_functions import str_to_bool
 from functools import partial
 from contextlib import aclosing
 from urllib.parse import quote
-from typing import AsyncGenerator, ClassVar, Any
+from typing import AsyncGenerator, Callable, ClassVar, Any, Literal
 from dataclasses import dataclass
 from curl_cffi import AsyncSession
 from selectolax.lexbor import LexborHTMLParser
@@ -54,6 +54,26 @@ PUBLIC_TOKEN = "Ikkg568nlM51RHvldlPvc2GzZPE9R4XGzaH9Qj4zK9npbbbTly1gj9K4mgRn0QlV
 logger = get_logger(__name__)
 
 SCRAPE_RETRY_POLICY = RetryPolicy(max_attempts=3)
+
+SearchStatus = Literal["completed", "empty", "aborted"]
+
+
+@dataclass(frozen=True, slots=True)
+class SearchOutcome:
+    """Observable ending of a single :meth:`Client.search` run.
+
+    ``status`` is one of ``completed`` (the stream was exhausted), ``empty``
+    (the upstream search returned no items) or ``aborted`` (the caller closed
+    the generator before it finished).
+    """
+
+    query: str
+    requested_count: int
+    yielded_count: int
+    status: SearchStatus
+
+
+SearchOutcomeCallback = Callable[[SearchOutcome], None]
 
 
 def make_iterator_config(
@@ -274,10 +294,21 @@ class Client:
         query: str,
         video_count: int = 50,
         iterator_config: IteratorConfig | None = None,
+        on_outcome: SearchOutcomeCallback | None = None,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         Mirrors: POST /search/users/{userId}/items/
         Body fields follow the snippet’s Recombee client (searchQuery, count, scenario, filter, booster, logic, etc.)
+
+        Yields results one by one. When ``on_outcome`` is given, it is invoked
+        exactly once per search with a :class:`SearchOutcome` describing how the
+        search ended:
+
+        * ``completed`` – every upstream item was streamed to the caller;
+        * ``empty`` – the upstream search returned no items;
+        * ``aborted`` – the caller closed the generator early.
+
+        An exception raised by the callback is propagated, not swallowed.
         """
         helper = Helper(constructor=Video, core=self.core)
 
@@ -297,6 +328,22 @@ class Client:
         body = {k: v for k, v in body.items() if v is not None}
         data = await _post(path=path, json_body=body, timeout=9, core=self.core)
         videos = data.get("recomms", [])
+
+        def report(status: SearchStatus, yielded_count: int) -> None:
+            if on_outcome is not None:
+                on_outcome(
+                    SearchOutcome(
+                        query=query,
+                        requested_count=video_count,
+                        yielded_count=yielded_count,
+                        status=status,
+                    )
+                )
+
+        if not videos:
+            report("empty", 0)
+            return
+
         video_urls = []
         for video in videos:
             video_urls.append(f"https://missav.ws/en/{video['id']}")
@@ -313,9 +360,19 @@ class Client:
             item_extractor=cubed_function,
             iterator_config=iterator_config,
         )
-        async with aclosing(stream):
-            async for result in stream:
-                yield result
+        yielded_count = 0
+        try:
+            async with aclosing(stream):
+                async for result in stream:
+                    yielded_count += 1
+                    yield result
+        except GeneratorExit:
+            # The caller closed us early: the aclosing block above has already
+            # driven scrape_stream's own aclose(), so its finally blocks ran.
+            report("aborted", yielded_count)
+            raise
+        else:
+            report("completed", yielded_count)
 
 
 def create_parser() -> argparse.ArgumentParser:
