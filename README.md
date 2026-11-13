@@ -132,7 +132,9 @@ Read tools accept structured `cookies`, `headers`, HTTP Basic `authenticate`, sc
 | `browser_type` | `url`, `selector`, `text`, `clear` | Resulting page state |
 | `browser_evaluate` | `url`, `script` | JSON-serializable value |
 | `browser_interact` | `url`, `actions[]` | Per-action results |
-| `browser_submit_form` | `url`, `fields`, `submit_selector?` | Resulting page state |
+| `browser_submit_form` | `url`, `fields`, `submit_selector?`, `continue_on_error?` | Per-field results plus submission state |
+
+`browser_submit_form` returns a `fields` array describing each selector as `filled` or `failed` (with a bounded `error` on failure) and a `submission` object stating whether submission ran, whether it used `submit_selector` or the first `<form>` on the page, and whether a navigation was observed. `continue_on_error` defaults to `false` (stop at the first failed field); set it `true` to keep filling the remaining fields. The form is never submitted when no field was filled — that overall failure and parameter validation are the only non-2xx responses, while a partial success returns 200 with its failed fields marked.
 
 Interaction routes require the `BROWSER` binding. A missing binding returns HTTP 501 and maps to `BrowserUnavailableError`; Direct mode uses `NotImplementedError`. A target (or main-frame redirect) that resolves to a blocked address returns HTTP 400 before any page content is returned.
 

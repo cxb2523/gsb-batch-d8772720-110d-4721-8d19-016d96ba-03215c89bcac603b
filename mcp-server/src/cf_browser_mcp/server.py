@@ -1528,6 +1528,7 @@ async def browser_submit_form(
     url: str,
     fields: dict[str, str] | str,
     submit_selector: str = "",
+    continue_on_error: bool = False,
     wait_for: str = "",
     wait_until: str = "",
     user_agent: str = "",
@@ -1547,6 +1548,10 @@ async def browser_submit_form(
                 Example: {"#username":"admin", "#password":"secret", "#email":"a@b.com"}
         submit_selector: Optional CSS selector for the submit button.
                          If empty, submits the first <form> on the page.
+        continue_on_error: When True, keep filling remaining fields after a
+                           single field fails. Default False aborts at the
+                           first failure. The response always reports a
+                           per-field status and whether submission ran.
         wait_for: Optional CSS selector to wait for before filling.
         wait_until: Navigation strategy — "load" | "domcontentloaded" | "networkidle0" | "networkidle2".
         user_agent: Custom User-Agent string.
@@ -1581,6 +1586,7 @@ async def browser_submit_form(
             url,
             parsed_fields,
             submit_selector=submit_selector or None,
+            continue_on_error=bool(continue_on_error),
             **kwargs,
         )
         return json.dumps(result, ensure_ascii=False)

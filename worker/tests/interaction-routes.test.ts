@@ -13,6 +13,55 @@ let evaluateResult: unknown = null;
 let evaluateError: Error | null = null;
 let titleResult = "Updated";
 let contentResult = "<html>updated</html>";
+let clickFailures: Set<string>;
+let navigationResolves: boolean;
+let currentUrl: string;
+let currentPage: ReturnType<typeof buildMockPage> | undefined;
+// Per-test overrides consulted when a fresh mock page is built for a request.
+let clickOverride: ((selector: string) => Promise<void> | void) | undefined;
+let evaluateOverride: ((script: string) => unknown) | undefined;
+
+function buildMockPage() {
+  return {
+    click: vi.fn(async (selector: string) => {
+      if (clickOverride) return clickOverride(selector);
+      if (clickFailures.has(selector)) {
+        throw new Error(`No node found for selector: ${selector}`);
+      }
+    }),
+    type: vi.fn(async () => {}),
+    title: vi.fn(async () => titleResult),
+    content: vi.fn(async () => contentResult),
+    url: vi.fn(() => currentUrl),
+    waitForNavigation: vi.fn(async () => {
+      if (navigationResolves) {
+        currentUrl = "https://example.com/thank-you";
+        return {} as never;
+      }
+      // Mimic the real helper's timeout path: the promise rejects and the
+      // caller's `.catch(() => false)` records no navigation.
+      throw new Error("Navigation timeout of 10000 ms exceeded");
+    }),
+    waitForSelector: vi.fn(async () => null),
+    setDefaultTimeout: vi.fn(),
+    select: vi.fn(async () => []),
+    screenshot: vi.fn(async () => screenshotResult),
+    keyboard: {
+      press: vi.fn(async () => {}),
+    },
+    evaluate: vi.fn(async (script: string) => {
+      if (evaluateOverride) return evaluateOverride(script);
+      if (evaluateError) throw evaluateError;
+      if (script.includes("requestSubmit")) {
+        return { ok: true, method: "requestSubmit" };
+      }
+      if (script.includes("document.title")) {
+        return "Updated";
+      }
+      return evaluateResult;
+    }),
+  };
+}
 
 function makeKv(): KVNamespace {
   return {
@@ -67,32 +116,14 @@ describe("interaction routes", () => {
     evaluateError = null;
     titleResult = "Updated";
     contentResult = "<html>updated</html>";
+    clickFailures = new Set();
+    navigationResolves = false;
+    currentUrl = "https://example.com/next";
+    clickOverride = undefined;
+    evaluateOverride = undefined;
     vi.spyOn(puppeteerLib, "withBrowser").mockImplementation(async (_env, _body, callback) => {
-      const page = {
-        click: vi.fn(async () => {}),
-        type: vi.fn(async () => {}),
-        title: vi.fn(async () => titleResult),
-        content: vi.fn(async () => contentResult),
-        url: vi.fn(() => "https://example.com/next"),
-        waitForNavigation: vi.fn(async () => null),
-        waitForSelector: vi.fn(async () => null),
-        setDefaultTimeout: vi.fn(),
-        select: vi.fn(async () => []),
-        screenshot: vi.fn(async () => screenshotResult),
-        keyboard: {
-          press: vi.fn(async () => {}),
-        },
-        evaluate: vi.fn(async (script: string) => {
-          if (evaluateError) throw evaluateError;
-          if (script.includes("requestSubmit")) {
-            return { ok: true, method: "requestSubmit" };
-          }
-          if (script.includes("document.title")) {
-            return "Updated";
-          }
-          return evaluateResult;
-        }),
-      };
+      const page = buildMockPage();
+      currentPage = page;
 
       return callback({
         page: page as unknown as any,
@@ -362,7 +393,281 @@ describe("interaction routes", () => {
       buildEnv(),
     );
     expect(res.status).toBe(200);
-    const body = await res.json<{ title: string }>();
+    const body = await res.json<{ title: string; fields: Array<{ status: string }> }>();
     expect(body.title).toBe("Updated");
+    expect(body.fields.every((entry) => entry.status === "filled")).toBe(true);
+  });
+
+  it("POST /submit-form reports every filled field and first-form submission on full success", async () => {
+    navigationResolves = true;
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        fields: {
+          "#email": "user@example.com",
+          "#password": "secret",
+        },
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      fields: Array<{ selector: string; status: string; error?: string }>;
+      submission: {
+        attempted: boolean;
+        trigger: string;
+        navigation_observed: boolean;
+        error?: string;
+      };
+      url: string;
+    }>();
+    expect(body.fields).toEqual([
+      { selector: "#email", status: "filled" },
+      { selector: "#password", status: "filled" },
+    ]);
+    expect(body.submission).toMatchObject({
+      attempted: true,
+      trigger: "first_form",
+      navigation_observed: true,
+    });
+    expect(body.submission.error).toBeUndefined();
+    expect(body.url).toBe("https://example.com/thank-you");
+    expect(currentPage?.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST /submit-form continues filling remaining fields when continue_on_error is true", async () => {
+    clickFailures.add("#missing");
+    navigationResolves = true;
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        continue_on_error: true,
+        fields: {
+          "#email": "user@example.com",
+          "#missing": "nope",
+          "#password": "secret",
+        },
+        submit_selector: "button[type=submit]",
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      fields: Array<{ selector: string; status: string; error?: string }>;
+      submission: {
+        attempted: boolean;
+        trigger: string;
+        navigation_observed: boolean;
+      };
+    }>();
+    expect(body.fields).toHaveLength(3);
+    expect(body.fields[0]).toEqual({ selector: "#email", status: "filled" });
+    expect(body.fields[1]).toMatchObject({
+      selector: "#missing",
+      status: "failed",
+    });
+    expect(body.fields[1]?.error).toContain("#missing");
+    expect(body.fields[2]).toEqual({ selector: "#password", status: "filled" });
+    // All three selectors were attempted despite the middle failure.
+    expect(currentPage?.click).toHaveBeenCalledWith("button[type=submit]");
+    expect(body.submission).toMatchObject({
+      attempted: true,
+      trigger: "submit_selector",
+      navigation_observed: true,
+    });
+  });
+
+  it("POST /submit-form returns an error status and never submits when every field fails", async () => {
+    clickFailures.add("#a");
+    clickFailures.add("#b");
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        continue_on_error: true,
+        fields: { "#a": "1", "#b": "2" },
+        submit_selector: "button[type=submit]",
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(500);
+    const body = await res.json<{
+      error: string;
+      fields: Array<{ selector: string; status: string; error?: string }>;
+      submission: { attempted: boolean; navigation_observed: boolean };
+    }>();
+    expect(body.error).toMatch(/not submitted/);
+    expect(body.fields).toHaveLength(2);
+    expect(body.fields.every((entry) => entry.status === "failed")).toBe(true);
+    expect(body.fields[0]?.error).toContain("#a");
+    expect(body.submission).toEqual({ attempted: false, navigation_observed: false });
+    // The submit button must never be clicked when no field was filled.
+    const submitCalls = vi.mocked(currentPage!.click).mock.calls
+      .filter(([selector]) => selector === "button[type=submit]");
+    expect(submitCalls).toHaveLength(0);
+  });
+
+  it("POST /submit-form aborts at the first failure by default and skips the submit", async () => {
+    clickFailures.add("#missing");
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        fields: {
+          "#email": "user@example.com",
+          "#missing": "nope",
+          "#password": "secret",
+        },
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      fields: Array<{ selector: string; status: string; error?: string }>;
+      submission: { attempted: boolean; trigger?: string; error?: string };
+    }>();
+    expect(body.fields[0]).toEqual({ selector: "#email", status: "filled" });
+    expect(body.fields[1]).toMatchObject({ selector: "#missing", status: "failed" });
+    expect(body.fields[2]).toMatchObject({
+      selector: "#password",
+      status: "failed",
+      error: "Skipped after an earlier field failure",
+    });
+    expect(body.submission.attempted).toBe(false);
+    expect(body.submission.trigger).toBeUndefined();
+    expect(body.submission.error).toMatch(/skipped/i);
+    // Neither the remaining field nor the form submission was attempted.
+    const selectorsClicked = vi.mocked(currentPage!.click).mock.calls.map(([selector]) => selector);
+    expect(selectorsClicked).not.toContain("#password");
+    expect(currentPage?.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("POST /submit-form records no navigation when the submit does not navigate", async () => {
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        fields: { "#email": "user@example.com" },
+        submit_selector: "button.save",
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      submission: { attempted: boolean; navigation_observed: boolean; trigger: string };
+    }>();
+    expect(body.submission).toMatchObject({
+      attempted: true,
+      trigger: "submit_selector",
+      navigation_observed: false,
+    });
+  });
+
+  it("POST /submit-form reports a submission error when the page has no form", async () => {
+    evaluateOverride = (script: string) => {
+      if (script.includes("requestSubmit")) {
+        return { ok: false, error: "No form found on page" };
+      }
+      return evaluateResult;
+    };
+    const res = await postJson(
+      "/submit-form",
+      { url: "https://example.com/form", fields: { "#email": "user@example.com" } },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      fields: Array<{ status: string }>;
+      submission: {
+        attempted: boolean;
+        trigger: string;
+        navigation_observed: boolean;
+        error?: string;
+      };
+    }>();
+    expect(body.fields).toEqual([{ selector: "#email", status: "filled" }]);
+    expect(body.submission).toMatchObject({
+      attempted: true,
+      trigger: "first_form",
+      navigation_observed: false,
+      error: "No form found on page",
+    });
+  });
+
+  it("POST /submit-form still returns 200 with per-field detail when a submit click throws", async () => {
+    clickOverride = async (selector: string) => {
+      if (selector === "button.broken") {
+        throw new Error("Submit button is not clickable");
+      }
+    };
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        fields: { "#email": "user@example.com" },
+        submit_selector: "button.broken",
+      },
+      buildEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      fields: Array<{ status: string }>;
+      submission: { attempted: boolean; error?: string; navigation_observed: boolean };
+    }>();
+    expect(body.fields).toEqual([{ selector: "#email", status: "filled" }]);
+    expect(body.submission.attempted).toBe(true);
+    expect(body.submission.error).toContain("not clickable");
+    expect(body.submission.navigation_observed).toBe(false);
+  });
+
+  it("POST /submit-form rejects a non-boolean continue_on_error", async () => {
+    const withBrowser = vi.mocked(puppeteerLib.withBrowser);
+    const res = await postJson(
+      "/submit-form",
+      {
+        url: "https://example.com/form",
+        fields: { "#email": "x" },
+        continue_on_error: "yes",
+      },
+      buildEnv(),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("continue_on_error must be a boolean");
+    expect(withBrowser).not.toHaveBeenCalled();
+  });
+
+  it("POST /submit-form maps a missing browser binding to 501", async () => {
+    vi.spyOn(puppeteerLib, "withBrowser").mockRejectedValue(
+      new puppeteerLib.BrowserBindingUnavailable(),
+    );
+    const res = await postJson(
+      "/submit-form",
+      { url: "https://example.com/form", fields: { "#email": "x" } },
+      buildEnv(),
+    );
+    expect(res.status).toBe(501);
+    expect(await res.json()).toMatchObject({ status: 501 });
+  });
+
+  it("POST /submit-form fails closed with 502 when the result exceeds the output limit", async () => {
+    contentResult = "x".repeat(MAX_INTERACTION_OUTPUT_BYTES + 1);
+    const res = await postJson(
+      "/submit-form",
+      { url: "https://example.com/form", fields: { "#email": "x" } },
+      buildEnv(),
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({
+      error: "Interaction output byte limit exceeded",
+    });
   });
 });

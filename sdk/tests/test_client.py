@@ -914,6 +914,88 @@ async def test_501_raises_browser_unavailable_error(client):
 
 
 # ---------------------------------------------------------------------------
+# submit_form()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_form_returns_per_field_and_submission_outcome(client):
+    payload = {
+        "fields": [
+            {"selector": "#email", "status": "filled"},
+            {"selector": "#missing", "status": "failed", "error": "No node found"},
+        ],
+        "submission": {
+            "attempted": True,
+            "trigger": "first_form",
+            "navigation_observed": True,
+        },
+        "url": "https://example.com/thank-you",
+    }
+    with respx.mock:
+        route = respx.post(f"{BASE_URL}/submit-form").mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        result = await client.submit_form(
+            "https://example.com/form",
+            {"#email": "user@example.com", "#missing": "x"},
+            continue_on_error=True,
+        )
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["fields"] == {"#email": "user@example.com", "#missing": "x"}
+    assert sent["continue_on_error"] is True
+    assert result["submission"]["trigger"] == "first_form"
+    assert result["fields"][1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_submit_form_omits_optional_flags_by_default(client):
+    with respx.mock:
+        route = respx.post(f"{BASE_URL}/submit-form").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "fields": [{"selector": "#email", "status": "filled"}],
+                    "submission": {
+                        "attempted": True,
+                        "trigger": "first_form",
+                        "navigation_observed": False,
+                    },
+                },
+            )
+        )
+        await client.submit_form("https://example.com/form", {"#email": "x"})
+    sent = json.loads(route.calls[0].request.content)
+    assert "continue_on_error" not in sent
+    assert "submit_selector" not in sent
+
+
+@pytest.mark.asyncio
+async def test_submit_form_forwards_submit_selector(client):
+    with respx.mock:
+        route = respx.post(f"{BASE_URL}/submit-form").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "fields": [],
+                    "submission": {
+                        "attempted": True,
+                        "trigger": "submit_selector",
+                        "navigation_observed": True,
+                    },
+                },
+            )
+        )
+        await client.submit_form(
+            "https://example.com/form",
+            {"#email": "x"},
+            submit_selector="button[type=submit]",
+        )
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["submit_selector"] == "button[type=submit]"
+
+
+# ---------------------------------------------------------------------------
 # Context manager
 # ---------------------------------------------------------------------------
 

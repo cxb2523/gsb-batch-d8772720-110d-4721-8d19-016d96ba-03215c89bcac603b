@@ -126,7 +126,9 @@ npx wrangler deploy
 | `browser_type` | `url`, `selector`, `text`, `clear` | 輸入後頁面狀態 |
 | `browser_evaluate` | `url`, `script` | JSON 可序列化結果 |
 | `browser_interact` | `url`, structured `actions[]` | 每個 action 結果 |
-| `browser_submit_form` | `url`, structured `fields`, `submit_selector?` | 提交後頁面狀態 |
+| `browser_submit_form` | `url`, structured `fields`, `submit_selector?`, `continue_on_error?` | 逐欄位結果與提交狀態 |
+
+`browser_submit_form` 會在 `fields` 陣列中以 `filled` 或 `failed` 標註每個 selector 的結局（失敗時附上長度受限的 `error` 文字），並以 `submission` 物件說明是否已觸發提交、使用 `submit_selector` 還是頁面中第一個 `<form>`、以及提交後是否觀察到導航。`continue_on_error` 預設為 `false`（首個欄位失敗即中止）；設為 `true` 時單一欄位填寫失敗不會阻止其餘欄位繼續嘗試。當沒有任何欄位填寫成功時，絕不提交表單——此整體失敗與參數校驗失敗是僅有的非 2xx 回應；部分成功則回傳 200 並如實標註失敗欄位。
 
 互動端點需要 `BROWSER` binding。未設定時回傳 HTTP 501 並映射為 `BrowserUnavailableError`；直連模式則使用 `NotImplementedError`。目標網址（或主框架 redirect）解析到被封鎖的位址時，會在回傳任何頁面內容前回應 HTTP 400。
 

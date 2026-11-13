@@ -121,6 +121,37 @@ export async function performActionAndWaitForNavigation<T>(
   return result;
 }
 
+/**
+ * Run *action* while watching for a frame navigation, reporting whether one
+ * was observed. A navigation counts when ``waitForNavigation`` settles before
+ * the timeout or when the page URL changes (e.g. same-document replacements).
+ * If *action* rejects, the navigation watcher is still awaited before the
+ * error is propagated so no pending navigation promise is left behind.
+ */
+export async function performActionAndTrackNavigation<T>(
+  page: Page,
+  action: () => Promise<T>,
+  timeout: number,
+): Promise<{ result: T; navigationObserved: boolean }> {
+  const urlBefore = page.url();
+  const navigation = page
+    .waitForNavigation({ timeout })
+    .then(() => true)
+    .catch(() => false);
+  let result: T;
+  try {
+    result = await action();
+  } catch (err) {
+    await navigation;
+    throw err;
+  }
+  const navigationSettled = await navigation;
+  return {
+    result,
+    navigationObserved: navigationSettled || page.url() !== urlBefore,
+  };
+}
+
 async function handleInterceptedRequest(
   req: HTTPRequest,
   dnsCache: Map<string, Promise<string[]>>,

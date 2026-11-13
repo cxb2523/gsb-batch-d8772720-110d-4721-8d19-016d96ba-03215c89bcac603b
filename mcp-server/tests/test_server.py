@@ -126,6 +126,54 @@ async def test_browser_submit_form_accepts_structured_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_browser_submit_form_passes_continue_on_error_and_returns_outcome(monkeypatch):
+    captured = {}
+
+    class Client:
+        async def submit_form(self, _url, fields, **kwargs):
+            captured.update(kwargs)
+            return {
+                "fields": [
+                    {"selector": "#email", "status": "filled"},
+                    {"selector": "#missing", "status": "failed", "error": "No node found"},
+                ],
+                "submission": {
+                    "attempted": True,
+                    "trigger": "submit_selector",
+                    "navigation_observed": True,
+                },
+            }
+
+    monkeypatch.setattr(server_module, "get_client", lambda: Client())
+    raw = await server_module.browser_submit_form(
+        "https://example.com",
+        {"#email": "a@b.com", "#missing": "x"},
+        submit_selector="button.go",
+        continue_on_error=True,
+    )
+    assert captured["continue_on_error"] is True
+    assert captured["submit_selector"] == "button.go"
+    payload = json.loads(raw)
+    assert payload["submission"]["attempted"] is True
+    assert payload["fields"][1]["status"] == "failed"
+    assert payload["fields"][1]["error"] == "No node found"
+
+
+@pytest.mark.asyncio
+async def test_browser_submit_form_defaults_continue_on_error_to_false(monkeypatch):
+    captured = {}
+
+    class Client:
+        async def submit_form(self, _url, fields, **kwargs):
+            captured.update(kwargs)
+            return {"fields": [], "submission": {"attempted": False, "navigation_observed": False}}
+
+    monkeypatch.setattr(server_module, "get_client", lambda: Client())
+    await server_module.browser_submit_form("https://example.com", {"#email": "a@b.com"})
+    assert captured["continue_on_error"] is False
+
+
+@pytest.mark.asyncio
 async def test_browser_crawl_defaults_to_rendered_current_contract(monkeypatch):
     captured = None
 

@@ -582,6 +582,7 @@ class CFBrowser:
         fields: dict[str, str],
         *,
         submit_selector: str | None = None,
+        continue_on_error: bool = False,
         **opts: Any,
     ) -> dict[str, Any]:
         """Fill and submit a form on *url*.
@@ -593,15 +594,24 @@ class CFBrowser:
         submit_selector:
             Optional CSS selector for the submit button. If omitted,
             submits the first ``<form>`` on the page.
+        continue_on_error:
+            When ``True``, a field that fails to fill does not stop the
+            remaining fields from being attempted. When ``False`` (the
+            default), filling stops at the first failure.
 
         Returns
         -------
         dict
-            Page state after submission: ``{url, title, content}``.
+            Per-field outcomes and submission state:
+            ``{fields: [{selector, status, error?}], submission:
+            {attempted, trigger?, navigation_observed, error?},
+            url?, title?, content?}``.
         """
         extras: dict[str, Any] = {"fields": fields, **opts}
         if submit_selector:
             extras["submit_selector"] = submit_selector
+        if continue_on_error:
+            extras["continue_on_error"] = True
         payload = _build_payload(url, None, extras)
         return _require_json_object(
             await self._post_json("/submit-form", payload), "form submission result"

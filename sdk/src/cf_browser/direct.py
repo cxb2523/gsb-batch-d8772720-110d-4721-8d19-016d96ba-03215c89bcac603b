@@ -1004,6 +1004,7 @@ class CFBrowserDirect:
         fields: dict[str, str],
         *,
         submit_selector: str | None = None,
+        continue_on_error: bool = False,
         **opts: Any,
     ) -> dict[str, Any]:
         raise NotImplementedError(self._INTERACT_MSG)

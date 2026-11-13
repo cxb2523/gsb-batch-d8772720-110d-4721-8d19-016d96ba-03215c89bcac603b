@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Granular `/submit-form` outcomes** — form submission no longer fails the whole request when a single selector misses. The response now carries a `fields` array with a per-field `status` of `filled` or `failed` (plus the bounded `error` text on failure) and a `submission` object reporting whether submission was attempted, whether it used `submit_selector` or the first form on the page, and whether a navigation was observed afterward. An optional `continue_on_error` flag (default `false`) keeps the stop-at-first-failure semantics; when `true`, a failed fill does not prevent the remaining fields from being attempted. The form is never submitted when no field was filled, and that overall failure (alongside parameter validation) is the only non-2xx outcome; partial successes return 200 with the failed fields marked. Existing 400 validation limits (50 fields, 500-character selectors, 10000-character string values), 501 missing-binding, 400 blocked-navigation, and 502 output-limit mappings are unchanged. The SDK `submit_form()` and MCP `browser_submit_form` accept and forward `continue_on_error`.
+
 ## [2.1.0] - 2026-10-21
 
 ### Upgrade notes
