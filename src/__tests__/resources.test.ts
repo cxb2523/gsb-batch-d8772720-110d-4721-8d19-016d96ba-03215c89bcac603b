@@ -1,0 +1,427 @@
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { SpidraClient } from "../client.js";
+import { SpidraJobError } from "../lib/errors.js";
+import { catchError, jsonResponse, sequenceFetch } from "./helpers.js";
+
+const POLL = { pollInterval: 1 };
+
+function makeClient(fetchImpl: typeof fetch) {
+  return new SpidraClient({
+    apiKey: "spd_test",
+    baseUrl: "https://api.test",
+    fetch: fetchImpl,
+    backoffFactor: 1,
+  });
+}
+
+describe("scrape", () => {
+  it("submits, polls to completion, and returns the unwrapped result", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "j1" }),
+      jsonResponse(200, { status: "active", progress: { message: "scraping", progress: 50 } }),
+      jsonResponse(200, {
+        status: "completed",
+        result: { content: { title: "Hi" }, data: [], screenshots: [], ai_extraction_failed: false },
+        error: null,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const result = await client.scrape({ urls: [{ url: "https://x.com" }], prompt: "extract title" }, POLL);
+    expect(result.content).toEqual({ title: "Hi" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws SpidraJobError with the jobId when the job fails", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "j9" }),
+      jsonResponse(200, { status: "failed", error: "target blocked us" })
+    );
+    const client = makeClient(fetchMock);
+    const err = await catchError(client.scrape({ urls: [{ url: "https://x.com" }], prompt: "p" }, POLL));
+    expect(err).toBeInstanceOf(SpidraJobError);
+    expect(err.jobId).toBe("j9");
+    expect(err.jobStatus).toBe("failed");
+    expect(err.message).toBe("target blocked us");
+  });
+
+  it("converts a Zod schema before submitting", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "j1" }),
+      jsonResponse(200, { status: "completed", result: { content: {}, data: [] }, error: null })
+    );
+    const client = makeClient(fetchMock);
+    const Product = z.object({ name: z.string() });
+    await client.scrape({ urls: [{ url: "https://x.com" }], prompt: "p", schema: Product }, POLL);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const submittedBody = JSON.parse(init.body as string);
+    expect(submittedBody.schema.type).toBe("object");
+    expect(submittedBody.schema.properties.name.type).toBe("string");
+    expect(submittedBody.schema._zod).toBeUndefined();
+  });
+
+  it("startScrape/getScrape give manual control", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "j-manual" }),
+      jsonResponse(200, { status: "active", progress: { message: "scraping", progress: 10 } })
+    );
+    const client = makeClient(fetchMock);
+    const queued = await client.startScrape({ urls: [{ url: "https://x.com" }], prompt: "p" });
+    expect(queued.jobId).toBe("j-manual");
+    const status = await client.getScrape(queued.jobId);
+    expect(status.status).toBe("active");
+  });
+});
+
+describe("crawl", () => {
+  it("throws SpidraJobError when the crawl is cancelled", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "c1" }),
+      jsonResponse(200, { status: "running", progress: { message: "crawling" } }),
+      jsonResponse(200, { status: "cancelled" })
+    );
+    const client = makeClient(fetchMock);
+    const err = await catchError(
+      client.crawl({ baseUrl: "https://x.com", crawlInstruction: "all pages" }, POLL)
+    );
+    expect(err).toBeInstanceOf(SpidraJobError);
+    expect(err.jobId).toBe("c1");
+    expect(err.jobStatus).toBe("cancelled");
+  });
+
+  it("resolves with page results on completion", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "c2" }),
+      jsonResponse(200, { status: "completed", result: [{ url: "https://x.com/a", data: { t: 1 } }] })
+    );
+    const client = makeClient(fetchMock);
+    const job = await client.crawl({ baseUrl: "https://x.com", crawlInstruction: "all" }, POLL);
+    expect(job.result).toHaveLength(1);
+    expect(job.result[0].url).toBe("https://x.com/a");
+  });
+
+  it("jobDetails() fetches the flat details snapshot", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, { id: "c1", base_url: "https://x.com", status: "completed", pages_crawled: 5 })
+    );
+    const client = makeClient(fetchMock);
+    const details = await client.crawlJobDetails("c1");
+    expect(details.pages_crawled).toBe(5);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/crawl/job/c1");
+  });
+
+  it("retryCrawlPage() posts to the per-page retry endpoint", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, { success: true, data: { title: "Hi" }, tokensUsed: 50, creditsUsed: 1, message: "ok" })
+    );
+    const client = makeClient(fetchMock);
+    const res = await client.retryCrawlPage("c1", "p1");
+    expect(res.success).toBe(true);
+    expect(res.data).toEqual({ title: "Hi" });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.test/crawl/c1/retry/p1");
+    expect(init.method).toBe("POST");
+  });
+
+  it("downloadCrawlResults() returns a blob and includes the `include` query param", async () => {
+    const fetchMock = sequenceFetch(
+      new Response(new Blob(["zip bytes"]), { status: 200, headers: { "Content-Type": "application/zip" } })
+    );
+    const client = makeClient(fetchMock);
+    const blob = await client.downloadCrawlResults("c1", ["markdown", "data"]);
+    expect(blob).toBeInstanceOf(Blob);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/crawl/c1/download?include=markdown,data");
+  });
+  it("crawl() reads every page when a large crawl's inline result is truncated", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, { status: "queued", jobId: "big" }),
+      jsonResponse(200, {
+        status: "completed",
+        result: [{ url: "https://x.com/1", data: { n: 1 } }],
+        totalPages: 2,
+        resultTruncated: true,
+      }),
+      jsonResponse(200, {
+        pages: [
+          { id: "a", url: "https://x.com/1", status: "success", data: '{"n":1}', error_message: null, html: null, markdown: null, created_at: "" },
+          { id: "b", url: "https://x.com/2", status: "success", data: '{"n":2}', error_message: null, html: null, markdown: null, created_at: "" },
+        ],
+        total: 2,
+        offset: 0,
+        limit: 1000,
+        hasMore: false,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const job = await client.crawl({ baseUrl: "https://x.com", crawlInstruction: "all", maxPages: 500 }, POLL);
+    expect(job.result).toHaveLength(2);
+    expect(job.result[1].data).toEqual({ n: 2 });
+    expect(job.resultTruncated).toBe(false);
+    expect(fetchMock.mock.calls[2][0]).toBe("https://api.test/crawl/big/pages?offset=0&limit=1000");
+  });
+
+  it("crawlReport() reads the report with reason and paging filters", async () => {
+    const report = {
+      understoodAs: "Product pages",
+      navigationPages: 3,
+      skippedTotal: 12,
+      skipped: [{ reason: "not_relevant", count: 12, description: "Not related to the instruction" }],
+      skippedUrls: [{ url: "https://x.com/about", reason: "not_relevant", foundOn: "https://x.com" }],
+      skippedUrlsTotal: 12,
+    };
+    const fetchMock = sequenceFetch(jsonResponse(200, { status: "success", report }));
+    const client = makeClient(fetchMock);
+    const res = await client.crawlReport("c1", { reason: "not_relevant", limit: 50, offset: 10 });
+    expect(res.report?.skippedUrls[0].foundOn).toBe("https://x.com");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/crawl/c1/report?reason=not_relevant&limit=50&offset=10");
+  });
+
+  it("crawlReport() returns a null report when none exists", async () => {
+    const fetchMock = sequenceFetch(jsonResponse(200, { status: "success", report: null, message: "No report is available for this crawl." }));
+    const client = makeClient(fetchMock);
+    const res = await client.crawlReport("c1");
+    expect(res.report).toBeNull();
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/crawl/c1/report");
+  });
+
+  it("crawl() sends respectRobots and useSitemap", async () => {
+    const fetchMock = sequenceFetch(jsonResponse(200, { status: "queued", jobId: "c1" }));
+    const client = makeClient(fetchMock);
+    await client.startCrawl({ baseUrl: "https://x.com", crawlInstruction: "all", respectRobots: true, useSitemap: false });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.respectRobots).toBe(true);
+    expect(body.useSitemap).toBe(false);
+  });
+});
+
+describe("map", () => {
+  it("map() posts to /map and returns links in the same request", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, {
+        status: "success",
+        links: [{ url: "https://x.com/pricing", title: "Pricing" }],
+        total: 1,
+        scanned: 40,
+        sources: { sitemap: 30, pages: 10 },
+        creditsUsed: 1,
+        durationMs: 900,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const res = await client.map({ url: "https://x.com", search: "pricing", limit: 10 });
+    expect(res.links[0].title).toBe("Pricing");
+    expect(res.scanned).toBe(40);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.test/map");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ url: "https://x.com", search: "pricing", limit: 10 });
+  });
+});
+
+describe("batchScrape", () => {
+  it("returns the final response even when some items failed", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", batchId: "b1", total: 2 }),
+      jsonResponse(200, {
+        status: "completed",
+        totalUrls: 2,
+        completedCount: 1,
+        failedCount: 1,
+        createdAt: "2026-07-13T00:00:00Z",
+        finishedAt: "2026-07-13T00:01:00Z",
+        items: [
+          { uuid: "i1", url: "https://a.com", status: "completed", result: { ok: 1 } },
+          { uuid: "i2", url: "https://b.com", status: "failed", error: "blocked" },
+        ],
+      })
+    );
+    const client = makeClient(fetchMock);
+    const res = await client.batchScrape({ urls: ["https://a.com", "https://b.com"], prompt: "p" }, POLL);
+    expect(res.status).toBe("completed");
+    expect(res.failedCount).toBe(1);
+  });
+});
+
+describe("search", () => {
+  it("submits, polls to completion, and returns the unwrapped result", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "s1" }),
+      jsonResponse(200, { status: "active", progress: { message: "Searching the web...", progress: 0 } }),
+      jsonResponse(200, {
+        status: "completed",
+        result: {
+          success: true,
+          data: { web: [{ title: "Hi", url: "https://x.com", position: 1 }] },
+          stats: { durationMs: 1200 },
+          logUuid: "log-1",
+        },
+        error: null,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const result = await client.search({ query: "hello world" }, POLL);
+    expect(result.data.web).toHaveLength(1);
+    expect(result.data.web?.[0].title).toBe("Hi");
+    expect(result.logUuid).toBe("log-1");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws SpidraJobError with the jobId when the job fails", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "s9" }),
+      jsonResponse(200, { status: "failed", error: "all engines blocked" })
+    );
+    const client = makeClient(fetchMock);
+    const err = await catchError(client.search({ query: "hello world" }, POLL));
+    expect(err).toBeInstanceOf(SpidraJobError);
+    expect(err.jobId).toBe("s9");
+    expect(err.jobStatus).toBe("failed");
+    expect(err.message).toBe("all engines blocked");
+  });
+
+  it("passes includeDomains/excludeDomains and scrapeOptions through to the request body", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "s2" }),
+      jsonResponse(200, {
+        status: "completed",
+        result: { success: true, data: { web: [] }, stats: { durationMs: 500 } },
+        error: null,
+      })
+    );
+    const client = makeClient(fetchMock);
+    await client.search(
+      {
+        query: "espresso machine reviews",
+        includeDomains: ["reddit.com"],
+        scrapeOptions: { formats: ["markdown"], maxResults: 3 },
+      },
+      POLL
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const submittedBody = JSON.parse(init.body as string);
+    expect(submittedBody.includeDomains).toEqual(["reddit.com"]);
+    expect(submittedBody.scrapeOptions).toEqual({ formats: ["markdown"], maxResults: 3 });
+  });
+
+  it("passes page, pageTokens, timeRange, and filetype through to the request body", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, { status: "completed", result: { success: true, data: { web: [] }, stats: { durationMs: 500 } }, error: null })
+    );
+    const client = makeClient(fetchMock);
+    await client.search(
+      {
+        query: "annual report 2026 filetype:pdf",
+        page: 2,
+        pageTokens: { web: "opaque-token" },
+        timeRange: "month",
+        filetype: "pdf",
+      },
+      POLL
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const submittedBody = JSON.parse(init.body as string);
+    expect(submittedBody.page).toBe(2);
+    expect(submittedBody.pageTokens).toEqual({ web: "opaque-token" });
+    expect(submittedBody.timeRange).toBe("month");
+    expect(submittedBody.filetype).toBe("pdf");
+  });
+
+  it("returns research and developer sources, and nextPageTokens, in the result", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, {
+        status: "completed",
+        result: {
+          success: true,
+          data: {
+            research: [{ title: "A paper", url: "https://arxiv.org/abs/1", position: 1, authors: "A. Author", doi: "10.1101/x", source: "arXiv" }],
+            developer: [{ title: "Issue: a bug", url: "https://github.com/x/y/issues/1", position: 1, authors: "octocat", source: "GitHub" }],
+            nextPageTokens: { research: "next-token" },
+          },
+          stats: { durationMs: 500 },
+        },
+        error: null,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const result = await client.search({ query: "transformer attention", sources: ["research", "developer"] }, POLL);
+
+    expect(result.data.research?.[0].doi).toBe("10.1101/x");
+    expect(result.data.developer?.[0].authors).toBe("octocat");
+    expect(result.data.nextPageTokens?.research).toBe("next-token");
+  });
+
+  it("sends wait: true on the initial request", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, { status: "completed", result: { success: true, data: { web: [] }, stats: { durationMs: 500 } }, error: null })
+    );
+    const client = makeClient(fetchMock);
+    await client.search({ query: "hello world" }, POLL);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const submittedBody = JSON.parse(init.body as string);
+    expect(submittedBody.wait).toBe(true);
+  });
+
+  it("returns the result directly, with no polling, when the API resolves inline", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(200, {
+        status: "completed",
+        jobId: "s3",
+        result: { success: true, data: { web: [{ title: "Hi", url: "https://x.com", position: 1 }] }, stats: { durationMs: 900 } },
+        error: null,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const result = await client.search({ query: "hello world" }, POLL);
+    expect(result.data.web).toHaveLength(1);
+    // Exactly one call -- the poll loop (GET /search/:jobId) never ran.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws SpidraJobError immediately when the API resolves inline to a failure, with no polling", async () => {
+    const fetchMock = sequenceFetch(jsonResponse(200, { status: "failed", jobId: "s4", error: "all engines blocked" }));
+    const client = makeClient(fetchMock);
+    const err = await catchError(client.search({ query: "hello world" }, POLL));
+    expect(err).toBeInstanceOf(SpidraJobError);
+    expect(err.jobId).toBe("s4");
+    expect(err.jobStatus).toBe("failed");
+    expect(err.message).toBe("all engines blocked");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to polling when the API returns queued despite wait: true (server-side timeout)", async () => {
+    const fetchMock = sequenceFetch(
+      jsonResponse(202, { status: "queued", jobId: "s5" }),
+      jsonResponse(200, {
+        status: "completed",
+        result: { success: true, data: { web: [{ title: "Hi", url: "https://x.com", position: 1 }] }, stats: { durationMs: 25000 } },
+        error: null,
+      })
+    );
+    const client = makeClient(fetchMock);
+    const result = await client.search({ query: "hello world" }, POLL);
+    expect(result.data.web).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("account", () => {
+  it("returns the unwrapped account summary from GET /account", async () => {
+    const summary = {
+      plan: { name: "Starter" },
+      credits: { limit: 5000, used: 1240, remaining: 3760, billingCycleStart: "2026-10-01T00:00:00.000Z" },
+      proxyBandwidth: { limitMb: 500, usedMb: 112.4, remainingMb: 387.6 },
+      subscription: { status: "active" },
+    };
+    const fetchMock = sequenceFetch(jsonResponse(200, { status: "success", data: summary }));
+    const client = makeClient(fetchMock);
+    const result = await client.account();
+    expect(result).toEqual(summary);
+    expect(result.credits.remaining).toBe(3760);
+    const [url] = (fetchMock as unknown as { mock: { calls: [string][] } }).mock.calls[0];
+    expect(String(url)).toBe("https://api.test/account");
+  });
+});
