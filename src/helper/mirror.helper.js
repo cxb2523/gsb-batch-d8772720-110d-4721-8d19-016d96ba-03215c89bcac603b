@@ -1,0 +1,382 @@
+/*
+ * ======= • ======= • ======= • ======= • =======• =======
+ * AniKotoAPI — mirror.helper.js
+ * Repository: https://github.com/Shineii86/AniKotoAPI
+ *
+ * @description
+ *   Multi-mirror fallback helper for resilient scraping.
+ *   Automatically tries alternative domains if primary is blocked/down.
+ *   Caches working mirror per session for faster subsequent requests.
+ *
+ * @exports
+ *   fetchWithMirror, getWorkingMirror, resetMirrorCache
+ *
+ * @author  Shinei Nouzen
+ * @license MIT
+ * ======= • ======= • ======= • ======= • =======• =======
+ */
+
+import axios from "axios";
+import { headers } from "../configs/header.config.js";
+import { getCache, setCache } from "./cache.helper.js";
+import { fetchWithProxy, getProxyStatus } from "./proxy.helper.js";
+
+// ══════════════════════════════════════════════════════════════
+// MIRROR CONFIGURATION
+// ══════════════════════════════════════════════════════════════
+
+// ---- FEATURE: Mirror Domain Configuration ----
+// Default mirrors with names and priority
+const DEFAULT_MIRRORS = [
+  { url: "https://anikototv.to", name: "Primary", priority: 1 },
+  { url: "https://anikoto.cz", name: "Regional CZ", priority: 2 },
+  { url: "https://anikoto.me", name: "Short TLD", priority: 3 },
+  { url: "https://anikoto.net", name: "Network", priority: 4 },
+  { url: "https://anikototv.se", name: "Nordic .se", priority: 5 },
+];
+
+// Parse custom mirrors from env or use defaults
+function parseMirrors() {
+  const envMirrors = process.env.MIRROR_DOMAINS;
+  if (!envMirrors) return DEFAULT_MIRRORS;
+  
+  return envMirrors.split(",").map((url, index) => ({
+    url: url.trim(),
+    name: `Mirror ${index + 1}`,
+    priority: index + 1
+  }));
+}
+
+const ALL_MIRRORS = parseMirrors();
+ALL_MIRRORS.sort((a, b) => a.priority - b.priority);
+
+// Cache key for working mirror
+const MIRROR_CACHE_KEY = "working_mirror";
+const MIRROR_CACHE_TTL = parseInt(process.env.MIRROR_CACHE_TTL) || 3600000;
+
+// ══════════════════════════════════════════════════════════════
+// MIRROR STATE
+// ══════════════════════════════════════════════════════════════
+
+let workingMirror = null;
+let failedMirrors = new Set();
+
+// ══════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ══════════════════════════════════════════════════════════════
+
+// ---- FEATURE: Mirror Health Check ----
+/**
+ * Check if a mirror is accessible
+ * @param {string} baseUrl - Mirror base URL
+ * @returns {Promise<boolean>}
+ */
+async function checkMirror(baseUrl) {
+  try {
+    const response = await axios.get(`${baseUrl}/home`, {
+      headers,
+      timeout: 10000,
+      maxRedirects: 5,
+    });
+    return response.status === 200;
+  } catch (error) {
+    return false;
+  }
+}
+
+// ---- FEATURE: Working Mirror Discovery ----
+/**
+ * Get the best available mirror
+ * @returns {Promise<string>} Working mirror base URL
+ */
+async function getWorkingMirror() {
+  // Check cache first
+  const cached = getCache(MIRROR_CACHE_KEY);
+  if (cached && !failedMirrors.has(cached)) {
+    workingMirror = cached;
+    return workingMirror;
+  }
+
+  // Try mirrors in priority order
+  for (const mirror of ALL_MIRRORS) {
+    if (failedMirrors.has(mirror.url)) continue;
+
+    const isWorking = await checkMirror(mirror.url);
+    if (isWorking) {
+      workingMirror = mirror.url;
+      setCache(MIRROR_CACHE_KEY, mirror.url, MIRROR_CACHE_TTL);
+      console.log(`[MIRROR] Using: ${mirror.name} (${mirror.url})`);
+      return mirror.url;
+    } else {
+      failedMirrors.add(mirror.url);
+      console.log(`[MIRROR] Failed: ${mirror.name} (${mirror.url})`);
+    }
+  }
+
+  // All mirrors failed, reset and try again
+  failedMirrors.clear();
+  workingMirror = ALL_MIRRORS[0].url;
+  console.log(`[MIRROR] All failed, resetting to primary: ${workingMirror}`);
+  return workingMirror;
+}
+
+// ---- FEATURE: Mirror Cache Reset ----
+/**
+ * Reset mirror cache and failed state
+ */
+function resetMirrorCache() {
+  workingMirror = null;
+  failedMirrors.clear();
+  setCache(MIRROR_CACHE_KEY, null, 0);
+  console.log("[MIRROR] Cache reset");
+}
+
+// ---- FEATURE: URL Builder ----
+/**
+ * Build URL with current mirror
+ * @param {string} path - URL path
+ * @param {string} baseUrl - Optional custom base URL
+ * @returns {string} Full URL
+ */
+function buildUrl(path, baseUrl = workingMirror) {
+  const base = baseUrl || ALL_MIRRORS[0].url;
+  return `${base}${path}`;
+}
+
+// ---- FEATURE: In-flight upstream request registry ----
+const inflightFetches = new Map();
+
+// ---- FEATURE: Resilient Fetch with Mirror Fallback ----
+/**
+ * Fetch with automatic mirror fallback and proxy support.
+ *
+ * NOTE: Concurrent callers asking for the exact same upstream document share
+ * one in-flight request (thundering-herd / cache-stampede protection). A cold
+ * cache key hit by N simultaneous requests used to trigger N identical
+ * scrapes against the Cloudflare-protected origin; now the other N-1 wait on
+ * the first promise. Deduplication is limited to text responses — shared HTML
+ * is read-only, whereas JSON objects must not be handed to two callers.
+ *
+ * @param {string} path - URL path to fetch
+ * @param {object} options - Additional options
+ * @returns {Promise<{data: string, mirror: string, proxy: string}>}
+ */
+async function fetchWithMirror(path, options = {}) {
+  const returnType = options.returnType || "text";
+  if (returnType !== "text") return fetchFromMirrors(path, options);
+
+  const key = `${path}|${JSON.stringify(options.headers || {})}|${options.useProxy !== false}`;
+  const existing = inflightFetches.get(key);
+  if (existing) return existing;
+
+  const promise = fetchFromMirrors(path, options);
+  inflightFetches.set(key, promise);
+  // NOTE: The cleanup branch must never reject (it would surface as an
+  // unhandled rejection), and only removes its own entry — a newer fetch
+  // for the same key must not be evicted by a late-settling predecessor
+  promise
+    .catch(() => {})
+    .finally(() => {
+      if (inflightFetches.get(key) === promise) inflightFetches.delete(key);
+    });
+  return promise;
+}
+
+async function fetchFromMirrors(path, options = {}) {
+  const { 
+    timeout = 15000, 
+    retries = 2,
+    returnType = "text",
+    headers: customHeaders = {},
+    useProxy = true,
+  } = options;
+
+  // Merge default headers with custom headers
+  const requestHeaders = { ...headers, ...customHeaders };
+
+  let lastError = null;
+
+  // Try cached working mirror first
+  const mirrorsToTry = [];
+  
+  if (workingMirror && !failedMirrors.has(workingMirror)) {
+    mirrorsToTry.push(workingMirror);
+  }
+
+  // Add remaining mirrors
+  for (const mirror of ALL_MIRRORS) {
+    if (!mirrorsToTry.includes(mirror.url) && !failedMirrors.has(mirror.url)) {
+      mirrorsToTry.push(mirror.url);
+    }
+  }
+
+  // If all failed, reset and try all
+  if (mirrorsToTry.length === 0) {
+    failedMirrors.clear();
+    mirrorsToTry.push(...ALL_MIRRORS.map(m => m.url));
+  }
+
+  // Try direct requests first
+  for (const mirror of mirrorsToTry) {
+    const url = buildUrl(path, mirror);
+    
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await axios.get(url, {
+          headers: requestHeaders,
+          timeout,
+          responseType: returnType === "text" ? "text" : "json",
+        });
+
+        if (response.status === 200) {
+          // Check for Cloudflare challenge
+          const data = response.data;
+          if (typeof data === "string" && (
+            data.includes("Just a moment...") ||
+            data.includes("Checking your browser") ||
+            data.includes("Enable JavaScript")
+          )) {
+            throw new Error("Cloudflare challenge detected");
+          }
+
+          // Check for upstream error
+          let parsed = data;
+          if (typeof data === "string") {
+            try { parsed = JSON.parse(data); } catch { /* not JSON */ }
+          }
+          if (parsed && typeof parsed === "object" && parsed.status && Number(parsed.status) >= 400) {
+            // NOTE: Every mirror fronts the same backend, so a structured
+            // upstream 4xx — or a 5xx that literally says "Bad request" — is
+            // the caller's fault and will fail identically everywhere.
+            // Retrying it across every mirror only burns the full budget
+            // (13s+ per bad request), so mark it terminal and map the status.
+            const upstream = Number(parsed.status);
+            const upstreamText = String(parsed.result || parsed.message || "Bad request");
+            const clientFault = upstream < 500 || /bad request|invalid/i.test(upstreamText);
+            const err = new Error(`Upstream error (${upstream}): ${upstreamText}`);
+            err.status = upstream < 500 ? upstream : (clientFault ? 400 : 502);
+            err.terminal = clientFault;
+            throw err;
+          }
+
+          // Update working mirror
+          if (mirror !== workingMirror) {
+            workingMirror = mirror;
+            setCache(MIRROR_CACHE_KEY, mirror, MIRROR_CACHE_TTL);
+            console.log(`[MIRROR] Switched to: ${mirror}`);
+          }
+          return { 
+            data: response.data,
+            mirror,
+            proxy: "direct"
+          };
+        }
+
+        // NOTE: 404 means endpoint doesn't exist, not mirror failure — don't retry
+        if (response.status === 404) {
+          const err = new Error(`Endpoint not found: ${path}`);
+          err.status = 404;
+          err.terminal = true;
+          throw err;
+        }
+      } catch (error) {
+        const httpStatus = error.response?.status;
+        if (httpStatus === 404 || httpStatus === 400) {
+          // NOTE: The path itself is wrong/missing — every mirror answers the
+          // same way, so stop immediately instead of retrying 5 mirrors.
+          const err = new Error(httpStatus === 404
+            ? `Endpoint not found: ${path}`
+            : `Upstream rejected the request (400): ${path}`);
+          err.status = httpStatus;
+          err.terminal = true;
+          lastError = err;
+          break;
+        }
+        lastError = error;
+        if (error.terminal) break;
+        if (attempt < retries) {
+          // Wait before retry
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+    }
+
+    // NOTE: Terminal errors (bad slug, invalid id, missing route) repeat on
+    // every mirror — bail out of the mirror loop instead of paying for the rest
+    if (lastError?.terminal) break;
+
+    // NOTE: Only mark mirror as failed for connection errors / upstream
+    // outages — never for terminal client-fault answers
+    if (lastError) {
+      failedMirrors.add(mirror);
+      console.log(`[MIRROR] Marked as failed: ${mirror}`);
+    }
+  }
+
+  // NOTE: Terminal answer reached — surface it with its own status code
+  if (lastError?.terminal) {
+    const err = new Error(lastError.message);
+    err.status = lastError.status || 404;
+    throw err;
+  }
+
+  // All direct requests failed — try proxy if configured
+  if (useProxy) {
+    const proxyStatus = getProxyStatus();
+    if (proxyStatus.anyEnabled) {
+      console.log(`[MIRROR] All mirrors failed, trying proxy...`);
+      try {
+        const proxyResult = await fetchWithProxy(
+          buildUrl(path, mirrorsToTry[0]),
+          { requestHeaders, timeout: timeout * 2, returnType }
+        );
+        return {
+          data: proxyResult.data,
+          mirror: mirrorsToTry[0],
+          proxy: proxyResult.proxy,
+        };
+      } catch (proxyError) {
+        console.log(`[MIRROR] Proxy also failed: ${proxyError.message}`);
+      }
+    }
+  }
+
+  throw new Error(`All mirrors failed. Last error: ${lastError?.message}`);
+}
+
+// ---- FEATURE: Mirror Status Reporter ----
+/**
+ * Get mirror status for all domains
+ * @returns {Promise<Array>}
+ */
+async function getMirrorStatus() {
+  const status = [];
+  
+  for (const mirror of ALL_MIRRORS) {
+    const start = Date.now();
+    const isWorking = await checkMirror(mirror.url);
+    const latency = Date.now() - start;
+    
+    status.push({
+      name: mirror.name,
+      url: mirror.url,
+      priority: mirror.priority,
+      status: isWorking ? "online" : "offline",
+      latency: `${latency}ms`,
+      isCurrent: mirror.url === workingMirror,
+    });
+  }
+  
+  return status;
+}
+
+export { 
+  fetchWithMirror, 
+  getWorkingMirror, 
+  resetMirrorCache, 
+  buildUrl,
+  getMirrorStatus,
+  getProxyStatus,
+  ALL_MIRRORS
+};
+// ══════════════════════════════════════════════════════════════ END: mirror.helper.js

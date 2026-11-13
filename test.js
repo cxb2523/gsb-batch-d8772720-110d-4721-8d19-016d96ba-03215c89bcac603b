@@ -1,0 +1,325 @@
+/*
+ * ======= • ======= • ======= • ======= • =======• =======
+ * AniKotoAPI — test.js
+ * Repository: https://github.com/Shineii86/AniKotoAPI
+ *
+ * @description
+ *   Comprehensive integration test suite for AniKotoAPI endpoints.
+ *   Tests all major endpoints for correct response format, status codes,
+ *   error handling, and performance benchmarks.
+ *
+ * @author  Shinei Nouzen
+ * @license MIT
+ * ======= • ======= • ======= • ======= • =======• =======
+ */
+
+const LIVE_API = "https://anikototvapi.vercel.app/api";
+const LOCAL_API = "http://localhost:4444/api";
+
+let BASE = process.env.API_URL || LIVE_API;
+
+async function detectBase() {
+  if (process.env.API_URL) return;
+  try {
+    const res = await fetch(`${LOCAL_API}/health`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      BASE = LOCAL_API;
+      console.log("📡 Detected local server — using localhost:4444\n");
+      return;
+    }
+  } catch (_) {}
+  BASE = LIVE_API;
+  console.log("📡 No local server found — using live API\n");
+}
+
+const tests = [
+  // Core endpoints
+  { name: "Home", url: "/", check: (d) => d.results?.spotlights || d.results?.trending },
+  { name: "Search", url: "/search?keyword=naruto", check: (d) => d.results?.data },
+  { name: "Info", url: "/info?id=one-piece-odmau", check: (d) => d.results?.title },
+  { name: "Info External IDs", url: "/info?id=one-piece-odmau", check: (d) => d.results?.externalIds?.malId },
+  { name: "Episodes", url: "/episodes/one-piece-odmau", check: (d) => d.results?.episodes },
+  { name: "Latest Episode", url: "/episodes/latest?slug=one-piece-odmau", check: (d) => d.results?.latest?.episode_no && d.results?.latest?.server_ids },
+  // NOTE: `Servers` placeholder URL is swapped for real server_ids below
+  { name: "Servers", url: "/servers?ids=1", check: (d) => d.results, optional: true },
+  // Streaming
+  { name: "Stream", url: "/watch?slug=one-piece-odmau&ep=1", check: (d) => d.results?.servers || d.results?.episodeNumber },
+  { name: "Embed Providers", url: "/stream/embeds?slug=one-piece-odmau&ep=1", check: (d) => d.results?.providers?.length > 0 },
+  { name: "Embed (direct MAL)", url: "/stream/embeds?mal=21&ep=1&provider=megavid", check: (d) => d.results?.providers?.[0]?.url?.includes("megavid.buzz") },
+  { name: "Proxy SSRF Guard", url: "/stream/proxy?url=https://example.com/x.m3u8", expectStatus: 403 },
+
+
+  // Discovery endpoints
+  { name: "Suggestions", url: "/suggestions?keyword=naruto", check: (d) => d.results },
+  { name: "Spotlight", url: "/spotlight", check: (d) => d.results },
+  { name: "Trending", url: "/trending", check: (d) => d.results },
+  { name: "Top 10", url: "/top-ten", check: (d) => d.results },
+  { name: "Random", url: "/random", check: (d) => d.results },
+  { name: "Most Popular", url: "/most-popular", check: (d) => d.results },
+  { name: "Upcoming", url: "/upcoming", check: (d) => Array.isArray(d.results), optional: true },
+  { name: "Top Rankings", url: "/top-rankings", check: (d) => Array.isArray(d.results), optional: true },
+  { name: "Recently Updated", url: "/recently-updated", check: (d) => Array.isArray(d.results), optional: true },
+  { name: "Completed", url: "/completed", check: (d) => Array.isArray(d.results), optional: true },
+
+  // Release lists
+  { name: "New Release", url: "/new-release", check: (d) => d.results },
+  { name: "Newly Added", url: "/newly-added", check: (d) => d.results },
+  { name: "Latest Updated", url: "/latest-updated", check: (d) => d.results },
+
+  // Category endpoints
+  { name: "Genre", url: "/genre/action", check: (d) => d.results },
+  { name: "Type", url: "/type/tv", check: (d) => d.results },
+  { name: "Status", url: "/status/airing", check: (d) => d.results, optional: true },
+  { name: "AZ List", url: "/az-list/a", check: (d) => d.results },
+  { name: "Filter", url: "/filter?keyword=naruto", check: (d) => d.results },
+
+  // Search variants
+  { name: "Search Suggest", url: "/search/suggest?keyword=naruto", check: (d) => d.results },
+  { name: "Trending Sidebar", url: "/trending-sidebar", check: (d) => d.results },
+
+  // Anime detail
+  { name: "Seasons", url: "/seasons/one-piece-odmau", check: (d) => d.results?.seasons || d.results?.totalSeasons, optional: true },
+  { name: "Watch Order", url: "/watch-order/one-piece-odmau", check: (d) => d.results?.related || d.results?.totalRelated, optional: true },
+  { name: "Download", url: "/download?slug=one-piece-odmau&ep=1", check: (d) => d.results, optional: true },
+
+  // ---- FEATURE: Regression suite for the 2.6.1 diagnostic-sweep fixes ----
+  // Real per-anime seasons via upstream /api/seasons/ (was generic sidebar)
+  { name: "Seasons Real Data", url: "/seasons/naruto-eybxz", check: (d) => d.results?.animeId === 958 && d.results?.seasons?.length > 0 && d.results?.seasons[0]?.slug },
+  // Numeric id form must work (was HTTP 500)
+  { name: "Seasons Numeric Id", url: "/seasons/1642", check: (d) => d.results?.animeId === 1642 && Array.isArray(d.results?.seasons) },
+  // Real per-anime watch order via upstream /api/watch-order/ (was trending sidebar)
+  { name: "Watch Order Real Data", url: "/watch-order/naruto-eybxz", check: (d) => d.results?.animeId === 958 && d.results?.related?.length > 0 && d.results?.related.every((r) => r.slug && r.relation) },
+  { name: "Watch Order Numeric Id", url: "/watch-order/1642", check: (d) => d.results?.animeId === 1642 && Array.isArray(d.results?.related) },
+  // Rankings: one tab per sort — 9 unique entries, no cross-tab bleed
+  { name: "Top Rankings Month Window", url: "/top-rankings?sort=month", check: (d) => Array.isArray(d.results) && d.results.length === 9 && new Set(d.results.map((r) => r.slug)).size === 9 },
+  { name: "Top Rankings Invalid Sort", url: "/top-rankings?sort=popular", expectStatus: 400 },
+  // Schedule: defaults to today, rejects impossible calendar dates
+  { name: "Schedule Defaults To Today", url: "/schedule", check: (d) => Array.isArray(d.results) },
+  { name: "Schedule Invalid Date", url: "/schedule?date=2026-13-45", expectStatus: 400 },
+  // Error mapping: client faults are 4xx, never 500/HTML
+  { name: "Unknown API Path JSON 404", url: "/definitely-missing-endpoint", expectStatus: 404 },
+  { name: "Bad Slug Episodes 404", url: "/episodes/definitely-not-a-real-slug-xyz", expectStatus: 404 },
+  { name: "Bad Slug Watch 404", url: "/watch?slug=definitely-not-a-real-slug-xyz&ep=1", expectStatus: 404 },
+  { name: "Missing AniList Media 404", url: "/anilist/999999999", expectStatus: 404 },
+  // Validation gaps: lang, non-HLS playlist, missing ids
+  { name: "Embeds Invalid Lang", url: "/stream/embeds?mal=21&lang=klingon", expectStatus: 400 },
+  { name: "Embeds Resolves AniList From MAL", url: "/stream/embeds?mal=21&provider=megaplay", check: (d) => d.results?.ids?.malId === 21 && d.results?.ids?.anilistId === 21 },
+  { name: "Qualities Non-HLS 415", url: "/stream/qualities?url=https://example.com/", expectStatus: 415 },
+  // Payload hygiene: entities, doubled rating, placeholder episodes
+  { name: "Info Clean Fields", url: "/info?id=one-piece-odmau", check: (d) => /^\d+(\.\d+)?$/.test(String(d.results?.rating)) && !/[&;]/.test(String(d.results?.premiered)) && !/\s\s/.test(String(d.results?.altNames)) },
+
+  // Enrichment (AniList)
+  { name: "AniList Anime", url: "/anilist/21", check: (d) => d.results?.id === 21 && Array.isArray(d.results?.genres) },
+  { name: "AniList (MAL alias)", url: "/anilist?mal=21", check: (d) => d.results?.idMal === 21 },
+  { name: "AniList Season", url: "/anilist/season?season=WINTER&year=2026", check: (d) => d.results?.season === "WINTER" && d.results?.media?.length > 0 },
+
+  // Input validation (must be rejected before any upstream request)
+  { name: "Invalid Slug Rejected", url: "/seasons/..%2F..%2Fetc", expectStatus: 400 },
+  { name: "Invalid Page Rejected", url: "/most-popular?page=abc", expectStatus: 400 },
+  { name: "Invalid Season Rejected", url: "/anilist/season?season=NOPE", expectStatus: 400 },
+
+  // Utility endpoints
+  { name: "Health", url: "/health", check: (d) => d.results?.status === "healthy" },
+  { name: "Stats", url: "/stats", check: (d) => d.results?.endpoints },
+  { name: "Cache Stats", url: "/cache/stats", check: (d) => d.results?.hits !== undefined },
+  { name: "Mirrors", url: "/mirrors", check: (d) => Array.isArray(d.results) },
+  { name: "OpenAPI", url: "/openapi", check: (d) => d.openapi === "3.0.3", optional: true },
+];
+
+let passed = 0;
+let failed = 0;
+let skipped = 0;
+let total = 0;
+const results = [];
+
+async function runTest(test) {
+  total++;
+  const start = Date.now();
+  
+  try {
+    const res = await fetch(`${BASE}${test.url}`);
+    const duration = Date.now() - start;
+
+    // ---- FEATURE: Negative tests — assert an exact rejection status ----
+    if (test.expectStatus) {
+      if (res.status === test.expectStatus) {
+        console.log(`✅ ${test.name} (HTTP ${res.status}) (${duration}ms)`);
+        passed++;
+        results.push({ name: test.name, status: "PASS", duration });
+      } else {
+        console.log(`❌ ${test.name} - expected HTTP ${test.expectStatus}, got ${res.status} (${duration}ms)`);
+        failed++;
+        results.push({ name: test.name, status: "FAIL", reason: `Expected ${test.expectStatus}, got ${res.status}`, duration });
+      }
+      return;
+    }
+
+    if (!res.ok) {
+      if (test.optional && (res.status === 404 || res.status === 500)) {
+        console.log(`⏭️  ${test.name} - Skipped (HTTP ${res.status}) (${duration}ms)`);
+        skipped++;
+        results.push({ name: test.name, status: "SKIP", httpStatus: res.status, duration });
+        return;
+      }
+      console.log(`❌ ${test.name} - HTTP ${res.status} (${duration}ms)`);
+      failed++;
+      results.push({ name: test.name, status: "FAIL", httpStatus: res.status, duration });
+      return;
+    }
+    
+    // ---- FEATURE: Raw-body tests — non-JSON responses such as playlists ----
+    if (test.checkText) {
+      const text = await res.text();
+      if (test.checkText(text)) {
+        console.log(`✅ ${test.name} (${duration}ms)`);
+        passed++;
+        results.push({ name: test.name, status: "PASS", duration });
+        return;
+      }
+      if (test.optional) {
+        console.log(`⏭️  ${test.name} - Skipped (validation failed) (${duration}ms)`);
+        skipped++;
+        results.push({ name: test.name, status: "SKIP", reason: "Validation failed", duration });
+        return;
+      }
+      console.log(`❌ ${test.name} - Validation failed (${duration}ms)`);
+      failed++;
+      results.push({ name: test.name, status: "FAIL", reason: "Validation failed", duration });
+      return;
+    }
+
+    const data = await res.json();
+    
+    if (!data.success) {
+      if (test.optional) {
+        console.log(`⏭️  ${test.name} - Skipped (success=false) (${duration}ms)`);
+        skipped++;
+        results.push({ name: test.name, status: "SKIP", reason: "success=false", duration });
+        return;
+      }
+      console.log(`❌ ${test.name} - success=false (${duration}ms)`);
+      failed++;
+      results.push({ name: test.name, status: "FAIL", reason: "success=false", duration });
+      return;
+    }
+    
+    // Check custom validation
+    if (test.check && !test.check(data)) {
+      if (test.optional) {
+        console.log(`⏭️  ${test.name} - Skipped (validation failed) (${duration}ms)`);
+        skipped++;
+        results.push({ name: test.name, status: "SKIP", reason: "Validation failed", duration });
+        return;
+      }
+      console.log(`❌ ${test.name} - Validation failed (${duration}ms)`);
+      failed++;
+      results.push({ name: test.name, status: "FAIL", reason: "Validation failed", duration });
+      return;
+    }
+    
+    console.log(`✅ ${test.name} (${duration}ms)`);
+    passed++;
+    results.push({ name: test.name, status: "PASS", duration });
+    
+  } catch (error) {
+    const duration = Date.now() - start;
+    if (test.optional) {
+      console.log(`⏭️  ${test.name} - Skipped (${error.message}) (${duration}ms)`);
+      skipped++;
+      results.push({ name: test.name, status: "SKIP", reason: error.message, duration });
+      return;
+    }
+    console.log(`❌ ${test.name} - ${error.message} (${duration}ms)`);
+    failed++;
+    results.push({ name: test.name, status: "FAIL", reason: error.message, duration });
+  }
+}
+
+async function fetchJson(url) {
+  const res = await fetch(`${BASE}${url}`);
+  return res.ok ? res.json() : null;
+}
+
+async function runAll() {
+  await detectBase();
+  console.log(`📡 API: ${BASE}\n`);
+
+  // ---- FEATURE: Resolve dynamic test dependencies ----
+  // NOTE: Fetch info to get numeric animeId for episodes-ajax
+  let animeId = "1642";
+  let linkId = "";
+  try {
+    const info = await fetchJson("/info?id=one-piece-odmau");
+    if (info?.success && info.results?.animeId) {
+      animeId = info.results.animeId;
+    }
+    // NOTE: Get a valid link_id via episodes → servers flow
+    const epData = await fetchJson("/episodes/one-piece-odmau");
+    if (epData?.success && epData.results?.episodes?.length > 0) {
+      const sid = epData.results.episodes[0].server_ids;
+      if (sid) {
+        // NOTE: Real server_ids — the placeholder ids=1 makes upstream return 500
+        const serversTest = tests.find((t) => t.name === "Servers");
+        if (serversTest) serversTest.url = `/servers?ids=${encodeURIComponent(sid)}`;
+        const srvData = await fetchJson(`/servers?ids=${encodeURIComponent(sid)}`);
+        if (srvData?.success && srvData.results?.length > 0) {
+          linkId = srvData.results[0].link_id || "";
+        }
+      }
+    }
+  } catch (_) { /* use defaults */ }
+
+  // ---- FEATURE: Inject dynamic tests with live data ----
+  tests.push({ name: "Episodes Ajax", url: `/episodes-ajax/${animeId}`, check: (d) => d.results?.episodes || d.results?.totalEpisodes });
+  if (linkId) {
+    tests.push({ name: "Stream Resolve", url: `/stream/resolve?id=${encodeURIComponent(linkId)}&slug=one-piece-odmau`, check: (d) => d.results?.url, optional: true });
+    // ---- FEATURE: Proxy chain — resolved manifest must come back rewritten ----
+    try {
+      const resolved = await fetchJson(`/stream/resolve?id=${encodeURIComponent(linkId)}&slug=one-piece-odmau`);
+      const master = resolved?.results?.url;
+      if (master) {
+        tests.push({
+          name: "Stream Proxy",
+          url: `/stream/proxy?url=${encodeURIComponent(master)}`,
+          checkText: (text) => text.includes("#EXTM3U") && text.includes("/api/stream/proxy?url="),
+          optional: true,
+        });
+      }
+    } catch (_) { /* upstream unavailable — test is not pushed */ }
+  }
+
+  // ---- FEATURE: Run all tests sequentially ----
+  // NOTE: Printed after the dynamic pushes so the count matches the final list
+  console.log(`🧪 Running ${tests.length} tests...\n`);
+  for (const test of tests) {
+    await runTest(test);
+  }
+  
+  console.log(`\n${"=".repeat(50)}`);
+  console.log(`📊 Results: ${passed} passed, ${failed} failed, ${skipped} skipped, ${total} total`);
+  console.log(`${"=".repeat(50)}`);
+  
+  // Performance summary
+  const durations = results.filter(r => r.status === "PASS").map(r => r.duration);
+  if (durations.length > 0) {
+    const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
+    const maxDuration = Math.max(...durations);
+    const minDuration = Math.min(...durations);
+    
+    console.log(`\n⚡ Performance:`);
+    console.log(`   Average: ${avgDuration.toFixed(0)}ms`);
+    console.log(`   Min: ${minDuration}ms`);
+    console.log(`   Max: ${maxDuration}ms`);
+  }
+  
+  // Detailed results
+  console.log(`\n📋 Detailed Results:`);
+  results.forEach(r => {
+    const icon = r.status === "PASS" ? "✅" : r.status === "SKIP" ? "⏭️" : "❌";
+    console.log(`   ${icon} ${r.name} - ${r.status} (${r.duration}ms)${r.reason ? ` - ${r.reason}` : ""}`);
+  });
+  
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+runAll();
