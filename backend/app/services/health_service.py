@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.adapter_fetch_attempt import AdapterFetchAttempt
 from app.models.adapter_health_log import AdapterHealthLog
 from app.models.source import Source
 
@@ -78,6 +79,25 @@ async def get_platform_logs(db: AsyncSession, platform: str, limit: int = 100) -
         .limit(limit)
     )
     rows = result.all()
+
+    # Batch fetch per-adapter attempt records for these logs (single query,
+    # grouped in Python) so each summary log carries its try-by-try detail.
+    attempts_by_log: dict[str, list[dict]] = {}
+    log_ids = [log.id for log, _, _ in rows]
+    if log_ids:
+        att_result = await db.execute(
+            select(AdapterFetchAttempt)
+            .where(AdapterFetchAttempt.health_log_id.in_(log_ids))
+            .order_by(AdapterFetchAttempt.sequence)
+        )
+        for att in att_result.scalars().all():
+            attempts_by_log.setdefault(str(att.health_log_id), []).append({
+                "adapter_type": att.adapter_type,
+                "success": att.success,
+                "error_message": att.error_message,
+                "duration_ms": att.duration_ms,
+            })
+
     return [
         {
             "id": str(log.id),
@@ -90,6 +110,7 @@ async def get_platform_logs(db: AsyncSession, platform: str, limit: int = 100) -
             "duration_ms": log.duration_ms,
             "articles_count": log.articles_count,
             "created_at": log.created_at,
+            "attempts": attempts_by_log.get(str(log.id), []),
         }
         for log, platform_uid, display_name in rows
     ]

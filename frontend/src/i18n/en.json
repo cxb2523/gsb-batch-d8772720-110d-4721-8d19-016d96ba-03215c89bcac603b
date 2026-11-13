@@ -243,7 +243,10 @@
     "failed": "Failed",
     "avgDuration": "Avg time",
     "lastError": "Last error:",
-    "successRate": "{n}% success"
+    "successRate": "{n}% success",
+    "noLogs": "No fetch logs yet",
+    "attemptSuccess": "OK",
+    "attemptFailed": "Failed"
   },
   "apiKey": {
     "title": "API Key",

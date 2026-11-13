@@ -9,7 +9,8 @@ from app.models.platform_cookie import PlatformCookie
 from app.models.push_subscription import PushSubscription
 from app.models.installed_plugin import InstalledPlugin
 from app.models.adapter_health_log import AdapterHealthLog
+from app.models.adapter_fetch_attempt import AdapterFetchAttempt
 
 __all__ = ["User", "Source", "Subscription", "Article", "UserArticle",
            "Group", "Tag", "PlatformCookie", "PushSubscription",
-           "InstalledPlugin", "AdapterHealthLog"]
+           "InstalledPlugin", "AdapterHealthLog", "AdapterFetchAttempt"]

@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.adapters import registry
 from app.adapters.base import SourceInfo
+from app.models.adapter_fetch_attempt import AdapterFetchAttempt
 from app.models.adapter_health_log import AdapterHealthLog
 from app.models.source import Source
 from app.models.subscription import Subscription
@@ -55,13 +56,27 @@ async def _fetch_source(source_id: str):
         used_adapter_type = None
         error_msg = None
         start_time = time.monotonic()
+        attempts = []
 
         for adapter in adapters:
+            attempt_start = time.monotonic()
             try:
                 items = await adapter.fetch(source_info, cookies=cookie)
+                attempts.append({
+                    "adapter_type": adapter.adapter_type,
+                    "success": True,
+                    "error_message": None,
+                    "duration_ms": int((time.monotonic() - attempt_start) * 1000),
+                })
                 used_adapter_type = adapter.adapter_type
                 break
             except Exception as e:
+                attempts.append({
+                    "adapter_type": adapter.adapter_type,
+                    "success": False,
+                    "error_message": str(e),
+                    "duration_ms": int((time.monotonic() - attempt_start) * 1000),
+                })
                 error_msg = str(e)
                 print(f"[fetch] {adapter.adapter_type} failed for {source.platform}/{source.platform_uid}: {e}")
                 continue
@@ -83,6 +98,14 @@ async def _fetch_source(source_id: str):
             articles_count=len(new_articles) if items is not None else 0,
         )
         db.add(log)
+        await db.flush()  # assign log.id so attempt rows can reference it
+        for sequence, attempt in enumerate(attempts):
+            db.add(AdapterFetchAttempt(
+                health_log_id=log.id,
+                source_id=source_pk,
+                sequence=sequence,
+                **attempt,
+            ))
         await db.commit()
 
         if new_articles:

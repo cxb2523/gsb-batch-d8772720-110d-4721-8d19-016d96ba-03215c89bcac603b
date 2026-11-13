@@ -243,7 +243,10 @@
     "failed": "失败",
     "avgDuration": "平均耗时",
     "lastError": "最后错误：",
-    "successRate": "{n}% 成功"
+    "successRate": "{n}% 成功",
+    "noLogs": "暂无抓取记录",
+    "attemptSuccess": "成功",
+    "attemptFailed": "失败"
   },
   "apiKey": {
     "title": "API Key",
