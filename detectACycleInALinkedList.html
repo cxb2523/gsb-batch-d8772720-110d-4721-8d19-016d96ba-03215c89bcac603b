@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Döngü tespiti | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Döngü tespiti</h1>
+<h1 data-lang="en">Detect a cycle</h1>
+<h1 data-lang="de">Zyklus erkennen</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Son düğümü ikinci düğümü gösteren bir liste oluşturalım. Bu liste hiç bitmez.</p>
+<p data-lang="en">Let's build a list whose last node points to the second node. This list never ends.</p>
+<p data-lang="de">Bauen wir eine Liste, deren letzter Knoten auf den zweiten Knoten zeigt. Diese Liste endet nie.</p>
+
+<textarea id="text1" class="deneme">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+var w = new Node(4)
+var v = new Node(5)
+
+x.next = y
+y.next = z
+z.next = w
+w.next = v
+v.next = y  // döngü burada</textarea>
+<script type="text/plain" class="code-variant" data-for="text1" data-lang="en">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+var w = new Node(4)
+var v = new Node(5)
+
+x.next = y
+y.next = z
+z.next = w
+w.next = v
+v.next = y  // the cycle is here</script>
+<script type="text/plain" class="code-variant" data-for="text1" data-lang="de">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+var w = new Node(4)
+var v = new Node(5)
+
+x.next = y
+y.next = z
+z.next = w
+w.next = v
+v.next = y  // hier ist der Zyklus</script>
+
+<p data-lang="tr">Floyd algoritması: <code>slow</code> her adımda bir düğüm, <code>fast</code> iki düğüm ilerler. Liste bir yerde bitiyorsa <code>fast</code> <code>null</code>'a ulaşır ve döngü yoktur. Döngü varsa <code>fast</code> döngünün içinde <code>slow</code>'a yetişir ve buluşurlar; o anda <code>break</code> ile döngüden çıkılır. Döngüsüz durumu görmek için ilk bloğun son satırını silip ikinci bloğu yeniden çalıştırın.</p>
+<p data-lang="en">Floyd's algorithm: <code>slow</code> moves one node per step, <code>fast</code> moves two. If the list ends somewhere, <code>fast</code> reaches <code>null</code> and there is no cycle. If there is a cycle, <code>fast</code> catches up with <code>slow</code> inside it and they meet; at that moment <code>break</code> leaves the loop. To see the case without a cycle, delete the last line of the first block and run the second block again.</p>
+<p data-lang="de">Floyds Algorithmus: <code>slow</code> rückt pro Schritt einen Knoten vor, <code>fast</code> zwei. Endet die Liste irgendwo, erreicht <code>fast</code> <code>null</code> und es gibt keinen Zyklus. Gibt es einen Zyklus, holt <code>fast</code> darin <code>slow</code> ein und sie treffen sich; in diesem Moment verlässt <code>break</code> die Schleife. Um den Fall ohne Zyklus zu sehen, löschen Sie die letzte Zeile des ersten Blocks und führen den zweiten Block erneut aus.</p>
+
+<textarea id="text2" class="deneme">
+var slow = x
+var fast = x
+var found = false
+while(fast != null && fast.next != null)
+{
+  slow = slow.next       // bir adım
+  fast = fast.next.next  // iki adım
+  if(slow == fast)
+  {
+    found = true
+    break                // buluştular, döngüden çık
+  }
+}
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="en">
+var slow = x
+var fast = x
+var found = false
+while(fast != null && fast.next != null)
+{
+  slow = slow.next       // one step
+  fast = fast.next.next  // two steps
+  if(slow == fast)
+  {
+    found = true
+    break                // they met, leave the loop
+  }
+}
+</script>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="de">
+var slow = x
+var fast = x
+var found = false
+while(fast != null && fast.next != null)
+{
+  slow = slow.next       // ein Schritt
+  fast = fast.next.next  // zwei Schritte
+  if(slow == fast)
+  {
+    found = true
+    break                // getroffen, Schleife verlassen
+  }
+}
+</script>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

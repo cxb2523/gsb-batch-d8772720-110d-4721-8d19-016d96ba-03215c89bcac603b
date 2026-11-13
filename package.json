@@ -1,0 +1,19 @@
+{
+  "name": "dsviz",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bağlı liste görselleştirme: tarayıcı testleri",
+  "scripts": {
+    "start": "node tests/server.js",
+    "test": "playwright test",
+    "build:grammar": "node tools/build-grammar.js",
+    "test:rules": "firebase emulators:exec --project demo-dsviz --only firestore \"node --test tests/rules/rules.test.mjs\""
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "@playwright/test": "1.63.0",
+    "firebase": "^12.19.0",
+    "firebase-tools": "^15.36.0"
+  }
+}

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Çift yönlü listeyi ters çevirme | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Çift yönlü listeyi ters çevirme</h1>
+<h1 data-lang="en">Reverse a doubly linked list</h1>
+<h1 data-lang="de">Doppelt verkettete Liste umdrehen</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Dört düğümlü çift yönlü bir liste oluşturalım.</p>
+<p data-lang="en">Let's create a doubly linked list with four nodes.</p>
+<p data-lang="de">Erstellen wir eine doppelt verkettete Liste mit vier Knoten.</p>
+
+<textarea id="text1" class="deneme">
+var a = new Node(1)
+var b = new Node(2)
+var c = new Node(3)
+var d = new Node(4)
+
+a.next = b
+b.prev = a
+b.next = c
+c.prev = b
+c.next = d
+d.prev = c
+</textarea>
+
+<p data-lang="tr">Her düğümde <code>next</code> ile <code>prev</code> yer değiştirir; takas için geçici bir değişken (<code>tmp</code>) gerekir. Takastan sonra sıradaki düğüm artık <code>p.prev</code>'dedir, bu yüzden <code>p = p.prev</code> ile ilerlenir. Sonunda <code>d</code> listenin yeni başı olur. Döngü boyunca düğümler yerinde kalır, yalnızca oklar döner: ters dönen bir <code>next</code> oku düğümün üstünden kıvrılıp soldaki düğüme, <code>prev</code> oku altından kıvrılıp sağdaki düğüme gider. Son adımda liste, yeni başı <code>d</code> solda olacak şekilde yeniden dizilir.</p>
+<p data-lang="en">In every node, <code>next</code> and <code>prev</code> swap places; the swap needs a temporary variable (<code>tmp</code>). After the swap the next node is in <code>p.prev</code>, so we move on with <code>p = p.prev</code>. At the end <code>d</code> is the new head of the list. During the loop the nodes stay where they are and only the arrows turn: a reversed <code>next</code> arrow hooks over its node to the node on the left, a <code>prev</code> arrow hooks underneath to the node on the right. At the last step the list is laid out again with the new head <code>d</code> on the left.</p>
+<p data-lang="de">In jedem Knoten tauschen <code>next</code> und <code>prev</code> die Plätze; für den Tausch braucht man eine Hilfsvariable (<code>tmp</code>). Nach dem Tausch steht der nächste Knoten in <code>p.prev</code>, deshalb geht es mit <code>p = p.prev</code> weiter. Am Ende ist <code>d</code> der neue Kopf der Liste. Während der Schleife bleiben die Knoten an ihrem Platz, nur die Pfeile drehen sich: ein umgedrehter <code>next</code>-Pfeil biegt über seinen Knoten zum linken Nachbarn, ein <code>prev</code>-Pfeil unter ihm zum rechten. Im letzten Schritt wird die Liste neu angeordnet, mit dem neuen Kopf <code>d</code> links.</p>
+
+<textarea id="text2" class="deneme">
+var p = a
+var tmp = null
+while(p != null)
+{
+  tmp = p.prev      // next ile prev'i takas et
+  p.prev = p.next
+  p.next = tmp
+  p = p.prev        // takastan sonra sıradaki düğüm prev'de
+}
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="en">
+var p = a
+var tmp = null
+while(p != null)
+{
+  tmp = p.prev      // swap next and prev
+  p.prev = p.next
+  p.next = tmp
+  p = p.prev        // after the swap the next node is in prev
+}
+</script>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="de">
+var p = a
+var tmp = null
+while(p != null)
+{
+  tmp = p.prev      // next und prev tauschen
+  p.prev = p.next
+  p.next = tmp
+  p = p.prev        // nach dem Tausch steht der nächste Knoten in prev
+}
+</script>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

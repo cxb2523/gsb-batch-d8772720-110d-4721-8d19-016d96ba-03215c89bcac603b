@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Bağlı Listeler</h1>
+<h1 data-lang="en">Linked Lists</h1>
+<h1 data-lang="de">Verkettete Listen</h1>
+<p class="lead" data-lang="tr">Bağlı listelerin (linked list) nasıl çalıştığını, yazdığınız kodu adım adım çizerek gösteren bir eğitim aracı. Kurulum gerektirmez.</p>
+<p class="lead" data-lang="en">A teaching tool that shows how linked lists work by drawing the code you write, step by step. Nothing to install.</p>
+<p class="lead" data-lang="de">Ein Lernwerkzeug, das zeigt, wie verkettete Listen funktionieren, indem es Ihren Code Schritt für Schritt zeichnet. Keine Installation nötig.</p>
+
+<h2 data-lang="tr">Deneme alanı</h2>
+<h2 data-lang="en">Playground</h2>
+<h2 data-lang="de">Spielwiese</h2>
+<textarea id="text1" class="deneme">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+
+x.next = y
+y.next = z
+
+var p1 = x
+</textarea>
+<p data-lang="tr">Kodu <strong>Çalıştır</strong> düğmesiyle ya da kod bloğunun içindeyken <kbd>CTRL</kbd>+<kbd>ENTER</kbd> ile çalıştırın. Animasyonu görselleştirmenin üstündeki düğmelerle adım adım ileri ve geri oynatabilirsiniz. Kodu değiştirip yeniden çalıştırdığınızda çizim temiz başlar. Değiştirdiğiniz kodu bloğun altındaki bağlantı düğmesiyle paylaşabilirsiniz: bağlantıyı açan kişi aynı sayfayı sizin kodunuzla görür.</p>
+<p data-lang="en">Run the code with the <strong>Run</strong> button, or with <kbd>CTRL</kbd>+<kbd>ENTER</kbd> while inside the code block. Use the buttons above the visualization to play the animation step by step, forwards and backwards. When you change the code and run it again, the drawing starts clean. You can share your changed code with the link button under a block: whoever opens the link sees the same page with your code.</p>
+<p data-lang="de">Führen Sie den Code mit der Schaltfläche <strong>Ausführen</strong> aus, oder mit <kbd>STRG</kbd>+<kbd>ENTER</kbd>, während Sie im Codeblock sind. Mit den Schaltflächen über der Visualisierung spielen Sie die Animation Schritt für Schritt vor und zurück ab. Wenn Sie den Code ändern und erneut ausführen, beginnt die Zeichnung sauber. Geänderten Code teilen Sie mit der Link-Schaltfläche unter einem Block: wer den Link öffnet, sieht dieselbe Seite mit Ihrem Code.</p>
+<p data-lang="tr">Görselleştirmenin altındaki <strong>Komut satırı</strong> sekmesine tek satırlık kodlar da yazabilirsiniz, Enter ile çalışır.</p>
+<p data-lang="en">You can also type one-line commands in the <strong>Command line</strong> tab below the visualization; Enter runs them.</p>
+<p data-lang="de">Im Reiter <strong>Befehlszeile</strong> unter der Visualisierung können Sie auch einzeilige Befehle eingeben; Enter führt sie aus.</p>
+<p data-lang="tr">Kodlar, bu iş için geliştirilmiş <strong>Düğüm</strong> adlı küçük bir dille yazılır. Dili tanımak için <a href="language.html">Düğüm dili rehberine</a> bakın.</p>
+<p data-lang="en">The code is written in <strong>Düğüm</strong>, a small language made for this purpose. To get to know it, read the <a href="language.html">guide to the Düğüm language</a>.</p>
+<p data-lang="de">Der Code ist in <strong>Düğüm</strong> geschrieben, einer kleinen Sprache, die eigens dafür entwickelt wurde. Zum Kennenlernen lesen Sie den <a href="language.html">Leitfaden zur Sprache Düğüm</a>.</p>
+
+<h2 data-lang="tr">Örnekler</h2>
+<h2 data-lang="en">Examples</h2>
+<h2 data-lang="de">Beispiele</h2>
+<div id="example-list"></div>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

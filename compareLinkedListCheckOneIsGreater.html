@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>İlk liste daha mı büyük? | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">İlk liste daha mı büyük?</h1>
+<h1 data-lang="en">Is the first list greater?</h1>
+<h1 data-lang="de">Ist die erste Liste größer?</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Önce iki liste oluşturalım.</p>
+<p data-lang="en">First, let's build two lists.</p>
+<p data-lang="de">Zuerst bauen wir zwei Listen.</p>
+
+<textarea id="text1" class="deneme">
+var list1 = new Node(10)
+list1.next = new Node(20)
+list1.next.next = new Node(30)
+
+var list2 = new Node(1)
+list2.next = new Node(2)
+list2.next.next = new Node(3)
+</textarea>
+
+<p data-lang="tr">İki pointer iki listede aynı anda ilerler. İlk listedeki bir değer, diğer listedeki karşılığından büyük değilse <code>flag</code> yanlış olur. Burada iki listenin aynı uzunlukta olduğu varsayılıyor.</p>
+<p data-lang="en">Two pointers move through the two lists at the same time. If a value in the first list is not greater than its counterpart in the other list, <code>flag</code> becomes false. Here we assume both lists have the same length.</p>
+<p data-lang="de">Zwei Zeiger laufen gleichzeitig durch die beiden Listen. Ist ein Wert der ersten Liste nicht größer als der entsprechende Wert der anderen Liste, wird <code>flag</code> falsch. Wir nehmen hier an, dass beide Listen gleich lang sind.</p>
+
+<textarea id="text3" class="deneme">
+var p = list1
+var q = list2
+var flag = true
+
+while(p != null) // listenin sonuna kadar git
+{
+  if(p.data <= q.data)
+	flag = false
+
+  p = p.next
+  q = q.next
+}
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text3" data-lang="en">
+var p = list1
+var q = list2
+var flag = true
+
+while(p != null) // walk to the end of the list
+{
+  if(p.data <= q.data)
+	flag = false
+
+  p = p.next
+  q = q.next
+}
+</script>
+<script type="text/plain" class="code-variant" data-for="text3" data-lang="de">
+var p = list1
+var q = list2
+var flag = true
+
+while(p != null) // bis zum Ende der Liste gehen
+{
+  if(p.data <= q.data)
+	flag = false
+
+  p = p.next
+  q = q.next
+}
+</script>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

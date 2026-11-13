@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Değere göre silme | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Değere göre silme</h1>
+<h1 data-lang="en">Delete by value</h1>
+<h1 data-lang="de">Nach Wert löschen</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Dört düğümlü bir liste oluşturalım.</p>
+<p data-lang="en">Let's build a list with four nodes.</p>
+<p data-lang="de">Bauen wir eine Liste mit vier Knoten.</p>
+
+<textarea id="text1" class="deneme">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+var w = new Node(4)
+
+x.next = y
+y.next = z
+z.next = w
+</textarea>
+
+<p data-lang="tr">Bir düğümü silmek için ondan <em>önceki</em> düğüme ihtiyacımız var. Bu yüzden <code>p</code>, <code>p.next</code> aradığımız değeri tuttuğunda durur. Sonra <code>p</code>'nin oku o düğümün üzerinden atlar ve düğüm listeden çıkar.</p>
+<p data-lang="en">To delete a node we need the node <em>before</em> it. That is why <code>p</code> stops when <code>p.next</code> holds the value we are looking for. Then the arrow of <code>p</code> skips over that node and the node leaves the list.</p>
+<p data-lang="de">Um einen Knoten zu löschen, brauchen wir den Knoten <em>davor</em>. Deshalb hält <code>p</code> an, wenn <code>p.next</code> den gesuchten Wert enthält. Dann springt der Pfeil von <code>p</code> über diesen Knoten hinweg und der Knoten verlässt die Liste.</p>
+
+<textarea id="text2" class="deneme">
+var p = x
+while(p.next != null)
+{
+  if(p.next.data == 3)
+    p.next = p.next.next  // düğümün üzerinden atla
+  p = p.next
+}
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="en">
+var p = x
+while(p.next != null)
+{
+  if(p.next.data == 3)
+    p.next = p.next.next  // skip over the node
+  p = p.next
+}
+</script>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="de">
+var p = x
+while(p.next != null)
+{
+  if(p.next.data == 3)
+    p.next = p.next.next  // den Knoten überspringen
+  p = p.next
+}
+</script>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Başa ekleme | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Başa ekleme</h1>
+<h1 data-lang="en">Insert at the head</h1>
+<h1 data-lang="de">Am Anfang einfügen</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Önce üç düğümlü bir liste oluşturalım. <code>x</code> listenin başı.</p>
+<p data-lang="en">First let's build a list with three nodes. <code>x</code> is the head of the list.</p>
+<p data-lang="de">Zuerst bauen wir eine Liste mit drei Knoten. <code>x</code> ist der Kopf der Liste.</p>
+
+<textarea id="text1" class="deneme">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+
+x.next = y
+y.next = z
+</textarea>
+
+<p data-lang="tr">Başa ekleme O(1) bir işlemdir: yeni düğümü oluşturun, <code>next</code>'ini şimdiki başa bağlayın, sonra baş pointer'ını yeni düğüme taşıyın. Listeyi dolaşmaya gerek yoktur.</p>
+<p data-lang="en">Inserting at the head is an O(1) operation: create the new node, link its <code>next</code> to the current head, then move the head pointer to the new node. There is no need to walk the list.</p>
+<p data-lang="de">Einfügen am Anfang ist eine O(1)-Operation: neuen Knoten erzeugen, sein <code>next</code> mit dem aktuellen Kopf verbinden und dann den Kopfzeiger auf den neuen Knoten setzen. Die Liste muss nicht durchlaufen werden.</p>
+
+<textarea id="text2" class="deneme">
+var h = new Node(9)  // yeni düğüm
+h.next = x           // başın önüne bağla
+x = h                // x artık yeni baş</textarea>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="en">
+var h = new Node(9)  // the new node
+h.next = x           // link it in front of the head
+x = h                // x is now the new head
+</script>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="de">
+var h = new Node(9)  // der neue Knoten
+h.next = x           // vor den Kopf hängen
+x = h                // x ist jetzt der neue Kopf
+</script>
+
+<p data-lang="tr">Aynı üç adım tek satırda da yazılabilir: <code>Node</code>'a verilen ikinci değer yeni düğümün <code>next</code>'idir. <code>new Node(8, x)</code> önce eski başı gösteren yeni düğümü oluşturur, sonra <code>x</code> ona taşınır; sağ taraf atamadan önce hesaplandığı için eski baş kaybolmaz.</p>
+<p data-lang="en">The same three steps also fit in one line: the second value given to <code>Node</code> is the new node's <code>next</code>. <code>new Node(8, x)</code> first creates the new node pointing to the old head, then <code>x</code> moves to it; the right-hand side is computed before the assignment, so the old head is not lost.</p>
+<p data-lang="de">Dieselben drei Schritte passen auch in eine Zeile: der zweite Wert für <code>Node</code> ist das <code>next</code> des neuen Knotens. <code>new Node(8, x)</code> erzeugt zuerst den neuen Knoten, der auf den alten Kopf zeigt, dann wandert <code>x</code> zu ihm; die rechte Seite wird vor der Zuweisung berechnet, daher geht der alte Kopf nicht verloren.</p>
+
+<textarea id="text3" class="deneme">
+x = new Node(8, x)   // yeni düğüm, next'i eski baş
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text3" data-lang="en">
+x = new Node(8, x)   // a new node whose next is the old head
+</script>
+<script type="text/plain" class="code-variant" data-for="text3" data-lang="de">
+x = new Node(8, x)   // ein neuer Knoten, sein next ist der alte Kopf
+</script>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

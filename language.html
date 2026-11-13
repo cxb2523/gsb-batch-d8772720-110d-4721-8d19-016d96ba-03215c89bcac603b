@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Düğüm dili: rehber | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Düğüm dili: rehber</h1>
+<h1 data-lang="en">The Düğüm language: a guide</h1>
+<h1 data-lang="de">Die Sprache Düğüm: ein Leitfaden</h1>
+
+
+<p data-lang="tr">Bu sitedeki kodlar <strong>Düğüm</strong> adında küçük bir dille yazılır. Düğüm, veri yapılarını öğretmek için tasarlanmış, JavaScript'e benzeyen bir dildir: her satırı tek tek çalıştırılır ve her satırın veri yapısında ne değiştirdiği tuvalde çizilir. Adı, dilin temel taşı olan düğümden (node) gelir; Türkçede düğüm aynı zamanda iki ipin birbirine bağlandığı yerdir, tıpkı <code>next</code> bağlarının düğümleri birbirine bağlaması gibi.</p>
+<p data-lang="en">The code on this site is written in a small language called <strong>Düğüm</strong>. Düğüm is a JavaScript-like language made for teaching data structures: it runs one line at a time, and what each line changes in the data structure is drawn on the canvas. The name is Turkish for <em>node</em>, the building block of the language; it also means <em>knot</em>, the place where two ropes are tied together, just as <code>next</code> links tie nodes together.</p>
+<p data-lang="de">Der Code auf dieser Seite ist in einer kleinen Sprache namens <strong>Düğüm</strong> geschrieben. Düğüm ist eine JavaScript-ähnliche Sprache zum Lehren von Datenstrukturen: sie führt eine Zeile nach der anderen aus, und was jede Zeile an der Datenstruktur ändert, wird auf der Zeichenfläche gezeichnet. Der Name ist das türkische Wort für <em>Knoten</em> (node), den Grundbaustein der Sprache; er bedeutet auch den Knoten in einem Seil, dort wo zwei Seile verbunden sind, so wie <code>next</code>-Verbindungen Knoten verbinden.</p>
+
+<p data-lang="tr">JavaScript bilen biri Düğüm kodunu hemen okur; yine de dil bilerek küçük tutuldu: her satırda tek bir komut vardır, nesneler yerine düğümler ve basit diziler vardır. Böylece öğrenci dile değil, veri yapısına odaklanır. Kodu her sayfada değiştirip yeniden çalıştırabilirsiniz; bu sayfanın blokları da çalışır.</p>
+<p data-lang="en">Anyone who knows JavaScript can read Düğüm code right away; still, the language is kept small on purpose: one statement per line, and nodes and simple arrays instead of objects. That way students focus on the data structure, not on the language. You can change and rerun the code on every page; the blocks on this page run too.</p>
+<p data-lang="de">Wer JavaScript kennt, kann Düğüm-Code sofort lesen; trotzdem ist die Sprache absichtlich klein gehalten: eine Anweisung pro Zeile, und Knoten und einfache Arrays statt Objekten. So konzentrieren sich Lernende auf die Datenstruktur, nicht auf die Sprache. Sie können den Code auf jeder Seite ändern und erneut ausführen; auch die Blöcke dieser Seite laufen.</p>
+
+<h2 data-lang="tr">Kısa özet</h2>
+<h2 data-lang="en">Quick reference</h2>
+<h2 data-lang="de">Kurzübersicht</h2>
+
+<div class="table-wrap" data-lang="tr"><table class="ref-table">
+<thead><tr><th>Yazım</th><th>Anlamı</th></tr></thead>
+<tbody>
+<tr><td><code>var x = new Node(5)</code></td><td>Yeni bir düğüm; <code>x</code> onu gösterir.</td></tr>
+<tr><td><code>x.next = y</code></td><td><code>x</code>'ten <code>y</code>'ye bağ kurar.</td></tr>
+<tr><td><code>x = new Node(0, x)</code></td><td><code>next</code>'i <code>x</code> olan yeni düğüm (başa ekleme).</td></tr>
+<tr><td><code>x.next = null</code></td><td>Bağı keser.</td></tr>
+<tr><td><code>p = p.next</code></td><td>Pointer'ı bir sonraki düğüme taşır.</td></tr>
+<tr><td><code>x.data = 7</code></td><td>Düğümün değerini değiştirir.</td></tr>
+<tr><td><code>delete p</code></td><td>Düğümü siler (<code>free p</code> da olur).</td></tr>
+<tr><td><code>var n = 3</code> <code>n++</code> <code>n += 2</code></td><td>Sayılar ve sayaçlar.</td></tr>
+<tr><td><code>print "toplam: " + sum</code></td><td>Çıktı alanına yazar.</td></tr>
+<tr><td><code>if(p != null) … else …</code></td><td>Koşul.</td></tr>
+<tr><td><code>while(p) { … }</code></td><td>Koşul doğru oldukça tekrarlar.</td></tr>
+<tr><td><code>for(var i = 0; i &lt; 5; i++) { … }</code></td><td>Sayaçlı döngü; <code>break</code>, <code>continue</code>.</td></tr>
+<tr><td><code>function f(a) { … return a }</code></td><td>Fonksiyon; özyineleme de olur.</td></tr>
+<tr><td><code>var t = new Array(5)</code> <code>t[2] = x</code> <code>t[2].data</code></td><td>Dizi: hücreleri <code>null</code> ile başlar.</td></tr>
+<tr><td><code>var g = new Array(3, 4)</code> <code>g[1][2] = 5</code> <code>g[1][2] + 1</code></td><td>Matris: 3 satır, 4 sütun; hücreler <code>g[satır][sütun]</code>.</td></tr>
+<tr><td><code>p.prev</code> <code>t.left</code> <code>t.right</code></td><td>Çift yönlü liste ve ağaç bağları.</td></tr>
+<tr><td><code>// yorum</code></td><td>Satırın gerisi yorumdur.</td></tr>
+</tbody></table></div>
+<div class="table-wrap" data-lang="en"><table class="ref-table">
+<thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>var x = new Node(5)</code></td><td>A new node; <code>x</code> points to it.</td></tr>
+<tr><td><code>x.next = y</code></td><td>Links <code>x</code> to <code>y</code>.</td></tr>
+<tr><td><code>x = new Node(0, x)</code></td><td>A new node whose <code>next</code> is <code>x</code> (insert at the head).</td></tr>
+<tr><td><code>x.next = null</code></td><td>Cuts the link.</td></tr>
+<tr><td><code>p = p.next</code></td><td>Moves the pointer to the next node.</td></tr>
+<tr><td><code>x.data = 7</code></td><td>Changes the node's value.</td></tr>
+<tr><td><code>delete p</code></td><td>Deletes the node (<code>free p</code> works too).</td></tr>
+<tr><td><code>var n = 3</code> <code>n++</code> <code>n += 2</code></td><td>Numbers and counters.</td></tr>
+<tr><td><code>print "toplam: " + sum</code></td><td>Writes to the Output area.</td></tr>
+<tr><td><code>if(p != null) … else …</code></td><td>A condition.</td></tr>
+<tr><td><code>while(p) { … }</code></td><td>Repeats while the condition is true.</td></tr>
+<tr><td><code>for(var i = 0; i &lt; 5; i++) { … }</code></td><td>A counting loop; <code>break</code>, <code>continue</code>.</td></tr>
+<tr><td><code>function f(a) { … return a }</code></td><td>A function; recursion works too.</td></tr>
+<tr><td><code>var t = new Array(5)</code> <code>t[2] = x</code> <code>t[2].data</code></td><td>An array: its cells start as <code>null</code>.</td></tr>
+<tr><td><code>var g = new Array(3, 4)</code> <code>g[1][2] = 5</code> <code>g[1][2] + 1</code></td><td>A matrix: 3 rows, 4 columns; cells are <code>g[row][column]</code>.</td></tr>
+<tr><td><code>p.prev</code> <code>t.left</code> <code>t.right</code></td><td>Doubly linked list and tree links.</td></tr>
+<tr><td><code>// comment</code></td><td>The rest of the line is a comment.</td></tr>
+</tbody></table></div>
+<div class="table-wrap" data-lang="de"><table class="ref-table">
+<thead><tr><th>Code</th><th>Bedeutung</th></tr></thead>
+<tbody>
+<tr><td><code>var x = new Node(5)</code></td><td>Ein neuer Knoten; <code>x</code> zeigt auf ihn.</td></tr>
+<tr><td><code>x.next = y</code></td><td>Verbindet <code>x</code> mit <code>y</code>.</td></tr>
+<tr><td><code>x = new Node(0, x)</code></td><td>Ein neuer Knoten, dessen <code>next</code> <code>x</code> ist (am Anfang einfügen).</td></tr>
+<tr><td><code>x.next = null</code></td><td>Trennt die Verbindung.</td></tr>
+<tr><td><code>p = p.next</code></td><td>Rückt den Zeiger zum nächsten Knoten.</td></tr>
+<tr><td><code>x.data = 7</code></td><td>Ändert den Wert des Knotens.</td></tr>
+<tr><td><code>delete p</code></td><td>Löscht den Knoten (<code>free p</code> geht auch).</td></tr>
+<tr><td><code>var n = 3</code> <code>n++</code> <code>n += 2</code></td><td>Zahlen und Zähler.</td></tr>
+<tr><td><code>print "toplam: " + sum</code></td><td>Schreibt in den Bereich Ausgabe.</td></tr>
+<tr><td><code>if(p != null) … else …</code></td><td>Eine Bedingung.</td></tr>
+<tr><td><code>while(p) { … }</code></td><td>Wiederholt, solange die Bedingung wahr ist.</td></tr>
+<tr><td><code>for(var i = 0; i &lt; 5; i++) { … }</code></td><td>Zählschleife; <code>break</code>, <code>continue</code>.</td></tr>
+<tr><td><code>function f(a) { … return a }</code></td><td>Eine Funktion; Rekursion geht auch.</td></tr>
+<tr><td><code>var t = new Array(5)</code> <code>t[2] = x</code> <code>t[2].data</code></td><td>Ein Array: seine Zellen sind anfangs <code>null</code>.</td></tr>
+<tr><td><code>var g = new Array(3, 4)</code> <code>g[1][2] = 5</code> <code>g[1][2] + 1</code></td><td>Eine Matrix: 3 Zeilen, 4 Spalten; die Zellen sind <code>g[Zeile][Spalte]</code>.</td></tr>
+<tr><td><code>p.prev</code> <code>t.left</code> <code>t.right</code></td><td>Verbindungen in doppelt verketteten Listen und Bäumen.</td></tr>
+<tr><td><code>// Kommentar</code></td><td>Der Rest der Zeile ist ein Kommentar.</td></tr>
+</tbody></table></div>
+
+<h2 data-lang="tr">Değişkenler ve sayılar</h2>
+<h2 data-lang="en">Variables and numbers</h2>
+<h2 data-lang="de">Variablen und Zahlen</h2>
+
+<p data-lang="tr">Değişkenler <code>var</code> ile tanımlanır (virgülle birkaç tane birden: <code>var a = 1, b = 2</code>); sonra <code>var</code> olmadan yeni değer alabilir. Sayılarla <code>+ - * / %</code> işlemleri yapılır, <code>n++</code>, <code>n--</code>, <code>n += 2</code> de olur. Doğru/yanlış değerleri <code>true</code> / <code>false</code> (ya da <code>doğru</code> / <code>yanlış</code>) ile yazılır. Metin (string) yalnızca <code>print</code> içinde kullanılır; parçalar <code>+</code> ile birleştirilir. Matematik için <code>taban</code> (aşağı yuvarlama), <code>tavan</code> (yukarı yuvarlama), <code>karekök</code> ve <code>mutlak</code> fonksiyonları vardır. Değişkenler panelinde her değişkenin değeri görünür.</p>
+<p data-lang="en">Variables are declared with <code>var</code> (several at once with commas: <code>var a = 1, b = 2</code>); afterwards they take new values without <code>var</code>. Numbers support <code>+ - * / %</code>, and <code>n++</code>, <code>n--</code>, <code>n += 2</code>. True/false values are written <code>true</code> / <code>false</code> (or <code>doğru</code> / <code>yanlış</code>). Text (strings) is used only in <code>print</code>; the parts are joined with <code>+</code>. For math there are <code>taban</code> (round down), <code>tavan</code> (round up), <code>karekök</code> (square root) and <code>mutlak</code> (absolute value). The Variables panel shows the value of every variable.</p>
+<p data-lang="de">Variablen werden mit <code>var</code> deklariert (mehrere auf einmal mit Kommas: <code>var a = 1, b = 2</code>); danach bekommen sie ohne <code>var</code> neue Werte. Zahlen kennen <code>+ - * / %</code> sowie <code>n++</code>, <code>n--</code>, <code>n += 2</code>. Wahrheitswerte schreibt man <code>true</code> / <code>false</code> (oder <code>doğru</code> / <code>yanlış</code>). Text (Strings) gibt es nur in <code>print</code>; die Teile werden mit <code>+</code> verbunden. Für Mathematik gibt es <code>taban</code> (abrunden), <code>tavan</code> (aufrunden), <code>karekök</code> (Quadratwurzel) und <code>mutlak</code> (Betrag). Das Feld Variablen zeigt den Wert jeder Variable.</p>
+
+<textarea id="text1" class="deneme">
+var a = 7
+var b = a * 2 + 1
+b += 3
+a++
+var c = b % 5
+var d = taban(b / 4)
+var ok = true
+print "a = " + a + ", b = " + b + ", d = " + d
+</textarea>
+
+<h2 data-lang="tr">Düğümler ve bağlar</h2>
+<h2 data-lang="en">Nodes and links</h2>
+<h2 data-lang="de">Knoten und Verbindungen</h2>
+
+<p data-lang="tr"><code>new Node(değer)</code> yeni bir düğüm oluşturur (<code>new</code> yazılmasa da olur); değer bir ifade de olabilir. İkinci bir değer verilirse yeni düğümün <code>next</code>'i olur: <code>head = new Node(0, head)</code> başa ekler, <code>new Node(1, new Node(2, new Node(3)))</code> üç düğümlü bir listeyi tek satırda kurar. Her düğümün <code>data</code> (değer) ve <code>next</code> (sonraki düğüm) alanları vardır; <code>next</code> başta <code>null</code>'dır. Bir değişken düğümün kendisini değil, onu gösteren bir <em>pointer</em>'ı tutar: <code>p = x</code> yeni bir düğüm oluşturmaz, iki değişken aynı düğümü gösterir. Alanlar zincirlenebilir: <code>x.next.next.data</code>. <code>delete</code> bir düğümü siler; ona hâlâ ulaşan bir bağ ya da pointer kalmamasına dikkat etmek programcının işidir. Artık hiçbir yerden ulaşılamayan düğümler soluk çizilir ve uyarı verilir.</p>
+<p data-lang="en"><code>new Node(value)</code> makes a new node (<code>new</code> may be left out); the value can be an expression. A second value becomes the new node's <code>next</code>: <code>head = new Node(0, head)</code> inserts at the head, and <code>new Node(1, new Node(2, new Node(3)))</code> builds a list of three nodes in one line. Every node has the fields <code>data</code> (its value) and <code>next</code> (the next node); <code>next</code> starts as <code>null</code>. A variable does not hold the node itself but a <em>pointer</em> to it: <code>p = x</code> makes no new node, the two variables point to the same node. Fields can be chained: <code>x.next.next.data</code>. <code>delete</code> deletes a node; making sure that no link or pointer still leads to it is the programmer's job. Nodes that nothing reaches any more are drawn faded, with a warning.</p>
+<p data-lang="de"><code>new Node(Wert)</code> erzeugt einen neuen Knoten (<code>new</code> darf fehlen); der Wert kann ein Ausdruck sein. Ein zweiter Wert wird das <code>next</code> des neuen Knotens: <code>head = new Node(0, head)</code> fügt am Anfang ein, und <code>new Node(1, new Node(2, new Node(3)))</code> baut eine Liste aus drei Knoten in einer Zeile. Jeder Knoten hat die Felder <code>data</code> (sein Wert) und <code>next</code> (der nächste Knoten); <code>next</code> ist anfangs <code>null</code>. Eine Variable enthält nicht den Knoten selbst, sondern einen <em>Zeiger</em> auf ihn: <code>p = x</code> erzeugt keinen neuen Knoten, beide Variablen zeigen auf denselben Knoten. Felder lassen sich verketten: <code>x.next.next.data</code>. <code>delete</code> löscht einen Knoten; dafür zu sorgen, dass keine Verbindung und kein Zeiger mehr zu ihm führt, ist Aufgabe des Programmierers. Knoten, die nichts mehr erreicht, werden blass gezeichnet, mit einer Warnung.</p>
+
+<textarea id="text2" class="deneme">
+var x = new Node(1)
+x.next = new Node(2)
+x.next.next = new Node(a)   // değer: bir ifade
+var p = x
+p = p.next                  // p bir sonraki düğüme geçer
+p.data = 20                 // x.next.data da 20 olur
+var v = x.next.next.data
+var q = new Node(9)
+delete q
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="en">
+var x = new Node(1)
+x.next = new Node(2)
+x.next.next = new Node(a)   // value: an expression
+var p = x
+p = p.next                  // p moves to the next node
+p.data = 20                 // so x.next.data is 20 too
+var v = x.next.next.data
+var q = new Node(9)
+delete q
+</script>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="de">
+var x = new Node(1)
+x.next = new Node(2)
+x.next.next = new Node(a)   // Wert: ein Ausdruck
+var p = x
+p = p.next                  // p rückt zum nächsten Knoten
+p.data = 20                 // also ist auch x.next.data 20
+var v = x.next.next.data
+var q = new Node(9)
+delete q
+</script>
+
+<h2 data-lang="tr">Koşullar ve döngüler</h2>
+<h2 data-lang="en">Conditions and loops</h2>
+<h2 data-lang="de">Bedingungen und Schleifen</h2>
+
+<p data-lang="tr"><code>if</code> / <code>else</code>, <code>while</code> ve <code>for</code> JavaScript'teki gibidir; gövde tek satırsa süslü parantez gerekmez. Karşılaştırmalar <code>== != &lt; &lt;= &gt; &gt;=</code>, birleştirmeler <code>&amp;&amp;</code>, <code>||</code>, <code>!</code> (ya da <code>and</code>, <code>or</code>, <code>not</code>) ile yazılır. Bir pointer tek başına da koşul olabilir: <code>while(p)</code>, <code>p != null</code> demektir. Her koşulun doğru mu yanlış mı çıktığı editörde yeşil ya da kırmızıyla işaretlenir. Sonsuz döngüye karşı bir döngü en fazla 1000 tur döner.</p>
+<p data-lang="en"><code>if</code> / <code>else</code>, <code>while</code> and <code>for</code> work as in JavaScript; a one-line body needs no braces. Comparisons are written <code>== != &lt; &lt;= &gt; &gt;=</code>, combinations <code>&amp;&amp;</code>, <code>||</code>, <code>!</code> (or <code>and</code>, <code>or</code>, <code>not</code>). A pointer on its own can be a condition: <code>while(p)</code> means <code>p != null</code>. Whether each condition is true or false is marked green or red in the editor. To stop endless loops, a loop runs at most 1000 rounds.</p>
+<p data-lang="de"><code>if</code> / <code>else</code>, <code>while</code> und <code>for</code> funktionieren wie in JavaScript; ein einzeiliger Rumpf braucht keine geschweiften Klammern. Vergleiche schreibt man <code>== != &lt; &lt;= &gt; &gt;=</code>, Verknüpfungen <code>&amp;&amp;</code>, <code>||</code>, <code>!</code> (oder <code>and</code>, <code>or</code>, <code>not</code>). Ein Zeiger allein kann eine Bedingung sein: <code>while(p)</code> bedeutet <code>p != null</code>. Ob eine Bedingung wahr oder falsch ist, wird im Editor grün oder rot markiert. Gegen Endlosschleifen läuft eine Schleife höchstens 1000 Runden.</p>
+
+<textarea id="text3" class="deneme">
+var sum = 0
+var p = x
+while(p)                    // p != null ile aynı
+{
+  sum += p.data
+  p = p.next
+}
+for(var i = 0; i &lt; 10; i++)
+{
+  if(i == 3)
+    continue                // 3'ü atla
+  if(i &gt; 4)
+    break                   // döngüden çık
+  print i
+}
+if(sum &gt; 20 &amp;&amp; x.next)
+  print "büyük"
+else
+  print "küçük"
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text3" data-lang="en">
+var sum = 0
+var p = x
+while(p)                    // the same as p != null
+{
+  sum += p.data
+  p = p.next
+}
+for(var i = 0; i < 10; i++)
+{
+  if(i == 3)
+    continue                // skip 3
+  if(i > 4)
+    break                   // leave the loop
+  print i
+}
+if(sum > 20 && x.next)
+  print "big"
+else
+  print "small"
+</script>
+<script type="text/plain" class="code-variant" data-for="text3" data-lang="de">
+var sum = 0
+var p = x
+while(p)                    // dasselbe wie p != null
+{
+  sum += p.data
+  p = p.next
+}
+for(var i = 0; i < 10; i++)
+{
+  if(i == 3)
+    continue                // 3 überspringen
+  if(i > 4)
+    break                   // die Schleife verlassen
+  print i
+}
+if(sum > 20 && x.next)
+  print "groß"
+else
+  print "klein"
+</script>
+
+<h2 data-lang="tr">Fonksiyonlar</h2>
+<h2 data-lang="en">Functions</h2>
+<h2 data-lang="de">Funktionen</h2>
+
+<p data-lang="tr"><code>function</code> ile tanımlanan fonksiyonlar parametre alır ve <code>return</code> ile değer döndürür; tanımından önce de çağrılabilir. Fonksiyonun kendi yerel değişkenleri vardır ve global değişkenleri görür. Her çağrı Çağrı yığını panelinde yerel değişkenleriyle görünür; özyinelemede derin çağrıların pointer'ları <code>p₂</code>, <code>p₃</code> diye adlandırılır. Sonsuz özyinelemeye karşı en fazla 200 çağrı iç içe girebilir. Çağrı bir ifadenin içinde de olur: <code>1 + count(p.next)</code>, <code>t.left = insert(t.left, v)</code>.</p>
+<p data-lang="en">Functions are defined with <code>function</code>, take parameters and give back a value with <code>return</code>; they can be called before the line that defines them. A function has its own local variables and sees the global ones. Every call appears in the Call stack panel with its locals; in a recursion the pointers of deeper calls are named <code>p₂</code>, <code>p₃</code>. To stop endless recursion, at most 200 calls can be nested. A call can be part of an expression: <code>1 + count(p.next)</code>, <code>t.left = insert(t.left, v)</code>.</p>
+<p data-lang="de">Funktionen werden mit <code>function</code> definiert, nehmen Parameter und geben mit <code>return</code> einen Wert zurück; man kann sie schon vor der Zeile aufrufen, die sie definiert. Eine Funktion hat eigene lokale Variablen und sieht die globalen. Jeder Aufruf erscheint im Aufrufstapel mit seinen lokalen Variablen; bei einer Rekursion heißen die Zeiger tieferer Aufrufe <code>p₂</code>, <code>p₃</code>. Gegen endlose Rekursion können höchstens 200 Aufrufe verschachtelt sein. Ein Aufruf kann Teil eines Ausdrucks sein: <code>1 + count(p.next)</code>, <code>t.left = insert(t.left, v)</code>.</p>
+
+<textarea id="text4" class="deneme">
+function count(p)
+{
+  if(p == null)
+    return 0                // boş liste
+  return 1 + count(p.next)  // bu düğüm + geri kalanı
+}
+var n = count(x)
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text4" data-lang="en">
+function count(p)
+{
+  if(p == null)
+    return 0                // an empty list
+  return 1 + count(p.next)  // this node + the rest
+}
+var n = count(x)
+</script>
+<script type="text/plain" class="code-variant" data-for="text4" data-lang="de">
+function count(p)
+{
+  if(p == null)
+    return 0                // eine leere Liste
+  return 1 + count(p.next)  // dieser Knoten + der Rest
+}
+var n = count(x)
+</script>
+
+<h2 data-lang="tr">Türkçe anahtar kelimeler</h2>
+<h2 data-lang="en">Turkish keywords</h2>
+<h2 data-lang="de">Türkische Schlüsselwörter</h2>
+
+<p data-lang="tr">Programlamaya ana dilinde başlamak isteyenler için Düğüm'ün Türkçe bir yazımı da var. Ayarlarda kod dili olarak <strong>Düğüm (Türkçe)</strong> seçilirse bütün örnekler Türkçe kelimelerle gösterilir ve öyle çalışır: <code>değişken</code> (var), <code>eğer</code> (if), <code>değilse</code> (else), <code>yinele</code> (while), <code>için</code> (for), <code>fonksiyon</code> (function), <code>döndür</code> (return), <code>kır</code> (break), <code>devam</code> (continue), <code>yaz</code> (print), <code>boş</code> (null), <code>doğru</code> / <code>yanlış</code> (true / false), <code>yeni Düğüm(…)</code> (new Node), <code>yeni Dizi(n)</code> (new Array), <code>sil</code> (delete), <code>ve</code> / <code>veya</code> / <code>değil</code> (and / or / not); alanlar da <code>.veri</code>, <code>.sonraki</code>, <code>.önceki</code>, <code>.sol</code>, <code>.sağ</code>, <code>.yükseklik</code>. Anlatım ve değişkenler paneli de aynı kelimeleri kullanır. <code>eğer</code>, <code>değilse</code>, <code>yinele</code>, <code>fonksiyon</code>, <code>döndür</code>, <code>değil</code>, <code>doğru</code> ve <code>yanlış</code> ise her zaman tanınır; aşağıdaki gibi iki yazım bir programda karışık da kullanılabilir. Değişken adlarında Türkçe harfler kullanılabilir.</p>
+<p data-lang="en">For those who want to start programming in their mother tongue, Düğüm also has a Turkish spelling. When <strong>Düğüm (Türkçe)</strong> is chosen as the code language in the settings, all examples are shown and run with Turkish words: <code>değişken</code> (var), <code>eğer</code> (if), <code>değilse</code> (else), <code>yinele</code> (while), <code>için</code> (for), <code>fonksiyon</code> (function), <code>döndür</code> (return), <code>kır</code> (break), <code>devam</code> (continue), <code>yaz</code> (print), <code>boş</code> (null), <code>doğru</code> / <code>yanlış</code> (true / false), <code>yeni Düğüm(…)</code> (new Node), <code>yeni Dizi(n)</code> (new Array), <code>sil</code> (delete), <code>ve</code> / <code>veya</code> / <code>değil</code> (and / or / not); and the fields <code>.veri</code>, <code>.sonraki</code>, <code>.önceki</code>, <code>.sol</code>, <code>.sağ</code>, <code>.yükseklik</code>. The narration and the variables panel use the same words. <code>eğer</code>, <code>değilse</code>, <code>yinele</code>, <code>fonksiyon</code>, <code>döndür</code>, <code>değil</code>, <code>doğru</code> and <code>yanlış</code> are always understood; as below, both spellings can even be mixed in one program. Variable names may contain Turkish letters.</p>
+<p data-lang="de">Für alle, die in ihrer Muttersprache mit dem Programmieren beginnen wollen, gibt es Düğüm auch in türkischer Schreibweise. Wird in den Einstellungen <strong>Düğüm (Türkçe)</strong> als Code-Sprache gewählt, werden alle Beispiele mit türkischen Wörtern gezeigt und ausgeführt: <code>değişken</code> (var), <code>eğer</code> (if), <code>değilse</code> (else), <code>yinele</code> (while), <code>için</code> (for), <code>fonksiyon</code> (function), <code>döndür</code> (return), <code>kır</code> (break), <code>devam</code> (continue), <code>yaz</code> (print), <code>boş</code> (null), <code>doğru</code> / <code>yanlış</code> (true / false), <code>yeni Düğüm(…)</code> (new Node), <code>yeni Dizi(n)</code> (new Array), <code>sil</code> (delete), <code>ve</code> / <code>veya</code> / <code>değil</code> (and / or / not); und die Felder <code>.veri</code>, <code>.sonraki</code>, <code>.önceki</code>, <code>.sol</code>, <code>.sağ</code>, <code>.yükseklik</code>. Erzählung und Variablenbereich benutzen dieselben Wörter. <code>eğer</code>, <code>değilse</code>, <code>yinele</code>, <code>fonksiyon</code>, <code>döndür</code>, <code>değil</code>, <code>doğru</code> und <code>yanlış</code> werden immer verstanden; wie unten lassen sich beide Schreibweisen sogar in einem Programm mischen. Variablennamen dürfen türkische Buchstaben enthalten.</p>
+
+<textarea id="text5" class="deneme">
+fonksiyon say(p)
+{
+  var k = 0
+  yinele(p != null)
+  {
+    k++
+    p = p.next
+  }
+  döndür k
+}
+var m = say(x)
+eğer(değil (m == 3))
+  print "olmadı"
+değilse
+  print "üç düğüm"
+var r = karekök(16) + mutlak(-2) + tavan(2.5)
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text5" data-lang="en">
+fonksiyon say(p)
+{
+  var k = 0
+  yinele(p != null)
+  {
+    k++
+    p = p.next
+  }
+  döndür k
+}
+var m = say(x)
+eğer(değil (m == 3))
+  print "not three"
+değilse
+  print "three nodes"
+var r = karekök(16) + mutlak(-2) + tavan(2.5)
+</script>
+<script type="text/plain" class="code-variant" data-for="text5" data-lang="de">
+fonksiyon say(p)
+{
+  var k = 0
+  yinele(p != null)
+  {
+    k++
+    p = p.next
+  }
+  döndür k
+}
+var m = say(x)
+eğer(değil (m == 3))
+  print "nicht drei"
+değilse
+  print "drei Knoten"
+var r = karekök(16) + mutlak(-2) + tavan(2.5)
+</script>
+
+<h2 data-lang="tr">Diziler</h2>
+<h2 data-lang="en">Arrays</h2>
+<h2 data-lang="de">Arrays</h2>
+
+<p data-lang="tr"><code>new Array(n)</code> (ya da <code>new Dizi(n)</code>) <em>n</em> hücreli bir dizi oluşturur; hücrelerin hepsi başta <code>null</code>'dır. <code>t[i]</code> i numaralı hücredir (0'dan başlar); bir düğüm, bir sayı ya da <code>null</code> tutabilir. Hücre okumak her ifadede olur: <code>var p = t[k]</code>, <code>n.next = t[k]</code>, <code>t[k].data</code>. Hücreye yazmak <code>t[i] = …</code> ile yapılır. Dizinin nasıl çizileceğini içine konan ilk değer belirler. Sayı tutan dizi tuvalin üstünde yatay hücreler olarak çizilir; <code>s[size] = v</code> gibi bir yazımda indis olarak kullanılan değişken hücrelerin altında bir okla gösterilir (dizi ile yığın ve kuyruk sayfasına bakın). Kod bir heap'in indis formüllerini kullanırsa (<code>2 * i + 1</code>, <code>taban((i - 1) / 2)</code>), sayı dizisi satırın altında temsil ettiği ağaç olarak da çizilir: 0. hücre kök, <code>i</code>. hücrenin çocukları <code>2i+1</code> ve <code>2i+2</code> (heap sayfasına bakın). Adı <code>adj</code> (ya da <code>graph</code>, <code>graf</code>, <code>komşu</code>) olan ve listelerinde yalnızca köşe numaraları (0 … <em>n</em>-1) bulunan bir düğüm dizisi, listelerinin sağında temsil ettiği graf olarak da çizilir; aynı boyda <code>visited</code> adlı bir dizide dolu olan köşeler renklenir (graflar sayfasına bakın). Kenar düğümüne <code>e.weight = w</code> ile ağırlık yazılırsa ağırlık kenarın ortasında görünür; aynı boyda <code>dist</code> dizisinin değerleri köşelerin içinde yazar (<code>INF</code> adlı değişkenin değeri ∞ olarak), <code>parent</code> dizisinin oluşturduğu en kısa yol ağacı kalın çizilir (Dijkstra sayfasına bakın). Sıralanacak ya da aranacak veriyi tutan bir sayı dizisi (adı <code>a</code>, <code>arr</code>, <code>dizi</code>, <code>nums</code>…) hücrelerin üstünde çubuk olarak da çizilir: çubuğun boyu değerdir. Bir adımın okuduğu (karşılaştırdığı) hücreler mavi, yazdığı hücre turuncu çerçevelenir; <code>a[mid]</code> gibi indis olarak kullanılan değişkenler (ve <code>low</code>, <code>high</code>, <code>size</code> gibi sınır değişkenleri) hücrelerin altında işaretlenir. Oynatıcının yanındaki sayaç, o bloğun yaptığı <em>karşılaştırma</em> (dizi hücresine bakan koşul) ve <em>yazma</em> (hücreye atama) sayısını gösterir (dizide arama ve sıralama sayfalarına bakın). Graf görünümünde aynı boyda <code>comp</code> (ya da <code>renk</code>) dizisinin sayıları köşeleri renklendirir (aynı sayı, aynı renk); <code>indeg</code> ve <code>key</code> dizileri Dijkstra'daki <code>dist</code> gibi köşenin içinde yazar; bir kenar düğümünün <code>chosen</code> alanı (Türkçe kodda <code>.seçili</code>) <code>true</code> yapılınca kenar kalın mavi çizilir (graf sayfalarına bakın). Adı <code>leader</code> (ya da <code>lider</code>, <code>uf</code>) olan ve her hücresi bir ebeveyn numarası taşıyan bir dizi, altta temsil ettiği orman olarak da çizilir (birleşik küme sayfasına bakın). Düğüm tutan dizi ise solda dikey hücreler olarak çizilir ve her hücreden başlayan zincir o hücrenin satırına yerleşir: zincirlemeli hash tablosunun görüntüsü (hash tablosu sayfasına bakın). Bir dizi en fazla 50 hücreli olabilir; dizinin dışındaki bir indise yazmak açıklamalı bir hata verir.</p>
+<p data-lang="tr"><code>new Array(r, c)</code> (ya da <code>new Dizi(r, c)</code>) <em>r</em> satır, <em>c</em> sütunluk bir <em>matris</em> (2B dizi) kurar; en fazla 12 × 12. <code>g[i][j]</code> i. satırın j. sütunundaki hücredir; okuma her ifadede, yazma <code>g[i][j] = …</code> ile yapılır. Matris tuvalde satır ve sütun numaralı bir ızgara olarak çizilir: okunan hücreler çerçevelenir, yazılan hücre turuncu yanar, eski değer üstü çizili görünür; <code>g[i][j]</code> içinde indis olarak kullanılan değişkenler satırın yanında ve sütunun altında işaretlenir (matris ve dinamik programlama sayfalarına bakın). Satır ya da sütun indisi sınırın dışındaysa (okurken de, yazarken de) açıklamalı bir hata verir. Düzensiz matris (<code>g[i] = new Array(5)</code>) ve üç boyutlu dizi yoktur. C++ gösteriminde <code>int g[3][4]</code>, Java'da <code>int[][] g = new int[3][4]</code> olur.</p>
+<p data-lang="en"><code>new Array(n)</code> (or <code>new Dizi(n)</code>) makes an array of <em>n</em> cells; all cells start as <code>null</code>. <code>t[i]</code> is cell number i (counting from 0); it can hold a node, a number or <code>null</code>. Reading a cell works in any expression: <code>var p = t[k]</code>, <code>n.next = t[k]</code>, <code>t[k].data</code>. A cell is written with <code>t[i] = …</code>. The first value put into an array decides how it is drawn. An array of numbers is a row of cells over the drawing; the variable used as the index in a line like <code>s[size] = v</code> is marked with an arrow under the cells (see the page on stacks and queues with an array). If the code uses the index formulas of a heap (<code>2 * i + 1</code>, <code>taban((i - 1) / 2)</code>), an array of numbers is also drawn under its row as the tree it stands for: cell 0 is the root, the children of cell <code>i</code> are <code>2i+1</code> and <code>2i+2</code> (see the heap page). An array of nodes named <code>adj</code> (or <code>graph</code>, <code>graf</code>, <code>komşu</code>) whose lists hold only vertex numbers (0 … <em>n</em>-1) is also drawn, right of its lists, as the graph it stands for; vertices filled in an array of the same size named <code>visited</code> are coloured (see the graphs page). If an edge's node gets a weight with <code>e.weight = w</code>, the weight shows in the middle of the edge; the values of an array of the same size named <code>dist</code> stand inside the vertices (the value of a variable named <code>INF</code> as ∞), and the tree of shortest paths that an array named <code>parent</code> forms is drawn thick (see the Dijkstra page). An array of numbers that holds data to search or sort (named <code>a</code>, <code>arr</code>, <code>dizi</code>, <code>nums</code>…) is also drawn as bars over its cells: the height of a bar is the value. The cells a step read (compared) get a blue frame, the cell it wrote an orange one; variables used as an index such as in <code>a[mid]</code> (and bound variables such as <code>low</code>, <code>high</code>, <code>size</code>) are marked under the cells. The counter next to the player shows the number of <em>comparisons</em> (conditions that look at an array cell) and <em>writes</em> (assignments to a cell) of that block (see the pages on searching and sorting arrays). In the graph view the numbers of an array of the same size named <code>comp</code> (or <code>renk</code>) colour the vertices (the same number, the same colour); the arrays <code>indeg</code> and <code>key</code> are written inside the vertices like <code>dist</code> in Dijkstra; when the <code>chosen</code> field of an edge's node (<code>.seçili</code> in Turkish code) is set to <code>true</code>, the edge is drawn thick and blue (see the graph pages). An array named <code>leader</code> (or <code>lider</code>, <code>uf</code>) whose cells hold parent numbers is also drawn as the forest it stands for (see the disjoint sets page). An array of nodes is a column of cells on the left, and the chain starting at each cell is placed on that cell's row: the picture of a hash table with chaining (see the hash table page). An array can have at most 50 cells; writing to an index outside the array gives an explained error.</p>
+<p data-lang="en"><code>new Array(r, c)</code> (or <code>new Dizi(r, c)</code>) builds a <em>matrix</em> (2D array) of <em>r</em> rows and <em>c</em> columns, at most 12 × 12. <code>g[i][j]</code> is the cell in row i, column j; reading works in any expression, writing is done with <code>g[i][j] = …</code>. A matrix is drawn as a grid with row and column numbers: the cells that are read get a frame, the cell that is written lights up in orange and the old value is shown struck through; variables used as an index inside <code>g[i][j]</code> are marked beside the row and under the column (see the pages on matrices and dynamic programming). A row or column index outside the matrix gives an explained error, both when reading and when writing. There is no jagged matrix (<code>g[i] = new Array(5)</code>) and no three-dimensional array. In C++ it is shown as <code>int g[3][4]</code>, in Java as <code>int[][] g = new int[3][4]</code>.</p>
+<p data-lang="de"><code>new Array(n)</code> (oder <code>new Dizi(n)</code>) erzeugt ein Array mit <em>n</em> Zellen; alle Zellen sind anfangs <code>null</code>. <code>t[i]</code> ist die Zelle Nummer i (ab 0 gezählt); sie kann einen Knoten, eine Zahl oder <code>null</code> enthalten. Eine Zelle lesen geht in jedem Ausdruck: <code>var p = t[k]</code>, <code>n.next = t[k]</code>, <code>t[k].data</code>. Geschrieben wird eine Zelle mit <code>t[i] = …</code>. Der erste Wert, der in ein Array kommt, bestimmt, wie es gezeichnet wird. Ein Array aus Zahlen ist eine Reihe von Zellen über der Zeichnung; die Variable, die in einer Zeile wie <code>s[size] = v</code> als Index dient, wird unter den Zellen mit einem Pfeil markiert (siehe die Seite zu Stapel und Warteschlange mit einem Array). Benutzt der Code die Indexformeln eines Heaps (<code>2 * i + 1</code>, <code>taban((i - 1) / 2)</code>), wird ein Array von Zahlen unter seiner Zeile auch als der Baum gezeichnet, für den es steht: Zelle 0 ist die Wurzel, die Kinder von Zelle <code>i</code> sind <code>2i+1</code> und <code>2i+2</code> (siehe die Heap-Seite). Ein Array von Knoten namens <code>adj</code> (oder <code>graph</code>, <code>graf</code>, <code>komşu</code>), dessen Listen nur Knotennummern (0 … <em>n</em>-1) enthalten, wird rechts seiner Listen auch als der Graph gezeichnet, für den es steht; Knoten, die in einem gleich großen Array namens <code>visited</code> gefüllt sind, werden eingefärbt (siehe die Seite zu Graphen). Bekommt der Knoten einer Kante mit <code>e.weight = w</code> ein Gewicht, erscheint es in der Mitte der Kante; die Werte eines gleich großen Arrays namens <code>dist</code> stehen innen an den Knoten (der Wert einer Variable namens <code>INF</code> als ∞), und der Baum der kürzesten Wege, den ein Array namens <code>parent</code> bildet, wird dick gezeichnet (siehe die Dijkstra-Seite). Ein Array von Zahlen, das Daten zum Suchen oder Sortieren hält (Name <code>a</code>, <code>arr</code>, <code>dizi</code>, <code>nums</code>…), wird über seinen Zellen auch als Balken gezeichnet: die Höhe eines Balkens ist der Wert. Die Zellen, die ein Schritt gelesen (verglichen) hat, bekommen einen blauen Rahmen, die geschriebene Zelle einen orangen; als Index benutzte Variablen wie in <code>a[mid]</code> (und Grenzvariablen wie <code>low</code>, <code>high</code>, <code>size</code>) werden unter den Zellen markiert. Der Zähler neben dem Player zeigt die Zahl der <em>Vergleiche</em> (Bedingungen, die eine Array-Zelle ansehen) und <em>Schreibvorgänge</em> (Zuweisungen an eine Zelle) dieses Blocks (siehe die Seiten zum Suchen und Sortieren in Arrays). In der Graphansicht färben die Zahlen eines gleich großen Arrays namens <code>comp</code> (oder <code>renk</code>) die Knoten (dieselbe Zahl, dieselbe Farbe); die Arrays <code>indeg</code> und <code>key</code> stehen wie <code>dist</code> bei Dijkstra in den Knoten; wird das Feld <code>chosen</code> des Knotens einer Kante (<code>.seçili</code> im türkischen Code) auf <code>true</code> gesetzt, wird die Kante dick und blau gezeichnet (siehe die Graphseiten). Ein Array namens <code>leader</code> (oder <code>lider</code>, <code>uf</code>), dessen Zellen Elternnummern enthalten, wird auch als der Wald gezeichnet, für den es steht (siehe die Seite zu disjunkten Mengen). Ein Array aus Knoten ist eine Spalte von Zellen links, und die Kette ab jeder Zelle steht in der Zeile dieser Zelle: das Bild einer Hashtabelle mit Verkettung (siehe die Seite zur Hashtabelle). Ein Array kann höchstens 50 Zellen haben; das Schreiben an einen Index außerhalb des Arrays gibt einen erklärten Fehler.</p>
+<p data-lang="de"><code>new Array(r, c)</code> (oder <code>new Dizi(r, c)</code>) erzeugt eine <em>Matrix</em> (2D-Array) mit <em>r</em> Zeilen und <em>c</em> Spalten, höchstens 12 × 12. <code>g[i][j]</code> ist die Zelle in Zeile i, Spalte j; gelesen wird in jedem Ausdruck, geschrieben mit <code>g[i][j] = …</code>. Eine Matrix wird als Gitter mit Zeilen- und Spaltennummern gezeichnet: gelesene Zellen bekommen einen Rahmen, die geschriebene Zelle leuchtet orange und der alte Wert steht durchgestrichen daneben; als Index in <code>g[i][j]</code> benutzte Variablen werden neben der Zeile und unter der Spalte markiert (siehe die Seiten zu Matrizen und dynamischer Programmierung). Ein Zeilen- oder Spaltenindex außerhalb der Matrix gibt einen erklärten Fehler, beim Lesen wie beim Schreiben. Eine unregelmäßige Matrix (<code>g[i] = new Array(5)</code>) und dreidimensionale Arrays gibt es nicht. In C++ wird sie als <code>int g[3][4]</code> gezeigt, in Java als <code>int[][] g = new int[3][4]</code>.</p>
+
+<textarea id="text6" class="deneme">
+var t = new Array(3)
+t[0] = x                    // x listesinin başı
+t[2] = new Node(7)
+var first = t[0].data
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text6" data-lang="en">
+var t = new Array(3)
+t[0] = x                    // the head of the list x
+t[2] = new Node(7)
+var first = t[0].data
+</script>
+<script type="text/plain" class="code-variant" data-for="text6" data-lang="de">
+var t = new Array(3)
+t[0] = x                    // der Kopf der Liste x
+t[2] = new Node(7)
+var first = t[0].data
+</script>
+
+<h2 data-lang="tr">Çift yönlü listeler ve ağaçlar</h2>
+<h2 data-lang="en">Doubly linked lists and trees</h2>
+<h2 data-lang="de">Doppelt verkettete Listen und Bäume</h2>
+
+<p data-lang="tr">Düğümlerin <code>next</code>'ten başka üç bağ alanı daha vardır. Kodda <code>.prev</code> geçince düğümler çift yönlü liste düğümü olarak çizilir: [prev | değer | next]. <code>.left</code> ya da <code>.right</code> geçince ağaç düğümü olarak çizilir: [left | değer | right]; düğümler derinliklerine göre satırlara yerleşir. Örnekler menüsündeki çift yönlü liste ve ağaç sayfalarına bakın.</p>
+<p data-lang="en">Besides <code>next</code>, nodes have three more link fields. When the code uses <code>.prev</code>, nodes are drawn as doubly linked list nodes: [prev | value | next]. When it uses <code>.left</code> or <code>.right</code>, they are drawn as tree nodes: [left | value | right], and nodes are placed in rows by their depth. See the doubly linked list and tree pages in the Examples menu.</p>
+<p data-lang="de">Neben <code>next</code> haben Knoten drei weitere Verbindungsfelder. Verwendet der Code <code>.prev</code>, werden Knoten als Knoten einer doppelt verketteten Liste gezeichnet: [prev | Wert | next]. Verwendet er <code>.left</code> oder <code>.right</code>, werden sie als Baumknoten gezeichnet: [left | Wert | right], und die Knoten stehen nach ihrer Tiefe in Zeilen. Siehe die Seiten zu doppelt verketteten Listen und Bäumen im Menü Beispiele.</p>
+
+<h2 data-lang="tr">Komut satırı ve hatalar</h2>
+<h2 data-lang="en">The command line and errors</h2>
+<h2 data-lang="de">Befehlszeile und Fehler</h2>
+
+<p data-lang="tr">Görselleştirmenin altındaki Komut satırı sekmesine tek satırlık kod yazılır ve Enter ile çalışır: <code>x.next.data</code> yazınca değeri, <code>x</code> yazınca listenin kendisi görünür (bir ağaç <code>{data, left, right}</code> olarak). Bir hata olunca hangi satırda ne olduğu açıklanır ve satır editörde kırmızıyla işaretlenir: örneğin <code>null</code> bir pointer'ın alanına erişmek, tanımlanmamış bir değişken, kapanmamış bir parantez. Bazı adlar tarayıcıda ayrılmıştır (ör. <code>top</code>, <code>name</code>); onların yerine başka bir ad seçmek gerekir.</p>
+<p data-lang="en">In the Command line tab under the visualization you type a single line and run it with Enter: typing <code>x.next.data</code> shows its value, typing <code>x</code> shows the list itself (a tree as <code>{data, left, right}</code>). When something goes wrong, the message says on which line and what happened, and the line is marked red in its editor: for example reading a field of a <code>null</code> pointer, a variable that was never defined, or a bracket that was not closed. Some names are reserved by the browser (e.g. <code>top</code>, <code>name</code>); choose another name instead.</p>
+<p data-lang="de">In der Registerkarte Befehlszeile unter der Visualisierung tippt man eine einzelne Zeile und führt sie mit Enter aus: <code>x.next.data</code> zeigt den Wert, <code>x</code> die Liste selbst (ein Baum als <code>{data, left, right}</code>). Geht etwas schief, sagt die Meldung, in welcher Zeile was passiert ist, und die Zeile wird im Editor rot markiert: zum Beispiel beim Lesen eines Feldes eines <code>null</code>-Zeigers, bei einer nie definierten Variable oder einer nicht geschlossenen Klammer. Einige Namen sind im Browser reserviert (z. B. <code>top</code>, <code>name</code>); wählen Sie stattdessen einen anderen Namen.</p>
+
+<h2 data-lang="tr">C++ ve Java ile kullanmak</h2>
+<h2 data-lang="en">Using C++ and Java</h2>
+<h2 data-lang="de">Mit C++ und Java arbeiten</h2>
+
+<p data-lang="tr">Veri yapıları dersini C++ ile alanlar için örnekler C++ olarak da gösterilip çalıştırılabilir: ayarlarda <strong>Kod dili</strong> olarak C++'ı seçin. Sayfalardaki kod kendiliğinden C++'a çevrilir (türler koddan çıkarılır: <code>Node*</code>, <code>int</code>, <code>bool</code>, dizi ve fonksiyon türleri), çizim ve anlatım aynen çalışır. Anlaşılan C++, veri yapıları için gereken kısımdır: hazır gelen <code>struct Node</code> (<code>data</code>, <code>next</code>, <code>prev</code>, <code>left</code>, <code>right</code>, <code>height</code>), <code>Node* p</code>, <code>int</code>, <code>bool</code>, <code>double</code> değişkenleri, <code>Node* t[5]</code> ve <code>int s[5]</code> dizileri, <code>new Node(5)</code>, <code>new Node(5, head)</code>, <code>delete</code>, <code>-&gt;</code>, <code>nullptr</code> / <code>NULL</code>, <code>if</code> / <code>else</code> / <code>while</code> / <code>for</code>, türleri yazılmış fonksiyonlar, <code>cout &lt;&lt; … &lt;&lt; endl</code>. <code>#include</code>, <code>using namespace std;</code> ve <code>struct Node { … };</code> satırları atlanır; <code>int main()</code> varsa çalıştırılır. Farklar: her satırda tek komut olur (aynı satırdaki birkaç tanım dışında); sınıf, şablon, referans ve <code>cin</code> yoktur; iki tarafı da tam sayı olan bölme C++'taki gibi kesilir (<code>7 / 2</code> 3, <code>-7 / 2</code> -3, <code>7 / 2.0</code> 3,5; sıfıra bölme hata verir). Bu rehber Düğüm'ü anlattığı için kodları hep Düğüm'dür.</p>
+<p data-lang="en">For those who take the data structures course in C++, the examples can also be shown and run in C++: choose C++ as the <strong>Code language</strong> in the settings. The code on the pages is translated to C++ by itself (the types come from the code: <code>Node*</code>, <code>int</code>, <code>bool</code>, array and function types), and the drawing and the narration work the same. The C++ that is understood is the part data structures need: a predefined <code>struct Node</code> (<code>data</code>, <code>next</code>, <code>prev</code>, <code>left</code>, <code>right</code>, <code>height</code>), <code>Node* p</code>, <code>int</code>, <code>bool</code> and <code>double</code> variables, arrays <code>Node* t[5]</code> and <code>int s[5]</code>, <code>new Node(5)</code>, <code>new Node(5, head)</code>, <code>delete</code>, <code>-&gt;</code>, <code>nullptr</code> / <code>NULL</code>, <code>if</code> / <code>else</code> / <code>while</code> / <code>for</code>, functions with types, <code>cout &lt;&lt; … &lt;&lt; endl</code>. Lines with <code>#include</code>, <code>using namespace std;</code> and <code>struct Node { … };</code> are skipped; an <code>int main()</code> is run. Differences: one statement per line (except several declarations on a line); no classes, templates, references or <code>cin</code>; a division with two integer sides is cut as in C++ (<code>7 / 2</code> is 3, <code>-7 / 2</code> is -3, <code>7 / 2.0</code> is 3.5; dividing by zero is an error). As this guide is about Düğüm, its code is always Düğüm.</p>
+<p data-lang="de">Wer den Kurs Datenstrukturen in C++ belegt, kann die Beispiele auch in C++ anzeigen und ausführen: wählen Sie in den Einstellungen C++ als <strong>Code-Sprache</strong>. Der Code der Seiten wird von selbst nach C++ übersetzt (die Typen ergeben sich aus dem Code: <code>Node*</code>, <code>int</code>, <code>bool</code>, Array- und Funktionstypen), Zeichnung und Erklärungen funktionieren genauso. Verstanden wird der Teil von C++, den Datenstrukturen brauchen: ein vordefiniertes <code>struct Node</code> (<code>data</code>, <code>next</code>, <code>prev</code>, <code>left</code>, <code>right</code>, <code>height</code>), Variablen <code>Node* p</code>, <code>int</code>, <code>bool</code> und <code>double</code>, Arrays <code>Node* t[5]</code> und <code>int s[5]</code>, <code>new Node(5)</code>, <code>new Node(5, head)</code>, <code>delete</code>, <code>-&gt;</code>, <code>nullptr</code> / <code>NULL</code>, <code>if</code> / <code>else</code> / <code>while</code> / <code>for</code>, Funktionen mit Typen, <code>cout &lt;&lt; … &lt;&lt; endl</code>. Zeilen mit <code>#include</code>, <code>using namespace std;</code> und <code>struct Node { … };</code> werden übersprungen; ein <code>int main()</code> wird ausgeführt. Unterschiede: eine Anweisung pro Zeile (außer mehreren Deklarationen in einer Zeile); keine Klassen, Templates, Referenzen oder <code>cin</code>; eine Division mit zwei ganzzahligen Seiten wird wie in C++ abgeschnitten (<code>7 / 2</code> ist 3, <code>-7 / 2</code> ist -3, <code>7 / 2.0</code> ist 3,5; Division durch null ist ein Fehler). Da dieser Leitfaden Düğüm beschreibt, ist sein Code immer Düğüm.</p>
+
+<p data-lang="tr"><strong>Java</strong> da aynı biçimde seçilir. Örneklerde <code>Node p</code>, <code>p.next</code>, <code>null</code>, <code>boolean</code>, <code>Node[] t = new Node[5]</code>, <code>int[] s = new int[5]</code>, <code>static</code> metotlar ve <code>System.out.println(…)</code> kullanılır. Elle yazılan Java'da <code>public class Main { … }</code> sarmalayıcısı, <code>class Node { … }</code> tanımı ve <code>import</code> satırları atlanır, <code>public static void main(String[] args)</code> çalıştırılır. Java'da <code>delete</code> yoktur: örneklerdeki <code>delete</code> satırları açıklayıcı bir yoruma dönüşür; hiçbir değişkenden ya da bağdan ulaşılamayan düğümler soluk çizilir ve "çöp" diye işaretlenir, çünkü onları Java'nın çöp toplayıcısı siler. Sınırlar C++ ile aynıdır; ayrıca <code>String</code> değişkeni yoktur (metin yalnızca <code>println</code> içinde).</p>
+<p data-lang="en"><strong>Java</strong> is chosen the same way. The examples use <code>Node p</code>, <code>p.next</code>, <code>null</code>, <code>boolean</code>, <code>Node[] t = new Node[5]</code>, <code>int[] s = new int[5]</code>, <code>static</code> methods and <code>System.out.println(…)</code>. In hand-written Java, a <code>public class Main { … }</code> wrapper, a <code>class Node { … }</code> definition and <code>import</code> lines are skipped, and <code>public static void main(String[] args)</code> is run. Java has no <code>delete</code>: the <code>delete</code> lines of the examples become an explaining comment; nodes that no variable and no link reaches are drawn faded and marked "garbage", because Java's garbage collector removes them. The limits are those of C++; in addition there are no <code>String</code> variables (text only inside <code>println</code>).</p>
+<p data-lang="de"><strong>Java</strong> wird genauso gewählt. Die Beispiele verwenden <code>Node p</code>, <code>p.next</code>, <code>null</code>, <code>boolean</code>, <code>Node[] t = new Node[5]</code>, <code>int[] s = new int[5]</code>, <code>static</code>-Methoden und <code>System.out.println(…)</code>. In selbst geschriebenem Java werden eine umschließende <code>public class Main { … }</code>, eine Definition <code>class Node { … }</code> und <code>import</code>-Zeilen übersprungen, und <code>public static void main(String[] args)</code> wird ausgeführt. Java hat kein <code>delete</code>: die <code>delete</code>-Zeilen der Beispiele werden zu einem erklärenden Kommentar; Knoten, die keine Variable und keine Verbindung mehr erreicht, werden blass gezeichnet und als „Müll“ markiert, weil der Garbage Collector von Java sie entfernt. Die Grenzen sind die von C++; zusätzlich gibt es keine <code>String</code>-Variablen (Text nur in <code>println</code>).</p>
+
+<h2 data-lang="tr">JavaScript'ten farkları</h2>
+<h2 data-lang="en">Differences from JavaScript</h2>
+<h2 data-lang="de">Unterschiede zu JavaScript</h2>
+
+<p data-lang="tr">Her satırda tek komut olur ve satır sonunda <code>;</code> gerekmez. Nesne ve metin değişkeni yoktur; veri yapıları düğümler ve düğüm tutan dizilerle kurulur. Fonksiyon içinde fonksiyon tanımlanamaz. Bir çağrının sonucunun alanı okunabilir (<code>find(3).data</code>), ama ona yazılamaz (<code>find(3).next = …</code> yerine önce <code>var p = find(3)</code>). Dilin grameri <code>grammer.pegjs</code> dosyasındadır (PEG.js); sayfa açılınca tarayıcıda derlenir.</p>
+<p data-lang="en">One statement per line, and no <code>;</code> needed at the end of a line. There are no objects or text variables; data structures are built from nodes and arrays of nodes. A function cannot be defined inside another function. The field of a call's result can be read (<code>find(3).data</code>) but not written (instead of <code>find(3).next = …</code>, first <code>var p = find(3)</code>). The grammar of the language is in the file <code>grammer.pegjs</code> (PEG.js); it is compiled in the browser when a page opens.</p>
+<p data-lang="de">Eine Anweisung pro Zeile, und am Zeilenende ist kein <code>;</code> nötig. Es gibt keine Objekte oder Textvariablen; Datenstrukturen werden aus Knoten und Arrays von Knoten gebaut. Eine Funktion kann nicht innerhalb einer anderen Funktion definiert werden. Das Feld eines Aufrufergebnisses kann man lesen (<code>find(3).data</code>), aber nicht beschreiben (statt <code>find(3).next = …</code> zuerst <code>var p = find(3)</code>). Die Grammatik der Sprache steht in der Datei <code>grammer.pegjs</code> (PEG.js); sie wird beim Öffnen einer Seite im Browser übersetzt.</p>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sıralı listeye ekleme | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Sıralı listeye ekleme</h1>
+<h1 data-lang="en">Insert into a sorted list</h1>
+<h1 data-lang="de">In eine sortierte Liste einfügen</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Sıralı bir liste oluşturalım.</p>
+<p data-lang="en">Let's build a sorted list.</p>
+<p data-lang="de">Bauen wir eine sortierte Liste.</p>
+
+<textarea id="text1" class="deneme">
+var x = new Node(1)
+var y = new Node(3)
+var z = new Node(7)
+var w = new Node(9)
+
+x.next = y
+y.next = z
+z.next = w
+</textarea>
+
+<p data-lang="tr">Listenin sıralı kalması için yeni düğüm, kendisinden büyük olan ilk düğümün önüne girmelidir. Baştaki düğümden küçükse yeni baş olur. Değilse <code>p</code>, <code>p.next</code> daha büyük olana kadar ilerler ve yeni düğüm araya bağlanır: <em>önce</em> <code>n.next = p.next</code>, <em>sonra</em> <code>p.next = n</code>. Sıra ters olsaydı listenin geri kalanı kaybolurdu.</p>
+<p data-lang="en">To keep the list sorted, the new node must go in front of the first node that is larger than it. If it is smaller than the head, it becomes the new head. Otherwise <code>p</code> moves forward until <code>p.next</code> is larger, and the new node is linked in between: <em>first</em> <code>n.next = p.next</code>, <em>then</em> <code>p.next = n</code>. In the opposite order the rest of the list would be lost.</p>
+<p data-lang="de">Damit die Liste sortiert bleibt, muss der neue Knoten vor den ersten Knoten, der größer ist als er. Ist er kleiner als der Kopf, wird er der neue Kopf. Sonst läuft <code>p</code> weiter, bis <code>p.next</code> größer ist, und der neue Knoten wird dazwischen eingehängt: <em>zuerst</em> <code>n.next = p.next</code>, <em>dann</em> <code>p.next = n</code>. In umgekehrter Reihenfolge ginge der Rest der Liste verloren.</p>
+
+<textarea id="text2" class="deneme">
+var n = new Node(5)
+if(n.data < x.data)
+{
+  n.next = x
+  x = n
+}
+else
+{
+  var p = x
+  while(p.next != null && p.next.data < n.data)
+    p = p.next
+  n.next = p.next
+  p.next = n
+}
+</textarea>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>

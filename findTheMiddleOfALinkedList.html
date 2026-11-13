@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ortadaki düğüm | Bağlı Listeler</title>
+<script src="js/i18n.js"></script> <!-- settings, language and theme, before the page is drawn -->
+<link rel="stylesheet" href="vendor/codemirror-5.25.2/codemirror.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="lesson">
+<h1 data-lang="tr">Ortadaki düğüm</h1>
+<h1 data-lang="en">The middle node</h1>
+<h1 data-lang="de">Der mittlere Knoten</h1>
+<p class="lead" data-i18n="lessonLead">Blokları sırayla çalıştırın. Bir bloğu çalıştırdığınızda üstündeki bloklar da kendiliğinden yeniden çalışır ve çizim temiz başlar. Animasyonu sağdaki düğmelerle adım adım ileri ve geri oynatabilirsiniz.</p>
+
+<p data-lang="tr">Beş düğümlü bir liste oluşturalım.</p>
+<p data-lang="en">Let's build a list with five nodes.</p>
+<p data-lang="de">Bauen wir eine Liste mit fünf Knoten.</p>
+
+<textarea id="text1" class="deneme">
+var x = new Node(1)
+var y = new Node(2)
+var z = new Node(3)
+var w = new Node(4)
+var v = new Node(5)
+
+x.next = y
+y.next = z
+z.next = w
+w.next = v
+</textarea>
+
+<p data-lang="tr">Listenin başından başlayan iki pointer kullanıyoruz: <code>slow</code> her adımda bir düğüm, <code>fast</code> iki düğüm ilerler. <code>fast</code> sona ulaştığında <code>slow</code> tam ortadadır. Liste yalnızca bir kez dolaşılır, uzunluğu hiç hesaplanmaz.</p>
+<p data-lang="en">We use two pointers that start at the head of the list: <code>slow</code> moves one node per step, <code>fast</code> moves two. When <code>fast</code> reaches the end, <code>slow</code> is exactly in the middle. The list is walked only once and its length is never computed.</p>
+<p data-lang="de">Wir verwenden zwei Zeiger, die am Kopf der Liste starten: <code>slow</code> rückt pro Schritt einen Knoten vor, <code>fast</code> zwei. Wenn <code>fast</code> das Ende erreicht, steht <code>slow</code> genau in der Mitte. Die Liste wird nur einmal durchlaufen, ihre Länge wird nie berechnet.</p>
+
+<textarea id="text2" class="deneme">
+var slow = x
+var fast = x
+while(fast != null && fast.next != null)
+{
+  slow = slow.next       // bir adım
+  fast = fast.next.next  // iki adım
+}
+</textarea>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="en">
+var slow = x
+var fast = x
+while(fast != null && fast.next != null)
+{
+  slow = slow.next       // one step
+  fast = fast.next.next  // two steps
+}
+</script>
+<script type="text/plain" class="code-variant" data-for="text2" data-lang="de">
+var slow = x
+var fast = x
+while(fast != null && fast.next != null)
+{
+  slow = slow.next       // ein Schritt
+  fast = fast.next.next  // zwei Schritte
+}
+</script>
+</main>
+
+<script src="js/grammar.js"></script> <!-- the parser, compiled from grammer.pegjs (npm run build:grammar) -->
+<script src="js/codelang.js"></script> <!-- C++ <-> Düğüm -->
+<script src="js/layout.js"></script>
+<script src="vendor/codemirror-5.25.2/codemirror.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/javascript/javascript.js"></script>
+<script src="vendor/codemirror-5.25.2/mode/clike/clike.js"></script>
+<script src="vendor/codemirror-5.25.2/addon/edit/closetag.js"></script>
+<script src="js/addon/active-line.js"></script>
+<script src="js/addon/closebrackets.js"></script>
+<script src="js/editorSettings.js"></script>
+<script src="js/paper.js"></script>
+<script type="text/paperscript" src="js/linkedlist.js" canvas="myCanvas0"></script>
+</body>
+</html>
