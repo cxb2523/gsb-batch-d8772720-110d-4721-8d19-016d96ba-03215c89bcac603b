@@ -26,6 +26,7 @@ https://mcp.hasdata.com/mcp?apis=google_trends
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
 - [Errors and failure paths](#errors-and-failure-paths)
+- [Collecting a trend in code](#collecting-a-trend-in-code)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
 - [How it compares](#how-it-compares)
@@ -270,6 +271,37 @@ Your client almost never sees an HTTP error code from a tool call. The MCP layer
 
 Results that carry data also carry a `requestMetadata.id` worth quoting in support.
 
+## Collecting a trend in code
+
+An agent that wants one "look at this trend" answer otherwise has to run three tool calls and notice the traps in each reply: a cold term is a successful empty array, the newest bucket carries `isPartial`, a free-plan burst answers 429 instead of queueing, and a revoked key answers 401 inside an `isError` result. `lib/trends-collect.mjs` runs those calls and returns a conclusion that flags each of them.
+
+```js
+import { collectTrend } from '@hasdata/google-trends-mcp/lib/trends-collect.mjs';
+
+const conclusion = await collectTrend('cold brew coffee', { geo: 'US', date: 'today 12-m' }, {
+  callTool: (name, args) => client.callTool({ name, arguments: args }),
+});
+```
+
+`callTool(name, args)` is injected, so tests pass a local fake and spend no credits. The module collects the series (`dataType` unset), `geoMap` with an explicit `region`, and `relatedQueries`, in that order.
+
+| Field | Meaning |
+| --- | --- |
+| `term`, `geo`, `date`, `region` | What was asked, and the granularity actually sent to `geoMap` |
+| `series` | Timeline points with the `isPartial` ones removed |
+| `droppedPartial` | How many points that removal discarded |
+| `regions` | `geoMap` entries, strongest first |
+| `rising` | Rising queries sorted on their `value` label, not on `extractedValue` |
+| `breakout` | Entries labelled `Breakout`, kept out of the ranking because their numbers are sentinels |
+| `top` | Top related queries, in the order the tool returned them |
+| `status` | Per-block outcome: `ok`, `no_interest`, `rate_limited`, `unauthorized`, `failed` or `skipped` |
+| `errors` | Message, attempt count and status for every block that failed |
+| `notes` | Plain-language reasons for anything odd, including why blocks are never compared numerically |
+
+An empty or all-zero series sets `status.series` to `no_interest` and the other two blocks to `skipped`; those calls are never made, so a cold term costs one request instead of three. A block that fails leaves the other blocks intact and the conclusion is still returned. Numbers from different blocks are never compared, because each call rescales to its own maximum.
+
+`concurrency_limit` or a 429 is retried after 4000ms, 8000ms and 16000ms, four attempts in all, then reported as `rate_limited`. `401 Unauthorized` fails at once as `unauthorized`. Anything else is `failed` with the original message kept in `errors`.
+
 ## Pricing, free tier and limits
 
 Every Google Trends call costs **10 credits per successful call**. Response size does not change the price. A five-year weekly series costs the same as a single week.
@@ -367,6 +399,8 @@ $env:HASDATA_API_KEY="your_key_here"; npm test
 ```
 
 The same suite runs in CI on every push and once a week on a schedule, because the upstream tool list can change without anyone touching this repository. A failure means the tool list moved, the key stopped working, or the endpoint was unreachable, and the assertion message says which.
+
+`test/trends-collect.test.mjs` covers the collector described in [Collecting a trend in code](#collecting-a-trend-in-code). It runs against a local fake `callTool`, needs no API key, and is the part that keeps the retry, `no_interest` and `isPartial` handling honest.
 
 ## Contributing
 
