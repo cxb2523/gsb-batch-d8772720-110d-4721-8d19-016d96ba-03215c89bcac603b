@@ -1,0 +1,122 @@
+{
+  "name": "dsh-usage-chart",
+  "version": "1.1.9",
+  "description": "DeepSeek 用量 / 成本 / 余额仪表盘 for DSH Web：输入框下方实时指标指示器 + 零依赖 SVG 用量可视化图表（含每轮成本视角、耗时叠加、异常标记、成本徽章、上下文压力条），token 数据来自官方 adapter 上报，成本按官方刊例价 + 用户覆盖 pricing.json 解析，余额来自官方 /user/balance 接口。",
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Max-Samson/dsh-usage-chart.git"
+  },
+  "homepage": "https://github.com/Max-Samson/dsh-usage-chart#readme",
+  "bugs": {
+    "url": "https://github.com/Max-Samson/dsh-usage-chart/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "CHANGELOG_ZH.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "README_ZH.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "THIRD_PARTY_NOTICES.md",
+    "cordis.patch.yml",
+    "docs/images/usage-panel-demo-en-lightv1.0.0.png",
+    "docs/images/usage-panel-demo-zh-darkv1.0.0.png",
+    "lib",
+    "src"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "verify": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run verify"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "plugin",
+    "usage",
+    "tokens",
+    "cost",
+    "balance",
+    "dashboard",
+    "charts",
+    "visualization"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.6 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-conversation": ">=0.1.0-rc.6 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6 <0.3.0-0",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.62.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.6.3"
+  }
+}

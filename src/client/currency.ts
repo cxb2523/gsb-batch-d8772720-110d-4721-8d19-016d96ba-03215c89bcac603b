@@ -1,0 +1,148 @@
+/**
+ * client 成本显示币种状态（PR #5 移植）。
+ *
+ * 数据流：/dsh-usage-chart/meta（config 币种 + 汇率）→ 模块级 store；
+ * 用户切换（USD/CNY）写入 localStorage 覆盖 config 默认；「刷新汇率」经
+ * /dsh-usage-chart/rate 拉到实时汇率并保存上次成功值。历史请求与所有换算消费方经
+ * useDisplayCurrency()（useSyncExternalStore）读取。
+ */
+import { useSyncExternalStore } from 'react'
+import { DEFAULT_CNY_PER_USD, type CostCurrency } from '../pricing/calc.ts'
+
+export interface DisplayMeta {
+  currency: CostCurrency
+  cnyPerUsd: number
+  rateSource?: 'config' | 'live'
+  rateFetchedAt?: number
+}
+
+export type RateRefreshResult = 'ok' | 'request-failed' | 'bad-response'
+
+const STORAGE_KEY = 'dsh-usage-chart:currency'
+/** 上次成功汇率的持久化：刷新失败时用它代替固定默认值，避免“不能正确计算”。 */
+const RATE_STORAGE_KEY = 'dsh-usage-chart:rate'
+const DEFAULT_META: DisplayMeta = { currency: 'usd', cnyPerUsd: DEFAULT_CNY_PER_USD, rateSource: 'config' }
+
+let meta: DisplayMeta = DEFAULT_META
+let userChosen = false
+const listeners = new Set<() => void>()
+
+function notify(): void {
+  for (const listener of [...listeners]) listener()
+}
+
+function storedCurrency(): CostCurrency | null {
+  try {
+    const value = typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY)
+    return value === 'cny' || value === 'usd' ? value : null
+  } catch {
+    return null
+  }
+}
+
+export function getDisplayMeta(): DisplayMeta {
+  return meta
+}
+
+export function subscribeDisplayMeta(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+export function useDisplayCurrency(): DisplayMeta {
+  return useSyncExternalStore(subscribeDisplayMeta, getDisplayMeta)
+}
+
+export function setDisplayCurrency(currency: CostCurrency): void {
+  userChosen = true
+  if (meta.currency === currency) return
+  meta = { ...meta, currency }
+  try {
+    localStorage.setItem(STORAGE_KEY, currency)
+  } catch {
+    // ignore
+  }
+  notify()
+}
+
+export async function fetchDisplayMeta(): Promise<void> {
+  try {
+    const res = await fetch('/dsh-usage-chart/meta', { headers: { Accept: 'application/json' } })
+    if (!res.ok) return
+    const body = (await res.json()) as { ok?: boolean; currency?: string; cnyPerUsd?: number }
+    if (body.ok !== true) return
+    const currency: CostCurrency = body.currency === 'cny' ? 'cny' : 'usd'
+    const cnyPerUsd =
+      typeof body.cnyPerUsd === 'number' && Number.isFinite(body.cnyPerUsd) && body.cnyPerUsd > 0
+        ? body.cnyPerUsd
+        : DEFAULT_CNY_PER_USD
+    // 唯一展示汇率：上次成功/新刷新的实时值优先于配置；但持久化汇率
+    // 不应阻止从 /meta 初始化币种。币种和汇率分别合并，避免互相覆盖。
+    const nextCurrency = userChosen ? meta.currency : currency
+    const nextRate = meta.rateSource === 'live' ? meta.cnyPerUsd : cnyPerUsd
+    if (meta.currency !== nextCurrency || meta.cnyPerUsd !== nextRate) {
+      meta = { ...meta, currency: nextCurrency, cnyPerUsd: nextRate }
+      notify()
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function storedRateMeta(): { rate: number; fetchedAt: number } | null {
+  try {
+    const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(RATE_STORAGE_KEY)
+    if (raw === null) return null
+    const parsed = JSON.parse(raw) as { rate?: unknown; fetchedAt?: unknown }
+    if (typeof parsed.rate === 'number' && Number.isFinite(parsed.rate) && parsed.rate > 0
+      && typeof parsed.fetchedAt === 'number' && Number.isFinite(parsed.fetchedAt) && parsed.fetchedAt >= 0) {
+      return { rate: parsed.rate, fetchedAt: parsed.fetchedAt }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function setLiveRate(rate: number, fetchedAt: number): void {
+  // 所有消费方只接受这一个已校验的展示汇率，不允许 NaN/负值污染历史成本。
+  if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(fetchedAt) || fetchedAt < 0) return
+  if (meta.currency === 'cny' && meta.cnyPerUsd === rate && meta.rateSource === 'live' && meta.rateFetchedAt === fetchedAt) return
+  meta = { ...meta, cnyPerUsd: rate, rateSource: 'live', rateFetchedAt: fetchedAt }
+  try {
+    localStorage.setItem(RATE_STORAGE_KEY, JSON.stringify({ rate, fetchedAt }))
+  } catch {
+    // ignore
+  }
+  notify()
+}
+
+export async function refreshLiveRate(): Promise<RateRefreshResult> {
+  try {
+    const res = await fetch('/dsh-usage-chart/rate', { headers: { Accept: 'application/json' } })
+    const body = (await res.json()) as { ok?: boolean; rate?: unknown; fetchedAt?: unknown; reason?: string }
+    if (body.ok === true && typeof body.rate === 'number' && Number.isFinite(body.rate) && body.rate > 0) {
+      setLiveRate(body.rate, typeof body.fetchedAt === 'number' && Number.isFinite(body.fetchedAt) && body.fetchedAt >= 0 ? body.fetchedAt : Date.now())
+      return 'ok'
+    }
+    return body.reason === 'bad-response' ? 'bad-response' : 'request-failed'
+  } catch {
+    return 'request-failed'
+  }
+}
+
+export function initDisplayMeta(): void {
+  const stored = storedCurrency()
+  if (stored !== null) {
+    userChosen = true
+    meta = { ...meta, currency: stored }
+  }
+  // 恢复上次成功汇率（如有）：异常时用它代替配置默认值
+  const storedRate = storedRateMeta()
+  if (storedRate !== null) {
+    meta = { ...meta, cnyPerUsd: storedRate.rate, rateSource: 'live', rateFetchedAt: storedRate.fetchedAt }
+  }
+  void fetchDisplayMeta()
+}

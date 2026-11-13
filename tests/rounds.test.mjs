@@ -1,0 +1,443 @@
+import assert from 'node:assert/strict'
+import test, { after } from 'node:test'
+
+import { apply, foldRounds, foldTurnUsage, tierAt } from '../lib/index.js'
+
+/** cordis 语义：effect(setup) 立即执行 setup，把返回的 disposer 留到 fiber 销毁时再调用。 */
+const disposers = []
+after(() => { for (const dispose of disposers) if (typeof dispose === 'function') dispose() })
+
+
+/** 2026-09-10 内置刊例价（双币种 /1M）：flash 高峰/空闲。 */
+const FLASH_PEAK = {
+  cny: { cacheMissInput: 2, cacheHitInput: 0.04, output: 8 },
+  usd: { cacheMissInput: 0.3, cacheHitInput: 0.006, output: 1.2 },
+}
+const FLASH_OFF_PEAK = {
+  cny: { cacheMissInput: 1, cacheHitInput: 0.02, output: 4 },
+  usd: { cacheMissInput: 0.15, cacheHitInput: 0.003, output: 0.6 },
+}
+
+/** 合成事件流工具：seq 自动递增，time 由调用方给定。 */
+function stream() {
+  let seq = 0
+  return {
+    events: [],
+    push(type, time, data) {
+      this.events.push({ type, seq: ++seq, time, data })
+    },
+  }
+}
+
+/** 固定解析器：任何模型都命中 flash 价，source=builtin。 */
+function flashResolver() {
+  return {
+    resolve() {
+      return { pricing: { peak: FLASH_PEAK, offPeak: FLASH_OFF_PEAK }, source: 'builtin', verifiedAt: 1_752_000_000_000, known: true, estimated: false }
+    },
+  }
+}
+
+test('foldRounds computes per-round timing, TTFT, TPS, model attribution and cost', () => {
+  const s = stream()
+  // 轮 1：request/context 显式归因 v4-pro
+  s.push('turn/start', 1_000, { turn: 1 })
+  s.push('step/start', 1_005, { turn: 1, step: 0 })
+  s.push('request/context', 1_010, { provider: 'deepseek', model: 'deepseek-v4-pro' })
+  s.push('request/header', 1_015, { header: { config: { provider: 'deepseek', model: 'deepseek-v4-pro' } } }) // 与 context 一致，不改变归因
+  s.push('assistant/chunk', 2_000, { turn: 1, step: 0, chunk: { type: 'usage', usage: { inputTokens: 80, outputTokens: 10, cacheReadTokens: 20 } } })
+  s.push('assistant/message', 3_000, { turn: 1, step: 0, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 } }) // 终样替换早样
+  s.push('step/end', 4_000, { turn: 1, step: 0 })
+  s.push('turn/end', 5_000, { turn: 1, reason: { kind: 'completed' } })
+  // 轮 2：无 request/context → 模型跨轮携带回退
+  s.push('turn/start', 6_000, { turn: 2 })
+  s.push('step/start', 6_005, { turn: 2, step: 0 })
+  s.push('assistant/message', 8_000, { turn: 2, step: 0, usage: { inputTokens: 10, outputTokens: 5 } })
+  s.push('turn/end', 9_000, { turn: 2, reason: { kind: 'max-tokens' } })
+
+  const { totals, rounds } = foldRounds(s.events, flashResolver())
+
+  assert.deepEqual(totals, { uncachedInputTokens: 110, outputTokens: 25, cacheReadTokens: 30, cacheWriteTokens: 0 })
+
+  const r1 = rounds.find((r) => r.turn === 1)
+  assert.ok(r1, 'round 1 present')
+  assert.deepEqual(r1.buckets, { uncachedInputTokens: 100, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0 })
+  assert.equal(r1.model, 'deepseek-v4-pro')
+  assert.equal(r1.startedAt, 1_000)
+  assert.equal(r1.endedAt, 5_000)
+  assert.equal(r1.durationMs, 4_000)
+  assert.equal(r1.ttftMs, 1_000) // 2000 - 1000
+  assert.equal(r1.outputTps, 20 / ((5_000 - 2_000) / 1_000)) // 输出 20 / 3s
+  assert.equal(r1.endReason, 'completed')
+  assert.equal(r1.cost.source, 'builtin')
+  assert.equal(r1.cost.estimated, false)
+  // 轮 1 开始于 1970-01-01T00:00:01Z = 北京时间 08:00（空闲时段）→ 空闲价
+  assert.equal(tierAt(r1.startedAt), 'offPeak')
+  assert.equal(r1.cost.cny.input, (100 / 1_000_000) * 1)
+  assert.equal(r1.cost.cny.cacheRead, (30 / 1_000_000) * 0.02)
+  assert.equal(r1.cost.cny.output, (20 / 1_000_000) * 4)
+  assert.equal(r1.cost.usd.input, (100 / 1_000_000) * 0.15)
+  assert.equal(r1.cost.usd.cacheRead, (30 / 1_000_000) * 0.003)
+  assert.equal(r1.cost.usd.output, (20 / 1_000_000) * 0.6)
+
+  const r2 = rounds.find((r) => r.turn === 2)
+  assert.ok(r2, 'round 2 present')
+  assert.equal(r2.model, 'deepseek-v4-pro', '模型跨轮携带回退')
+  assert.equal(r2.endReason, 'max-tokens')
+  assert.equal(r2.durationMs, 3_000)
+  assert.equal(r2.ttftMs, 2_000)
+})
+
+test('foldRounds uses assistant/message.stream timing on DSH 0.2.x logs (no assistant/chunk)', () => {
+  const s = stream()
+  // 0.2.x 会话日志：没有 assistant/chunk，助手消息自带 usage + 流式时间线。
+  s.push('turn/start', 1_000, { turn: 1 })
+  s.push('step/start', 1_005, { turn: 1, step: 0 })
+  s.push('user/message', 1_010, { turn: 1, source: { kind: 'agent-message' } })
+  s.push('request/context', 1_020, { provider: 'deepseek', model: 'deepseek-flash' })
+  s.push('assistant/message', 9_000, {
+    turn: 1,
+    step: 0,
+    usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10 },
+    // 真实 0.2.x 形状：texts 比 dt 多一项（第 i 片段时间 = time0 + Σdt[0..i-1]），
+    // 打包段常以空片段开头；block-start/usage/finish 等 chunk 边界不携带 token。
+    stream: [
+      { type: 'chunk', time: 1_500, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } },
+      { type: 'reasoning-chunks', time0: 2_900, dt: [100, 50], texts: ['', 'Hi', ' there'] },
+      { type: 'tool-call-chunks', time0: 4_000, dt: [], id: 'call-1', index: 1, args: ['{"a":1}'] },
+      { type: 'chunk', time: 5_000, chunk: { type: 'block-end', index: 1 } },
+      { type: 'chunk', time: 5_010, chunk: { type: 'finish' } },
+    ],
+  })
+  s.push('turn/end', 9_500, { turn: 1, reason: { kind: 'completed' } })
+
+  const { totals, rounds } = foldRounds(s.events, flashResolver())
+  assert.deepEqual(totals, { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0 })
+  assert.equal(rounds.length, 1)
+  // TTFT 取首个非空 token 片段 3000（不是 block-start 1500，也不是空片段 2900）；
+  // TPS 窗口止于最后一个 token 片段 4000（不是 block-end / finish）。
+  assert.equal(rounds[0].ttftMs, 2_000)
+  assert.equal(rounds[0].outputTps, 50 / ((4_000 - 3_000) / 1_000))
+  assert.equal(rounds[0].durationMs, 8_500)
+  assert.equal(rounds[0].userSource, 'agent-message')
+})
+
+test('foldRounds counts DSH 0.2.x failed-attempt usage and keeps retries separate', () => {
+  const usageChunk = (time, usage) => ({ type: 'chunk', time, chunk: { type: 'usage', usage } })
+  // 失败的一轮：只有 assistant/attempt，没有 assistant/message
+  const failed = stream()
+  failed.push('turn/start', 1_000, { turn: 1 })
+  failed.push('step/start', 1_005, { turn: 1, step: 0 })
+  failed.push('assistant/attempt', 4_000, {
+    turn: 1,
+    step: 0,
+    stream: [
+      { type: 'text-chunks', time0: 2_000, dt: [], texts: ['partial'] },
+      usageChunk(3_900, { inputTokens: 100, outputTokens: 50 }),
+    ],
+  })
+  failed.push('turn/end', 4_100, { turn: 1, reason: { kind: 'error' } })
+  const one = foldRounds(failed.events, flashResolver())
+  assert.deepEqual(one.totals, { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 })
+  assert.equal(one.rounds.length, 1)
+  assert.equal(one.rounds[0].endReason, 'error')
+  assert.equal(one.rounds[0].ttftMs, 1_000)
+
+  // 同一步骤先失败后重试成功：两次请求分别计费，重试不替换失败尝试
+  const retried = stream()
+  retried.push('turn/start', 1_000, { turn: 1 })
+  retried.push('step/start', 1_005, { turn: 1, step: 0 })
+  retried.push('assistant/attempt', 3_000, { turn: 1, step: 0, stream: [usageChunk(2_900, { inputTokens: 100, outputTokens: 10 })] })
+  retried.push('assistant/message', 6_000, { turn: 1, step: 0, usage: { inputTokens: 120, outputTokens: 40, cacheReadTokens: 30 } })
+  retried.push('turn/end', 6_100, { turn: 1, reason: { kind: 'completed' } })
+  const two = foldRounds(retried.events, flashResolver())
+  assert.deepEqual(two.totals, { uncachedInputTokens: 220, outputTokens: 50, cacheReadTokens: 30, cacheWriteTokens: 0 })
+  assert.deepEqual(two.rounds[0].buckets, two.totals)
+})
+
+test('foldRounds measures 0.2.x TPS over streaming time only, excluding tool gaps between steps', () => {
+  const s = stream()
+  s.push('turn/start', 1_000, { turn: 1 })
+  // 步骤 0：2000→3000 流式输出 30 token，随后工具执行到 10000
+  s.push('assistant/message', 3_100, {
+    turn: 1, step: 0, usage: { inputTokens: 10, outputTokens: 30 },
+    stream: [{ type: 'text-chunks', time0: 2_000, dt: [1_000], texts: ['a', 'b'] }],
+  })
+  // 步骤 1：10000→11000 流式输出 20 token
+  s.push('assistant/message', 11_100, {
+    turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 20 },
+    stream: [{ type: 'text-chunks', time0: 10_000, dt: [1_000], texts: ['c', 'd'] }],
+  })
+  s.push('turn/end', 11_200, { turn: 1, reason: { kind: 'completed' } })
+  const { rounds } = foldRounds(s.events, flashResolver())
+  assert.equal(rounds[0].ttftMs, 1_000)
+  // 50 token / (1s + 1s) = 25 tok/s；墙钟窗口（2000→11000）会误报 5.6 tok/s
+  assert.equal(rounds[0].outputTps, 25)
+})
+
+test('foldRounds reads 0.2.x raw delta chunks, all named tool-call fragments, and stream-only usage', () => {
+  const s = stream()
+  s.push('turn/start', 1_000, { turn: 1 })
+  s.push('assistant/message', 9_000, {
+    turn: 1,
+    step: 0,
+    // 没有 data.usage：用量只在流里
+    stream: [
+      { type: 'chunk', time: 1_500, chunk: { type: 'block-start', index: 0, blockType: 'tool-call' } },
+      // 累加器无法合并的原始 tool-call-delta（id 为空）按 chunk 落盘，仍是首个 token
+      { type: 'chunk', time: 2_000, chunk: { type: 'tool-call-delta', id: '', name: 'run_code', argumentsDelta: '' } },
+      // 带 name 的段：每个片段都携带工具名，末尾空参数片段也算 token
+      { type: 'tool-call-chunks', time0: 3_000, dt: [500, 500], id: 'call-1', index: 0, name: 'run_code', args: ['{"a"', ':1}', ''] },
+      { type: 'chunk', time: 4_100, chunk: { type: 'usage', usage: { inputTokens: 10, outputTokens: 20 } } },
+      { type: 'chunk', time: 4_200, chunk: { type: 'finish' } },
+    ],
+  })
+  s.push('turn/end', 9_500, { turn: 1, reason: { kind: 'completed' } })
+  const { totals, rounds } = foldRounds(s.events, flashResolver())
+  assert.deepEqual(totals, { uncachedInputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 })
+  assert.equal(rounds[0].ttftMs, 1_000)
+  // 首个 token 2000，最后一个 token 4000（第三个片段）
+  assert.equal(rounds[0].outputTps, 20 / ((4_000 - 2_000) / 1_000))
+})
+
+test('foldRounds normalizes DSH 0.2.x object user/message sources', () => {
+  const s = stream()
+  const turn = (n, t, kind) => {
+    s.push('turn/start', t, { turn: n })
+    s.push('user/message', t + 1, { turn: n, source: { kind } })
+    // 运行时上下文注入跟在真实来源之后，不应改写本轮来源
+    s.push('user/message', t + 2, { turn: n, source: { kind: 'time-context' } })
+    s.push('assistant/message', t + 50, { turn: n, step: 0, usage: { inputTokens: 1, outputTokens: 1 } })
+    s.push('turn/end', t + 60, { turn: n, reason: { kind: 'completed' } })
+  }
+  turn(1, 1_000, 'user')
+  turn(2, 2_000, 'tool-jobs')
+  turn(3, 3_000, 'agent-message')
+  turn(4, 4_000, 'user-question-reply')
+  const { rounds } = foldRounds(s.events, flashResolver())
+  assert.deepEqual(rounds.map((r) => r.userSource), ['human', 'agent.tool-jobs', 'agent-message', 'human'])
+})
+
+test('foldRounds treats a name-bearing tool-call delta with empty args as the first token', () => {
+  const s = stream()
+  s.push('turn/start', 1_000, { turn: 1 })
+  s.push('assistant/message', 9_000, {
+    turn: 1,
+    step: 0,
+    usage: { inputTokens: 10, outputTokens: 20 },
+    stream: [
+      { type: 'chunk', time: 1_500, chunk: { type: 'block-start', index: 0, blockType: 'tool-call' } },
+      { type: 'tool-call-chunks', time0: 3_000, dt: [500, 500], id: 'call-1', index: 0, name: 'run_code', args: ['', '{"a"', ':1}'] },
+    ],
+  })
+  s.push('turn/end', 9_500, { turn: 1, reason: { kind: 'completed' } })
+  const { rounds } = foldRounds(s.events, flashResolver())
+  // 工具名 delta 在 3000 就是首个 token（不等到 3500 的参数片段，也不回退到 9000 的 usage）
+  assert.equal(rounds[0].ttftMs, 2_000)
+  assert.equal(rounds[0].outputTps, 20 / ((4_000 - 3_000) / 1_000))
+})
+
+test('foldRounds bills peak vs off-peak rounds by their start time', () => {
+  const s = stream()
+  // 高峰轮：开始于北京时间 10:00（UTC 02:00）
+  const peakStart = Date.UTC(1970, 0, 1, 2, 0, 0)
+  s.push('turn/start', peakStart, { turn: 1 })
+  s.push('assistant/message', peakStart + 500, { turn: 1, step: 0, usage: { inputTokens: 1_000_000, outputTokens: 0 } })
+  s.push('turn/end', peakStart + 1_000, { turn: 1, reason: { kind: 'completed' } })
+  // 空闲轮：开始于北京时间 08:00（UTC 00:00）
+  const offPeakStart = Date.UTC(1970, 0, 1, 0, 0, 0)
+  s.push('turn/start', offPeakStart, { turn: 2 })
+  s.push('assistant/message', offPeakStart + 500, { turn: 2, step: 0, usage: { inputTokens: 1_000_000, outputTokens: 0 } })
+  s.push('turn/end', offPeakStart + 1_000, { turn: 2, reason: { kind: 'completed' } })
+
+  const { rounds } = foldRounds(s.events, flashResolver())
+  const peak = rounds.find((r) => r.turn === 1)
+  const offPeak = rounds.find((r) => r.turn === 2)
+  assert.equal(tierAt(peak.startedAt), 'peak')
+  assert.equal(tierAt(offPeak.startedAt), 'offPeak')
+  // 1M 未命中输入：高峰 = 空闲 × 2（CNY 2/1；USD 0.3/0.15）
+  assert.equal(peak.cost.cny.total, 2)
+  assert.equal(peak.cost.usd.total, 0.3)
+  assert.equal(offPeak.cost.cny.total, 1)
+  assert.equal(offPeak.cost.usd.total, 0.15)
+})
+
+test('foldRounds tolerates missing turn/end (open round) and missing model', () => {
+  const s = stream()
+  s.push('turn/start', 100, { turn: 7 })
+  s.push('step/start', 110, { turn: 7, step: 0 })
+  s.push('assistant/message', 500, { turn: 7, step: 0, usage: { inputTokens: 5, outputTokens: 3 } })
+  // 没有 turn/end：当前轮
+
+  const { rounds } = foldRounds(s.events, flashResolver())
+  assert.equal(rounds.length, 1)
+  assert.equal(rounds[0].model, null)
+  assert.equal(rounds[0].startedAt, 100)
+  assert.equal(rounds[0].endedAt, null)
+  assert.equal(rounds[0].durationMs, null)
+  assert.equal(rounds[0].ttftMs, 400)
+  assert.equal(rounds[0].outputTps, null)
+  assert.equal(rounds[0].endReason, null)
+})
+
+test('foldRounds attributes model from request/header when request/context absent', () => {
+  const s = stream()
+  s.push('turn/start', 100, { turn: 3 })
+  s.push('request/header', 150, { header: { config: { provider: 'deepseek', model: 'deepseek-v4-flash' } } })
+  s.push('assistant/message', 200, { turn: 3, step: 0, usage: { inputTokens: 1, outputTokens: 1 } })
+  s.push('turn/end', 300, { turn: 3, reason: 'completed' })
+
+  const { rounds } = foldRounds(s.events, flashResolver())
+  assert.equal(rounds[0].model, 'deepseek-v4-flash')
+})
+
+test('foldRounds marks unknown models and uses fallback pricing', () => {
+  const s = stream()
+  s.push('turn/start', 100, { turn: 1 })
+  s.push('request/context', 110, { provider: 'deepseek', model: 'some-future-model' })
+  s.push('assistant/message', 200, { turn: 1, step: 0, usage: { inputTokens: 1_000_000, outputTokens: 0 } })
+  s.push('turn/end', 300, { turn: 1, reason: { kind: 'completed' } })
+
+  // 真实解析器：some-future-model 未收录 → 回退 flash 估算价并标记未知。
+  const { rounds } = foldRounds(s.events)
+  assert.equal(rounds[0].model, 'some-future-model')
+  assert.equal(rounds[0].cost.unknownModel, true)
+  assert.equal(rounds[0].cost.estimated, true)
+  assert.equal(rounds[0].cost.source, 'fallback')
+  // 轮开始于北京时间 08:00（空闲）→ 1M token × flash 空闲未命中价（CNY 1 / USD 0.15）
+  assert.equal(rounds[0].cost.cny.total, 1)
+  assert.equal(rounds[0].cost.usd.total, 0.15)
+})
+
+test('foldTurnUsage stays compatible with the v0.1 semantics', () => {
+  const events = [
+    { type: 'assistant/chunk', seq: 1, time: 100, data: { turn: 1, step: 0, chunk: { type: 'usage', usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 3 } } } },
+    { type: 'assistant/message', seq: 2, time: 200, data: { turn: 1, step: 0, usage: { inputTokens: 12, outputTokens: 4, cacheReadTokens: 5 } } },
+    { type: 'assistant/message', seq: 3, time: 300, data: { turn: 1, step: 1, usage: { inputTokens: 7, outputTokens: 1 } } },
+    { type: 'assistant/message', seq: 4, time: 400, data: { turn: 2, step: 0, usage: { inputTokens: 3, outputTokens: 2, cacheWriteTokens: 1 } } },
+  ]
+  assert.deepEqual(foldTurnUsage(events), {
+    totals: { uncachedInputTokens: 22, outputTokens: 7, cacheReadTokens: 5, cacheWriteTokens: 1 },
+    turns: [
+      { turn: 1, buckets: { uncachedInputTokens: 19, outputTokens: 5, cacheReadTokens: 5, cacheWriteTokens: 0 } },
+      { turn: 2, buckets: { uncachedInputTokens: 3, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 1 } },
+    ],
+  })
+})
+
+test('foldRounds ignores zero-usage turns and malformed samples', () => {
+  const s = stream()
+  s.push('turn/start', 100, { turn: 1 })
+  s.push('turn/end', 500, { turn: 1, reason: { kind: 'completed' } }) // 无用量的轮
+  s.push('turn/start', 600, { turn: 2 })
+  s.push('assistant/message', 700, { turn: 2, step: 0, usage: { inputTokens: -1, outputTokens: 2 } }) // 非法
+  s.push('turn/end', 800, { turn: 2, reason: { kind: 'completed' } })
+
+  const { totals, rounds } = foldRounds(s.events, flashResolver())
+  assert.equal(rounds.length, 0)
+  assert.deepEqual(totals, { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+})
+
+// ── 路由级：/usage 返回 rounds（含成本/耗时/模型）──────────────────────────
+
+function responseRecorder() {
+  return {
+    headers: {},
+    status: 0,
+    body: '',
+    setHeader(name, value) { this.headers[name] = value },
+    writeHead(status, headers) { this.status = status; Object.assign(this.headers, headers) },
+    end(body) { this.body = body ?? '' },
+  }
+}
+
+test('/usage route returns rounds with cost and timing', async () => {
+  const events = [
+    { type: 'turn/start', seq: 1, time: 1_000, data: { turn: 1 } },
+    { type: 'request/context', seq: 2, time: 1_010, data: { provider: 'deepseek', model: 'deepseek-v4-pro' } },
+    { type: 'assistant/message', seq: 3, time: 2_000, data: { turn: 1, step: 0, usage: { inputTokens: 1_000_000, outputTokens: 0 } } },
+    { type: 'turn/end', seq: 4, time: 5_000, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const routes = new Map()
+  apply({
+    effect(setup) { disposers.push(setup()) },
+    get() { return undefined },
+    webServer: { register(route) { routes.set(route.path, route); return () => {} } },
+    sessions: { get(id) { return id === 'session-test' ? { id, events } : undefined } },
+  })
+
+  const route = routes.get('/dsh-usage-chart/usage')
+  const recorder = responseRecorder()
+  await route.handler({ method: 'GET', url: '/dsh-usage-chart/usage?session=session-test', headers: { host: 'localhost:3000' } }, recorder)
+  assert.equal(recorder.status, 200)
+  const body = JSON.parse(recorder.body)
+  assert.equal(body.ok, true)
+  assert.equal(body.rounds.length, 1)
+  assert.equal(body.rounds[0].turn, 1)
+  assert.equal(body.rounds[0].model, 'deepseek-v4-pro')
+  assert.equal(body.rounds[0].durationMs, 4_000)
+  // 轮开始于北京时间 08:00（空闲）→ 1M token × v4-pro 空闲未命中价（CNY 4.5 / USD 0.66）
+  assert.equal(body.rounds[0].cost.cny.total, 4.5)
+  assert.equal(body.rounds[0].cost.usd.total, 0.66)
+  assert.equal(body.rounds[0].cost.unknownModel, false)
+})
+
+/** 构造一个「只暴露 snapshotEvents()、不暴露 events」的 session 句柄，模拟 dsh-session >= 0.1.2-rc.1。 */
+function snapshotSession(events) {
+  return {
+    id: 'session-test',
+    // 新版 dsh-session 移除了 events 属性，只剩 snapshotEvents()。
+    get events() { throw new Error('session.events was removed in dsh-session >= 0.1.2-rc.1') },
+    snapshotEvents() { return events },
+  }
+}
+
+test('/usage route prefers snapshotEvents() when the new API is present', async () => {
+  const events = [
+    { type: 'turn/start', seq: 1, time: 1_000, data: { turn: 1 } },
+    { type: 'request/context', seq: 2, time: 1_010, data: { provider: 'deepseek', model: 'deepseek-v4-pro' } },
+    { type: 'assistant/message', seq: 3, time: 2_000, data: { turn: 1, step: 0, usage: { inputTokens: 1_000_000, outputTokens: 0 } } },
+    { type: 'turn/end', seq: 4, time: 5_000, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const routes = new Map()
+  apply({
+    effect(setup) { disposers.push(setup()) },
+    get() { return undefined },
+    webServer: { register(route) { routes.set(route.path, route); return () => {} } },
+    // 有 snapshotEvents、无 events —— 必须走 snapshotEvents() 分支，且绝不触碰 events 属性。
+    sessions: { get(id) { return id === 'session-test' ? snapshotSession(events) : undefined } },
+  })
+
+  const route = routes.get('/dsh-usage-chart/usage')
+  const recorder = responseRecorder()
+  await route.handler({ method: 'GET', url: '/dsh-usage-chart/usage?session=session-test', headers: { host: 'localhost:3000' } }, recorder)
+  assert.equal(recorder.status, 200)
+  const body = JSON.parse(recorder.body)
+  assert.equal(body.ok, true)
+  assert.equal(body.sessionId, 'session-test')
+  // 走 snapshotEvents() 分支：time 字段被消费，durationMs / 峰值计费都应正确。
+  assert.equal(body.rounds.length, 1)
+  assert.equal(body.rounds[0].startedAt, 1_000)
+  assert.equal(body.rounds[0].endedAt, 5_000)
+  assert.equal(body.rounds[0].durationMs, 4_000)
+  assert.equal(body.rounds[0].cost.cny.total, 4.5)
+  assert.equal(body.rounds[0].cost.usd.total, 0.66)
+  assert.equal(Array.isArray(body.compactions), true)
+  // 新分支优先：即便 events 属性仍暴露，也应调用 snapshotEvents() 而非 events。
+  const both = { id: 'session-test', events: [], snapshotEvents: () => events }
+  const bothRoutes = new Map()
+  apply({
+    effect(setup) { disposers.push(setup()) },
+    get() { return undefined },
+    webServer: { register(route) { bothRoutes.set(route.path, route); return () => {} } },
+    sessions: { get(id) { return id === 'session-test' ? both : undefined } },
+  })
+  const bothRecorder = responseRecorder()
+  await bothRoutes.get('/dsh-usage-chart/usage').handler(
+    { method: 'GET', url: '/dsh-usage-chart/usage?session=session-test', headers: { host: 'localhost:3000' } },
+    bothRecorder,
+  )
+  const bothBody = JSON.parse(bothRecorder.body)
+  assert.equal(bothBody.rounds.length, 1, '同时暴露 events 与 snapshotEvents 时应优先用 snapshotEvents')
+  assert.equal(bothBody.rounds[0].durationMs, 4_000)
+})

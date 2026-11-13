@@ -1,0 +1,305 @@
+# 更新日志（中文）
+
+本文件记录本项目所有重要变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
+版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。英文版见 [CHANGELOG.md](./CHANGELOG.md)。
+
+## [1.1.9] - 2026-11-10
+
+### 新增
+
+- **Claude 成本估算**——内置 Anthropic Claude 官方 API 标准价（美元 / 1M tokens，2026-11-05 对照 https://platform.claude.com/docs/en/about-claude/pricing 核验）：Fable 5.1 / 5、Mythos 5.1 / 5、Opus 5.5 / 5 / 4.8 / 4.7 / 4.6 / 4.5 / 4.1 / 4、Sonnet 5.5 / 5 / 4.6 / 4.5 / 4、Haiku 4.5。不分高峰/空闲；人民币按统一展示汇率折算（配置／默认值、上次成功值或手动刷新）。Claude Haiku 5.5 暂不收录（按请求输入长度分档，按轮汇总无法判定档位）。
+- **写缓存单独计价**——`BucketPrices` 新增可选 `cacheWrite`（Claude 取 5 分钟 TTL 写入价），`pricing.json` 同样支持；缺省时写缓存仍按「缓存未命中」价计（DeepSeek 行为不变）。
+- **模型 ID 归一化**——`normalizeModelId` 转小写、去掉 `anthropic/` 前缀、把 Claude 点号版本改为连字符（`claude-opus-5.5` → `claude-opus-5-5`）；宿主解析、`pricing.json` 键与 client 快照查找共用。
+- **未定价轮次**——`RoundCost` / `ChartCost` / 解析结果新增 `unpriced`。会话合计含未定价轮次时显示为 `≥`（下限）并在面板提示；当前模型未定价时不再显示「$0/1M」刊例价行；压缩成本留空而非显示 `$0`。
+
+### 变更
+
+- **未收录的 Claude 模型不再按 DeepSeek 回退价估算**——型号名含 `claude` 且未定价的模型（含 Bedrock 写法 `anthropic.claude-…` / `us.anthropic.claude-…` 与显示名）解析为全零单价并标记未定价，不再套用会低估数十倍的 `deepseek-flash` 回退价；DeepSeek 系列与模型名缺失仍按 flash 回退估算。导出的 `pricingFor()` / `estimateCost()` 随之变化：此类模型现返回 `UNPRICED_PRICING` / `0`（仍为 `estimated: true`）。
+- **价格键最长匹配**——价格键查找（`matchPricingKey`，内置表、`pricing.json` 与 client 快照共用）改为精确优先、其次最长前缀，与键的插入顺序无关：`claude-opus-5-5-20261101` 命中 Opus 5.5 而非 Opus 5。Claude 键只接受精确 ID 或「ID + 日期快照后缀」（`-YYYYMMDD` / `-latest`），未收录的新版本（如 `claude-opus-5-6`）显示为未定价，不借用相近型号的价格；非 Claude 键保持宽松前缀语义。
+
+### 修复
+
+- **宿主／客户端价格一致性**——两侧统一先选来源、再做精确／最长前缀匹配；用户文件前缀覆盖优先于内置精确键。
+- **成本分项完整性**——面板分项与比例条补齐缓存命中费用，窄屏允许换行。
+- **统一汇率估值**——Claude、仅 USD 的覆盖及旧人民币单币种条目保留原币种标记，共用同一个已校验的展示汇率；显式双币种原价不变。刷新同步重算历史、压缩、实时估算及徽章；历史请求按会话与汇率去重并防止旧响应覆盖。恢复上次汇率不再阻止配置币种初始化。
+- **定价说明**——面板解释实际换算口径、独立写缓存价及内置 Claude 的 5 分钟 TTL／标准价边界，不再暗示使用了无关的实时汇率。
+- **成本异常检测**跳过未定价轮次，其零成本不再拉低基线、导致后续正常计价的轮次被误报为突增。
+
+### 兼容性
+
+- Claude PR 作者报告了已安装 DSH 0.2.2-rc.1 应用包的检查（不是独立干净 profile 安装验收）：peer 范围准入通过（`includePrerelease`）；`dsh.client.inject` 中已不存在的 `dsh-client-ui-slots` 会被跳过；两个槽位及其标准 props 未变；fold 能处理 0.2.2-rc.1 会话日志。DeepSeek 模型 ID 与刊例价未变（`deepseek-flash` = DeepSeek-V4.1-Flash-1017，`deepseek-v4-pro` = DeepSeek-V4-Pro-0813）。
+
+### 验证与升级说明
+
+- 源码验证：Node 20.19.5 / 22.17.0 / 24.22.2，**85 项测试通过、0 跳过**（包含版本／文档一致性）；打包预检、解包后的运行时入口与类型检查通过。没有依赖升级或 peer 范围变更。
+- 隔离 Chrome 使用合成宿主／会话，验证真实组件、hook 与插件路由：配置汇率 7.1 → 刷新至 7.3、历史／指示器／徽章一致、CNY/USD 切换、保存汇率后重载、完整成本分项与英文 360px 布局。这不是实际 DSH 或干净 profile 安装认证；本版本未新增 0.1.x/0.2.x 干净 profile 验收证据。
+- 确认 npm 已存在 1.1.9 后请显式安装目标版本、重启 `dsh web` 并刷新浏览器。旧配置与价格覆盖继续兼容，新增接受仅 USD 覆盖。单币种换算的历史展示金额会随所选汇率重估，显式双币种原价不变；无需迁移会话日志。
+- 版本记录日期为 2026-11-10（北京时间）。内容已定稿，由维护者自行发布 npm；有日期的日志本身不表示 npm 已可安装。应从最终通过验证的提交发布，不要使用之前的实现提交；若实际发布跨日，请同步调整双语日志日期。
+
+## [1.1.8] - 2026-10-22
+
+### 修复
+
+- **兼容 DSH 0.2.x（插件准入校验）**——DSH 0.2.1-rc.2 在启动时执行插件准入校验：除非 `package.json` 声明了 `engines.dsh`，否则所有包名为 `@deepseek-ai/dsh` 或 `@deepseek-ai/dsh-*` 的 `peerDependencies` 范围都必须匹配当前运行的 DSH 运行时版本。1.1.7 的 4 个 DSH client peer 都声明为 `>=0.1.0-rc.6 <0.2.0`，因此启动时被拒绝，并给出用户可见警告：`dsh-usage-chart@1.1.7 与 DSH 0.2.1-rc.2 不兼容（要求 @deepseek-ai/dsh-client-locale >=0.1.0-rc.6 <0.2.0, ...）…`。现在 peer 范围同时覆盖两代 client SDK：
+  - `@deepseek-ai/dsh-client-locale`、`@deepseek-ai/dsh-client-ui-conversation`、`@deepseek-ai/dsh-client-ui-slots` 的 peer 范围由 `>=0.1.0-rc.6 <0.2.0` 放宽为 `>=0.1.0-rc.6 <0.3.0-0`。上界带 `-0` 是因为 DSH 以 `includePrerelease` 比较范围：这样仍接受 0.2.x 预发布（如 0.2.1-rc.2），但不会把未来的 0.3.0 预发布提前放行。
+  - 移除已退役的 `@deepseek-ai/dsh-client-runtime` peer。DSH 0.2.x 用 `dsh-client-modules` 模块系统（以及 `dsh-client-ui-renderer`、`dsh-client-ui-session` 标准套件与 `dsh-client-store`）取代了它；该包最后发布的版本为 `0.1.1-rc.2`，不存在兼容 0.2.x 的版本。
+  - 在代码层面继续支持 DSH 0.1.x：保留 0.1.x 的 `provenance`、`assistant/chunk` 与 `user/message.source` 路径（该字段自 dsh-llm 0.1.0-rc.2 起同样为 `{ kind }` 对象，仅旧日志可能是裸字符串，折叠对两种形状都接受），插件使用的接口在两条线上一致。0.2.1-rc.2 侧已对照本机安装的应用包与已发布的 0.2.1-rc.2 包类型声明核实：`conversation.composer.dock`、`conversation.chat.assistant-actions` 槽位仍存在且正常渲染；会话作用域标准属性仍提供 `useSession` / `sessionId` / `useProjection`（ui-session）与 `useChat`（ui-chat）；`useChat` 快照仍暴露 `legacy.nodes`；`tokenUsage` / `contextPressure` / `contextBreakdown` 投影字段不变；`ctx.locale.getLocale()` / `subscribe` 与 `ctx.slots.inject` / `register` 未变；宿主 `webServer.register` / `sessions.get` / `snapshotEvents` / `credentials.resolve` 服务未变。把 `dsh-client-runtime` 移出 `dsh.client.inject` 后，未在 0.1.x 上重新做实机安装测试。
+- **适配 DSH 0.2.x 的助手节点模型识别**——助手节点的模型标识新增读取 0.2.x 的 `providerMetadata` 字段；存在 DSH 0.1.x 的 `provenance` 字段时仍优先使用，`requestConfig` 继续作为最后回退，0.2.x 下模型名称与逐条消息成本归因不再丢失。
+- **client 类型声明自包含**——生成的 client `.d.ts` 不再 import 已退役的 `@deepseek-ai/dsh-client-runtime` 包。在仅安装 0.2.x 的 DSH 环境做类型检查时，不会再因悬空导入（DSH 已不再提供该包）而失败；0.1.x 环境行为保持不变。
+- **适配 DSH 0.2.x 会话日志词汇**——DSH 0.2.x 移除了 `assistant/chunk` 事件，流式用量合并进 `assistant/message`（`usage` + `stream`）。宿主折叠现按官方 token-meter 的口径处理这类日志：
+  - 消息用量取 `data.usage`，缺席时回退到 `stream` 里最后一条 usage 记录。
+  - 0.2.x 把失败/重试的请求只记为 `assistant/attempt`（用量内嵌在 `stream` 中），这些用量现在也计入会话总量与每轮成本，重试前后的每次尝试分别计费。
+  - TTFT 取流里首个携带 token 的记录：跳过 `block-start` / `usage` / `finish` 等结构记录与空片段；原始 `*-delta` chunk 与带工具名的 tool-call 片段即使参数为空也算 token。
+  - 输出吞吐 = 输出 token ÷ 各条 `assistant/message` / `assistant/attempt` 流式时长之和，不再被工具执行与步骤间等待拉低；整轮输出只有一个片段时不报吞吐。没有流时间线的日志沿用 0.1.x 口径（首个 usage 样本 → 轮次结束）。
+  - `user/message.source` 为 `{ kind }` 对象（0.1.x 自 dsh-llm 0.1.0-rc.2 起已是同一类型化形状，仅旧日志可能仍是裸字符串，折叠两种都接受）：`user` 与 `user-*` 归为 `human`，目标续跑与 Agent 类来源保留原名，`tool-jobs` 等其他运行时注入记为 `agent.<kind>`，来源标签不再把它们显示为人工。
+
+### 发布准备
+
+- 同步 npm lockfile 根节点的 peer 范围与元数据，移除退役 runtime 条目，不升级已锁定的依赖版本。
+- npm 包收录双语 README 实际引用的截图文件名；同步双语文档、架构、路线图和发布检查清单；新增 lockfile 根元数据一致性与截图收录回归。
+- 对照 DSH 0.2.1-rc.2 官方发布说明与 `llm-deepseek` 模型目录核实：`DeepSeek-V4.1-Flash-1017` 的模型 id 仍为 `deepseek-flash`，1.1.5 起的费率表已覆盖，无需改价。准入校验有意保留 peer 范围回退、不声明 `engines.dsh`：DSH 0.2.x 在声明 `engines.dsh` 时优先按它判断，否则回退到 peer 范围（官方允许），而 peer 范围能让三个客户端 SDK 包分别受版本门禁约束。
+
+### 测试
+
+- 新增 manifest 测试断言放宽后的 peer 范围、退役的 `@deepseek-ai/dsh-client-runtime` peer/inject 条目已移除，以及构建后的 client bundle 与发布的 client 类型声明均不再引用该退役包。新增折叠测试喂入 DSH 0.2.x 形状的日志（无 `assistant/chunk`、`assistant/message` / `assistant/attempt` 带 `usage` + `stream`、`user/message.source` 为对象），断言 token 汇总、仅在流中的用量、由携带 token 的记录（原始 delta chunk、带工具名的 tool-call 片段）推导的 TTFT、跨步骤按流式时长计算的 TPS、失败尝试与重试计费，以及来源归一化；退役 runtime 检查改为扫描全部发布的 client `.d.ts`；另有 client 测试覆盖 `provenance` → `providerMetadata` → `requestConfig` 模型回退。`npm run verify` 全部通过（typecheck + build + `node --test`，共 57 项测试）。兼容面已对照本机安装的 DSH 0.2.1-rc.2 应用包与已发布的 0.2.1-rc.2 包类型声明核实；并在 DSH 0.2.1-rc.2 Web 实例上用 headless 浏览器完成加载冒烟测试：boot 图中包含本插件，输入框下方指示器在真实会话上渲染出实时用量/成本（经 `locale` 服务显示中文），展开面板渲染出会话汇总、上下文构成与投影数据，且无插件控制台错误。
+
+## [1.1.7] - 2026-09-24
+
+### 修复
+
+- **兼容 DSH 0.1.2+ 的会话节点来源**——[PR #12](https://github.com/Max-Samson/dsh-usage-chart/pull/12)：输入框下方的指示器和助手消息成本徽章从独立的 `chat` 槽位源（`useChat`）读取 `legacy.nodes`。旧版 DSH 继续从会话快照的 `chat.legacy.nodes` 或顶层 `nodes` 回退；两个 hook 始终按固定顺序调用，避免 React hook 状态错位。旧版回退仅订阅节点列表，减少无关会话状态更新引起的重渲染。
+- **皮肤下的面板定位**——[PR #14](https://github.com/Max-Samson/dsh-usage-chart/pull/14)：dock 或祖先使用 `transform`、`filter`、`backdrop-filter`、CSS containment 等属性时，将视口坐标换算到最近的 fixed 定位包含块，修复面板偏到屏幕右侧的问题。后续修复补齐边框偏移、根元素和更多 `will-change` 属性的处理，并排除不创建该包含块的 `contain: style`。
+- **跨模型、跨计费时段的会话总成本**——[PR #15](https://github.com/Max-Samson/dsh-usage-chart/pull/15)：指示器与面板逐轮累加宿主折叠出的 CNY/USD 成本，保留每轮自己的模型和开始时刻对应的高峰/空闲价格；不再用单一模型、当前时段价格重算整场会话。历史不可用或轮次缺少成本时，按 `/pricing` 快照回退估算。
+- **合并回归及实时成本同步**——提交 `9753856`、`cc0963f`：恢复 PR #15 合并时覆盖的指示器 `useChat` 接线，补回丢失的 `ChatNodesHook` 导入。指示器和面板现在共用同一份历史、模型归因及成本结果；实时 token 超过已读取历史时，显示“已结算轮次成本＋仅新增 token 的估算成本”，静默 750 毫秒后刷新宿主历史。面板手动刷新也会更新指示器；历史请求失败可重试，切换会话后旧请求不会覆盖新会话的数据。
+
+### 测试
+
+- 新增 chat 源优先级、旧版回退、选择器订阅、双币种逐轮求和、历史过期增量，以及指示器实际组件接线和模型/成本显示的回归测试。`npm run verify` 的 46 项测试全部通过；本地无头浏览器模拟验证了实时估算转为权威历史及面板金额一致。发布前仍应在运行中的 DSH Web 上完成安装冒烟测试。
+
+## [1.1.6] - 2026-09-19
+
+### 修复
+
+- **宿主自定义价格文件源生命周期早释问题（`pricing.json` 覆盖与变更监听）**——[PR #10](https://github.com/Max-Samson/dsh-usage-chart/pull/10)：
+  - **修复 `filePricingSource` 启动即被销毁的 Bug**：此前 `ctx.effect(() => fileSource.dispose(), ...)` 在挂载期立即执行了清理调用，导致文件数据源在首次异步读取完成前被截断关闭，致使用户配置的 `pricing.json` 覆盖及变更监听均无法生效。现已修正为返回高阶清理函数 `ctx.effect(() => () => fileSource.dispose(), ...)`，使文件源在 fiber 卸载时才被释放。
+  - **纠正单测 Cordis effect Mock 语义**：在 `tests/core.test.mjs`、`tests/pricing.test.mjs` 与 `tests/rounds.test.mjs` 中对齐 Cordis 真实生命周期契约，在 `after()` 中统一执行清理函数。
+  - **补充端到端回归用例**：新增 `/pricing route serves the user pricing.json override (file source survives startup)`，验证插件挂载自定义 `pricing.json` 时价格覆盖正常生效且来源正确标记为 `file`。
+
+
+## [1.1.5] - 2026-09-12
+
+### 变更与优化
+
+- **同步 DeepSeek 官方最新调价（2026-09-10）与 `deepseek-flash` 适配**——[PR #8](https://github.com/Max-Samson/dsh-usage-chart/pull/8)：
+  - **新增 `deepseek-flash` 官方刊例价**：按 DeepSeek 官方 2026-09-10 最新调价更新内置定价表，`deepseek-flash` 刊例价全面下调：
+    - **空闲时段**（北京时间工作日非高峰与周末全天）：人民币 CNY 1.0 / 0.02 / 4.0 每 1M tokens（未命中输入 / 命中输入 / 输出）；美元 USD 0.15 / 0.003 / 0.6 每 1M tokens。
+    - **高峰时段**（北京时间工作日 09:00–12:00 与 14:00–18:00）：人民币 CNY 2.0 / 0.04 / 8.0 每 1M tokens；美元 USD 0.30 / 0.006 / 1.2 每 1M tokens。
+  - **历史模型标识平滑兼容**：将 `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 指向 `deepseek-flash` 价格表，确保历史会话在重新加载与折叠时平滑解析，不被判定为未定价模型。
+  - **未收录模型回退**：未收录模型的默认保守估算回退（`FALLBACK_PRICING`）同步切换至新版 `deepseek-flash` 刊例价。
+  - **文档与测试同步**：更新 README 中的 `pricing.json` 自定义配置示例与核验时间戳（`verifiedAt: 1788998400000` 即 2026-09-10）；全量同步 core、pricing、rounds 单测断言与 `BUILTIN_VERIFIED_AT`。
+
+## [1.1.4] - 2026-09-08
+
+### 修复
+
+- **适配 `dsh-session >= 0.1.2-rc.1`（改用 `snapshotEvents()`）**——[PR #7](https://github.com/Max-Samson/dsh-usage-chart/pull/7)：`dsh-session` 在 `0.1.2-rc.1` 移除了公开的 `events` 属性（改为 `snapshotEvents()` 方法）；`/usage` 路由随之抛 `TypeError: events is not iterable`，被 `dsh-host-webserver` 包装成裸 `400` 空响应，每轮图表消失（客户端回退到空的 observed-rounds 路径）。已在 `dsh-session 0.1.2-rc.1` 上实测复现：`/usage?session=<已加载会话>` 返回空 `400`、`/usage?session=<未知>` 返回插件 `404` JSON、离线折叠同一日志却成功——证明崩溃仅源于新版运行时 API 形状。宿主现在通过能力检测读取事件——`snapshotEvents` 为函数时优先调用它，否则回退到旧版 `session.events ?? []`（即便 API 缺失也绝不再导致路由崩溃）。同时为 vendored 的 `SessionEventLike` 类型补齐 `time` 字段（Unix epoch 毫秒），并新增 `SessionHandle` 形状（可选 `events` + 可选 `snapshotEvents`），使 `SessionStoreService.get()/list()` 在新旧两代 API 下均成立。已对照上游 `deepseek-harness` 源码核实：`Session.events` 自 `0.1.2-alpha.4` 起移除（官方架构笔记 `2026-08-21-session-log-read-intent`）；本机安装的 `0.1.0-rc.6` 仍暴露 `events`，因此回退分支持续有覆盖。
+- **为新的 `snapshotEvents()` 读取路径补充测试**：新增 `tests/rounds.test.mjs` → `/usage route prefers snapshotEvents() when the new API is present`，mock 一个只暴露 `snapshotEvents()` 的会话句柄（其 `get events()` 会抛错，证明路由绝不读取被移除的属性），断言 `time` 被正确消费（耗时/峰值计费），并验证同时暴露两者时优先使用 `snapshotEvents()`。
+
+## [1.1.2] - 2026-08-26
+
+### 优化与修复
+
+- **轮次 Hover 悬浮卡双列紧凑化**：
+  - **消除高度溢出**：重构条形柱悬浮详情卡（`.duc-chart-tooltip`）为 2 列紧凑网格（Token 构成 2×2 网格，9 行元数据合并为 4-5 行双列排布），卡片宽度微调至 240px，卡片总高度从 ~280px 压缩至 ~120px（缩减 55%+）。
+  - **贴顶对齐**：定位从 `top: 20px` 调整为 `top: 2px`，悬浮卡完全收敛在图表高度（132px）内，彻底杜绝悬浮卡向下延伸撑大弹窗导致竖向滚动条的问题。
+
+## [1.1.1] - 2026-08-26
+
+### 优化与修复
+
+- **面板 UI 紧凑化与高度收敛**：
+  - **消除竖向滚动**：重构面板小节间距（`.duc-section` 内边距由 `12px` 收紧为 `8px`），单元格内边距由 `8px 9px` 收紧为 `5px 8px`，数值与行高紧凑化，面板总高度从 ~800px 缩减至 ~560px（缩减 ~170px），在大屏与笔记本屏幕下均可在视口内完整展开，彻底告别竖向滚动条。
+  - **剔除重复图例**：移除「会话用量」区域冗余渲染的 4 色图例行（该区域顶部 4 格数据卡已有明确文字标签，图表区域保留统一图例）。
+  - **压缩空状态轻量化**：会话未发生压缩时，不再占用独立整行展示“尚未发生上下文压缩”空占位，节约垂直高度；发生压缩时才展示时间线卡片。
+  - **SVG 轮次图高度优化**：`RoundBars` 柱高基准由 `96px` 优化为 `76px`，SVG 画布高度由 `166px` 缩减为 `132px`，滚动箭头与耗时折线位置自适应对齐。
+  - **健壮性增强**：`RoundBars` 针对缺失币种或历史成本对象增加安全兜底（`currency` 默认 `'cny'`，链式可选属性防解构异常）。
+
+## [1.1.0] - 2026-08-26
+
+里程碑交付：**上下文可解释性与压缩诊断**。把「上下文为什么变大、哪一轮被压缩、释放了多少、压缩摘要自身花了多少」变成可解释视图（Dock 入口 + 面板诊断专区），同时支持上下文增长来源归因。
+
+### 新增
+
+- **上下文构成与压缩诊断专区**：面板新增「上下文与压缩诊断」专区，三列并排展示系统提示（System Prompt）、工具定义（Tools Schema）、历史消息（Messages）的 Token 规模与百分比，并配有系统蓝 / 工具橙 / 消息绿的分段条，明确标注官方 `contextBreakdown` 投影的启发式近似分桶口径。
+- **Compaction 压缩折叠与成本核算**：Host 端新增 `foldCompactions`（`src/usage/compactions.ts`），从事件流解析 `compaction/start`、`compaction/summary`、`compaction/prune`、`compaction/end`，精确统计裁剪范围（`shadowedRange` / `shadowedSeqs`）、释放 Token 规模（`shadowedTokenCount`）、发生轮次、摘要生成模型及 summarize 调用的双币种成本估算（高峰/空闲时段自适应计费）。
+- **压缩时间线与节约统计**：诊断专区汇总展示总裁剪释放的 Token 规模与压缩总次数，逐条列出各轮压缩记录（裁剪量、发生轮次、summarize 调用开销）。
+- **容量预警与优化建议**：根据上下文占用比例（`contextPressure` 投影）自动给出优化建议（≥75% 提示考虑开新会话或减少大文件注入，≥90% 提示上下文即将耗尽）。
+- **Dock 压力条三段着色**：消费官方 `contextBreakdown` 投影，在输入框下方的细压力条内将系统（蓝）、工具（橙）、消息（绿）按比例分段渲染，悬浮展示各段百分比，无 breakdown 时自动平滑回退至单色压力条。
+- **轮次增长来源归因（userSource）**：Host 端 `foldRounds` 提取 `user/message` 的来源属性（人工输入 `human`、Agent 注入 `agent.inject`、目标续跑 `continuation` 等），图表 Tooltip 解释卡显式展示该轮的输入来源标识。
+- **新增导出**：`foldCompactions` 函数与 `CompactionRecord` 类型。
+
+## [1.0.2] - 2026-08-26
+
+### 修复与优化
+
+- **周末全天空闲时段规则对齐**：`isPeakHour` 与 `tierAt` 增加对星期几的判定，高峰时段严格限定为**北京时间周一至周五 09:00–12:00、14:00–18:00（UTC 01:00–04:00、06:00–10:00）**；周六、周日全天均正确判定为空闲时段（休闲期 / 优惠期，享受半价计费）。
+- **内置刊例价补全**：内置价表补全收录 `deepseek-v4-flash-vision-exp` 模型定价（与 flash 相同）；官方价表核验日期 `BUILTIN_VERIFIED_AT` 更新为 `2026-08-26`。
+
+## [1.0.1] - 2026-08-17
+
+计费方式更新为 DeepSeek 最新调价（官方定价页中/英文版，2026-08-17 抓取）：刊例价改为**双币种
+（CNY / USD，每 1M tokens）**，并区分**高峰 / 空闲时段**——高峰时段（北京时间 09:00–12:00、
+14:00–18:00，即 UTC 01:00–04:00、06:00–10:00）价格为空闲时段的 2 倍。
+
+### 新增
+
+- **高峰/空闲时段计费**：内置价表每个模型同时收录 `peak` 与 `offPeak` 单价；每轮成本按轮次开始时刻
+  自动选用对应时段单价（`tierAt` 按北京时间 = UTC+8 判定）。时刻未知按高峰价保守估算。
+- **官方双币种刊例价**：每个时段同时携带官方人民币报价与美元报价（中文定价页 CNY / 英文定价页 USD）；
+  成本按所选显示币种的官方刊例价直接计算，**不做汇率换算**，与官方账单口径一致。CNY/USD 切换
+  同时驱动指示器、面板、图表成本视角与成本徽章。
+- `pricing.json` 支持双币种双时段形状 `{ "peak": { "cny": {…}, "usd": {…} }, "offPeak": {…} }`；
+  旧格式继续兼容（单币种时段价或平铺形状视为人民币报价，美元按默认汇率 6.76 折算）。
+- 新增导出：`costSplitAt`、`tierAt`、`isPeakHour`、`formatCny` 与 `CostCurrency` / `PriceTier` /
+  `PriceTierId` / `BucketPrices` 类型。
+- 面板价格注记同时展示两个时段：如未命中输入 `1.5/3.0`（空闲/高峰，按所选币种）。
+- **当前计费时段 tag**：面板「会话用量」标题行以红（高峰）/ 绿（空闲）tag 实时标注当前计费时段
+  （北京时间，跨整点自动翻转）；每轮解释卡也显示该轮计费时段。
+- **逐轮费用可见**：成本视角下每根柱都显示对应费用数值（不再只有当前轮）；宿主历史不可用时，
+  观测增量路径也按 `/pricing` 快照 + 逐轮模型/开始时刻推导双币种成本，成本视角在无历史时同样可用。
+
+### 变更
+
+- 内置刊例价更新为官方双币种价（flash：CNY 空闲 1.5 / 0.05 / 4.5、高峰 3.0 / 0.10 / 9.0；
+  USD 空闲 0.22 / 0.007 / 0.66、高峰 0.44 / 0.014 / 1.32；pro：CNY 空闲 4.5 / 0.15 / 13.5、
+  高峰 9.0 / 0.30 / 27.0；USD 空闲 0.66 / 0.022 / 1.98、高峰 1.32 / 0.044 / 3.96——
+  未命中输入 / 命中输入 / 输出）；`BUILTIN_VERIFIED_AT` 更新为 2026-08-17。
+- 成本计算改为按币种参数化：`costSplit(usage, pricing, tier, currency)` 与
+  `costSplitAt(usage, pricing, timeMs, currency)` 返回所选币种的中性分拆
+  （`input` / `cacheRead` / `output` / `total`）；`formatMoney` / `formatPricePerM` 去掉汇率参数
+  （金额已按显示币种计算）；移除 `toDisplayAmount`；`estimateCost` 仍返回 `{ cny, estimated }`
+  （官方人民币价）。
+- `foldRounds` 每轮按 `turn/start` 时刻计费（回退 `turn/end`，再回退高峰价），并在 `/usage` 负载中
+  同时下发 `cny` 与 `usd` 两份成本分拆，client 切换币种无需重新推导。
+- 汇率（`config.cnyPerUsd`、`/rate`、「刷新汇率」）仅用于「1 USD ≈ X CNY」参考注记；
+  官方模型成本不再依赖汇率。
+
+### 修复
+
+- 旧内置表（单一币种、单一价格）已不符合官方双币种分时段计费，成本长期失真；整条链路现已跟随
+  当前官方定价页（CNY + USD）。
+
+## [1.0.0] - 2026-08-15
+
+首个完整版本：会话内用量解释器核心能力齐备——三视角轮次图（全部历史横向滚动）+ 每轮成本/耗时/异常解释卡 + 多币种成本与实时汇率 + 账户余额。
+
+### 变更
+
+- 每轮图表不再截断最近 12 轮：**全部**轮次渲染进横向滚动区域，柱宽固定为细柱（30px），柱宽恒定、不再拥挤；自动滚到最新轮次，内容越界时出现箭头按钮与边缘渐隐提示，滚动条细化为 5px。
+- 柱顶值标签自适应密度：可滚动（密集）时仅当前轮保留柱顶数值（其余经悬浮解释卡查看）；不可滚动时省略过长标签（如 `$0.0013`、`123.4K`），杜绝相邻标签重叠。
+- 图表最小宽度自适应面板宽度：轮次少时填满/居中显示且不拉伸柱宽；工具提示按「内容坐标 − 滚动偏移」精确定位并收敛进可见区。
+
+### 修复
+
+- 图表可滚动后工具提示定位错位：现随滚动精确跟随当前柱。
+- 窄面板下短历史不必要地横向溢出：自适应最小宽度已消除。
+- 余额「无密钥」用例现在隔离 `$DEEPSEEK_API_KEY`，在宿主环境已配置该密钥时测试套件仍能通过；并新增环境变量回退的用例覆盖。
+
+## [0.3.0] - 2026-08-15
+
+### 新增
+
+- 成本显示币种：`config.currency`（'usd' | 'cny'）与 `config.cnyPerUsd`（默认 6.76），成本按所选币种展示。
+- 成本区 USD/CNY 切换按钮，选择在浏览器中记住（localStorage）。
+- 「刷新汇率」按钮：经新同源代理路由 `/dsh-usage-chart/rate`（`config.fxUrl`）拉取最新 USD→CNY 汇率并立即重估。
+- 新增 `/dsh-usage-chart/meta` 路由，向客户端下发显示币种配置。
+
+### 变更
+
+- 刊例价注记跟随显示币种并标注所用汇率。
+
+### 修复
+
+- 汇率刷新健壮性：默认源不可达时自动回退内置备用源（frankfurter.dev）；上次成功汇率持久化，断网刷新沿用真实汇率而非写死默认值。
+- 槽位注册改为 `ctx.slots.inject` 等待声明，修复加载顺序变化时 `slot "…" is not declared`。
+
+## [0.2.0] - 2026-08-15## [0.2.0] - 2026-08-15
+
+### 新增
+
+- **每轮成本解释力（v0.2，见 `docs/ROADMAP.md`）**：宿主折叠
+  （`RoundFold`，`src/usage/rounds.ts`）现在逐轮推导**总耗时**（`turn/start → turn/end`）、
+  **TTFT**（start → 首个 usage 样本）、**输出吞吐**（tokens/s）、**模型归因**
+  （`request/context` → `request/header` → 跨轮携带回退）、**结束原因**，以及**每轮成本分拆**
+  （输入 / 缓存命中 / 输出 × 单价）。
+- **价格治理**：`src/pricing.ts` 拆分为纯数学模块（`pricing/calc.ts`，两个半区 bundle 同一份）
+  与 host 专用 `PricingSource` 接缝（`pricing/source.ts` —— 带核验日期的内置刊例价 +
+  支持变更监听的用户覆盖 `pricing.json` 文件适配器），以及 `PricingResolver`
+  （`pricing/resolve.ts`，优先级：文件 > 内置 > 回退，未知模型显式标记）。
+  新增 `/dsh-usage-chart/pricing` 路由导出解析快照 —— client 的**唯一**价格输入（ADR 2），
+  旧的 client 内置价格常量不再与宿主解析漂移。
+- **`/usage` 路由**改为返回 `rounds`（含成本 / 时序 / 模型 / 结束原因），不再返回裸 `turns`
+  （`foldTurnUsage` 保留为 v0.1 兼容出口）。
+- **RoundBars 成本视角**：第三个图表模式按成本（各桶 × 单价）堆叠；柱顶叠加**总耗时点线**；
+  相对最近 N 轮成本突增的轮次（`src/client/diagnose/anomaly.ts`）加**警示标记**与归因 chip；
+  柱底加每轮**缓存命中迷你刻度**；悬浮提示升级为**解释卡**（token 分桶 + 成本 + 模型 +
+  耗时 + TTFT + TPS + 缓存命中 + 结束原因 + 异常 chip）。
+- **成本徽章**：每条助手消息尾部显示可关闭的「本轮 ≈ $0.00xx」徽章
+  （`conversation.chat.assistant-actions` 槽位，数据来自宿主 `/usage` 历史）。
+- **Dock 上下文压力条**：指示器内的细压力条（`contextPressure`），随占用升高由绿转黄再转红。
+- **测试**：`tests/rounds.test.mjs`（折叠的耗时/TTFT/TPS/模型/成本 + 路由）、
+  `tests/pricing.test.mjs`（解析优先级、临时目录文件源、未知标记 + 路由）、
+  `tests/anomaly.test.mjs`（突增判定与归因）；`npm run verify` 共 28 项通过。
+- **配置**：可选 `config.pricingFile` 覆盖默认的 `$DSH_HOME/data/dsh-usage-chart/pricing.json`
+  （无 `DSH_HOME` 时回退 `~/.dsh/...`）。
+
+### 修复
+
+- 成本估算单一真相：指示器与面板的实时成本都消费 `/pricing` 快照；面板展示价格来源、
+  核验日期与「未定价模型」标记。
+- 面板成本解析优先使用宿主折叠的**权威模型归因**（ADR 1），不再依赖快照 provenance
+  （老会话快照可能缺失模型字段，此前会误标「回退估算」来源）。
+
+### 升级注意
+
+- **升级到 0.2.0 后必须重启 `dsh web`。** 宿主进程会把插件代码缓存进内存（无热重载）：
+  新的 `/dsh-usage-chart/pricing` 路由与 `rounds` 形状的 `/dsh-usage-chart/usage` 响应
+  只有重启后才会生效。在此之前指示器会静默隐藏成本位、面板显示「价格快照不可用」。
+
+## [0.1.1] - 2026-08-14
+
+### 新增
+
+- 余额查询现在通过 DSH 凭据服务（`ctx.get('credentials')`）解析 DeepSeek API Key，
+  在网页端（设置 → 模型）或 `.credentials.yaml` 中配置的密钥无需环境变量或插件配置即可生效。
+
+### 修复
+
+- 安装警告 `missing peer react@^18.2.0`（react 由 DSH web 平台内置；peer 现标记为可选）。
+- 文档：README 补充卸载/清理步骤。
+
+## [0.1.0] - 2026-08-14
+
+### 新增
+
+- 输入框下方的用量指示器与可展开的 SVG 仪表盘。
+- 会话 token、缓存、上下文压力、模型与成本估算视图。
+- 每轮用量柱状图：总量/构成视图、悬浮与键盘 Tooltip、当前轮高亮；宿主侧从会话日志
+  按轮聚合。
+- 宿主侧 DeepSeek 余额代理。
+- 完整中英文本地化：指示器、面板、图表与余额视图跟随 DSH 应用内语言设置
+  （经 `locale` 服务；浏览器语言只做初始兜底）。
+- 发布元数据、双语文档、CI、贡献/安全策略，以及可移植的视觉探测脚本（`scripts/*.mjs`）。
+- 隐私安全的 README 演示截图（虚构用量数据，不含任何账户数据）。
+
+### 修复
+
+- 浅色主题可读性：指示器、面板与 SVG 图表改用 DSH 主题 token
+  （`--dsw-alias-label-*` / `--dsw-alias-bg-*`）与主题静态色板，明暗外观下文字与
+  图表分桶均清晰可读。
+
+### 安全
+
+- Host JSON 路由仅接受同源 GET 请求。
+- 自定义 API 地址强制 HTTPS；仅回环地址允许 HTTP（便于连接本地代理）。
+- 聚合前校验 token 用量样本。

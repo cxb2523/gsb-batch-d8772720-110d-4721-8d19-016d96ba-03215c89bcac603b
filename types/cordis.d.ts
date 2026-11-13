@@ -1,0 +1,66 @@
+/**
+ * 最小 cordis Context 声明（自包含 vendored 类型，仅宿主半区使用）。
+ *
+ * 说明：本插件不把 DSH 内部包作为运行时/类型依赖（它们由运行中的 DSH 提供），
+ * 因此按 DSH 0.1.x – 0.2.x 实际暴露的宿主 API 形状 vendored 了所需的最小类型；
+ * 客户端半区的类型是 `src/client/context.ts`（同样自包含，见该文件）。
+ * 宿主代码只做 type-only import，构建时被擦除，不影响运行。
+ */
+import type { IncomingMessage, ServerResponse } from 'node:http'
+
+/** dsh-host-webserver 的 webServer 服务（仅声明本插件用到的面）。 */
+export interface WebServer {
+  readonly port: number
+  register(route: {
+    kind: 'exact' | 'prefix'
+    path: string
+    handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
+  }): () => void
+}
+
+/** 会话日志事件的最小形状（assistant/chunk 与 assistant/message 携带 turn/step/usage）。 */
+export interface SessionEventLike {
+  type: string
+  seq: number
+  /** Unix epoch 毫秒。 */
+  time: number
+  data: {
+    turn?: number
+    step?: number
+    usage?: unknown
+    chunk?: { type?: string; usage?: unknown }
+  }
+}
+
+/** dsh-session 的 SessionStore 服务（仅声明本插件用到的面）。 */
+export interface SessionHandle {
+  id: string
+  /** 旧版 dsh-session（< 0.1.2-rc.1）的公开事件数组；新版已移除，改为 snapshotEvents()。 */
+  events?: readonly SessionEventLike[]
+  /** 新版 dsh-session（>= 0.1.2-rc.1，0.2.x 同样保留）的公开事件快照方法。 */
+  snapshotEvents?: () => readonly SessionEventLike[]
+}
+export interface SessionStoreService {
+  /** 按 id 查实时会话；不存在返回 undefined。 */
+  get(id: string): SessionHandle | undefined
+  /** 所有实时会话（创建顺序）。 */
+  list(): SessionHandle[]
+}
+
+/** dsh-credentials 的凭据服务（本插件用到的面：按引用解析密钥值）。 */
+export interface CredentialsService {
+  /** 解析一个凭据引用（如 'DEEPSEEK_API_KEY'）为当前值；未配置返回 undefined。 */
+  resolve(ref: string): Promise<{ value: string; source?: string } | undefined>
+}
+
+/** cordis Context（本插件宿主半区用到的面：effect + get + webServer + sessions）。 */
+export interface Context {
+  /** 注册一个资源释放器，插件卸载时执行。 */
+  effect(disposer: () => (() => void) | void, label?: string): void
+  /** 读取服务（反射层）：不要求 inject 声明；服务不存在返回 undefined。 */
+  get(name: string, strict?: boolean): unknown
+  webServer: WebServer
+  sessions: SessionStoreService
+  /** 可选服务（如 credentials）一律经 ctx.get 读取——未 inject 的服务属性访问会抛错。 */
+  [key: string]: unknown
+}
