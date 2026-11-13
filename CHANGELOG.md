@@ -1,0 +1,354 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [4.4.7](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.6...v4.4.7) (2026-11-01)
+
+
+### Documentation
+
+* refresh download page (v4.4.6) ([695fe94](https://github.com/redtidev1918/deviantart-downloader/commit/695fe94f0a73b6012940983c803966a62fb3eff8))
+* sync managed workflows with fixed docsite template ([#60](https://github.com/redtidev1918/deviantart-downloader/issues/60)) ([d590d6e](https://github.com/redtidev1918/deviantart-downloader/commit/d590d6e05883031cd7fc5a0b4ccd98524a5771d4))
+
+## [4.4.6](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.5...v4.4.6) (2026-10-31)
+
+
+### Documentation
+
+* **agent:** record download-page asset-table toggle delivery ([#58](https://github.com/redtidev1918/deviantart-downloader/issues/58)) ([0def9e9](https://github.com/redtidev1918/deviantart-downloader/commit/0def9e9f9aeb8a90eb3cd958f0d40e28ec34fb96))
+* fix docs-site links left over from the docsify era ([#56](https://github.com/redtidev1918/deviantart-downloader/issues/56)) ([6957712](https://github.com/redtidev1918/deviantart-downloader/commit/695771218006fc851006c0c85675577e4fcfed0f))
+* migrate documentation site to VitePress ([f7ddb8c](https://github.com/redtidev1918/deviantart-downloader/commit/f7ddb8ca046b2eb518f561fcb2e3b6a04dfda019))
+* migrate documentation site to VitePress ([13532d7](https://github.com/redtidev1918/deviantart-downloader/commit/13532d7cbd653e827010e3f9fbd53356d5496656))
+* migrate documentation site to VitePress [skip ci] ([f7ddb8c](https://github.com/redtidev1918/deviantart-downloader/commit/f7ddb8ca046b2eb518f561fcb2e3b6a04dfda019))
+* refresh download page (v4.4.5) ([4af1091](https://github.com/redtidev1918/deviantart-downloader/commit/4af109136801b589893d247ac91a15ad9055e63d))
+* retain inactive deployment workflow backup ([e79d304](https://github.com/redtidev1918/deviantart-downloader/commit/e79d3048653d24ac4143dd8e07f8f8ff72154a48))
+* 下载入口 PyPI 优先，补英文下载页安装指引 ([#54](https://github.com/redtidev1918/deviantart-downloader/issues/54)) ([cf1f968](https://github.com/redtidev1918/deviantart-downloader/commit/cf1f968ecf144a8fa8f622f234702ed699152e00))
+* 下载页精简为安装指引，生成器停用资产表 ([#57](https://github.com/redtidev1918/deviantart-downloader/issues/57)) ([f650a7c](https://github.com/redtidev1918/deviantart-downloader/commit/f650a7cd36741b654600390c89cc7be09c85f84d))
+
+## [4.4.5](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.4...v4.4.5) (2026-10-29)
+
+
+### Documentation
+
+* add .agent engineering state files ([8381633](https://github.com/redtidev1918/deviantart-downloader/commit/83816336c602cb9fa45a3e361791abaeb48d6145))
+* refresh download page (v4.4.4) ([df97947](https://github.com/redtidev1918/deviantart-downloader/commit/df979470eb213913406affddda9d4aff9a7d536d))
+
+## [4.4.4](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.3...v4.4.4) (2026-10-29)
+
+
+### Documentation
+
+* explain media versions and original download priority ([8164784](https://github.com/redtidev1918/deviantart-downloader/commit/8164784a83e1d428a834e4eedd2fe05d6135643e))
+* refresh download page (v4.4.3) ([840e8fa](https://github.com/redtidev1918/deviantart-downloader/commit/840e8fab2abf5cb087e7194f1b52f373d492c9bd))
+
+## [4.4.3](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.2...v4.4.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* download bounded media with explicit fullview labels ([#49](https://github.com/redtidev1918/deviantart-downloader/issues/49)) ([eb301c7](https://github.com/redtidev1918/deviantart-downloader/commit/eb301c72bc19ccdf9fb71dce19924a769720ece9))
+
+
+### Documentation
+
+* refresh download page (v4.4.2) ([14b7291](https://github.com/redtidev1918/deviantart-downloader/commit/14b7291b190a245975715c17bfbfea3f1d9645cf))
+
+## [4.4.2](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.1...v4.4.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **auth:** distinguish expired sessions from unavailable evidence ([#45](https://github.com/redtidev1918/deviantart-downloader/issues/45)) ([28a9ec9](https://github.com/redtidev1918/deviantart-downloader/commit/28a9ec903ac1545b763e209b51b1aa9d3a467337))
+
+
+### Documentation
+
+* refresh download page (v4.4.1) ([33fc046](https://github.com/redtidev1918/deviantart-downloader/commit/33fc046d1ad54d754fa4c6a4018bb849a403fbca))
+
+## [4.4.1](https://github.com/redtidev1918/deviantart-downloader/compare/v4.4.0...v4.4.1) (2026-10-07)
+
+
+### Documentation
+
+* refresh download page (v4.4.0) ([01ee803](https://github.com/redtidev1918/deviantart-downloader/commit/01ee803280a5d99b6e933c5cde0bc2edd8907b3b))
+
+## [4.4.0](https://github.com/redtidev1918/deviantart-downloader/compare/v4.3.4...v4.4.0) (2026-09-23)
+
+
+### Features
+
+* **literature:** extract inline text works as documents ([86c38d7](https://github.com/redtidev1918/deviantart-downloader/commit/86c38d7b35fdf5b432b69bccba49cf5b2ef42e63))
+
+
+### Bug Fixes
+
+* **release:** smoke test wheel entry points before release ([#40](https://github.com/redtidev1918/deviantart-downloader/issues/40)) ([14296eb](https://github.com/redtidev1918/deviantart-downloader/commit/14296ebd78a798376b89586ad444c32832e9ef19))
+
+
+### Documentation
+
+* refresh download page (v4.3.4) ([7126324](https://github.com/redtidev1918/deviantart-downloader/commit/7126324521fe080d33f3e59e13c543aaaeb40bd0))
+
+## [4.3.4](https://github.com/redtidev1918/deviantart-downloader/compare/v4.3.3...v4.3.4) (2026-09-23)
+
+
+### Bug Fixes
+
+* recognize paid/subscription-locked works instead of saving blurred mains ([ca1d405](https://github.com/redtidev1918/deviantart-downloader/commit/ca1d405e54c63e7ede9f948529f769979d9370b4))
+* recognize paid/subscription-locked works instead of saving blurred mains ([bb88b92](https://github.com/redtidev1918/deviantart-downloader/commit/bb88b92667aa4b3780d59b2b8417845cae33d709))
+
+
+### Documentation
+
+* document paid/subscription-locked work handling ([5db6330](https://github.com/redtidev1918/deviantart-downloader/commit/5db63307adc569386a20a471fb071896170355fc))
+* refresh download page (v4.3.3) ([4e1872a](https://github.com/redtidev1918/deviantart-downloader/commit/4e1872ac244df8aab4e1ca1f8be3ab4dfe3d05aa))
+
+## [4.3.3](https://github.com/redtidev1918/deviantart-downloader/compare/v4.3.2...v4.3.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* **ci:** run caller ACK even when PyPI job is skipped ([a83be0a](https://github.com/redtidev1918/deviantart-downloader/commit/a83be0ae120fdf7273504f3eb81452df86ae832e))
+
+
+### Documentation
+
+* refresh download page (v4.3.2) ([756f2f5](https://github.com/redtidev1918/deviantart-downloader/commit/756f2f5c4b8fa3724dd98aab8827c823e6ec902d))
+* tighten AI-flavored wording ([6a6e1a1](https://github.com/redtidev1918/deviantart-downloader/commit/6a6e1a1d6bba8103cb4b4ca6a527a098c1858036))
+
+## [4.3.2](https://github.com/redtidev1918/deviantart-downloader/compare/v4.3.1...v4.3.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* resolve extra pages through the full media descriptor ([5f562cf](https://github.com/redtidev1918/deviantart-downloader/commit/5f562cf3920787fa4400040c097bea3e9e3d1d34))
+
+
+### Documentation
+
+* refresh download page (v4.3.1) ([0ce1261](https://github.com/redtidev1918/deviantart-downloader/commit/0ce12615834a7f3d2c1dc44b0a8fce297035c79a))
+
+## [4.3.1](https://github.com/redtidev1918/deviantart-downloader/compare/v4.3.0...v4.3.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* prefer official video source, skip blurred extras, widen web fallback ([ad5c79b](https://github.com/redtidev1918/deviantart-downloader/commit/ad5c79bea9a72a3428344136e29211defaf524d6))
+
+
+### Documentation
+
+* add language entries to both sidebars ([1c740b9](https://github.com/redtidev1918/deviantart-downloader/commit/1c740b96aadba6f512ed49fa8ffa56bbedfa0147))
+* improve README readability ([152b76b](https://github.com/redtidev1918/deviantart-downloader/commit/152b76beb3a8cb13eb148bdf68bbe4527803f69a))
+* labeled docs-site links, tidy header emphasis ([aa649f3](https://github.com/redtidev1918/deviantart-downloader/commit/aa649f3e71a93db5b20d8c67896dd496e55335cb))
+* move long-form usage out of the README and add doc index ([e9da38b](https://github.com/redtidev1918/deviantart-downloader/commit/e9da38bf663fb6d2cd09360ac2e4e4c6e8426afa))
+* put the documentation link on its own line ([9ea011f](https://github.com/redtidev1918/deviantart-downloader/commit/9ea011f407092d5c9da1eb821e9fe002d487a4ec))
+* refresh download page (latest) ([e371be9](https://github.com/redtidev1918/deviantart-downloader/commit/e371be9efa9276b62af7aaff34fa46110e99f0ac))
+* sync managed download-page generator to v3 ([8a59a1e](https://github.com/redtidev1918/deviantart-downloader/commit/8a59a1e551bb09c617b8082e3c510134f116c8cd))
+* tagline as blockquote ([8e8b8bd](https://github.com/redtidev1918/deviantart-downloader/commit/8e8b8bd058e7e097668734e1ea55810206787830))
+* tidy README header, match TelePost layout ([bb51ff4](https://github.com/redtidev1918/deviantart-downloader/commit/bb51ff43ee82a40076a0c738905c7520035743d3))
+
+## [4.2.0](https://github.com/redtidev1918/deviantart-downloader/compare/v4.1.2...v4.2.0) (2026-09-17)
+
+
+### Features
+
+* `--dry-run` plan mode: resolve the target and report what would be downloaded without writing any file ([#25](https://github.com/redtidev1918/deviantart-downloader/pull/25))
+
+
+## [4.1.2](https://github.com/redtidev1918/deviantart-downloader/compare/v4.1.1...v4.1.2) (2026-09-12)
+
+
+### Documentation
+
+* 侧边栏按信息架构规约收敛，拆分语言侧边栏 ([#20](https://github.com/redtidev1918/deviantart-downloader/issues/20)) ([07e2bcf](https://github.com/redtidev1918/deviantart-downloader/commit/07e2bcfa2787b6d5c62ac69a490c9952a2be41b6))
+* 发版说明对齐 releasegraph 流水线，去 emoji ([fcde413](https://github.com/redtidev1918/deviantart-downloader/commit/fcde4134a50274e62d4a6502af00138e00a2ab84))
+* 统一双语命名与侧边栏，接入托管下载页生成链路，清理一次性报告 ([#18](https://github.com/redtidev1918/deviantart-downloader/issues/18)) ([9b4c751](https://github.com/redtidev1918/deviantart-downloader/commit/9b4c7519981ad4a7db26275265af20fc18f6d5fe))
+
+## [4.1.1](https://github.com/redtidev1918/deviantart-downloader/compare/v4.1.0...v4.1.1) (2026-09-07)
+
+
+### Documentation
+
+* 中英文 README 增加一键浏览器登录（devart-dl login browser） ([cdcdefa](https://github.com/redtidev1918/deviantart-downloader/commit/cdcdefababa2052ac1f458dfc10a3467fcaf924b))
+
+## [4.1.0](https://github.com/redtidev1918/deviantart-downloader/compare/v4.0.4...v4.1.0) (2026-09-06)
+
+
+### Features
+
+* **login:** 一键浏览器登录（CDP 自动抓 cookie），免 F12 手动复制 ([94f86ff](https://github.com/redtidev1918/deviantart-downloader/commit/94f86ffd90c6dda9a7414063c72021332a9c53d1))
+
+
+### Documentation
+
+* mature content blur/quota and login-liveness notes ([85d9a38](https://github.com/redtidev1918/deviantart-downloader/commit/85d9a3848d2c41b110921172bc7ec34b2b141112))
+* **site:** 新增自动化下载页（pip wheel + 发版自动更新） ([29ee11d](https://github.com/redtidev1918/deviantart-downloader/commit/29ee11dccbd50737d06d31810530351f97ba9460))
+
+## [4.0.4] - 2026-09-06
+
+### Chores
+- 补测试工具链与用例：`pytest` 全量 89 个用例通过（含新增「多文件作品逐个下载」回归测试）；`ruff check` 通过；CI 各 Python 版本矩阵验证通过。
+
+## [4.0.3] - 2026-09-06
+
+### Fixed
+- 单作品下载支持**多文件作品**：附加画面来自网页 init 响应（deviation.extended.additionalMedia，官方 API 不再返回），会逐个产出下载项，不再只下第一张图。
+
+## [4.0.2] - 2026-09-06
+
+### Fixed
+- 修复 DA 改版后「数字 id → UUID」解析失效：网页解析接口自 2026 年起把 `type` 列为必填参数，缺失会返回 400，已补上该参数（gallery-dl/DeviantDrop 同款修复）。
+- 网页路径取全图改为「baseUri 原文件优先」：现代 DA 的 `baseUri` 本身就是带扩展名的原始文件，直接加 token 下载即可；此前拿它拼 `/v1/fit|fill` 变体模板（DA 2026 改版后实测 400/404）会导致下载失败。
+
+### Docs
+- 新增网络出口说明：DeviantArt 会按出口 IP 封锁数据中心（Cloudflare Workers、Fly 及多数云主机实测网页与部分接口被拦），详见 docs/README.md「网络 / 出口要求」。
+
+## [4.0.1] - 2026-09-05
+
+### Added
+- Cookie 登录现在支持 `DEVIANTART_COOKIES` 环境变量。
+- 登录文档新增 OAuth、Cookie、环境变量、Cookie 文件的逐步教程，并说明各方式支持的下载类型。
+- 安装文档解释 GitHub Release 中 wheel、sdist、源码压缩包与 SHA256 的用途。
+
+### Changed
+- GitHub 发版后自动删除旧 Release，仅保留最新 Release；历史 git 标签继续保留。
+
+## [4.0.0] - 2026-09-05
+
+### Added
+- `fav.me` 短链现在可直接下载（自动跟随跳转解析作品）。
+
+### Changed
+- 显式子命令（`url` / `artist` / `gallery` / `search` / `fav`）现在走同一套可靠下载管线（Range 续传、下载档案、响应校验）。
+- 依赖更精简：只保留 `requests`，不再安装浏览器自动化等额外组件。
+
+### Removed
+- 移除旧的 `devart-dl anti-ban`、`devart-dl test`、`devart-dl login browser`、`devart-dl login validate` 命令（改用 `devart-dl URL` 与 `login oauth` / `whoami`）。
+- 移除旧的 `deviantart_dl` Python 包（改用 `da_downloader`）。
+
+## [3.4.0] - 2026-09-05
+
+### Added
+- **官方 API（OAuth）登录**：`devart-dl login oauth --client-id …` 在浏览器中完成授权，无需导出 Cookie 或填写密码。登录后下载自动走官方 API，原图来自官方下载接口，也不再需要防封延时。
+- **URL 优先**：`devart-dl URL` 直接下载（作品 / 画廊 / 收藏夹 / 标签 / fav.me 短链），无需子命令。
+- **下载档案**：`--archive 文件` 用 SQLite 记住已下载内容，跨会话自动跳过。
+- **文件名 / 目录模板**：`--filename`、`--directory` 支持 `{id}` `{title}` `{author}` `{published}` `{filename}` `{ext}` 等字段。
+- **元数据 sidecar**：`--write-info-json` 在每个作品旁写一份 `*.json` 元数据。
+- **断点续传**：中断的下载从 `.part` 文件续传，不重新下载。
+- **`devart-dl whoami` / `devart-dl logout`**：查看登录状态、撤销令牌。
+- **下载校验**：HTML 错误页、空文件不再被当作图片保存；遇到 429 会自动退避重试。
+
+### Changed
+- 画质参数改为 `--quality original|best|preview`（旧的 `o|f|p` 仍可用）。
+- 下载改为边下边写盘，不再把整个文件读进内存。
+- 解析失败、网络失败现在会明确报错，而不是被当成「下载完毕」。
+
+## [3.3.1] - 2026-04-24
+
+### Fixed
+- **Gallery downloads only fetched the Featured folder** (`#2`): the gallection
+  request now sends `all_folder=true`, so works stored in other gallery folders
+  are downloaded too. Verified against the live API, which no longer rejects
+  the parameter with HTTP 400.
+- **Broken `pip` entry point** (`#1`): installing from PyPI produced a
+  `devart-dl` launcher that crashed with `ModuleNotFoundError: No module named
+  'deviantart_downloader_cli'`. The console script now points to the packaged
+  `da_downloader.cli:main`, and the source-tree `bin/devart-dl` is a thin
+  wrapper around the same module.
+- A failed pagination request no longer silently truncates a download run:
+  API/pagination errors raise `APIError` instead of being reported as
+  "end of gallery", so incomplete runs are visible and resumable.
+- Pagination loops detect non-advancing offsets/cursors and abort with a
+  clear error instead of downloading the same page forever.
+- Downloads are streamed to an atomic `.part` file and size-verified against
+  `Content-Length` before replacing the target, preventing truncated files
+  from being recorded as complete.
+- Resume records now store output paths; a downloaded flag only counts when
+  the file still exists on disk, and failed items are retried on the next run.
+- Progress file writes are atomic (temp file + `os.replace`).
+- Missing deviation IDs raise a parse error instead of colliding under an
+  empty-string ID; filenames fall back to `title_<id>` to avoid overwrites.
+- `deviantart_dl` async client compatibility with httpx >= 0.28 (`proxy=`).
+
+### Changed
+- Unified CLI (`da_downloader/cli.py`) dispatches all subcommands via
+  `python -m` module execution, so installed packages no longer depend on
+  source-tree script paths.
+- Packaging consolidated in `pyproject.toml` (`setup.py` is a shim); tests are
+  excluded from the installed wheel/sdist.
+
+### Added
+- CI workflow (pytest matrix 3.10–3.13, ruff, build check) and tag-driven
+  release automation (build → GitHub Release → optional PyPI publish).
+- This changelog, issue templates, and `RELEASING.md`.
+
+## [3.3.0] - 2026-03-21
+
+### Changed
+- Default quality switched from `original` to `full`, so anonymous users get
+  working downloads without a Core membership.
+
+## [3.2.6] - 2026-03-01
+
+### Changed
+- Progress display frequency reduced to avoid log spam.
+
+## [3.2.5] - 2026-02-20
+
+### Added
+- Per-file download progress display.
+
+## [3.2.4] - 2026-02-10
+
+### Changed
+- Existing files are skipped by default (`--replace=1` restores old behavior).
+
+## [3.2.3] - 2026-02-01
+
+### Changed
+- File existence check moved to the outer loop (performance).
+
+## [3.2.2] - 2026-01-20
+
+### Added
+- Login status display before downloads.
+
+## [3.2.1] - 2026-01-15
+
+### Fixed
+- Original-quality failures no longer block downloads; the downloader falls
+  back to full quality automatically.
+
+## [3.2.0] - 2026-01-10
+
+### Added
+- Resume support with progress tracking (`.deviantart_dl/progress`).
+
+## [3.1.6] - 2025-12-20
+
+### Fixed
+- Video downloads select the highest available quality (1080p).
+
+## [3.1.5] - 2025-12-10
+
+### Added
+- Video download support.
+
+[4.0.1]: https://github.com/redtidev1918/deviantart-downloader/compare/v4.0.0...v4.0.1
+[4.0.0]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.4.0...v4.0.0
+[3.4.0]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.3.1...v3.4.0
+[3.3.1]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.3.0...v3.3.1
+[3.3.0]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.6...v3.3.0
+[3.2.6]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.5...v3.2.6
+[3.2.5]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.4...v3.2.5
+[3.2.4]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.3...v3.2.4
+[3.2.3]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.2...v3.2.3
+[3.2.2]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.1...v3.2.2
+[3.2.1]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.2.0...v3.2.1
+[3.2.0]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.1.6...v3.2.0
+[3.1.6]: https://github.com/redtidev1918/deviantart-downloader/compare/v3.1.5...v3.1.6
+[3.1.5]: https://github.com/redtidev1918/deviantart-downloader/tag/v3.1.5

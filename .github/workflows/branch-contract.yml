@@ -1,0 +1,21 @@
+name: Branch contract
+# Production-operation branch contract gate (see redtidev1918/releasegraph
+# docs/branch-contract.md). Feature PRs are skipped; a violating
+# cutover/release/hotfix/ops PR hard-fails with a diff proof.
+#
+# Pinned to the immutable ReleaseGraph v1.4.11 commit. v1.4.10 enforces engine
+# provenance (the gate builds and asserts its engine from job.workflow_sha, so
+# caller pin == engine version end to end); v1.4.11 evaluates the real PR head
+# commit (github.event.pull_request.head.sha) instead of the merge ref, whose
+# ancestry against the base is trivially clean.
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  branch-contract:
+    # Skip release-please PRs (authored by github-actions[bot]): GitHub holds their
+    # workflow runs for approval so they never start, which shows a permanent failed
+    # check on every release PR. Self-healing: once RELEASE_PLEASE_TOKEN (a real user
+    # PAT) authors the release PR, this guard no longer matches and CI returns.
+    if: github.event_name != 'pull_request' || github.event.pull_request.user.login != 'github-actions[bot]'
+    uses: redtidev1918/releasegraph/.github/workflows/reusable-branch-contract.yml@5936e83b80044e4ce8d644b68b0388e201a99e39 # ReleaseGraph v1.5.19

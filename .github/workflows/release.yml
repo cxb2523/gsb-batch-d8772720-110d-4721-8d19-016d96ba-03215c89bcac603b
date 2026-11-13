@@ -1,0 +1,210 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "11 * * * *"
+  workflow_dispatch:
+    inputs:
+      version: {description: "Existing version; blank reads the manifest", required: false, type: string}
+      dry_run: {description: "Build and validate without publishing", required: false, default: false, type: boolean}
+      force: {description: "Rerun a healthy version", required: false, default: false, type: boolean}
+      repair: {description: "Repair the current incomplete version", required: false, default: false, type: boolean}
+      stage: {description: "Recovery stage label", required: false, default: all, type: string}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: write
+  actions: write # post-release workflow_dispatch from 20ac922+
+  id-token: write # ReleaseGraph c035ba8 publish job (PyPI/Sigstore)
+
+jobs:
+  release:
+    # Skip release-please PRs (authored by github-actions[bot]): GitHub holds their
+    # workflow runs for approval so they never start, which shows a permanent failed
+    # check on every release PR. Self-healing: once RELEASE_PLEASE_TOKEN (a real user
+    # PAT) authors the release PR, this guard no longer matches and CI returns.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.user.login != 'github-actions[bot]') && (github.event_name != 'workflow_dispatch' || !(github.event.inputs.repair == 'true' && github.event.inputs.stage == 'pypi'))
+    uses: redtidev1918/releasegraph/.github/workflows/reusable-release.yml@5936e83b80044e4ce8d644b68b0388e201a99e39 # ReleaseGraph v1.5.19
+    with:
+      version: ${{ inputs.version || '' }}
+      dry_run: ${{ github.event_name == 'pull_request' || inputs.dry_run || false }}
+      force: ${{ inputs.force || false }}
+      repair: ${{ github.event_name == 'pull_request' || inputs.repair || false }}
+      stage: ${{ inputs.stage || 'all' }}
+    secrets: inherit
+
+  publish-pypi:
+    needs: release
+    if: needs.release.result == 'success' && needs.release.outputs.pypi_enabled == 'true' && needs.release.outputs.should_publish_pypi == '1' && (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true'))
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/devart-dl/
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.release.outputs.version }}
+      PKG_NAME: devart-dl
+    steps:
+      - name: Download canonical release assets
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.whl' --pattern '*.tar.gz' --pattern 'SHA256SUMS' --dir dist
+      - name: Verify canonical artifacts
+        run: |
+          set -euo pipefail
+          python - "$RELEASE_VERSION" <<'PY'
+          import glob, hashlib, os, sys, zipfile
+          version = sys.argv[1]
+          whls = glob.glob('dist/*.whl')
+          sdists = glob.glob('dist/*.tar.gz')
+          assert len(whls) == 1 and len(sdists) == 1, (whls, sdists)
+          assert whls[0].endswith(f'-{version}-py3-none-any.whl'), whls[0]
+          assert version in sdists[0], sdists[0]
+          zf = zipfile.ZipFile(whls[0])
+          metas = [n for n in zf.namelist() if n.endswith('.dist-info/METADATA')]
+          assert len(metas) == 1, metas
+          assert f'Version: {version}' in zf.read(metas[0]).decode()
+          if os.path.exists('dist/SHA256SUMS'):
+              sums = {}
+              for line in open('dist/SHA256SUMS'):
+                  parts = line.split()
+                  if len(parts) >= 2:
+                      sums[parts[-1]] = parts[0]
+              for path in whls + sdists:
+                  name = os.path.basename(path)
+                  assert name in sums, name
+                  assert hashlib.sha256(open(path, 'rb').read()).hexdigest() == sums[name], name
+          PY
+      - name: Stage packages for upload
+        run: rm -f dist/SHA256SUMS dist/RELEASE-METADATA.json
+      - name: Probe PyPI status
+        id: probe
+        run: |
+          set -euo pipefail
+          python - "$PKG_NAME" "$RELEASE_VERSION" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys, urllib.error, urllib.request
+          pkg, ver = sys.argv[1], sys.argv[2]
+          try:
+              with urllib.request.urlopen(f'https://pypi.org/pypi/{pkg}/{ver}/json', timeout=20) as r:
+                  json.load(r)
+              print('status=published')
+          except urllib.error.HTTPError as e:
+              print('status=missing' if e.code == 404 else 'status=unknown')
+          except Exception:
+              print('status=unknown')
+          PY
+      - name: Skip if already published
+        if: steps.probe.outputs.status == 'published'
+        run: echo "PyPI $RELEASE_VERSION already published; skipping."
+      - name: Refuse to blind-publish on unknown status
+        if: steps.probe.outputs.status == 'unknown'
+        run: |
+          echo "Could not confirm PyPI status for $RELEASE_VERSION; refusing to publish."
+          exit 1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        if: steps.probe.outputs.status == 'missing'
+        with:
+          packages-dir: dist
+
+  # ReleaseGraph's finalize ACKs before this caller's independent publish-pypi
+  # job, so the registry health gate refuses to acknowledge an incomplete
+  # version at that point; the reusable workflow re-enters the idempotent ACK
+  # only after PyPI publication.
+  acknowledge:
+    needs: [release, publish-pypi]
+    if: >-
+      always()
+      && needs.release.result == 'success'
+      && needs.release.outputs.run_release == '1'
+      && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
+      && github.event_name != 'pull_request'
+      && !(github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true')
+    uses: redtidev1918/releasegraph/.github/workflows/reusable-acknowledge.yml@9f1789fa7cda31e4a1138e627b5d1d29e1f164de
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
+
+  repair-pypi:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.repair == 'true' && github.event.inputs.stage == 'pypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/devart-dl/
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: v${{ github.event.inputs.version }}
+      RELEASE_VERSION: ${{ github.event.inputs.version }}
+      PKG_NAME: devart-dl
+    steps:
+      - name: Download canonical release assets
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.whl' --pattern '*.tar.gz' --pattern 'SHA256SUMS' --dir dist
+      - name: Verify canonical artifacts
+        run: |
+          set -euo pipefail
+          python - "$RELEASE_VERSION" <<'PY'
+          import glob, hashlib, os, sys, zipfile
+          version = sys.argv[1]
+          whls = glob.glob('dist/*.whl')
+          sdists = glob.glob('dist/*.tar.gz')
+          assert len(whls) == 1 and len(sdists) == 1, (whls, sdists)
+          assert whls[0].endswith(f'-{version}-py3-none-any.whl'), whls[0]
+          assert version in sdists[0], sdists[0]
+          zf = zipfile.ZipFile(whls[0])
+          metas = [n for n in zf.namelist() if n.endswith('.dist-info/METADATA')]
+          assert len(metas) == 1, metas
+          assert f'Version: {version}' in zf.read(metas[0]).decode()
+          if os.path.exists('dist/SHA256SUMS'):
+              sums = {}
+              for line in open('dist/SHA256SUMS'):
+                  parts = line.split()
+                  if len(parts) >= 2:
+                      sums[parts[-1]] = parts[0]
+              for path in whls + sdists:
+                  name = os.path.basename(path)
+                  assert name in sums, name
+                  assert hashlib.sha256(open(path, 'rb').read()).hexdigest() == sums[name], name
+          PY
+      - name: Stage packages for upload
+        run: rm -f dist/SHA256SUMS dist/RELEASE-METADATA.json
+      - name: Probe PyPI status
+        id: probe
+        run: |
+          set -euo pipefail
+          python - "$PKG_NAME" "$RELEASE_VERSION" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys, urllib.error, urllib.request
+          pkg, ver = sys.argv[1], sys.argv[2]
+          try:
+              with urllib.request.urlopen(f'https://pypi.org/pypi/{pkg}/{ver}/json', timeout=20) as r:
+                  json.load(r)
+              print('status=published')
+          except urllib.error.HTTPError as e:
+              print('status=missing' if e.code == 404 else 'status=unknown')
+          except Exception:
+              print('status=unknown')
+          PY
+      - name: Skip if already published
+        if: steps.probe.outputs.status == 'published'
+        run: echo "PyPI $RELEASE_VERSION already published; skipping."
+      - name: Refuse to blind-publish on unknown status
+        if: steps.probe.outputs.status == 'unknown'
+        run: |
+          echo "Could not confirm PyPI status for $RELEASE_VERSION; refusing to publish."
+          exit 1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        if: steps.probe.outputs.status == 'missing'
+        with:
+          packages-dir: dist

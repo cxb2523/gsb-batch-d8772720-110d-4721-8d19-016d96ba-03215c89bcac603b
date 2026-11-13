@@ -1,0 +1,90 @@
+# DeviantArt Downloader
+
+**语言 / Language:** 中文 · [English](README.en.md)
+
+> **一个可靠、聚焦的 DeviantArt 下载 / 归档命令行工具。**
+
+[完整文档](https://redtidev1918.github.io/deviantart-downloader/) · [更新日志](CHANGELOG.md)
+
+[![CI](https://github.com/redtidev1918/deviantart-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/redtidev1918/deviantart-downloader/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/devart-dl.svg)](https://pypi.org/project/devart-dl/)
+[![Python](https://img.shields.io/pypi/pyversions/devart-dl.svg)](https://pypi.org/project/devart-dl/)
+[![Downloads](https://img.shields.io/pypi/dm/devart-dl.svg)](https://pypi.org/project/devart-dl/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/Docs-文档站点-6366f1?style=flat-square)](https://redtidev1918.github.io/deviantart-downloader/)
+
+## 快速开始
+
+需要 Python 3.10 或更高版本。
+
+```bash
+python -m pip install -U devart-dl
+
+# 单张作品（也支持 fav.me 短链、裸 artwork id）
+devart-dl https://www.deviantart.com/username/art/title-123456
+
+# 画廊 / 作者全集
+devart-dl https://www.deviantart.com/username/gallery
+
+# 收藏夹 / 标签
+devart-dl https://www.deviantart.com/username/favourites
+devart-dl https://www.deviantart.com/tag/landscape
+
+# 解析为 JSON 描述（不下载文件）
+devart-dl resolve https://www.deviantart.com/username/art/title-123456
+```
+
+首次下载前建议使用 OAuth 登录：
+
+```bash
+devart-dl login oauth --client-id 你的_PUBLIC_CLIENT_ID
+devart-dl whoami
+```
+
+不会注册 OAuth 应用也可以使用 Cookie。最简单的是一键浏览器登录（本机装 Chrome + Node ≥ 22）：
+
+```bash
+devart-dl login browser   # 打开你的 Chrome 登录，自动保存 Cookie，无需 F12 复制
+```
+
+下载或 resolve 遇到 401/403 时，工具会用同一代理与浏览器 UA 核对网页会话，
+区分会话已过期、证据暂不可用和已登录但作品访问被拒。网络失败或页面结构变化
+不会当作登出，也不会清除 Cookie；只有明确的未登录证据才提示刷新登录。
+这一步只诊断错误，不自动重试下载，也不保证已登录账号有权访问所有作品。
+
+完整图文式步骤见 **[登录与认证教程](https://redtidev1918.github.io/deviantart-downloader/LOGIN)**。
+
+> 普通用户无需手动下载 GitHub Release 里的 `.whl`、`.tar.gz` 或 Source code，运行上面的 `pip install` 即可。文件区别和 SHA256 校验方法见[完整文档](https://redtidev1918.github.io/deviantart-downloader/#github-release-%e9%87%8c%e7%9a%84%e6%96%87%e4%bb%b6%e6%98%af%e4%bb%80%e4%b9%88)。
+
+## 功能
+
+- **媒体版本标识**：4.4.3 起修复部分图片及附加页的 CDN 403；使用 DA 全尺寸展示版本时明确提示，下载元数据和 `resolve` 输出保留版本标识，原文件下载入口仍优先。
+
+- **官方 API（OAuth）优先**：登录一次即可下载原图，无需导出 Cookie，也无需防封延时。
+- **URL 优先**：直接粘贴作品 / 画廊 / 收藏夹 / 标签链接即可下载。
+- **文本作品**：文学 / 日志型 deviation 在响应内直接提取正文，保存为 UTF-8 `.txt`；媒体与文本自动分流。
+- **下载可靠**：HTTP Range 断点续传、自动重试、429 退避、原子落盘。
+- **下载档案**：`--archive` 用 SQLite 记住已下载，跨会话自动跳过。
+- **路径模板 + 元数据 sidecar**：`--directory`/`--filename` 模板与 `--write-info-json`。
+- **代理与降级**：支持 `--proxy`；未登录 OAuth 时自动回退 Cookie。
+- **Resolve 模式**：`devart-dl resolve URL` 输出 `ResolvedDeviation`/`MediaAsset` 的 JSON 契约，不写文件。
+- **付费/订阅锁定识别**：官方 API 返回 `premium_folder_data` / `tier_access`，或网页端非成熟作品的模糊主图（`blur_`），都会识别为「需要订阅/购买」：网页通道跳过，官方通道明确报错，不再把打码图当原图保存。
+
+## 文档
+
+| 你想做什么 | 文档 |
+| --- | --- |
+| 下载安装包 | [下载页](https://redtidev1918.github.io/deviantart-downloader/download) |
+| 登录与认证 | [登录与认证](docs/LOGIN.md) |
+| 命令、配置与 Python 调用 | [文档站](https://redtidev1918.github.io/deviantart-downloader/) |
+
+## 致谢
+
+- [requests](https://github.com/psf/requests)：HTTP 客户端。
+- 登录与归档目录的实现与 [gallery-dl](https://github.com/mikf/gallery-dl) 交叉核对过。
+
+## 许可证与免责声明
+
+本项目基于 [MIT License](LICENSE) 开源。
+
+**注意**：本工具仅供个人学习和研究使用。使用者应遵守 DeviantArt 服务条款及版权规定，请勿用于商业用途或大规模抓取导致服务器过载。作者不对任何滥用后果负责。

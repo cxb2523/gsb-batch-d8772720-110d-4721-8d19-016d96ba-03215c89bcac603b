@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "skip-github-release": true,
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "package-name": "deviantart-downloader",
+      "include-v-in-tag": true,
+      "include-component-in-tag": false,
+      "skip-github-release": true
+    }
+  }
+}

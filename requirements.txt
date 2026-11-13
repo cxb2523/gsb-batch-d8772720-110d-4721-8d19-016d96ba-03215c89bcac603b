@@ -1,0 +1,5 @@
+# DeviantArt Downloader - 核心依赖
+# Python 3.10+
+
+# HTTP 客户端
+requests>=2.31.0

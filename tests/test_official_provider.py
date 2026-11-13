@@ -1,0 +1,380 @@
+"""Tests for the OfficialProvider (official API → DownloadItem)."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+import da_downloader.provider as provider_mod
+from da_downloader.errors import MediaUnavailableError
+from da_downloader.official_api import (
+    OriginalDownload,
+    _extract_numeric_id,
+    _resolve_short_id,
+)
+from da_downloader.provider import OfficialProvider
+from da_downloader.targets import TargetParser
+
+
+def make_deviation(
+    uuid="uuid-1",
+    title="Art",
+    author="alice",
+    content_src="https://images.test/full.jpg",
+    is_downloadable=True,
+    mature=False,
+):
+    return {
+        "deviationid": uuid,
+        "title": title,
+        "author": {"username": author},
+        "url": f"https://www.deviantart.com/{author}/art/{title}",
+        "content": {"src": content_src},
+        "preview": {"src": "https://images.test/preview.jpg"},
+        "is_downloadable": is_downloadable,
+        "is_mature": mature,
+        "published_time": 1427750464,
+    }
+
+
+class FakeClient:
+    def __init__(self) -> None:
+        self.deviations: dict = {}
+        self.originals: dict = {}
+        self.pages: dict = {}
+
+    def deviation(self, uuid):
+        return self.deviations[uuid]
+
+    def original_download(self, uuid):
+        return self.originals[uuid]
+
+    def gallery_all(self, username, offset=0, limit=24):
+        return self.pages[("gallery_all", username, offset)]
+
+    def browse_tags(self, tag, offset=0, limit=24):
+        return self.pages[("browse_tags", tag, offset)]
+
+
+def test_artwork_original(monkeypatch) -> None:
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: {"deviation": {"extended": {"deviationUuid": "uuid-1", "additionalMedia": []}}})
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    client.originals["uuid-1"] = OriginalDownload(
+        "https://download.test/original.jpg", "original.jpg"
+    )
+    provider = OfficialProvider(client, quality="o")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/art/x-123456")))
+
+    assert len(items) == 1
+    assert items[0].media_url == "https://download.test/original.jpg"
+    assert items[0].extension == "jpg"
+    assert items[0].author == "alice"
+    assert items[0].title == "Art"
+    assert items[0].mature is False
+    assert items[0].published_at == datetime(2015, 3, 30, 21, 21, 4, tzinfo=timezone.utc)
+
+
+def test_artwork_multimedia_yields_every_file(monkeypatch) -> None:
+    init = {
+        "deviation": {
+            "extended": {
+                "deviationUuid": "uuid-1",
+                "additionalMedia": [
+                    {"fileId": 2, "media": {"baseUri": "https://media.test/p2.jpg", "token": ["t2"]}},
+                    {"fileId": 3, "media": {"baseUri": "https://media.test/p3.png", "token": ["t3"]}},
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: init)
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/art/x-123456")))
+
+    assert len(items) == 3  # 主图 + 两张附加
+    assert items[0].media_url == "https://images.test/full.jpg"
+    assert items[1].media_url == "https://media.test/p2.jpg?token=t2"
+    assert items[1].artwork_id == "uuid-1-1"
+    assert items[2].media_url == "https://media.test/p3.png?token=t3"
+    assert items[2].extension == "png"
+
+
+def test_mature_blurred_extra_pages_are_skipped(monkeypatch) -> None:
+    init = {
+        "deviation": {
+            "extended": {
+                "deviationUuid": "uuid-1",
+                "additionalMedia": [
+                    {"media": {"baseUri": "https://media.test/blur_page2.jpg", "token": "t"}},
+                    {"media": {"baseUri": "https://media.test/page3.png", "token": "t"}},
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: init)
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert [item.media_url for item in items] == [
+        "https://images.test/full.jpg",
+        "https://media.test/page3.png?token=t",
+    ]
+
+
+def test_extra_video_page_uses_playable_source_not_poster(monkeypatch) -> None:
+    init = {
+        "deviation": {
+            "extended": {
+                "deviationUuid": "uuid-1",
+                "additionalMedia": [
+                    {"media": {
+                        "baseUri": "https://media.test/page2.jpg",
+                        "types": [
+                            {"t": "video", "q": "480p", "b": "https://videos.test/p2-480.mp4"},
+                            {"t": "video", "q": "1080p", "b": "https://videos.test/p2-1080.mp4"},
+                        ],
+                        "token": "t",
+                    }},
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: init)
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert items[1].media_url == "https://videos.test/p2-1080.mp4?token=t"
+    assert items[1].extension == "mp4"
+
+
+def test_extra_page_uses_fullview_template_when_baseuri_is_not_a_file(monkeypatch) -> None:
+    init = {
+        "deviation": {
+            "extended": {
+                "deviationUuid": "uuid-1",
+                "additionalMedia": [
+                    {"media": {
+                        "baseUri": "https://wixmp.test/hashed",
+                        "fullview": True,
+                        "types": [{"t": "fullview", "c": "/f/<prettyName>.jpg"}],
+                        "prettyName": "page2",
+                        "token": "t",
+                    }},
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: init)
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert items[1].media_url == "https://wixmp.test/hashed/f/page2.jpg?token=t"
+
+
+def test_preview_only_extra_page_is_skipped_not_downgraded(monkeypatch) -> None:
+    init = {
+        "deviation": {
+            "extended": {
+                "deviationUuid": "uuid-1",
+                "additionalMedia": [
+                    {"media": {
+                        "baseUri": "https://wixmp.test/hashed",
+                        "types": [{"t": "preview", "c": "/f/<prettyName>.jpg"}],
+                        "prettyName": "page2",
+                        "token": "t",
+                    }},
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: init)
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert [item.media_url for item in items] == ["https://images.test/full.jpg"]
+
+
+def test_artwork_best_uses_content(monkeypatch) -> None:
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: {"deviation": {"extended": {"deviationUuid": "uuid-1", "additionalMedia": []}}})
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation()
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert items[0].media_url == "https://images.test/full.jpg"
+    assert client.originals == {}  # never called the download endpoint
+
+
+def test_artwork_video_uses_playable_source_not_poster(monkeypatch) -> None:
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: {"deviation": {"extended": {"deviationUuid": "uuid-1", "additionalMedia": []}}})
+    client = FakeClient()
+    client.deviations["uuid-1"] = {
+        **make_deviation(content_src="https://images.test/poster.jpg"),
+        "videos": [{"src": "https://videos.test/full.mp4"}],
+    }
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert items[0].media_url == "https://videos.test/full.mp4"
+    assert items[0].extension == "mp4"
+
+
+def test_gallery_paginates(monkeypatch) -> None:
+    client = FakeClient()
+    client.pages[("gallery_all", "alice", 0)] = {
+        "results": [make_deviation("uuid-1"), make_deviation("uuid-2", title="B")],
+        "has_more": True,
+        "next_offset": 24,
+    }
+    client.pages[("gallery_all", "alice", 24)] = {
+        "results": [make_deviation("uuid-3", title="C")],
+        "has_more": False,
+    }
+    client.originals["uuid-1"] = OriginalDownload("https://d.test/1.jpg", "1.jpg")
+    client.originals["uuid-2"] = OriginalDownload("https://d.test/2.jpg", "2.jpg")
+    client.originals["uuid-3"] = OriginalDownload("https://d.test/3.jpg", "3.jpg")
+    provider = OfficialProvider(client, quality="o")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/gallery")))
+
+    assert [i.artwork_id for i in items] == ["uuid-1", "uuid-2", "uuid-3"]
+
+
+def test_no_media_raises(monkeypatch) -> None:
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: {"deviation": {"extended": {"deviationUuid": "uuid-1", "additionalMedia": []}}})
+    client = FakeClient()
+    client.deviations["uuid-1"] = {
+        "deviationid": "uuid-1",
+        "title": "No Media",
+        "author": {"username": "alice"},
+        "is_downloadable": False,
+    }
+    provider = OfficialProvider(client, quality="f")
+
+    with pytest.raises(MediaUnavailableError):
+        list(provider.resolve(TargetParser.parse("123456")))
+
+
+def test_blurred_non_mature_main_raises_premium(monkeypatch) -> None:
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: {"deviation": {"extended": {"deviationUuid": "uuid-1", "additionalMedia": []}}})
+    client = FakeClient()
+    client.deviations["uuid-1"] = make_deviation(
+        uuid="uuid-1",
+        content_src="https://images.test/blur_40/full.jpg",
+        is_downloadable=False,
+        mature=False,
+    )
+    provider = OfficialProvider(client, quality="f")
+
+    with pytest.raises(MediaUnavailableError, match="subscription/purchase"):
+        list(provider.resolve(TargetParser.parse("123456")))
+
+
+def test_premium_folder_without_access_raises_premium(monkeypatch) -> None:
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: {"deviation": {"extended": {"deviationUuid": "uuid-1", "additionalMedia": []}}})
+    client = FakeClient()
+    deviation = make_deviation(uuid="uuid-1", is_downloadable=False)
+    deviation["premium_folder_data"] = {"has_access": False}
+    client.deviations["uuid-1"] = deviation
+    provider = OfficialProvider(client, quality="f")
+
+    with pytest.raises(MediaUnavailableError, match="subscription/purchase"):
+        list(provider.resolve(TargetParser.parse("123456")))
+
+
+def test_tag_target() -> None:
+    client = FakeClient()
+    client.pages[("browse_tags", "landscape", 0)] = {
+        "results": [make_deviation("uuid-1")],
+        "has_more": False,
+    }
+    provider = OfficialProvider(client, quality="f")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/tag/landscape")))
+
+    assert [i.artwork_id for i in items] == ["uuid-1"]
+    assert items[0].media_url == "https://images.test/full.jpg"
+
+
+def test_extract_numeric_id() -> None:
+    assert _extract_numeric_id("https://www.deviantart.com/u/art/title-123456") == "123456"
+    assert _extract_numeric_id("https://www.deviantart.com/u/art/123456") == "123456"
+    assert _extract_numeric_id("https://www.deviantart.com/u/gallery") is None
+
+
+def test_resolve_short_id_follows_redirect() -> None:
+    class FakeResponse:
+        url = "https://www.deviantart.com/alice/art/title-123456"
+
+        def close(self) -> None:
+            pass
+
+    class FakeHttp:
+        def get(self, url, allow_redirects=True, timeout=30, stream=True):
+            return FakeResponse()
+
+    assert _resolve_short_id("abc123", FakeHttp(), 30) == "123456"
+
+
+def test_artwork_literature_uses_init_text_and_skips_media_api(monkeypatch) -> None:
+    markup = "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Once upon a time.\"}]}]}"
+    init = {
+        "deviation": {
+            "extended": {"deviationUuid": "uuid-1", "additionalMedia": []},
+            "type": "literature",
+            "title": "Story",
+            "author": {"username": "alice"},
+            "url": "https://www.deviantart.com/alice/art/story-123456",
+            "textContent": {"html": {"markup": markup}},
+        }
+    }
+    monkeypatch.setattr(provider_mod, "deviation_init", lambda identifier, username=None, **_: init)
+    provider = OfficialProvider(FakeClient(), quality="o")
+
+    items = list(provider.resolve(TargetParser.parse("123456")))
+
+    assert items[0].content == "Once upon a time."
+    assert items[0].media_url == ""
+    assert items[0].extension == "txt"
+    assert items[0].metadata == {"kind": "literature", "quality": "o"}
+
+
+def test_gallery_literature_is_inline_text() -> None:
+    client = FakeClient()
+    client.pages[("gallery_all", "alice", 0)] = {
+        "results": [{
+            "deviationid": "uuid-1",
+            "title": "Story",
+            "author": {"username": "alice"},
+            "url": "https://www.deviantart.com/alice/art/story-1",
+            "type": "literature",
+            "textContent": {"html": {"markup": "{\"type\":\"doc\",\"content\":[{\"type\":\"text\",\"text\":\"Text\"}]}"}},
+        }],
+        "has_more": False,
+    }
+    provider = OfficialProvider(client, quality="o")
+
+    items = list(provider.resolve(TargetParser.parse("https://www.deviantart.com/alice/gallery")))
+
+    assert items[0].content == "Text"
+    assert items[0].media_url == ""
+    assert items[0].extension == "txt"

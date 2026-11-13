@@ -1,0 +1,31 @@
+# 工程状态
+
+> 当前工程状态的摘要快照，每次重要任务结束或发布后更新。任务进度的权威是 [TASKS.md](TASKS.md)；CI、Release、PR 的平台事实以 GitHub / PyPI 为准，本文件不复制它们。
+
+- 更新时间：2026-10-31（文档站迁移；下载入口 PyPI 优先）
+- 当前版本：v4.4.4（2026-10-29 发布，GitHub Release 与 PyPI 均已核验）。同日 v4.4.3 为尺寸受限签名 403 修复版；v4.4.4 为纯文档维护版（release PR #51）。
+- 分支：`main` 与远端同步；工作区干净（`.agent/` 为本日新增，随 `docs:` 提交入库）。
+- 开发阶段：常规开发。近期主线：bounded-media 403 修复——网页主图与附加页改用响应提供的 fullview，并在元数据中标识展示版本。
+- 生态：DeviantDrop v1.16.2 已同步同类修复并部署；DAKit / DAViewer 是 Wix 描述符解析的参照实现（AGENTS.md 生态复用规则）。
+
+## 开放事项
+
+- 源码回退版本号过期：`da_downloader/__init__.py` 的 `__version__ = "4.3.0"` 落后于 `pyproject.toml` 的 4.4.4；按 `RELEASING.md` 约定在下次发版时手工同步。
+- 4.4.3 修复的验证边界是 150 项测试、ruff、打包与已发布包的 fixture 冒烟；未执行登录态 CLI 真实下载验收（[TASKS.md](TASKS.md) T-002）。
+
+## 当前无阻塞
+
+下载页生成器治理见 T-006：docsite 上游 `showAssetTable` 配置（默认字节不变）落地本仓，双语下载页主体为「版本头 + PyPI 安装 + 首次使用 + 离线安装与历史版本 + 更新日志」，不再出现技术附件表；下次真实发版时观察重新生成后结构保持。
+
+下载入口 PyPI 优先治理见 T-005：英文下载页补齐推荐安装指引（en preview 注入），安装命令全线统一为 `python -m pip install -U devart-dl`；v4.4.5 Release 正文改为 PyPI 安装优先，`releasegraph-post-release` 标记逐字节保留。发布/构建流程未动。
+
+文档站迁移见 T-004：VitePress 1.6.4、Node 22 构建、新 docs.yml，旧 static.yml 保留为停用备份。下载页使用真实 v4.4.5 JSON 本地回放；应用代码和 Python 包版本未改。PR CI及合并后的上线验收待完成。
+
+## 更新纪律
+
+- 只记录可核实的事实并注明来源；不把计划写成已完成，不把测试通过写成真实下载验证。
+- 与 [HANDOFF.md](HANDOFF.md) 分工：本文件管跨会话状态，HANDOFF 管单次会话交接。
+
+## 2026-11-01 文档模板同步
+
+固定 docsite `3fa6b643de6d2843ce713ccacb16e4ca2475656b`，通过统一生成器采用 setup-node v7。docs build 与无 .git 的 check/navcheck 本地通过；远程 CI 待 PR 验收。

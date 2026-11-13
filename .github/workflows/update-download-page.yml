@@ -1,0 +1,111 @@
+# docsite-managed-file: update-download-page.yml
+# docsite-managed-version: 2
+# docsite: managed file, run `python3 docsite.py update` to refresh.
+#
+# 刷新下载页（docs/download.md 与语言镜像），并显式重建 Pages 文档站。
+#
+# 触发方式（按优先级）：
+#   1. workflow_call / workflow_dispatch：传入精确 tag（ReleaseGraph post-release action 的入口）
+#   2. release: published：手工发布或使用 PAT/App 创建的 Release 的兜底（exact tag 取自事件）
+#      —— GITHUB_TOKEN 创建的 Release 不会触发该事件；那种情况必须走入口 1。
+#   3. 不传 tag 时生成器回落到最新 stable Release，并在日志中明确说明。
+#
+# 注意：本 workflow 的 commit 由 GITHUB_TOKEN 推送，push 事件不会再次触发 Pages 部署，
+# 因此提交成功后会显式 dispatch 文档站 workflow（默认 docs.yml，可在
+# .github/scripts/download-page.json 的 docsWorkflow 覆盖）。
+name: Update download page
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: false
+      deploy-docs:
+        type: boolean
+        required: false
+        default: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: false
+      deploy-docs:
+        type: boolean
+        required: false
+        default: true
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  actions: write # 显式 dispatch 文档站 workflow（GITHUB_TOKEN 的 push 不会触发 push 型 workflow）
+
+concurrency:
+  group: update-download-page
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+      tag: ${{ steps.render.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Resolve exact tag
+        id: resolve
+        run: |
+          EXACT="${{ inputs.tag || github.event.release.tag_name }}"
+          if [ -n "$EXACT" ]; then
+            echo "tag=$EXACT" >> "$GITHUB_OUTPUT"
+            echo "source=explicit"
+          else
+            echo "source=latest-stable"
+          fi
+
+      - name: Regenerate download pages
+        id: render
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if [ -n "$TAG" ]; then
+            python3 .github/scripts/update_download_page.py "${{ github.repository }}" --tag "$TAG"
+          else
+            python3 .github/scripts/update_download_page.py "${{ github.repository }}"
+          fi
+          echo "tag=${TAG:-latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit if changed
+        id: commit
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "download page already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          git commit -m "docs: refresh download page (${{ steps.render.outputs.tag }})"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild docs site (explicit dispatch)
+        # release 事件下 inputs 为空。GitHub 表达式比较不同类型时会各自转成数字，
+        # null 与 false 都变成 0，`inputs.deploy-docs != false` 会被判成假 →
+        # 这一整步被跳过，而"发版后没重建 Pages"正是 v2 要修的 bug。
+        # 改成按事件名短路，只依赖布尔真值与 event_name 比较，不依赖隐式转换。
+        if: steps.commit.outputs.changed == 'true' && (github.event_name == 'release' || inputs.deploy-docs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          WORKFLOW="docs.yml"
+          if [ -f .github/scripts/download-page.json ]; then
+            WORKFLOW="$(python3 -c 'import json,sys;print(json.load(open(".github/scripts/download-page.json")).get("docsWorkflow","docs.yml"))' 2>/dev/null || echo docs.yml)"
+          fi
+          gh workflow run "$WORKFLOW" --ref "${{ github.event.repository.default_branch }}"
