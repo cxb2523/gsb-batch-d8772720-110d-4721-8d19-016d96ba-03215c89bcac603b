@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+.vitest/
+*.tgz
+
+.env
+.env.*
+
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.vscode
+.idea
+
+.claude
+
+.Codex/

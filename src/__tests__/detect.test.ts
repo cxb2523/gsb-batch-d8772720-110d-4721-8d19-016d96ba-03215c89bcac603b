@@ -1,0 +1,264 @@
+import { describe, expect, it } from "vitest"
+import {
+  detectUrlType,
+  extractNpmPackage,
+  extractVideoId,
+  extractXHandle,
+  extractXStatus,
+  isValidUrl,
+  normalizeUrl,
+} from "../detect"
+
+describe("detectUrlType", () => {
+  it("routes Reddit post links without matching lookalike hosts or listing pages", () => {
+    for (const url of [
+      "https://www.reddit.com/r/test/comments/abc123/title/",
+      "https://old.reddit.com/comments/abc123/",
+      "https://redd.it/abc123",
+    ]) {
+      expect(detectUrlType(url)).toBe("reddit")
+    }
+    for (const url of [
+      "https://notreddit.com/comments/abc123/",
+      "https://reddit.com.evil.test/comments/abc123/",
+      "https://reddit.com/r/test/",
+      "https://example.com/?url=https://reddit.com/comments/abc123/",
+    ]) {
+      expect(detectUrlType(url)).toBe("webpage")
+    }
+  })
+  it("only routes GitHub URLs by their actual host and pathname", () => {
+    for (const url of [
+      "https://notgithub.com/user/repo/issues/42",
+      "https://example.com/github.com/user/repo/issues/42",
+      "https://example.com/?next=https://github.com/user/repo/issues/42",
+      "https://github.com/user/repo/issues/42oops",
+    ]) {
+      expect(detectUrlType(url)).toBe("webpage")
+    }
+    expect(detectUrlType("https://GITHUB.COM/user/repo/issues/42?tab=comments")).toBe("github-issue")
+  })
+  it("classifies youtube variants", () => {
+    expect(detectUrlType("https://www.youtube.com/watch?v=abc123")).toBe("youtube")
+    expect(detectUrlType("https://youtube.com/watch?v=abc123")).toBe("youtube")
+    expect(detectUrlType("https://youtu.be/abc123")).toBe("youtube")
+    expect(detectUrlType("https://m.youtube.com/watch?v=abc123")).toBe("youtube")
+  })
+
+  it("classifies github issues and PRs", () => {
+    expect(detectUrlType("https://github.com/user/repo/issues/42")).toBe("github-issue")
+    expect(detectUrlType("https://github.com/user/repo/pull/7")).toBe("github-issue")
+  })
+
+  it("classifies github blob files", () => {
+    expect(detectUrlType("https://github.com/user/repo/blob/main/src/index.ts")).toBe("github-file")
+  })
+
+  it("classifies github discussions", () => {
+    expect(detectUrlType("https://github.com/user/repo/discussions/19")).toBe("github-discussion")
+    expect(detectUrlType("https://github.com/user/repo/discussions")).toBe("webpage")
+  })
+
+  it("classifies stackoverflow questions and answers", () => {
+    expect(detectUrlType("https://stackoverflow.com/questions/11227809/why-is-processing")).toBe("stackoverflow")
+    expect(detectUrlType("https://stackoverflow.com/q/11227809")).toBe("stackoverflow")
+    expect(detectUrlType("https://stackoverflow.com/a/1732454")).toBe("stackoverflow")
+    expect(detectUrlType("https://stackoverflow.com/users/22656/jon-skeet")).toBe("webpage")
+    expect(detectUrlType("https://stackoverflow.com")).toBe("webpage")
+  })
+
+  it("classifies pdf urls as webpage (pdf support removed)", () => {
+    expect(detectUrlType("https://example.com/report.pdf")).toBe("webpage")
+  })
+
+  it("classifies x/twitter profile urls", () => {
+    expect(detectUrlType("https://x.com/finnfkonovalov")).toBe("x-profile")
+    expect(detectUrlType("https://twitter.com/someone")).toBe("x-profile")
+  })
+
+  it("does not classify x reserved paths as profile", () => {
+    expect(detectUrlType("https://x.com/home")).toBe("webpage")
+    expect(detectUrlType("https://x.com/settings")).toBe("webpage")
+  })
+
+  it("classifies x/twitter status urls", () => {
+    expect(detectUrlType("https://x.com/someone/status/123")).toBe("x-status")
+    expect(detectUrlType("https://twitter.com/handle/status/9876")).toBe("x-status")
+    // Routed-by-id form with `i` placeholder for unknown author.
+    expect(detectUrlType("https://x.com/i/status/123")).toBe("x-status")
+  })
+
+  it("falls back to webpage for anything else", () => {
+    expect(detectUrlType("https://example.com")).toBe("webpage")
+    expect(detectUrlType("https://react.dev/learn")).toBe("webpage")
+  })
+})
+
+describe("extractXStatus", () => {
+  it("extracts handle + id", () => {
+    expect(extractXStatus("https://x.com/someone/status/123")).toEqual({ handle: "someone", id: "123" })
+    expect(extractXStatus("https://twitter.com/handle/status/987654321")).toEqual({
+      handle: "handle",
+      id: "987654321",
+    })
+  })
+
+  it("supports the /i/status/ canonical form", () => {
+    expect(extractXStatus("https://x.com/i/status/123")).toEqual({ handle: null, id: "123" })
+  })
+
+  it("returns null for non-status paths", () => {
+    expect(extractXStatus("https://x.com/someone")).toBeNull()
+    expect(extractXStatus("https://x.com/i/foo/123")).toBeNull()
+  })
+
+  it("returns null for non-x hosts", () => {
+    expect(extractXStatus("https://example.com/someone/status/1")).toBeNull()
+  })
+})
+
+describe("extractXHandle", () => {
+  it("extracts handle from x/twitter urls", () => {
+    expect(extractXHandle("https://x.com/someone")).toBe("someone")
+    expect(extractXHandle("https://twitter.com/another")).toBe("another")
+    expect(extractXHandle("https://www.x.com/yet_another")).toBe("yet_another")
+    expect(extractXHandle("https://x.com/Trailing/")).toBe("Trailing")
+  })
+
+  it("returns null for reserved handles", () => {
+    expect(extractXHandle("https://x.com/home")).toBeNull()
+    expect(extractXHandle("https://x.com/i")).toBeNull()
+    expect(extractXHandle("https://x.com/HOME")).toBeNull()
+  })
+
+  it("returns null for non-x hosts", () => {
+    expect(extractXHandle("https://example.com/someone")).toBeNull()
+  })
+
+  it("returns null for multi-segment paths", () => {
+    expect(extractXHandle("https://x.com/someone/status/123")).toBeNull()
+  })
+
+  it("returns null for invalid urls", () => {
+    expect(extractXHandle("not-a-url")).toBeNull()
+  })
+})
+
+describe("extractVideoId", () => {
+  it("extracts from youtu.be short links", () => {
+    expect(extractVideoId("https://youtu.be/dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ")
+  })
+
+  it("extracts from watch?v= urls", () => {
+    expect(extractVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ")
+    expect(extractVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5s")).toBe("dQw4w9WgXcQ")
+  })
+
+  it("extracts from /embed/", () => {
+    expect(extractVideoId("https://www.youtube.com/embed/dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ")
+  })
+
+  it("extracts from /shorts/", () => {
+    expect(extractVideoId("https://www.youtube.com/shorts/dQw4w9WgXcQ")).toBe("dQw4w9WgXcQ")
+  })
+
+  it("returns null when no id present", () => {
+    expect(extractVideoId("https://www.youtube.com/")).toBeNull()
+    expect(extractVideoId("https://youtu.be/")).toBeNull()
+  })
+
+  it("returns null for invalid urls", () => {
+    expect(extractVideoId("garbage")).toBeNull()
+  })
+})
+
+describe("isValidUrl", () => {
+  it("accepts http and https", () => {
+    expect(isValidUrl("https://example.com")).toBe(true)
+    expect(isValidUrl("http://example.com")).toBe(true)
+  })
+
+  it("rejects other protocols", () => {
+    expect(isValidUrl("javascript:alert(1)")).toBe(false)
+    expect(isValidUrl("file:///etc/passwd")).toBe(false)
+    expect(isValidUrl("ftp://example.com")).toBe(false)
+  })
+
+  it("rejects garbage", () => {
+    expect(isValidUrl("not a url")).toBe(false)
+    expect(isValidUrl("")).toBe(false)
+  })
+})
+
+describe("normalizeUrl", () => {
+  it("preserves an explicitly requested HTTP URL", () => {
+    expect(normalizeUrl("http://example.com/foo")).toBe("http://example.com/foo")
+  })
+
+  it("strips hash fragment", () => {
+    expect(normalizeUrl("https://example.com/foo#section")).toBe("https://example.com/foo")
+  })
+
+  it("preserves significant path and query slashes", () => {
+    expect(normalizeUrl("https://example.com/foo/")).toBe("https://example.com/foo/")
+    expect(normalizeUrl("https://example.com/api?prefix=docs/")).toBe("https://example.com/api?prefix=docs/")
+  })
+
+  it("preserves trailing slash on root", () => {
+    expect(normalizeUrl("https://example.com/")).toBe("https://example.com/")
+  })
+
+  it("returns raw input for malformed urls", () => {
+    expect(normalizeUrl("not a url")).toBe("not a url")
+  })
+
+  it("is idempotent", () => {
+    const u = "https://example.com/article"
+    expect(normalizeUrl(normalizeUrl(u))).toBe(u)
+  })
+})
+
+describe("extractNpmPackage", () => {
+  it("classifies npm package pages", () => {
+    expect(detectUrlType("https://www.npmjs.com/package/hash-wasm")).toBe("npm")
+    expect(detectUrlType("https://npmjs.com/package/rdrr")).toBe("npm")
+    expect(detectUrlType("https://www.npmjs.com/package/@types/node")).toBe("npm")
+    expect(detectUrlType("https://www.npmjs.com/package/zod/v/4.5.4")).toBe("npm")
+  })
+
+  it("leaves non-package npm pages as webpage", () => {
+    expect(detectUrlType("https://www.npmjs.com/")).toBe("webpage")
+    expect(detectUrlType("https://www.npmjs.com/search?q=markdown")).toBe("webpage")
+    expect(detectUrlType("https://www.npmjs.com/~sindresorhus")).toBe("webpage")
+  })
+
+  it("extracts name and version", () => {
+    expect(extractNpmPackage("https://www.npmjs.com/package/zod")).toEqual({ name: "zod", version: null })
+    expect(extractNpmPackage("https://www.npmjs.com/package/@scope/pkg/v/1.0.0")).toEqual({
+      name: "@scope/pkg",
+      version: "1.0.0",
+    })
+  })
+
+  it("accepts legacy uppercase names", () => {
+    expect(detectUrlType("https://www.npmjs.com/package/JSONStream")).toBe("npm")
+    expect(extractNpmPackage("https://www.npmjs.com/package/JSONStream")).toEqual({
+      name: "JSONStream",
+      version: null,
+    })
+  })
+
+  it("accepts leading-hyphen names", () => {
+    expect(detectUrlType("https://www.npmjs.com/package/-")).toBe("npm")
+    expect(extractNpmPackage("https://www.npmjs.com/package/@scope/-pkg")).toEqual({
+      name: "@scope/-pkg",
+      version: null,
+    })
+  })
+
+  it("rejects names that fail npm naming rules", () => {
+    expect(extractNpmPackage("https://www.npmjs.com/package/..%2F..%2Fevil")).toBeNull()
+    expect(extractNpmPackage("https://www.npmjs.com/package/_private")).toBeNull()
+    expect(extractNpmPackage("https://www.npmjs.com/package/.dotfile")).toBeNull()
+  })
+})

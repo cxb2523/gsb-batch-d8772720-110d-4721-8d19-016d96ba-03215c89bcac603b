@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [22, 24]
+        include:
+          - os: macos-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        run: pnpm test:coverage
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+      - name: Verify pack
+        if: matrix.os != 'windows-latest'
+        run: pnpm pack --pack-destination /tmp
+
+      - name: Check bundle size
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        shell: bash
+        run: |
+          file=$(ls /tmp/rdrr-*.tgz | head -1)
+          size=$(wc -c < "$file")
+          limit=$((600 * 1024))  # 600 KB, tightens as dist stabilises
+          printf "Package size: %d bytes (limit: %d)\n" "$size" "$limit"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::Package size $size exceeds limit $limit"
+            exit 1
+          fi
+
+      - name: Smoke-test published tarball
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        shell: bash
+        run: |
+          file=$(ls /tmp/rdrr-*.tgz | head -1)
+          workdir=$(mktemp -d)
+          cd "$workdir"
+          npm init -y >/dev/null
+          npm pkg set type=module >/dev/null
+          npm install "$file" >/dev/null
+          node --input-type=module -e "
+            import { parse, detectUrlType } from 'rdrr'
+            if (typeof parse !== 'function') throw new Error('parse missing')
+            if (detectUrlType('https://example.com') !== 'webpage') throw new Error('detect broken')
+            console.log('Smoke OK')
+          "

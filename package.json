@@ -1,0 +1,104 @@
+{
+  "name": "rdrr",
+  "version": "0.8.0",
+  "private": false,
+  "description": "Convert any URL to clean markdown for AI agents.",
+  "keywords": [
+    "ai-agents",
+    "content-extraction",
+    "html-to-markdown",
+    "llm",
+    "markdown",
+    "rdrr",
+    "readability",
+    "reader",
+    "web-scraping",
+    "x-twitter",
+    "youtube-transcript"
+  ],
+  "homepage": "https://rdrr.app",
+  "bugs": {
+    "url": "https://github.com/fkonovalov/rdrr/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Finn Paketborsha",
+    "url": "https://github.com/fkonovalov"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fkonovalov/rdrr.git"
+  },
+  "bin": {
+    "rdrr": "./dist/cli.mjs",
+    "rdrr-mcp": "./dist/mcp.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs/reference.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": [
+    "./dist/parse-html.mjs",
+    "./dist/esm.mjs",
+    "./src/extract/sites/init.ts",
+    "./src/extract/sites/*.ts"
+  ],
+  "types": "./dist/index.d.mts",
+  "typesVersions": {
+    "*": {
+      "extract": [
+        "./dist/extract/index.d.mts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./extract": {
+      "types": "./dist/extract/index.d.mts",
+      "default": "./dist/extract/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "test:reddit:live": "pnpm build && node scripts/test-reddit-live.mjs",
+    "snapshots:update": "vitest run --config vitest.live.config.ts",
+    "test:coverage": "vitest run --coverage",
+    "lint": "knip && oxlint ./src",
+    "fmt": "oxfmt --write .",
+    "prepublishOnly": "pnpm lint && pnpm build && pnpm test"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/node": "26.4.0",
+    "@vitest/coverage-v8": "5.0.0",
+    "commander": "15.0.0",
+    "knip": "6.33.0",
+    "linkedom": "0.18.13",
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
+    "saxes": "6.0.0",
+    "tsdown": "0.22.14",
+    "turndown": "7.2.4",
+    "typescript": "7.0.2",
+    "undici": "7.29.1",
+    "vitest": "5.0.0",
+    "zod": "4.5.4"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "pnpm@11.24.0"
+}
