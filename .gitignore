@@ -1,0 +1,12 @@
+.eggs/
+.DS_Store
+*.pyc
+*.swp
+__pycache__
+signac_dashboard.egg-info/
+build/
+dist/
+doc/_*
+.signac
+.signac_sp_cache.json.gz
+.signac_shell_history

@@ -1,0 +1,409 @@
+=======
+Changes
+=======
+
+The **signac-dashboard** package follows `semantic versioning <https://semver.org/>`_.
+
+Version 0.7
+===========
+
+[0.7.0] -- 2026-07-08
+---------------------
+
+Added
++++++
+
+- Tile view, enabling compact layouts of module cards (#286).
+- Make state point keys hyperlinks (#304).
+
+Updated
++++++++
+
+- Feedback when querying for Python booleans instead of JSON booleans (#213).
+- Moved Navigator module logic to signac, enabling ignoring state point keys when detecting neighbors (#320).
+- Require signac 2.4.0.
+
+Fixed
++++++
+
+- Use ``tool.setuptools`` key in ``pyproject.toml``.
+- Website links.
+
+Version 0.6
+===========
+
+[0.6.1] -- 2023-11-10
+---------------------
+
+Added
++++++
+
+- Support for flask 3 and werkzeug 3 (#204).
+- Tested Python 3.12 support (#205).
+
+
+[0.6.0] -- 2023-08-30
+---------------------
+
+Added
++++++
+
+- Login page that redirects back to current URL (#160, #181).
+- Navigator module to display links to jobs differing by one state point parameter (#188).
+
+Fixed
++++++
+
+- Updated bundled jQuery version to 3.6.4 for a security fix (#184).
+
+Updated
++++++++
+
+- Security documentation (#185).
+
+[0.5.0] -- 2023-03-30
+---------------------
+
+Added
++++++
+
+- Official Python 3.11 support (#176).
+- Ability to sort ``ImageViewer`` and ``VideoViewer`` cards (#155).
+
+Changed
++++++++
+
+- Require signac 2.0.0 (#166).
+- Default value of ``PER_PAGE`` is now 24 (#168).
+- Minor visual updates (#175).
+- Switched to a pyproject.toml based build (#176).
+
+Version 0.4
+===========
+
+[0.4.0] -- 2022-12-12
+---------------------
+
+Added
++++++
+
+- Improve security on multi-user systems. Dashboard now generates a login token when started. Users
+  must login with the token to view project and job data in the dashboard (#122, #158).
+
+Changed
++++++++
+
+- ``ImageViewer`` searches for ``*.svg`` files by default (#157).
+
+Fixed
++++++
+
+- Fixed handling of ``--debug`` command line option (#152).
+- Addressed deprecation warnings from signac 1.8.0 (#132, #153).
+
+Version 0.3
+===========
+
+[0.3.1] -- 2022-10-17
+---------------------
+
+Changed
++++++++
+
+- Updated CI to use GitHub Actions (#150).
+
+Fixed
++++++
+
+- Renamed ``cache_timeout`` to ``max_age`` in calls to flask.send_from_directory (#142, #143, #149).
+
+[0.3.0] -- 2022-06-22
+---------------------
+
+Added
++++++
+
+- The Project page displays cards from modules with ``context="ProjectContext"`` (#27, #110).
+- Schema module for the ProjectContext (#110).
+- ProjectContext support for the DocumentList, ImageViewer, TextDisplay, and VideoViewer modules (#110).
+- Dashboard config option ``CARDS_PER_ROW`` controls the number of cards per row in the desktop view (#133).
+- The endpoint ``views.get_file`` now reads the ``download_name`` request argument (#127).
+
+Changed
++++++++
+
+- Hide the list of modules in the sidebar when viewing the job list (#110).
+
+Fixed
++++++
+
+- Hide the list and grid view buttons when viewing a single job (#92, #110).
+- Fixed bug with disabled modules not showing a checkbox to enable them in the grid view (#134).
+- FileList module now respects prefix_jobid option (#127, #128).
+- Endpoints added via ``Dashboard.add_url`` can be used with multiple routes (#130).
+
+Removed
++++++++
+
+- Removed upper bound on ``python_requires`` (#137).
+
+Version 0.2
+===========
+
+[0.2.10] -- 2022-04-05
+----------------------
+
+Added
++++++
+
+- Ability to select modules and views on narrow screens (#93, #114).
+
+Fixed
++++++
+
+- Jinja2 and markupsafe are now dependencies (#123, #125).
+
+Removed
++++++++
+
+- Dropped support for Python 3.7 following the recommended support schedules of `NEP 29 <https://numpy.org/neps/nep-0029-deprecation_policy.html>`__.
+
+[0.2.9] -- 2022-02-08
+---------------------
+
+Fixed
++++++
+
+- Use Flask's ``send_from_directory`` for safety (#111).
+
+[0.2.8] -- 2021-05-26
+---------------------
+
+Added
++++++
+
+- Code is formatted with pre-commit hooks (#95).
+- ``per_page`` argument added to pagination query options (#94).
+
+Changed
++++++++
+
+- Tests now use pytest (#96).
+
+Fixed
++++++
+
+- Kitchen sink example uses FlowProject to ensure all features are used (#94).
+
+[0.2.7] -- 2020-02-27
+---------------------
+
+Fixed
++++++
+
+- Added submodules in CI deployment to fix broken bulma.
+
+[0.2.6] -- 2020-02-25
+---------------------
+
+Fixed
++++++
+
+- Updated dependencies to prevent errors with Werkzeug.
+
+[0.2.5] -- 2019-07-19
+---------------------
+
+Added
++++++
+
+- Automatically clear caches upon changes of the project's workspace, e.g. initialization, migration, or removal of jobs.
+- Image Viewer enlarges images in a modal window when clicked.
+
+[0.2.4] -- 2019-05-23
+---------------------
+
+Fixed
++++++
+
+- Made streamed video files seekable.
+- Long words in card titles will now wrap.
+- Increased size of search bar.
+- Submitted search queries populate the search bar even after errors.
+
+[0.2.3] -- 2019-05-08
+---------------------
+
+Added
++++++
+
+- Method for clearing dashboard and project caches.
+
+Changed
++++++++
+
+- Disabled $where operations in search queries by default, see :ref:`dashboard-security`.
+
+[0.2.2] -- 2019-04-25
+---------------------
+
+Fixed
++++++
+
+- Resolved issue with enabling/disabling modules.
+- Long words in card content will now wrap.
+
+[0.2.1] -- 2019-04-24
+---------------------
+
+Fixed
++++++
+
+- Corrected PyPI deployment.
+
+[0.2.0] -- 2019-04-24
+---------------------
+
+Added
++++++
+
+- New modules: DocumentEditor, FlowStatus, TextDisplay.
+- New examples: cli, custom-modules, document-editor, flow-status, plots.
+- The default job sorter uses natural sorting for numbers via natsort.
+
+Changed
++++++++
+
+- Improved API documentation, especially for modules.
+- Unified module asset/route registration into one ``register`` method.
+- The Notes module can be used with any job document key.
+
+Fixed
++++++
+
+- Corrected error in VideoViewer when no poster was provided.
+- ImageViewer/VideoViewer match files in job workspace subdirectories.
+- Files can now be retrieved from job workspace subdirectories.
+- Corrected pagination error.
+
+Removed
++++++++
+
+- The signac project document and user session are no longer used to store
+  module settings. The dashboard user script is the single source for
+  all configuration besides command line arguments.
+- Job labels have been removed and replaced with the FlowStatus module.
+
+Version 0.1
+===========
+
+[0.1.6] -- 2018-10-09
+---------------------
+
+Changed
++++++++
+
+- Updated layouts for bulma 0.7.1.
+
+Fixed
++++++
+
+- PyPI upload was missing bulma and couldn't run.
+
+Removed
++++++++
+
+- ``cssmin`` is no longer a dependency.
+
+[0.1.5] -- 2018-10-09
+---------------------
+
+Added
++++++
+
+- Example dashboards are in the ``examples`` folder.
+- Console entry point, ``signac-dashboard run`` will launch a simple dashboard. This will be extended in a future release.
+- Better support for custom module assets.
+
+Changed
++++++++
+
+- Modules are now part of the user session and are saved to the project document. This requires all module arguments to be JSON-encodable.
+- Restructured module design and how modules provide assets.
+- Documentation has been updated, with instructions for port forwarding.
+- Split views into a separate file.
+
+Fixed
++++++
+
+- Browsers will no longer cache dynamic content.
+- Pagination rendering bug squashed.
+
+[0.1.4] -- 2018-07-23
+---------------------
+
+Fixed
++++++
+
+- Removed ``flask_cache`` and replaced with ``lru_cache`` to fix compatibility with Flask 1.0.
+
+[0.1.3] -- 2018-04-02
+---------------------
+
+Added
++++++
+
+- README documentation on searching.
+- Added support for signac cache.
+- Added LRU cache for job details.
+- Added pagination support for much faster loading.
+- Added VideoViewer module.
+
+Changed
++++++++
+
+- Error handling is cleaner.
+- Refactored job views.
+- Job titles show statepoint booleans as True/False.
+- Added job id prefix to downloaded filenames so they can be distinguished.
+
+Fixed
++++++
+
+- Heterogeneous schemas can generate job titles.
+
+[0.1.2] -- 2018-02-08
+---------------------
+
+Added
++++++
+
+- Search jobs with a document filter with `doc:{"key":"value"}`.
+- Unit tests for job search.
+- README documentation is much more complete.
+- flake8 checked in CI.
+- Added CHANGELOG.
+
+[0.1.1] -- 2017-09-25
+---------------------
+
+Added
++++++
+
+- Continuous integration support.
+- Added first unit test.
+- Mobile support is significantly improved.
+
+Fixed
++++++
+
+- Flask package was incorrectly configured in the previous release.
+- Corrected menu activation script to trigger on ``turbolinks:load`` event.
+
+[0.1.0] -- 2017-09-17
+---------------------
+
+Added
++++++
+
+- First release.

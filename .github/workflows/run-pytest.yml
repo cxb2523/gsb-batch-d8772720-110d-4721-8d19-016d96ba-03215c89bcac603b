@@ -1,0 +1,61 @@
+name: Run Unit Tests
+
+on:
+  pull_request:
+
+  push:
+    branches:
+      - 'main'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.python }}, ${{ matrix.dependencies }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        python: ['3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: 'macos-26'
+            python: '3.14'
+          - os: 'windows-2025'
+            python: '3.14'
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        submodules: "recursive"
+    - name: Set up Python ${{ matrix.python }}
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+      with:
+        python-version: ${{ matrix.python }}
+    - name: Setup Python environment
+      uses: glotzerlab/workflows/setup-uv@00c67cb577c36bdc2570845fc62d1a30e3383012 # 0.14.0
+      with:
+        lockfile: "requirements/requirements-test-py${{ matrix.python }}.txt"
+        only-binary: ":none:"
+    - name: Install the package
+      run: |
+        uv pip install . --no-build-isolation --no-deps --system -v
+    - name: Test with pytest
+      run: |
+        pytest --cov=signac_dashboard --cov-config=pyproject.toml --cov-report=xml tests/ -v
+    - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+
+  # This job is used to provide a single requirement for branch merge conditions.
+  tests_complete:
+    name: Unit test
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-26.04
+
+    steps:
+    - run: jq --exit-status 'all(.result == "success")' <<< '${{ toJson(needs) }}'
+    - name: Done
+      run: echo "Done."
