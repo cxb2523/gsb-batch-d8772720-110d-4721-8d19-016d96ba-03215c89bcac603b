@@ -9,9 +9,15 @@
   },
   "files": [
     "index.mjs",
+    "lib/",
     "README.md",
     "LICENSE"
   ],
+  "exports": {
+    ".": "./index.mjs",
+    "./batch-scrape": "./lib/batch-scrape.mjs",
+    "./remote-scraper": "./lib/remote-scraper.mjs"
+  },
   "scripts": {
     "test": "node --test"
   },

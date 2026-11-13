@@ -29,6 +29,7 @@ https://mcp.hasdata.com/mcp?apis=web_scraping
 - [Tools](#tools)
 - [Output formats](#output-formats)
 - [Errors and failure paths](#errors-and-failure-paths)
+- [Local batch orchestration](#local-batch-orchestration)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [How it compares](#how-it-compares)
 - [FAQ](#faq)
@@ -280,6 +281,55 @@ Plan for these rather than assuming a happy path.
 
 Results that carry data also carry a `requestMetadata.id` worth quoting in support.
 
+## Local batch orchestration
+
+The launcher ships a small local module, `lib/batch-scrape.mjs`, for crawling a list of pages without mistaking the three kinds of "nothing came back" for one another. It changes nothing on the remote server and adds no command-line tool: it calls the same single `hasdata_web_scraping_web_scraping_scrapeWebPage` tool, one request at a time, in input order.
+
+```js
+import { batchScrape } from '@hasdata/web-scraping-mcp/batch-scrape';
+
+const outcomes = await batchScrape([
+    { url: 'https://example.com/a', outputFormat: ['json'], jsRendering: false,
+      extractRules: { title: 'h1' }, extractLinks: true },
+    { url: 'https://example.com/b', outputFormat: ['markdown'], jsRendering: false,
+      extractEmails: true },
+]);
+```
+
+The returned list is exactly as long as the input and keeps its order. Every entry carries `url`, `outcome`, `statusCode`, `missingFields` and `notes` (plus `attempts` and the raw `payload`). The `outcome` taxonomy keeps the failure paths apart:
+
+| outcome | when | how to treat it |
+| :--- | :--- | :--- |
+| `success` | A payload came back and the target did not answer 403/404 | Parse it; check `missingFields` first |
+| `blocked` | The target page answered **403 or 404**. The API call itself succeeded and was billed | Do not parse the empty body; report the block |
+| `unreachable` | The managed proxy never connected: `errorType: proxyConnection` or an HTTP **400** | Retry later or switch proxy type; the target may be fine |
+| `failed` | Any other error, including a 429 once retries are exhausted | Read `notes` for the reason and retry count |
+
+`extractRules` fields whose selector matched nothing come back `null` from the API; every such field name is collected in `missingFields` and never replaced with a guessed value. Asking for `extractLinks` or `extractEmails` without `json` in `outputFormat` cannot return anything, so the entry's `notes` say explicitly that the links or emails had nowhere to land.
+
+**Rate limits.** On the free plan concurrency is 1, so a sequential crawl hits `429` / `concurrency_limit` regularly. Those two answers are retried with exponential backoff (default 4 retries, injectable via `maxRetries`, `baseDelayMs`, `maxDelayMs`); only after the retries are exhausted is the page marked `failed`, and `notes` records the retry count and final reason. A single page failing never interrupts the rest of the batch.
+
+**Injectable calls and tests.** The scrape call is a dependency, not hardwired: pass `{ scrape }` to replace the network call with a fake that returns scripted per-page responses. The default adapter (`lib/remote-scraper.mjs`) speaks the same streamable-HTTP JSON-RPC as the launcher and reads `HASDATA_API_KEY` lazily on first use. The orchestrator tests run entirely against fakes, so they need no API key and no network:
+
+```js
+import { batchScrape } from './lib/batch-scrape.mjs';
+import { ScrapeToolError } from './lib/scrape-errors.mjs';
+
+const scrape = async (request) => {
+    if (request.url.endsWith('/down')) {
+        throw new ScrapeToolError('proxy connection to the target failed',
+            { errorType: 'proxyConnection' });
+    }
+    return { json: { statusCode: 200, extractedData: { title: null } }, text: null };
+};
+
+const outcomes = await batchScrape(
+    [{ url: 'https://example.test/down', extractRules: { title: 'h1' } }],
+    { scrape, sleep: async () => {} },
+);
+// outcomes[0].outcome === 'unreachable'
+```
+
 ## Pricing, free tier and limits
 
 The cost depends on two switches, and nothing else changes it.
@@ -380,6 +430,8 @@ HASDATA_API_KEY=your_key_here npm test
 ```
 
 The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=web_scraping` returns the one expected tool, that its name has not changed, that it still requires `url` and carries a description, that the parameters this README documents are still in the schema, and that the key in use is actually accepted.
+
+`test/batch-scrape.test.mjs` and `test/remote-scraper.test.mjs` cover the local batch orchestration instead: success, blocked, unreachable, missing fields, links/emails with no landing spot, retry-then-succeed and retry-exhausted paths. Every response is an injected fake, so these tests need neither an API key nor network access and run anywhere.
 
 Two tests pin the output-format behaviour, because it is the part of this README a reader is most likely to be caught by and the part a refactor is most likely to change. One asks for markdown alone and asserts the content arrives as a string at the top level. The other asks for `json` with `extractRules` and asserts the extraction lands in `extractedData` inside `json`. Both run without rendering, so the pair costs 2 credits.
 
