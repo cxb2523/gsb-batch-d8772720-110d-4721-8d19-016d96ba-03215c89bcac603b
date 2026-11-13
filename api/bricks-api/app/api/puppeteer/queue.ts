@@ -15,12 +15,13 @@ export interface QueueJob {
     headless: boolean;
   };
   rowData: Record<string, string>;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
   result?: string;
   error?: string;
   createdAt: Date;
   startedAt?: Date;
   completedAt?: Date;
+  cancelledAt?: Date;
   progress?: string;
 }
 
@@ -70,6 +71,53 @@ class PuppeteerQueue {
       console.log(`🔍 Job ${id} not found. Total jobs: ${allJobs.length}. Recent jobs:`, recentJobs);
     }
     return job;
+  }
+
+  /**
+   * Cancel a job that is still waiting in the queue.
+   *
+   * Outcomes:
+   *  - 'cancelled': the job was pending and has now been cancelled (it will
+   *    never be picked up by processNext, and pending stats exclude it).
+   *  - 'not-cancellable': the job exists but has already started (processing,
+   *    completed, failed) — caller should return 409.
+   *  - 'not-found': no job with this id, or it was already cancelled. A
+   *    repeated cancel therefore surfaces as 404 — the job remains visible
+   *    via getJob()/status endpoint but is no longer a cancellable resource.
+   */
+  cancelJob(id: string): 'cancelled' | 'not-cancellable' | 'not-found' {
+    const job = this.jobs.get(id);
+    if (!job || job.status === 'cancelled') {
+      return 'not-found';
+    }
+
+    if (job.status !== 'pending') {
+      return 'not-cancellable';
+    }
+
+    // Synchronous status flip: Node.js is single-threaded, so once this
+    // returns no processNext() tick can observe the job as 'pending' again.
+    const previousStatus = job.status;
+    job.status = 'cancelled';
+    job.cancelledAt = new Date();
+    job.completedAt = job.cancelledAt;
+    job.progress = 'Job cancelled before execution';
+
+    console.log(`🛑 Job ${id} status: ${previousStatus} → cancelled`);
+    return 'cancelled';
+  }
+
+  // Recent cancellations, newest first — surfaced via GET /api/puppeteer
+  // so users can verify what was cancelled and when.
+  getCancelledJobs(limit = 10) {
+    return Array.from(this.jobs.values())
+      .filter(job => job.status === 'cancelled' && job.cancelledAt)
+      .sort((a, b) => b.cancelledAt!.getTime() - a.cancelledAt!.getTime())
+      .slice(0, limit)
+      .map(job => ({
+        jobId: job.id,
+        cancelledAt: job.cancelledAt!.toISOString()
+      }));
   }
 
   private async processNext(): Promise<void> {
@@ -369,6 +417,14 @@ class PuppeteerQueue {
     }
 
     const previousStatus = job.status;
+
+    // A cancelled job must never be executed or transition back to another
+    // state (e.g. a stale processNext tick racing with the cancellation).
+    if (previousStatus === 'cancelled') {
+      console.warn(`⚠️ Ignored status update for cancelled job ${jobId}: → ${status}`);
+      return;
+    }
+
     job.status = status;
     job.progress = progress;
     
@@ -396,6 +452,7 @@ class PuppeteerQueue {
       processing: jobs.filter(j => j.status === 'processing').length,
       completed: jobs.filter(j => j.status === 'completed').length,
       failed: jobs.filter(j => j.status === 'failed').length,
+      cancelled: jobs.filter(j => j.status === 'cancelled').length,
       avgProcessingTime: 0,
       estimatedWaitTime: 0
     };
@@ -432,10 +489,10 @@ class PuppeteerQueue {
     return position >= 0 ? position + 1 : 0;
   }
 
-  // Cleanup old completed jobs (keep last 1000)
+  // Cleanup old terminal jobs (keep last 1000)
   cleanup(): void {
     const completedJobs = Array.from(this.jobs.values())
-      .filter(j => (j.status === 'completed' || j.status === 'failed') && j.completedAt)
+      .filter(j => (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') && j.completedAt)
       .sort((a, b) => b.completedAt!.getTime() - a.completedAt!.getTime());
 
     if (completedJobs.length > 1000) {
@@ -445,7 +502,7 @@ class PuppeteerQueue {
       });
       console.log(`🧹 Cleaned up ${toRemove.length} old jobs. Remaining: ${this.jobs.size}`);
     } else {
-      console.log(`🧹 Cleanup check: ${completedJobs.length} completed/failed jobs, ${this.jobs.size} total jobs`);
+      console.log(`🧹 Cleanup check: ${completedJobs.length} completed/failed/cancelled jobs, ${this.jobs.size} total jobs`);
     }
   }
 

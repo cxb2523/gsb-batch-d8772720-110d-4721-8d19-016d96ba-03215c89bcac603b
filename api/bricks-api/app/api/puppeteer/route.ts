@@ -174,12 +174,85 @@ export async function GET() {
   // Return queue statistics
   const stats = puppeteerQueue.getQueueStats();
   const recentJobs = puppeteerQueue.getRecentJobs(5);
+  const cancelled = puppeteerQueue.getCancelledJobs(10);
 
   return NextResponse.json({
     queue: stats,
     recentJobs,
+    cancelled,
     message: 'Puppeteer queue status'
   }, { headers: corsHeaders });
+}
+
+// Cancel a queued job. Only jobs still in 'pending' state can be cancelled;
+// once execution has started (or the job finished) the request is rejected.
+export async function DELETE(request: NextRequest) {
+  try {
+    const requestUrl = new URL(request.url);
+    const jobId = requestUrl.searchParams.get('jobId')?.trim();
+
+    if (!jobId) {
+      return NextResponse.json(
+        { success: false, error: 'jobId query parameter is required' },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    const puppeteerQueue = await getPuppeteerQueue();
+    if (!puppeteerQueue) {
+      return NextResponse.json(PUPPETEER_UNAVAILABLE, { status: 503, headers: corsHeaders });
+    }
+
+    const outcome = puppeteerQueue.cancelJob(jobId);
+
+    if (outcome === 'not-found') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Job not found',
+          jobId,
+          message: 'The requested job does not exist, has already been cancelled, or has expired'
+        },
+        { status: 404, headers: corsHeaders }
+      );
+    }
+
+    if (outcome === 'not-cancellable') {
+      const job = puppeteerQueue.getJob(jobId);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Job cannot be cancelled',
+          jobId,
+          status: job?.status,
+          message: 'Only jobs that are still pending in the queue can be cancelled. This job has already started or finished.'
+        },
+        { status: 409, headers: corsHeaders }
+      );
+    }
+
+    console.log(`🛑 Job ${jobId} cancelled via DELETE /api/puppeteer`);
+
+    return NextResponse.json({
+      success: true,
+      jobId,
+      status: 'cancelled'
+    }, { headers: corsHeaders });
+
+  } catch (error) {
+    console.error('💥 Puppeteer cancel API error:', error);
+
+    const errorMessage = error instanceof Error ? error.message : 'Unknown server error';
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Server error: ${errorMessage}`,
+        timestamp: new Date().toISOString()
+      },
+      { status: 500, headers: corsHeaders }
+    );
+  }
 }
 
 // Handle CORS preflight requests

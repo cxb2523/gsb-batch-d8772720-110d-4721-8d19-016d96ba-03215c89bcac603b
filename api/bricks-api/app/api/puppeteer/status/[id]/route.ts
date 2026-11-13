@@ -113,6 +113,11 @@ export async function GET(
         error: job.error,
         message: 'Job failed to complete'
       }, { headers: corsHeaders });
+    } else if (job.status === 'cancelled') {
+      return NextResponse.json({
+        ...response,
+        message: 'Job was cancelled before execution'
+      }, { headers: corsHeaders });
     } else {
       // Still pending or processing
       return NextResponse.json({
