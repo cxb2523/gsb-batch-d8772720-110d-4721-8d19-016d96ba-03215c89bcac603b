@@ -1,0 +1,332 @@
+# بحث-المتصفح
+
+<p align="center">
+  <img src="../img/logoLarge-browser-search.png" alt="browser-search logo" width="80%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Johell1NS/browser-search/releases"><img src="https://img.shields.io/github/v/release/Johell1NS/browser-search" alt="Release"></a>
+  <a href="https://github.com/Johell1NS/browser-search"><img src="https://img.shields.io/github/stars/Johell1NS/browser-search" alt="GitHub stars"></a>
+  <a href="https://github.com/Johell1NS/browser-search/issues"><img src="https://img.shields.io/github/issues/Johell1NS/browser-search" alt="GitHub issues"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/github/license/Johell1NS/browser-search" alt="License: MIT"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D20.19-brightgreen" alt="Node.js >=20.19"></a>
+  <a href="https://github.com/Johell1NS/browser-search/discussions"><img src="https://img.shields.io/badge/Discussions-GitHub-333333?logo=github&logoColor=white" alt="Discussions"></a>
+  <a href="https://x.com/Johell1NS"><img src="https://img.shields.io/badge/-Follow%20updates-333333?logo=x" alt="Follow updates"></a>
+</p>
+
+> **مهارة لوكلاء الذكاء الاصطناعي.** OpenCode، Claude Code، Cursor، OpenClaw وغيرهم. ابحث في الويب باستخدام SearXNG، تصفح باستخدام Camofox، تجاوز الحماية باستخدام CloakBrowser. **مكافحة الهلوسة بالتصميم.** كل شيء مستضاف ذاتياً، مجاني، غير محدود.
+
+## لماذا هي موجودة
+
+اليوم، وكيل الذكاء الاصطناعي الذي يحاول تصفح الويب يشبه **لصاً يرتدي قناعاً** يتسلل إلى أكاديمية الشرطة. حماية الموقع تمنعه وتتحداه وترفضه.
+
+👮 browser-search يقلب الوضع: وكيلك لم يعد اللص بل أصبح **قائد الشرطة**. لا مزيد من محاولات الوصول الخرقاء. يعبر كل باب لأنه يمتلك الأدوات الصحيحة. SearXNG للبحث، Camofox للتصفح، CloakBrowser عندما يشتد اللعب.
+
+المهارة تفرض الاستخدام الحصري للنصوص الحتمية. هذا **يزيل هلوسات النموذج**، حتى مع أرخص النماذج. الأدوات الثلاث موصوفة بلغة طبيعية، لكن التنفيذ صارم: لا يمكن للنموذج أن يخطئ في الأمر أو يسيء تفسير المخرجات. النتيجة هي **نجاح مضمون في كل استعلام** — المهارة ونصوصها الحتمية توجه النموذج لتمشيط الويب حتى يجد الإجابة.
+
+1. **[SearXNG](https://github.com/searxng/searxng)** — محرك بحث وصفي لمرحلة البحث (متعدد المصادر، JSON)
+2. **[Camofox](https://github.com/jo-inc/camofox-browser)** — متصفح يمكن الوصول إليه عبر REST API للمواقع القياسية
+3. **[CloakBrowser](https://github.com/cloakhq/cloakbrowser)** — متصفح متخفي للمواقع المحمية بمكافحة البوت
+
+التدفق النموذجي: يبحث الوكيل أولاً باستخدام SearXNG، ثم يتصفح النتائج باستخدام Camofox (أو CloakBrowser إذا كان الموقع محمياً).
+
+## الفوائد
+
+- **مجاني 100%، مستضاف ذاتياً، غير محدود.** لا حاجة لشراء مفاتيح API، لا اشتراكات، لا حدود للمعدل. كل شيء يعمل على جهازك، Docker وnpm. استخدام غير محدود، تكلفة صفرية.
+
+- **خفيف، يعمل في أي مكان.** تم بناؤه واختباره على Raspberry Pi — إذا كان يعمل هناك، فإنه يعمل في كل مكان. استهلاك موارد ضئيل، لا حاجة لبنية تحتية ثقيلة، يعمل 24/7 على أجهزة منخفضة الطاقة.
+
+- **بحث + تصفح في حزمة واحدة.** لا حاجة لتكامل يدوي. البحث والتصفح مرحلتان متميزتان، كلتاهما مغطاة.
+
+- **تصعيد تلقائي للتنقل.** إذا تم حظر Camofox بواسطة Cloudflare/Akamai، يتحول الوكيل تلقائياً إلى CloakBrowser.
+
+- **أداء ذكي.** SearXNG لمرحلة البحث (ملي ثانية). Camofox وCloakBrowser يُستخدمان فقط لتصفح المواقع التي تحتاج ذلك فعلاً.
+
+- **اختيار تلقائي للوكيل.** وكيل الذكاء الاصطناعي يقرر أي أداة يستخدم: SearXNG للبحث الأولي، Camofox للتصفح، CloakBrowser إذا كان الموقع محمياً. تدخل بشري صفري.
+
+- **مكافحة الهلوسة بالتصميم.** وضع البحث العميق للمهارة يفرض سير عمل "ابحث أولاً، ثم أجب": يجب على الوكيل التحقق من كل ادعاء واقعي مقابل مصادر الويب الحية، والرجوع إلى مصادر متعددة، وعدم التخمين أبداً. لا مزيد من الإجابات المختلقة.
+
+- **قابل للتخصيص بالكامل.** SKILL.md هو نص عادي. يمكنك تحرير القواعد الأساسية، إضافة قواعدك الخاصة، إزالة ما لا تحتاجه. كيّفه مع سير عملك، فريقك، معاييرك.
+
+- **تخفي أصلي.** CloakBrowser يكتشف تلقائياً تحديات Cloudflare وAkamai وDataDome وImperva وPerimeterX وDDoS-Guard، وينتظر حلها قبل استخراج المحتوى.
+
+- **يعمل مع أي وكيل.** SKILL.md مكتوب لـ OpenCode، لكن المنطق متطابق لأي وكيل ذكاء اصطناعي. نفس README، نفس package.json، كل شيء يعمل في كل مكان. فقط اطلب من وكيلك تحويل المهارة لبيئته.
+
+## لماذا هو مختلف
+
+معظم أدوات الويب لوكلاء الذكاء الاصطناعي تتوقف عند بداية الجدار: عندما يقدم موقع تحدي Cloudflare أو Akamai، تعيد خطأً ويستسلم الوكيل. browser-search مصمم ليعبر الجدار بدلاً من ذلك.
+
+- **بحث → تصفح → تجاوز في مهارة واحدة.** لا تكامل يدوي، لا تكلفة لكل استعلام، لا مفاتيح API للشراء.
+- **تصعيد من ثلاث طبقات.** SearXNG لبحث في أجزاء من الثانية، Camofox لنحو 90% من المواقع القياسية، CloakBrowser عندما يلعب الموقع بقوة — تلقائياً، دون تدخل بشري.
+- **نتائج مضادة للبوت مثبتة.** CloakBrowser يطبق 58 تصحيحاً على مستوى الكود المصدري C++ ويحقق 0.9 في reCAPTCHA v3 (مستوى بشري، مُتحقق منه على الخادم)، متجاوزاً Cloudflare وTurnstile وDataDome وAkamai وImperva وPerimeterX وDDoS-Guard — بينما تعيد الأدوات الأخرى فقط `blocked_by_challenge`.
+- **مجاني، خاص، مستضاف ذاتياً.** SearXNG وCamofox وCloakBrowser كلها تعمل على جهازك. صفر تكلفة، غير محدود، لا شيء يُقاس.
+
+حيث تستسلم الأدوات الأخرى، browser-search يواصل المضي قدماً.
+
+## 🏆 أحدث ما توصلت إليه التكنولوجيا
+
+تم اختيار هذه الأدوات الثلاث لأنها تمثل أحدث ما توصلت إليه التكنولوجيا المتاحة اليوم. مثل هذه المهارة مصممة لتتطور: عندما تظهر أدوات أفضل، كل ما يتطلبه الأمر هو تحديث SKILL.md لاستبدالها. 🔄
+
+⭐ **ضع نجمة على المستودع وتابع** لتبقى على اطلاع دائم بالأدوات الجديدة وتحسينات التدفق وتحديثات التنسيق. 🚀
+
+## البنية
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    browser-search                        │
+│                                                         │
+│  ┌──────────────┐                                       │
+│  │    بحث       │                                       │
+│  │               │                                       │
+│  │  SearXNG      │  محركات البحث ← URLs                 │
+│  │  (Docker)     │  نتائج JSON، سريعة                   │
+│  │  :8080        │                                       │
+│  └──────────────┘                                       │
+│         │                                                │
+│         │ النتائج جاهزة → للتصفح                         │
+│         ↓                                                │
+│  ┌─────────────────────────────────────┐                │
+│  │          تصفح                       │                │
+│  │                                      │                │
+│  │  ┌──────────────┐                   │                │
+│  │  │   Camofox    │  متصفح + REST    │                │
+│  │  │  (Docker)    │  JS، نقرة، تقييم  │                │
+│  │  │  :9377       │                   │                │
+│  │  └──────┬───────┘                   │                │
+│  │         │                           │                │
+│  │         │ إذا تم الحظر              │                │
+│  │         ↓                           │                │
+│  │  ┌──────────────┐                   │                │
+│  │  │ CloakBrowser │  Chromium متخفي   │                │
+│  │  │   (npm)      │  مضاد للبوت، وكيل │                │
+│  │  └──────────────┘                   │                │
+│  └─────────────────────────────────────┘                │
+└─────────────────────────────────────────────────────────┘
+```
+
+## كيف يعمل
+
+### المرحلة 1 — البحث باستخدام SearXNG
+
+حاوية Docker على `localhost:8080`. محرك بحث وصفي يستعلم Google وWikipedia وBing وDuckDuckGo والعديد من الآخرين في وقت واحد. مخرجات JSON مع عناوين ومقتطفات وروابط URL.
+
+**مثال:**
+
+```bash
+node scripts/searxng/searxng.mjs search "largest llm benchmark 2026"
+```
+
+الوكيل لديه الآن قائمة عناوين URL لزيارتها ويقرر بشكل مستقل ما إذا كان سيتصفحها باستخدام Camofox أو CloakBrowser بناءً على الموقع.
+
+### المرحلة 2 — التصفح باستخدام Camofox
+
+حاوية Docker على `localhost:9377`. يعرض متصفح Firefox كاملاً عبر REST API. يمكن للوكيل إنشاء علامات تبويب، والتنقل، والنقر، والتمرير، وتنفيذ JavaScript عشوائي، وهيكلة البيانات.
+
+**يشمل:** Readability.js من Mozilla لاستخراج مقالات نظيفة، مع إزالة التنقل والشريط الجانبي والإعلانات (توفير ~70% من الرموز).
+
+**الأوامر الرئيسية:**
+
+```bash
+# Single-URL extraction (Readability.js, auto-fallback to snapshot)
+node scripts/camofox/camofox.mjs readability "https://example.com"
+
+# JavaScript evaluation
+node scripts/camofox/camofox.mjs evaluate "https://example.com" "document.title"
+
+# Accessibility snapshot
+node scripts/camofox/camofox.mjs snapshot "https://example.com"
+```
+
+### المرحلة 3 — التصفح باستخدام CloakBrowser (عندما لا يكون Camofox كافياً)
+
+حزمة npm مبنية على Playwright + `cloakbrowser`. تطلق متصفح Chromium ببصمة رقمية متقدمة لتجاوز Cloudflare وAkamai وDataDome وأنظمة مكافحة البوت الأخرى. كشف تلقائي للتحديات مع الانتظار وإعادة المحاولة.
+
+**البرامج النصية المتاحة:**
+
+- `cloak-fetch.mjs` — جلب عالمي مع كشف التحديات
+- `cloak-script.mjs` — تنفيذ برنامج Playwright مخصص
+
+**مثال:**
+
+```bash
+node scripts/cloak/cloak-fetch.mjs "https://protected-site.com"
+node scripts/cloak/cloak-fetch.mjs "https://protected-site.com" --proxy socks5://... --geoip
+
+# Markdown output (requires: pip install markitdown)
+node scripts/cloak/cloak-fetch.mjs "https://example.com" --format markdown
+```
+
+> **ملاحظة الإصدار:** يُثبّت browser-search على CloakBrowser `^0.6.3` وPlaywright Core `1.64.1`. يتطلب CloakBrowser 0.6 الإصدار Node.js 20.19+ أو 22.12+. تستخدم المهارة الملف التنفيذي المجاني لـ CloakBrowser (Chromium 146; 145 على macOS) الذي لا يحتاج إلى مفتاح ترخيص؛ وتسري عليه أيضًا تحديثات الغلاف (دعم Linux arm64، تنزيل أكثر أمانًا للملف التنفيذي، بصمة مستقرة لكل ملف تعريف دائم، إجراءات بشرية المحاكاة أكثر موثوقية). يتيح مفتاح مجاني (تسجيل الدخول عبر GitHub بالأمر `cloakbrowser login`) استخدام أحدث ملف تنفيذي مع جلسة متزامنة واحدة؛ والمهارة لا تستخدمه ولا تشترطه.
+
+## لماذا كل من Camofox وCloakBrowser؟
+
+لأن السرعة والتخفي هما مقايضة، والأداة المناسبة تعتمد على الموقع.
+
+**Camofox — سريع، منظم، دائم.**
+Camofox يغلف Camoufox (شوكة Firefox على مستوى C++) في REST API مع متصفح دافئ دائماً. بعد بدء بارد ~1-3ث، كل طلب يكاد يكون فورياً. لقطات الوصول الخاصة به أصغر بنسبة ~90% من HTML الخام، مع مراجع عناصر مستقرة (e1، e2، ...) للتفاعل الموثوق. يتعامل مع ~90% من المواقع التي لا تستخدم حماية متقدمة لمكافحة البوت: المقالات، المستندات، محركات البحث، صفحات الويب القياسية.
+
+**CloakBrowser — متخفي، مضاد للبوت، عند الطلب.**
+CloakBrowser يطلق مثيل Chromium جديد لكل طلب (~1-3ث بدء في كل مرة). يستخدم بصمة رقمية متقدمة، دعم وكيل، تحديد الموقع الجغرافي، وكشف التحديات التلقائي لتجاوز Cloudflare وAkamai وDataDome وImperva وPerimeterX وDDoS-Guard. إنه الملاذ الأخير لـ ~10% من المواقع التي تحظر Camofox.
+
+**أرقام من العالم الحقيقي:**
+
+| الأداة | Cloudflare قياسي | Cloudflare Turnstile | DataDome |
+|---|---|---|---|
+| **Camoufox** (محرك Camofox) | حتى **~92%** [¹] | **~65-78%** [¹] | **60-75%** [¹] |
+| **Playwright Stealth** | ~70-80% [¹] | ~40-55% [¹] | ~30-50% [¹] |
+
+- **CloakBrowser** يطبق **58 تصحيحاً على مستوى كود مصدر C++** ويحقق **0.9 reCAPTCHA v3** (مستوى بشري، تم التحقق منه بالخادم)، مجتازاً جميع اختبارات مكافحة البوت الرئيسية بما في ذلك Cloudflare Turnstile وFingerprintJS [²]
+- **Camofox** بدء بارد: **~1-3ث** (مرة واحدة، ثم ~0ملث لكل طلب عبر REST API دافئ) [³]
+- **Playwright/Chromium** بدء بارد: **~0.5-6ث** (كل إطلاق، يختلف حسب البيئة) [⁴]
+
+Camofox يتعامل مع المسار السريع. CloakBrowser يتعامل مع الحالات الحدية. معاً يغطيان الويب بأكمله دون ثغرات. الوكيل يقرر أي منهما يستخدم.
+
+### المصادر
+
+¹ "Camoufox Vs Playwright Stealth: Complete Comparison & Alternatives (2026)" — [blog.send.win](https://blog.send.win/camoufox-vs-playwright-stealth-complete-comparison-alternatives-2026/)
+² CloakBrowser README — [github.com/cloakhq/cloakbrowser](https://github.com/cloakhq/cloakbrowser)
+³ camoufox-pi README (cold start comparison) — [github.com/MonsieurBarti/camoufox-pi](https://github.com/MonsieurBarti/camoufox-pi)
+⁴ Playwright issue #4345 (launch time variability) — [github.com/microsoft/playwright/issues/4345](https://github.com/microsoft/playwright/issues/4345)
+
+## التثبيت
+
+### الخطوة 1 — تثبيت المهارة
+
+قم بتثبيت تعريف المهارة في وكيل الذكاء الاصطناعي الخاص بك بأمر واحد:
+
+```bash
+npx skills add Johell1NS/browser-search
+```
+
+> **Required after `npx skills add`:** CloakBrowser is an npm dependency (`cloakbrowser` + `playwright-core`). The `skills` installer does **not** run `npm install` automatically. You must run it manually inside the skill directory:
+>
+> ```bash
+> # Find your skill directory (OpenCode example):
+> #   ~/.config/opencode/skills/browser-search
+> #   or .agents/skills/browser-search  (project-local)
+> cd ~/.config/opencode/skills/browser-search
+> npm install
+> node -e "import('cloakbrowser').then(c=>c.ensureBinary())"
+> # Verify:
+> bash scripts/check.sh
+> ```
+>
+> Without this, SearXNG and Camofox (Docker) work, but `smart-extract` -> CloakBrowser (`--fallback` / `full-auto`) will fail with `ERR_MODULE_NOT_FOUND: Cannot find package 'cloakbrowser'`.
+
+يعمل مع أكثر من 70 وكيل ذكاء اصطناعي بما في ذلك OpenCode وClaude Code وCursor وGitHub Copilot والمزيد.
+
+### الخطوة 2 — إعداد البنية التحتية
+
+```bash
+git clone https://github.com/Johell1NS/browser-search
+cd browser-search
+npm install
+node -e "import('cloakbrowser').then(c=>c.ensureBinary())"
+```
+
+يتم تثبيت CloakBrowser عبر npm. يتطلب SearXNG وCamofox حاويات Docker منفصلة — تأكد من تشغيلها قبل استخدام المهارة.
+
+أظهر هذا README لوكيل الذكاء الاصطناعي الخاص بك لتثبيت كامل مصمم خصيصاً لبيئتك ومنصتك.
+
+browser-search لا يوفر ملفات docker-compose أو نصوص تثبيت خاصة بمنصة معينة. وكيل الذكاء الاصطناعي الخاص بك يقرأ المراجع أدناه ويكيّف الإعداد تلقائياً مع نظام التشغيل والبنية والبيئة الخاصة بك.
+
+**نظرة عامة على الخدمات:**
+
+| الخدمة | الطريقة | المرجع |
+|---|---|---|
+| SearXNG | Docker، `:8080` | [docs.searxng.org](https://docs.searxng.org/admin/installation-docker.html) |
+| Camofox | Docker، `:9377` | [github.com/jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser) |
+| CloakBrowser | npm (requires `npm install` in skill dir + `ensureBinary`) | `scripts/cloak/cloak-fetch.mjs` |
+
+**إعداد SearXNG (مطلوب)**
+
+التثبيت الافتراضي لـ SearXNG يُعطّل مخرجات JSON، والمهارة تحتاجها: بدونها يفشل السكربت بالخطأ `HTTP 403`. في ملف `settings.yml` الخاص بـ SearXNG (المجلد `core-config` في إعداد Docker الرسمي) استخدم:
+
+```yaml
+use_default_settings: true
+server:
+  secret_key: "<random>"   # or set SEARXNG_SECRET
+  limiter: false           # local instance: the limiter would block the script's JSON requests
+search:
+  formats: [html, json]
+```
+
+- يُبقي `use_default_settings: true` المحركات والإعدادات الافتراضية متوافقة مع المشروع الأصلي عند كل تحديث. لتفعيل محركات إضافية أضف إدخالات مثل `engines:` ← `- name: bing` مع `disabled: false`.
+- أبقِه محليًا: اربط SearXNG بالعنوان `127.0.0.1` (`SEARXNG_HOST=127.0.0.1` في `.env`).
+- المهارة **لا تحتاج** إلى Valkey/Redis (يستخدمه SearXNG فقط للمحدِّد limiter، وهو معطّل).
+- إذا لم يكن SearXNG على `http://127.0.0.1:8080`، فاضبط `SEARXNG_URL`.
+
+**لوكيل الذكاء الاصطناعي — اقرأ هذه الملفات:**
+
+| الملف | ما يحتويه |
+|---|---|
+| `SKILL.md` | المهارة الكاملة: الأوامر، التصعيد، استكشاف الأخطاء |
+| `scripts/cloak/cloak-fetch.mjs` | استخدام واجهة CLI لـ CloakBrowser وجميع الخيارات |
+| `scripts/setup.sh` | تبعيات النظام |
+| `scripts/check.sh` | التحقق بعد التثبيت |
+| `docker/setup.md` | نصائح إعداد Docker |
+
+**ملاحظة:** `SKILL.md` مكتوب بناء جملة **OpenCode** (`exec`، `node scripts`). إذا كان وكيلك يستخدم تنسيقاً مختلفاً (Claude Code، Cursor، إلخ)، اقرأه وحوّل الأوامر إلى بناء جملة وكيلك قبل استخدام المهارة.
+
+## متغيرات البيئة
+
+| المتغير | مطلوب لـ | الافتراضي |
+|---|---|---|
+| `CAMOFOX_API_KEY` | evaluate، session، cleanup في Camofox | — |
+| `CAMOFOX_ADMIN_KEY` | نقطة إيقاف Camofox | — |
+
+## ما لا تفعله هذه المهارة
+
+- **وسائل التواصل الاجتماعي.** Instagram وFacebook وTikTok وLinkedIn وTwitter/X تتطلب تسجيل الدخول. `browser-search` لا يحاول تصفحها.
+- **تحميل الملفات.** هو للقراءة فقط (باستثناء لقطات الشاشة الصريحة).
+- **تجاوز جدران الدفع.** لا يتجاوز أنظمة الدفع أو تسجيل الدخول.
+
+## الأمان
+
+browser-search يتضمن عدة طبقات من تعزيز الأمان:
+
+### الحماية المضمنة
+
+- **منع SSRF.** يتم التحقق من صحة URLs قبل التصفح — عناوين IP الداخلية (`127.x`، `10.x`، `192.168.x`، `169.254.x`)، نقاط نهاية بيانات التعريف السحابية، ونطاقات `.internal`/`.local` TLD محظورة. يتم أيضًا التحقق من تحليل DNS لمنع هجمات إعادة ربط DNS.
+- **صندوق حماية البرامج النصية.** يتم تنفيذ البرامج النصية المخصصة (`cloak-script.mjs`) في صندوق حماية يحد من سطح API الخاص بـ Playwright (فقط الطرق المسموح بها على `page`، `browser`، `context` قابلة للوصول). ملاحظة: تظل واجهات Node.js API متاحة — للعزل الكامل، سيكون `vm.Context` مطلوباً. استخدم `--unsafe` لتجاوز صندوق الحماية وحماية SSRF.
+- **حماية اجتياز المسار.** يجب أن تكون مسارات `--script` داخل دليل المهارة. المسارات المطلقة واجتياز `../` محظورة.
+- **تحديد المعدل.** 30 طلب/الدقيقة افتراضياً لمنع DoS العرضي أو تفعيل الحماية من البوتات (استخدم `--no-rate-limit` لتعطيل).
+- **أسماء ملفات آمنة.** لقطات الشاشة تستخدم UUID عشوائي بدلاً من الطوابع الزمنية المتوقعة.
+- **إخفاء تتبع الأخطاء.** مخرجات الأخطاء تحذف تتبع الأخطاء افتراضياً. استخدم `--verbose` لتصحيح الأخطاء.
+
+### أفضل الممارسات
+
+- **مفاتيح API.** استخدم متغيرات البيئة (`$CAMOFOX_API_KEY`) أو `--env-file` لـ Docker. لا تلصق المفاتيح أبداً في سطر الأوامر — تظهر في `ps aux` وسجل الأوامر.
+- **ربط Docker.** استخدم دائماً البادئة `127.0.0.1:` لتعيين المنفذ (`-p 127.0.0.1:9377:9377`). لا تعرض أبداً على `0.0.0.0`.
+- **ترميز URL.** تتعامل النصوص الحتمية مع الترميز داخلياً. لا حاجة للتشفير اليدوي.
+- **تثبيت الإصدارات.** التبعيات تستخدم إصدارات محددة (بدون نطاقات `^`) و `package-lock.json` لبناءات قابلة للتكرار.
+
+### التدقيق
+
+قم بتشغيل `bash scripts/audit.sh` للتحقق من الوضع الأمني لتثبيتك.
+
+### المخاطر المتبقية
+
+- **حقن الأوامر.** يمكن خداع وكيل AI لتنفيذ إجراءات ضارة. الأدوات تخفف الضرر لكن لا يمكنها منع وكيل مخترق بالكامل.
+- **سلسلة التوريد.** يقوم CloakBrowser بتحميل ملف Chromium الثنائي من `cloakbrowser.dev`. الملف الثنائي تم التحقق منه عبر SHA-256 لكنه مملوك.
+- **أتمتة المتصفح.** أي أداة لديها إمكانية الوصول إلى المتصفح تحمل مخاطر كامنة. قم بالتشغيل في بيئات معزولة عندما يكون ذلك ممكناً.
+
+## شارك
+
+browser-search مفتوح المصدر ومجاني. إذا وجدته مفيداً:
+
+- ⭐ **ضع نجمة على المستودع** — يساعد الآخرين على اكتشافه
+- 🐛 **افتح issue** — أبلغ عن الأخطاء أو اقترح ميزات
+- 🔀 **أرسل PR** — أصلح، حسن، وسع
+- 💬 **شاركه** — مع فريقك، على Reddit، Twitter، Discord
+- 🧠 **كيّفه** — انسخ المستودع، عدّل SKILL.md، اجعله ملكك
+
+كل مساهمة، مهما كانت صغيرة، تجعله أفضل.
+
+## FAQ
+
+راجع [FAQ.md](../FAQ.md) للأسئلة الشائعة حول التثبيت والهندسة وقرارات التصميم والمشكلات الشائعة.
+
+## الترخيص
+
+MIT
