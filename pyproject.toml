@@ -1,0 +1,90 @@
+[build-system]
+requires = [
+    "wheel",
+    "Cython",
+    "setuptools>=62.4",
+]
+
+[project]
+name = 'selectolax'
+version = '1.0.2'
+description = 'A fast HTML5 parser with CSS selectors, written in Cython, using the Lexbor engine.'
+readme = 'README.md'
+requires-python = '>=3.9'
+license = 'MIT'
+authors = [
+    { name = 'Artem Golubin', email = 'me@rushter.com' }
+]
+dependencies = []
+
+keywords = [
+    "selectolax",
+    "html",
+    "parser",
+    "css",
+    "fast",
+    "lexbor",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: OS Independent",
+    "Operating System :: Unix",
+    "Programming Language :: Cython",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Internet",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/rushter/selectolax"
+Repository = "https://github.com/rushter/selectolax"
+Documentation = "https://selectolax.readthedocs.io/en/latest/lexbor.html"
+Changelog = "https://github.com/rushter/selectolax/blob/master/CHANGES.md"
+
+[tool.cibuildwheel]
+build-frontend = "build"
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+environment = { LDFLAGS = "-Wl,--strip-debug" }
+
+skip = [
+    "*-manylinux_i686",
+    "*-musllinux_i686",
+    "*-win32*",
+    "pp*"
+]
+test-skip = "*-macosx_arm64"
+
+[project.optional-dependencies]
+cython = [
+    "Cython",
+]
+
+[tool.cython-lint]
+max-line-length = 120
+ignore = ['E221', 'E222', ]
+
+[tool.setuptools.packages.find]
+include = ["selectolax*"]
