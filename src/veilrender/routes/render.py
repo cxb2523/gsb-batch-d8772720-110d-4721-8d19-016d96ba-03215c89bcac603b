@@ -21,6 +21,8 @@ from veilrender.models import (
     LinkInfo,
     PageMetadata,
     RenderContent,
+    RenderOutcome,
+    RenderOutcomeStatus,
     RenderRequest,
     RenderResponse,
 )
@@ -59,6 +61,64 @@ def _html_to_markdown(html: str) -> str:
     except Exception:
         # Fallback: strip tags and return raw text
         return re.sub(r"<[^>]+>", "", html)
+
+
+# Substrings in Playwright/patchright error messages that identify a failure
+# as "the browser itself is unusable" rather than a problem with the page.
+_BROWSER_UNAVAILABLE_MARKERS = (
+    "no healthy browser workers available",
+    "browser has been closed",
+    "browser closed",
+    "target page, context or browser has been closed",
+    "connection closed",
+    "connect timed out",
+)
+
+
+def _classify_failure(exc: Exception) -> RenderOutcomeStatus:
+    """Map a rendering exception onto a terminal outcome status.
+
+    The outbound policy aborts navigations through the Playwright route
+    handler (``route.abort("blockedbyclient")``); those surface with
+    ``blockedbyclient``/``ERR_BLOCKED_BY_CLIENT`` in the message and must be
+    reported as a policy interception, not a timeout. Worker-pool and
+    browser-connection failures are reported as the engine being
+    unavailable. Everything else is a generic render error.
+    """
+    exc_str = str(exc)
+    if "blockedbyclient" in exc_str or "ERR_BLOCKED_BY_CLIENT" in exc_str:
+        return "blocked"
+    if any(marker in exc_str.lower() for marker in _BROWSER_UNAVAILABLE_MARKERS):
+        return "browser_unavailable"
+    return "error"
+
+
+def _failure_response(
+    *,
+    status_code: int,
+    error: str,
+    outcome: RenderOutcomeStatus,
+    reason: str,
+    engine: str,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    """Build a failure response carrying a truthful collection outcome.
+
+    A failed fetch never produces page content: ``content`` is an empty
+    object and ``links`` is an empty list, so callers cannot mistake a
+    transport failure for a genuinely empty page. The original ``error``
+    string is preserved unchanged for backward compatibility.
+    """
+    body = {
+        "error": error,
+        "content": {},
+        "metadata": {},
+        "links": [],
+        "outcome": RenderOutcome(
+            status=outcome, engine=engine, reason=reason
+        ).to_dict(),
+    }
+    return JSONResponse(body, status_code=status_code, headers=headers)
 
 
 def register(app: App) -> None:
@@ -104,6 +164,10 @@ def register(app: App) -> None:
                 return JSONResponse(cached)
             stats.render.cache_misses += 1
 
+        # Tracks the engine label of the latest attempt, including attempts
+        # that raised. Empty until a worker slot has actually been acquired.
+        engine_holder: dict[str, str] = {"engine": ""}
+
         async def _do_render(
             *,
             min_tier: int = 0,
@@ -117,6 +181,10 @@ def register(app: App) -> None:
                 engine,
                 force_wu,
             ):
+                # Record the engine actually serving this attempt. The holder
+                # outlives the context manager, so a failure still reports the
+                # alpha/beta label of the worker it failed on.
+                engine_holder["engine"] = engine
                 effective_wu = force_wu or req.wait_until
                 partial = False
                 try:
@@ -173,39 +241,71 @@ def register(app: App) -> None:
         except QueueFullError:
             elapsed = (time.monotonic() - t0) * 1000
             stats.render.record_failure(elapsed)
-            return JSONResponse(
-                {"error": "Server overloaded, try again later"},
+            return _failure_response(
                 status_code=503,
+                error="Server overloaded, try again later",
+                outcome="queue_full",
+                reason="Request queue depth limit reached; no browser slot available",
+                engine="",
                 headers={"Retry-After": "5"},
             )
-        except TimeoutError:
+        except (TimeoutError, PlaywrightTimeoutError) as exc:
             elapsed = (time.monotonic() - t0) * 1000
             stats.render.record_failure(elapsed)
-            logger.error("Render deadline exceeded for %s (%.0fms)", req.url, elapsed)
-            return JSONResponse(
-                {"error": "Render timed out"},
+            logger.error("Render timed out for %s (%.0fms)", req.url, elapsed)
+            reason = type(exc).__name__
+            if str(exc):
+                reason = f"{reason}: {exc}"
+            return _failure_response(
                 status_code=504,
+                error="Render timed out",
+                outcome="timeout",
+                reason=reason,
+                engine=engine_holder["engine"],
             )
         except Exception as exc:
             elapsed = (time.monotonic() - t0) * 1000
             exc_str = str(exc)
             if "Download is starting" in exc_str:
+                # A download is a client-side navigation rejection, not a
+                # rendering failure: keep the pre-existing 400 without an
+                # outcome, mirroring the parameter-validation responses.
                 return JSONResponse(
                     {"error": "URL triggers a file download, not a renderable page"},
                     status_code=400,
                 )
-            if "blockedbyclient" in exc_str or "ERR_BLOCKED_BY_CLIENT" in exc_str:
-                stats.render.record_failure(elapsed)
-                logger.warning("Navigation blocked by outbound policy for %s", req.url)
-                return JSONResponse(
-                    {"error": "Destination blocked by outbound request policy"},
-                    status_code=400,
-                )
+            outcome_status = _classify_failure(exc)
             stats.render.record_failure(elapsed)
+            if outcome_status == "blocked":
+                logger.warning("Navigation blocked by outbound policy for %s", req.url)
+                return _failure_response(
+                    status_code=400,
+                    error="Destination blocked by outbound request policy",
+                    outcome="blocked",
+                    reason=(
+                        "Navigation aborted by outbound request policy or domain "
+                        f"blocklist (blockedbyclient): {exc_str}"
+                    ),
+                    engine=engine_holder["engine"],
+                )
+            if outcome_status == "browser_unavailable":
+                logger.error(
+                    "No usable browser for %s: %s", req.url, exc, exc_info=True
+                )
+                return _failure_response(
+                    status_code=502,
+                    error="Render failed: browser unavailable",
+                    outcome="browser_unavailable",
+                    reason=exc_str or type(exc).__name__,
+                    engine=engine_holder["engine"],
+                )
             logger.error("Render failed for %s: %s", req.url, exc)
-            return JSONResponse(
-                {"error": f"Render failed: {exc_str}"},
+            return _failure_response(
                 status_code=502,
+                error=f"Render failed: {exc_str}",
+                outcome="error",
+                reason=exc_str or type(exc).__name__,
+                engine=engine_holder["engine"],
             )
 
         # Re-check where the navigation actually ended up. The submitted URL is
@@ -251,6 +351,7 @@ def register(app: App) -> None:
                 partial=partial,
             ),
             links=links,
+            outcome=RenderOutcome(status="success", engine=engine, reason=""),
         )
 
         elapsed = (time.monotonic() - t0) * 1000

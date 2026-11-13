@@ -91,6 +91,23 @@ curl -X POST http://localhost:7860/render \
 | `formats` | string[] | `["html"]` | 输出格式：`html`、`readability`、`markdown` |
 | `wait_until` | string | `"load"` | Playwright 等待策略：`load`、`domcontentloaded`、`networkidle` |
 
+只要发起了取页尝试，响应都会带一个 `outcome` 对象，逐次说明本次取页的实际结局，调用方据此区分“页面确实没有内容”和“这一页根本没取到”：
+
+```json
+{"outcome": {"status": "success", "engine": "beta", "reason": ""}}
+```
+
+| `outcome.status` | 含义 | HTTP 状态码 |
+|------------------|------|-------------|
+| `success` | 页面渲染成功，`reason` 为空 | 200 |
+| `timeout` | 导航在超时/整体截止时间内未完成 | 504 |
+| `blocked` | 被出站请求策略或域名黑名单拦截（路由处理器 abort） | 400 |
+| `browser_unavailable` | 没有健康的浏览器引擎可服务本次请求 | 502 |
+| `queue_full` | 请求队列已满（`QueueFullError`），请稍后重试 | 503 |
+| `error` | 其他渲染失败，细节见 `reason` | 502 |
+
+`engine` 是实际服务本次请求的工作节点层级标签（tier 0 为 `alpha`，tier 1 为 `beta`）；当未获取到任何工作节点槽位（`queue_full`）时为空字符串。任何失败结局下 `content` 均为空对象、`links` 均为空列表——失败响应不会伪造正文。参数校验失败（URL 不合法等）直接返回 4xx 且不带 `outcome`，因为此时尚未发起取页。
+
 ### POST /screenshot
 
 捕获截图（PNG 或 JPEG）。

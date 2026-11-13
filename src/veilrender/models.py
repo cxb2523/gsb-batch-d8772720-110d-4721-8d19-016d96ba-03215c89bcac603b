@@ -9,6 +9,22 @@ WaitUntil = Literal["commit", "domcontentloaded", "load", "networkidle"]
 ScreenshotFormat = Literal["png", "jpeg"]
 ColorScheme = Literal["light", "dark", "no-preference"]
 
+# Terminal states a single /render fetch attempt can end in.
+#   success            — the page rendered; ``reason`` stays empty
+#   timeout            — navigation did not finish within the budget
+#   blocked            — aborted by the outbound policy or domain blocklist
+#   browser_unavailable — no usable engine could serve the request
+#   queue_full         — the in-process request queue was already saturated
+#   error              — any other rendering failure, reason carries detail
+RenderOutcomeStatus = Literal[
+    "success",
+    "timeout",
+    "blocked",
+    "browser_unavailable",
+    "queue_full",
+    "error",
+]
+
 _SUPPORTED_FORMATS: set[str] = {"png", "jpeg"}
 _VALID_COLOR_SCHEMES: set[str] = {"light", "dark", "no-preference"}
 _MAX_SCALE: float = 8.0
@@ -171,6 +187,32 @@ class PageMetadata:
 
 
 @dataclass
+class RenderOutcome:
+    """How a single page-fetch attempt actually ended.
+
+    Attached to every /render response once a fetch has been attempted, so
+    callers can distinguish "the page genuinely has no content" from "this
+    page was never fetched". Parameter validation failures happen before any
+    fetch and therefore return 4xx errors without an outcome.
+
+    Attributes:
+        status: Terminal outcome, one of :data:`RenderOutcomeStatus`.
+        engine: Engine label of the worker that served the attempt
+            (``"alpha"``/``"beta"`` per worker tier). Empty when no worker
+            slot was ever acquired (queue full, no healthy worker).
+        reason: Human-readable failure detail. Empty on success.
+    """
+
+    status: RenderOutcomeStatus
+    engine: str = ""
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        return {"status": self.status, "engine": self.engine, "reason": self.reason}
+
+
+@dataclass
 class RenderContent:
     """Rendered content in multiple formats."""
 
@@ -186,6 +228,7 @@ class RenderResponse:
     content: RenderContent
     metadata: PageMetadata
     links: list[LinkInfo]
+    outcome: RenderOutcome
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict."""
@@ -206,4 +249,5 @@ class RenderResponse:
                 **({"partial": True} if self.metadata.partial else {}),
             },
             "links": [{"url": link.url, "text": link.text} for link in self.links],
+            "outcome": self.outcome.to_dict(),
         }

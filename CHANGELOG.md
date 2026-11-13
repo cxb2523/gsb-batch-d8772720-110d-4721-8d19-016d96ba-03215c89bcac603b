@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`/render` responses now carry an `outcome` object** — every response after a fetch has been attempted reports how the page fetch actually ended, so callers can distinguish a genuinely empty page from a page that was never fetched. `outcome.status` is one of `success`, `timeout`, `blocked` (outbound policy / domain blocklist abort), `browser_unavailable` (no healthy engine), `queue_full` (`QueueFullError`), or `error`; `outcome.engine` carries the worker tier label actually used (`alpha`/`beta`, empty when no slot was acquired) and `outcome.reason` carries a human-readable failure detail (empty on success). A route-handler `abort` is classified as `blocked`, never as a timeout, and a saturated queue is `queue_full` rather than a generic error. Failure responses contain no page content (`content` is `{}`, `links` is `[]`); parameter-validation failures still return 4xx before any fetch and carry no `outcome`.
+
 ## [0.6.4] - 2026-10-22
 
 ### Security

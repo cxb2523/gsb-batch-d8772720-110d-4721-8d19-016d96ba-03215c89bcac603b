@@ -73,7 +73,24 @@ curl -s -X POST "$VEILRENDER_URL/render" \
 | `wait_until` | string | `"load"` | `load`, `domcontentloaded`, `networkidle` |
 | `timeout` | int | `30000` | Navigation timeout (ms) |
 
-Response: `{"content": {"html": "...", "readability": "...", "markdown": "..."}, "metadata": {"title": "...", "url": "...", "status_code": 200}, "links": [...]}`
+Response: `{"content": {"html": "...", "readability": "...", "markdown": "..."}, "metadata": {"title": "...", "url": "...", "status_code": 200}, "links": [...], "outcome": {"status": "success", "engine": "beta", "reason": ""}}`
+
+The `outcome` object appears on every response after a fetch was attempted and
+tells you what actually happened — use it to tell "page has no content" apart
+from "page was never fetched":
+
+| `outcome.status` | Meaning | HTTP |
+|------------------|---------|------|
+| `success` | Rendered; `reason` is empty | 200 |
+| `timeout` | Navigation missed the timeout/deadline | 504 |
+| `blocked` | Aborted by outbound policy / domain blocklist (a block, not a timeout) | 400 |
+| `browser_unavailable` | No healthy engine available | 502 |
+| `queue_full` | Queue saturated; retry later | 503 |
+| `error` | Other failure, detail in `reason` | 502 |
+
+`engine` is `alpha` (tier 0) or `beta` (tier 1); empty when no worker slot was
+acquired. On any failure `content` is `{}` and `links` is `[]` — never treat a
+failure body as real page content. 4xx validation errors carry no `outcome`.
 
 ## Take a screenshot
 

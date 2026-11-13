@@ -91,6 +91,30 @@ Request body:
 | `formats` | string[] | `["html"]` | Output formats: `html`, `readability`, `markdown` |
 | `wait_until` | string | `"load"` | Playwright wait strategy: `load`, `domcontentloaded`, `networkidle` |
 
+Every response after a fetch has been attempted carries an `outcome` object
+describing how the page fetch actually ended, so callers can distinguish "the
+page has no content" from "the page was never fetched":
+
+```json
+{"outcome": {"status": "success", "engine": "beta", "reason": ""}}
+```
+
+| `outcome.status` | Meaning | HTTP status |
+|------------------|---------|-------------|
+| `success` | Page rendered; `reason` is empty | 200 |
+| `timeout` | Navigation did not finish within the timeout/deadline | 504 |
+| `blocked` | Aborted by the outbound request policy or domain blocklist | 400 |
+| `browser_unavailable` | No healthy browser engine could serve the request | 502 |
+| `queue_full` | The request queue was saturated (`QueueFullError`); retry later | 503 |
+| `error` | Any other rendering failure, detail in `reason` | 502 |
+
+`engine` is the tier label of the worker that served the attempt (`alpha` for
+tier 0, `beta` for tier 1); it is empty when no worker slot was acquired
+(`queue_full`). On any failure `content` is an empty object and `links` is an
+empty list — failure responses never carry fabricated page content.
+Parameter-validation failures (malformed URL, etc.) return 4xx without an
+`outcome`, since no fetch was attempted.
+
 ### POST /screenshot
 
 Capture a screenshot (PNG or JPEG).
