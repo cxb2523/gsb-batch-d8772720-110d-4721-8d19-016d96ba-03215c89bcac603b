@@ -42,7 +42,10 @@ from syndat.rct.preprocessing_tidy_format import (
     get_rp,
     convert_long_data_to_tidy,
     convert_static_data_to_tidy,
-    convert_data_to_tidy
+    convert_data_to_tidy,
+    read_csv_to_tidy,
+    TidyReadResult,
+    AllChunksFailedError
 )
 
 from syndat.rct.visualization_clinical_trials import (
@@ -88,6 +91,9 @@ __all__ = [
     'convert_long_data_to_tidy',
     'convert_static_data_to_tidy',
     'convert_data_to_tidy',
+    'read_csv_to_tidy',
+    'TidyReadResult',
+    'AllChunksFailedError',
     # visualization clinical trials
     'gof_continuous',
     'gof_continuous_list',

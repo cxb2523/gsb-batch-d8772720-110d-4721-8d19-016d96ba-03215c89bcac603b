@@ -1,9 +1,175 @@
 import logging
+from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+class AllChunksFailedError(RuntimeError):
+    """Raised when every chunk read from a CSV fails to convert to tidy format.
+
+    The per-chunk outcome report is attached as the ``chunk_report`` attribute
+    so that the failure reason of every chunk remains inspectable.
+    """
+
+    def __init__(self, message: str, chunk_report: pd.DataFrame):
+        super().__init__(message)
+        self.chunk_report = chunk_report
+
+
+@dataclass
+class TidyReadResult:
+    """Result of :func:`read_csv_to_tidy`.
+
+    :ivar tidy: Tidy-format DataFrame built by vertically concatenating the
+        successful chunks.
+    :ivar chunk_report: DataFrame with one row per read chunk and the columns
+        ``chunk`` (1-based chunk index), ``input_rows`` (rows read from the
+        CSV for that chunk), ``output_rows`` (rows produced by the conversion,
+        NaN when the chunk failed), ``success`` (whether the conversion
+        succeeded) and ``error`` (failure reason or ``None``).
+    """
+
+    tidy: pd.DataFrame
+    chunk_report: pd.DataFrame
+
+
+def _validate_chunked_csv_arguments(
+        filepath, data_type: str, chunksize: int) -> Path:
+    """Validates the arguments of :func:`read_csv_to_tidy` and the CSV header.
+
+    :return: The resolved :class:`~pathlib.Path` of the CSV file.
+    :raises ValueError: If ``chunksize`` or ``data_type`` is invalid or a
+        required column is missing.
+    :raises FileNotFoundError: If ``filepath`` does not point to an existing
+        file.
+    """
+    if isinstance(chunksize, bool) or not isinstance(chunksize, int):
+        raise ValueError(
+            f"chunksize must be a positive integer >= 1; got {chunksize!r}.")
+    if chunksize < 1:
+        raise ValueError(
+            f"chunksize must be a positive integer >= 1; got {chunksize!r}.")
+
+    if data_type not in ("long", "static"):
+        raise ValueError(
+            f"data_type must be 'long' or 'static'; got {data_type!r}.")
+
+    path = Path(filepath)
+    if not path.is_file():
+        raise FileNotFoundError(f"CSV file not found: {path}")
+
+    header = pd.read_csv(path, nrows=0)
+    if "PTNO" not in header.columns:
+        raise ValueError(
+            f"Column 'PTNO' is required but was not found in {path}. "
+            f"Available columns: {list(header.columns)}")
+    if data_type == "long" and "TIME" not in header.columns:
+        raise ValueError(
+            f"Column 'TIME' is required for data_type='long' but was not "
+            f"found in {path}. Available columns: {list(header.columns)}")
+    return path
+
+
+def _convert_chunk(chunk: pd.DataFrame, data_type: str,
+                   only_pos: bool, only_realtimes: bool) -> pd.DataFrame:
+    """Converts one CSV chunk to tidy format."""
+    return convert_data_to_tidy(
+        chunk,
+        data_type,
+        only_pos=only_pos,
+        only_realtimes=only_realtimes)
+
+
+def read_csv_to_tidy(
+        filepath,
+        data_type: str,
+        chunksize: int = 100_000,
+        only_pos: bool = False,
+        only_realtimes: bool = False) -> TidyReadResult:
+    """
+    Reads a wide-format CSV in row-wise chunks and converts each chunk to tidy
+    format with :func:`convert_data_to_tidy`.
+
+    The chunks are read independently and the successful tidy frames are
+    concatenated vertically, so the result is equivalent to reading the whole
+    file at once and converting it, regardless of the chosen ``chunksize``.
+    A failing chunk is recorded in the chunk report and does not interrupt the
+    reading of the remaining chunks; if every chunk fails, an
+    :class:`AllChunksFailedError` is raised.
+
+    :param filepath: Path to the wide-format CSV file.
+    :param data_type: Type of data to convert; ``'long'`` for longitudinal
+        data (requires a ``TIME`` column) or ``'static'`` for static data.
+    :param chunksize: Number of CSV rows read per chunk. Must be a positive
+        integer (``>= 1``).
+    :param only_pos: Passed through to :func:`convert_data_to_tidy`; if True,
+        clips negative values to zero.
+    :param only_realtimes: Passed through to :func:`convert_data_to_tidy`; if
+        True, keeps only observations whose mask is 1.
+    :return: A :class:`TidyReadResult` holding the concatenated tidy
+        DataFrame and a per-chunk outcome report.
+    :raises ValueError: If ``chunksize`` is not a positive integer,
+        ``data_type`` is neither ``'long'`` nor ``'static'``, a required
+        column (``PTNO``, or ``TIME`` for longitudinal data) is missing, or
+        the file contains no data rows.
+    :raises FileNotFoundError: If ``filepath`` does not point to an existing
+        file.
+    :raises AllChunksFailedError: If every read chunk fails to convert.
+    """
+    path = _validate_chunked_csv_arguments(filepath, data_type, chunksize)
+
+    tidy_chunks = []
+    report_rows = []
+    total_input_rows = 0
+    reader = pd.read_csv(path, chunksize=chunksize)
+    for chunk_index, chunk in enumerate(reader, start=1):
+        input_rows = len(chunk)
+        total_input_rows += input_rows
+        try:
+            tidy_chunk = _convert_chunk(
+                chunk, data_type, only_pos, only_realtimes)
+        except Exception as exc:
+            # Record the failure and continue with the remaining chunks.
+            reason = f"{type(exc).__name__}: {exc}"
+            logger.warning("Chunk %s failed to convert to tidy format: %s",
+                           chunk_index, reason)
+            report_rows.append({
+                "chunk": chunk_index,
+                "input_rows": input_rows,
+                "output_rows": None,
+                "success": False,
+                "error": reason})
+            continue
+
+        report_rows.append({
+            "chunk": chunk_index,
+            "input_rows": input_rows,
+            "output_rows": len(tidy_chunk),
+            "success": True,
+            "error": None})
+        tidy_chunks.append(tidy_chunk)
+
+    chunk_report = pd.DataFrame(
+        report_rows,
+        columns=["chunk", "input_rows", "output_rows", "success", "error"])
+
+    if total_input_rows == 0:
+        raise ValueError(f"No data rows found in CSV file: {path}")
+
+    if not chunk_report["success"].any():
+        raise AllChunksFailedError(
+            f"All {len(chunk_report)} chunk(s) failed while converting "
+            f"{path} to tidy format; inspect the chunk report for the "
+            f"failure reasons.",
+            chunk_report)
+
+    tidy = pd.concat(tidy_chunks, ignore_index=True)
+    return TidyReadResult(tidy=tidy, chunk_report=chunk_report)
+
 
 def merge_real_synthetic(
         real_df: pd.DataFrame,
