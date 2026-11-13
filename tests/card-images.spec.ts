@@ -59,7 +59,7 @@ function fakeWeb() {
   const fetchUrl: UrlFetcher = async (url) => {
     calls.push(url.href)
     if (url.pathname.endsWith('/missing.png')) throw new Error('the server answered HTTP 404')
-    return PNG
+    return { data: PNG, redirects: 0 }
   }
   return { calls, fetchUrl }
 }
@@ -111,8 +111,12 @@ describe('visualize with data-viz-src images', () => {
     const result = text(value)
     expect(result).toContain('Embedded 2 images')
     expect(result).toContain('1 image could not be embedded and shows a placeholder')
-    expect(result).toContain('"./figs/los.png": not found in the workspace')
-    expect(result.length).toBeLessThan(800)
+    // Mixed card: the embedded images and the failure are listed separately.
+    expect(result).toContain(`- ${JSON.stringify('./figs/loss.png')}: embedded`)
+    expect(result).toContain(`- ${JSON.stringify('https://example.com/a.png')}: embedded`)
+    expect(result).toContain(`- ${JSON.stringify('./figs/los.png')}: [file-unavailable] not found in the workspace`)
+    expect(result).not.toContain('[unavailable]')
+    expect(result.length).toBeLessThan(1000)
   })
 
   it('re-reads workspace files and carries fetched URLs on update', async () => {
@@ -145,7 +149,7 @@ describe('visualize with data-viz-src images', () => {
     })
     let hang = true
     const fetchUrl: UrlFetcher = async (_url, signal) => {
-      if (!hang) return PNG
+      if (!hang) return { data: PNG, redirects: 0 }
       started()
       return await new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
     }
@@ -186,6 +190,31 @@ describe('visualize with data-viz-src images', () => {
     expect(value.imageReport).toBeUndefined()
     expect('images' in (meta(value) as object)).toBe(false)
     expect(text(value)).not.toContain('image')
+  })
+
+  it('writes no bytes for an image refused as a private address, and reports the category', async () => {
+    // The default fetcher (no policy override) refuses loopback/private
+    // targets after DNS resolution, so no connection — and no store write —
+    // happens for the blocked source.
+    const tool = visualizeTool(host(), 100_000, 'whale', { delivery: () => true })
+    const imagesDir = join(home, 'visualize', 'sessions', 'sess-1', 'images')
+    const fragment = '<div id="lab"><h3>Network</h3>\n'
+      + '<img data-viz-src="http://10.0.0.5/figs/private.png" alt="private">\n'
+      + `<img data-viz-src="./figs/loss.png" alt="local"></div>`
+    const value = await tool.execute({ fragment, title: 'Lab' }, exec) as Value
+
+    // Only the workspace image reached the card; the blocked URL is not in meta.
+    expect(value.images!.map(i => i.src)).toEqual(['./figs/loss.png'])
+    expect(value.imageReport).toContain('[blocked-address]')
+    expect(value.imageReport).toContain('10.0.0.5')
+    expect(value.imageReport).toContain('1 image could not be embedded')
+
+    // The store holds exactly one file (the workspace figure); the refused
+    // image left no bytes of any kind on disk.
+    const stored = await readdir(imagesDir)
+    expect(stored).toHaveLength(1)
+    const digest = createHash('sha256').update(FIGURE).digest('hex')
+    expect(stored).toEqual([`${digest}.png`])
   })
 })
 

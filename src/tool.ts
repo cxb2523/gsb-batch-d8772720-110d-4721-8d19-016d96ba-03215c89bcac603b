@@ -277,7 +277,7 @@ export function visualizeTool(
       await target.write(fragment)
       await target.images?.write(resolved.images)
       const embedded = resolved.images.map(cardImageOf)
-      const report = imageReport(embedded, resolved.failures)
+      const report = imageReport(embedded, resolved.outcomes)
       return {
         action,
         path: target.displayPath,

@@ -22,8 +22,12 @@
  *
  * Bytes go to the card store (storage.ts), not into the fragment, the
  * model-facing result, or the persisted meta, which carries only references.
- * Failures are per image: each comes back with a reason the model can act
- * on, and the card shows a placeholder for it.
+ * Failures are per image: every `data-viz-src` comes back with one
+ * checkable {@link ImageOutcome} — its source, whether it was embedded, a
+ * machine-readable failure category when it was not, and the number of
+ * redirects its fetch actually followed — and the card shows a placeholder
+ * for it. A failed image is never written to the store and never fails the
+ * whole card.
  *
  * @module @nagi-ovo/dsh-visualize/images
  */
@@ -62,20 +66,62 @@ export const DEFAULT_IMAGE_LIMITS: ImageLimits = {
   maxRedirects: 3,
 }
 
+/**
+ * Machine-readable categories for why one `data-viz-src` was not embedded.
+ * The category tells the model which kind of fix to attempt without
+ * parsing the human reason; the reason stays the detailed explanation.
+ */
+export type ImageFailureCategory =
+  | 'unsupported-source'
+  | 'blocked-address'
+  | 'fetch-failed'
+  | 'timeout'
+  | 'too-many-redirects'
+  | 'http-status'
+  | 'image-too-large'
+  | 'not-an-image'
+  | 'file-unavailable'
+  | 'workspace-refused'
+  | 'card-too-large'
+  | 'too-many-images'
+  | 'unavailable'
+
 /** One image that could not be embedded, and why, in words the model can act on. */
 export interface ImageFailure {
   src: string
   reason: string
+  /** Which kind of failure this was, so the model can pick a fix without parsing the reason. */
+  category: ImageFailureCategory
+  /** `url` for http(s) sources, `file` for workspace paths. */
+  origin: 'url' | 'file'
+  /** Redirect responses its fetch actually followed; 0 for workspace files and un-fetched sources. */
+  redirects: number
 }
 
-/** An image refusal whose message is the model-facing reason. */
-export class ImageError extends Error {}
+/** A refusal carrying the machine-readable category a failed source is filed under. */
+export class ImageError extends Error {
+  constructor(
+    message: string,
+    readonly category: ImageFailureCategory,
+  ) {
+    super(message)
+  }
+}
+
+/** A throw whose chain may carry the redirect count reached when it failed. */
+type RedirectCarrier = { redirects?: unknown }
 
 /** Reads one workspace image: `(path, signal, maxBytes) → bytes`. */
 export type FileReader = (path: string, signal: AbortSignal, maxBytes: number) => Promise<Uint8Array>
 
-/** Fetches one URL's body: `(url, signal, maxBytes) → bytes`. */
-export type UrlFetcher = (url: URL, signal: AbortSignal, maxBytes: number) => Promise<Uint8Array>
+/** One URL's body plus the redirect responses the fetcher actually followed. */
+export interface UrlFetchResult {
+  data: Uint8Array
+  redirects: number
+}
+
+/** Fetches one URL's body: `(url, signal, maxBytes) → bytes and redirect count`. */
+export type UrlFetcher = (url: URL, signal: AbortSignal, maxBytes: number) => Promise<UrlFetchResult>
 
 /** What {@link resolveCardImages} needs from its surroundings. */
 export interface ResolveOptions {
@@ -91,19 +137,48 @@ export interface ResolveOptions {
   signal: AbortSignal
 }
 
+/**
+ * One checkable ending for a single `data-viz-src`: where it pointed,
+ * whether it reached the card, the failure category when it did not, and
+ * the redirect responses its fetch actually followed.
+ */
+export interface ImageOutcome {
+  /** The attribute value exactly as the fragment spells it, entities undecoded. */
+  src: string
+  /** True exactly when its bytes were stored and the image entered the card meta. */
+  ok: boolean
+  /** `url` for http(s) sources, `file` for workspace paths. */
+  origin: 'url' | 'file'
+  /** Redirect responses actually followed; always 0 for a workspace file. */
+  redirects: number
+  /** Present only on failure: the model-facing explanation. */
+  reason?: string
+  /** Present only on failure: the machine-readable kind of failure. */
+  category?: ImageFailureCategory
+}
+
 /** What one card resolved. */
 export interface ResolvedImages {
   /** Embedded images, one per distinct source, in document order. */
   images: StoredImage[]
-  failures: ImageFailure[]
+  /** One ending per distinct source, in document order — embedded and failed alike. */
+  outcomes: ImageOutcome[]
+}
+
+/** The failed outcomes of a resolution, keeping document order. */
+export function failedOutcomes(outcomes: readonly ImageOutcome[]): ImageFailure[] {
+  return outcomes
+    .filter((outcome): outcome is ImageOutcome & { reason: string; category: ImageFailureCategory } => !outcome.ok)
+    .map(({ src, reason, category, origin, redirects }) => ({ src, reason, category, origin, redirects }))
 }
 
 /**
  * Resolve every `<img data-viz-src>` in a fragment. Never throws for one
- * image: each failure is recorded and the rest continue.
+ * image: each failure is recorded as its own outcome and the rest continue,
+ * and a failed image writes no bytes and never enters the card meta.
  * @param fragment - the card's markup, as it will be stored.
  * @param options - readers, store, previous images, caps.
- * @returns the embedded images and the failures.
+ * @returns the embedded images and one outcome per distinct source.
  */
 export async function resolveCardImages(fragment: string, options: ResolveOptions): Promise<ResolvedImages> {
   const limits = options.limits ?? DEFAULT_IMAGE_LIMITS
@@ -113,27 +188,49 @@ export async function resolveCardImages(fragment: string, options: ResolveOption
   // image costs its size once per reference, not once per source.
   const uses = new Map<string, number>()
   for (const src of all) uses.set(src, (uses.get(src) ?? 0) + 1)
-  const failures: ImageFailure[] = []
-  if (sources.length === 0) return { images: [], failures }
+  const outcomes: ImageOutcome[] = []
+  const fail = (src: string, origin: 'url' | 'file', category: ImageFailureCategory, reason: string, redirects = 0): ImageOutcome => {
+    const outcome: ImageOutcome = { src, ok: false, origin, redirects, reason, category }
+    outcomes.push(outcome)
+    return outcome
+  }
+  if (sources.length === 0) return { images: [], outcomes }
   const { store } = options
   const unavailable = options.unavailable ?? (store === undefined ? 'this session has no card store to keep images in' : undefined)
   if (unavailable !== undefined || store === undefined) {
-    return { images: [], failures: sources.map(src => ({ src, reason: unavailable! })) }
+    return {
+      images: [],
+      outcomes: sources.map(src => ({
+        src, ok: false, origin: originOf(src),
+        redirects: 0, reason: unavailable!, category: 'unavailable',
+      })),
+    }
   }
   const carried = new Map((options.previous ?? []).filter(image => image.origin === 'url').map(image => [image.src, image]))
   const wanted = sources.slice(0, limits.maxImages)
+  // Over-cap sources are recorded alongside the rest but merged back in
+  // document order at the end, so the outcome order never depends on which
+  // branch appended it.
+  const overCap: ImageOutcome[] = []
   for (const src of sources.slice(limits.maxImages)) {
-    failures.push({ src, reason: `the card already embeds ${limits.maxImages} images, the most one card takes` })
+    overCap.push({
+      src, ok: false, origin: originOf(src), redirects: 0, category: 'too-many-images',
+      reason: `the card already embeds ${limits.maxImages} images, the most one card takes`,
+    })
   }
   // Fetched together, so a slow host costs one timeout, not one per image.
-  const fetched = await Promise.all(wanted.map(async (src) => {
+  const fetched = await Promise.all(wanted.map(async (src): Promise<FetchedEntry> => {
     const kept = carried.get(src)
-    if (kept !== undefined && await store.exists(kept.id)) return { src, kept }
+    if (kept !== undefined && await store.exists(kept.id)) return { kind: 'kept', src, kept }
     try {
-      return { src, image: await resolveOne(src, options, limits) }
+      return { kind: 'image', src, image: await resolveOne(src, options, limits) }
     } catch (error) {
       if (options.signal.aborted) throw error
-      return { src, reason: reasonOf(error) }
+      const { category, reason } = failureOf(error)
+      return {
+        kind: 'failure', src, origin: originOf(src),
+        failure: { category, reason, redirects: redirectsOf(error) },
+      }
     }
   }))
   // The card budget is spent in document order, so which image misses it
@@ -141,31 +238,60 @@ export async function resolveCardImages(fragment: string, options: ResolveOption
   let budget = limits.maxCardBytes
   const images: StoredImage[] = []
   for (const entry of fetched) {
-    if (entry.reason !== undefined) {
-      failures.push({ src: entry.src, reason: entry.reason })
+    if (entry.kind === 'failure') {
+      fail(entry.src, entry.origin, entry.failure.category, entry.failure.reason, entry.failure.redirects)
       continue
     }
-    const bytes = entry.kept?.bytes ?? entry.image!.data.byteLength
+    const bytes = entry.kind === 'kept' ? entry.kept.bytes : entry.image.data.byteLength
     const count = uses.get(entry.src) ?? 1
+    const redirects = entry.kind === 'kept' ? 0 : entry.image.redirects
+    const origin = entry.kind === 'kept' ? entry.kept.origin : entry.image.origin
     if (bytes * count > budget) {
-      failures.push({
-        src: entry.src,
-        reason: count === 1
+      fail(
+        entry.src,
+        origin,
+        'card-too-large',
+        count === 1
           ? cardBudgetReason(limits)
           : `${cardBudgetReason(limits)} — it is referenced ${count} times and every reference embeds a full copy, so reference it once or use a smaller image`,
-      })
+        redirects,
+      )
       continue
     }
     budget -= bytes * count
-    if (entry.kept !== undefined) {
+    if (entry.kind === 'kept') {
       images.push(entry.kept)
+      outcomes.push({ src: entry.src, ok: true, origin: entry.kept.origin, redirects: 0 })
       continue
     }
-    const { data, type, origin } = entry.image!
+    const { data, type } = entry.image
     images.push({ src: entry.src, id: await store.put(data, type), type, bytes, origin })
+    outcomes.push({ src: entry.src, ok: true, origin, redirects })
   }
-  failures.sort((a, b) => sources.indexOf(a.src) - sources.indexOf(b.src))
-  return { images, failures }
+  // One ending per distinct source, in document order: merge the over-cap
+  // endings back at the index their sources hold.
+  return { images, outcomes: [...outcomes, ...overCap].sort((a, b) => sources.indexOf(a.src) - sources.indexOf(b.src)) }
+}
+
+/** One source's settled fetch: carried bytes, freshly read bytes, or a failure. */
+type FetchedEntry =
+  | { kind: 'kept'; src: string; kept: StoredImage }
+  | { kind: 'image'; src: string; image: ResolvedImage }
+  | {
+      kind: 'failure'
+      src: string
+      origin: 'url' | 'file'
+      failure: { category: ImageFailureCategory; reason: string; redirects: number }
+    }
+
+/** Where a source points without throwing on a scheme nothing can fetch. */
+function originOf(src: string): 'url' | 'file' {
+  try {
+    return classify(decodeEntities(src).trim()).kind
+  } catch {
+    // Unsupported and data/blob schemes are URL-shaped, never workspace paths.
+    return 'url'
+  }
 }
 
 /** The meta form of an embedded image: the manifest entry without its origin. */
@@ -173,38 +299,57 @@ export function cardImageOf({ src, id, type, bytes }: StoredImage): CardImage {
   return { src, id, type, bytes }
 }
 
+/** One freshly resolved source: its bytes, type, origin, and redirects followed. */
+interface ResolvedImage {
+  data: Uint8Array
+  type: CardImageType
+  origin: 'url' | 'file'
+  /** Redirect responses actually followed; 0 for a workspace file. */
+  redirects: number
+}
+
 /**
  * Fetch or read one source and identify it.
  * @param src - the attribute value as written.
  * @param options - readers.
  * @param limits - the per-image cap and the timeout.
- * @returns the bytes, their type, and their origin.
+ * @returns the bytes, their type, their origin, and the redirects followed.
  */
 async function resolveOne(
   src: string,
   options: ResolveOptions,
   limits: ImageLimits,
-): Promise<{ data: Uint8Array; type: CardImageType; origin: 'url' | 'file' }> {
+): Promise<ResolvedImage> {
   const maxBytes = limits.maxImageBytes
   const value = decodeEntities(src).trim()
   const target = classify(value)
   let data: Uint8Array
+  let redirects = 0
   try {
     if (target.kind === 'url') {
       const signal = withTimeout(options.signal, limits.timeoutMs)
-      data = await options.fetchUrl(target.url, signal, maxBytes)
+      const fetched = await options.fetchUrl(target.url, signal, maxBytes)
+      data = fetched.data
+      redirects = fetched.redirects
     } else {
       data = await options.readFile(target.path, options.signal, maxBytes)
     }
   } catch (error) {
-    if (error instanceof TooLarge) throw new ImageError(`larger than the ${mib(limits.maxImageBytes)} limit for one image`)
+    if (error instanceof TooLarge) {
+      const tooLarge = new ImageError(`larger than the ${mib(limits.maxImageBytes)} limit for one image`, 'image-too-large')
+      // The fetch may have followed redirects before the body overflowed;
+      // carry the count so the outcome can still report it.
+      const seen = redirectsOf(error)
+      if (seen > 0) (tooLarge as RedirectCarrier).redirects = seen
+      throw tooLarge
+    }
     throw error
   }
   const type = sniffImageType(data)
   if (type === undefined) {
-    throw new ImageError(`not a PNG, JPEG, GIF, WebP or SVG image (the content starts ${JSON.stringify(preview(data))})`)
+    throw new ImageError(`not a PNG, JPEG, GIF, WebP or SVG image (the content starts ${JSON.stringify(preview(data))})`, 'not-an-image')
   }
-  return { data, type, origin: target.kind === 'url' ? 'url' : 'file' }
+  return { data, type, origin: target.kind === 'url' ? 'url' : 'file', redirects }
 }
 
 /** Where a decoded `data-viz-src` points. */
@@ -222,8 +367,8 @@ function classify(value: string): SourceTarget {
   // A one-letter "scheme" is a Windows drive, which is a path.
   if (scheme === undefined || scheme.length === 1) return { kind: 'file', path: value }
   if (scheme === 'http' || scheme === 'https') return { kind: 'url', url: parseUrl(value) }
-  if (scheme === 'data' || scheme === 'blob') throw new ImageError(`a ${scheme}: URL already loads in the card; put it in src, not data-viz-src`)
-  throw new ImageError(`${scheme}: URLs are not supported; use an http(s) URL or a path relative to the workspace root`)
+  if (scheme === 'data' || scheme === 'blob') throw new ImageError(`a ${scheme}: URL already loads in the card; put it in src, not data-viz-src`, 'unsupported-source')
+  throw new ImageError(`${scheme}: URLs are not supported; use an http(s) URL or a path relative to the workspace root`, 'unsupported-source')
 }
 
 /** Parse a URL, refusing what cannot be fetched. */
@@ -231,7 +376,7 @@ function parseUrl(value: string): URL {
   try {
     return new URL(value)
   } catch {
-    throw new ImageError('not a valid URL')
+    throw new ImageError('not a valid URL', 'unsupported-source')
   }
 }
 
@@ -248,12 +393,31 @@ function mib(bytes: number): string {
   return `${Math.round(bytes / 1024 / 102.4) / 10} MB`
 }
 
-/** The model-facing reason for one failure. */
-function reasonOf(error: unknown): string {
-  if (error instanceof ImageError) return error.message
-  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) return 'timed out'
+/** The category and model-facing reason for one failure. */
+function failureOf(error: unknown): { category: ImageFailureCategory; reason: string } {
+  if (error instanceof ImageError) return { category: error.category, reason: error.message }
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return { category: 'timeout', reason: 'timed out' }
+  }
   const message = error instanceof Error ? error.message : String(error)
-  return message.split('\n')[0]!.slice(0, 200)
+  return { category: 'fetch-failed', reason: message.split('\n')[0]!.slice(0, 200) }
+}
+
+/**
+ * The redirect count reached when a failure happened, when the throw's chain
+ * carries one (the guarded fetcher stamps it); 0 otherwise — a workspace
+ * read, a pre-fetch refusal, or a fetcher that does not track redirects.
+ */
+function redirectsOf(error: unknown): number {
+  let current: unknown = error
+  const seen = new Set<unknown>()
+  while (current !== null && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current)
+    const value = (current as RedirectCarrier).redirects
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value
+    current = (current as { cause?: unknown }).cause
+  }
+  return 0
 }
 
 /** The first few bytes as text, for a "not an image" message. */
@@ -324,30 +488,30 @@ interface BinaryFs {
  */
 export function workspaceImageReader(ctx: Context, root: string | undefined): FileReader {
   return async (path, signal, maxBytes) => {
-    if (root === undefined) throw new ImageError('this conversation has no workspace to read files from')
+    if (root === undefined) throw new ImageError('this conversation has no workspace to read files from', 'file-unavailable')
     if (path === '~' || path.startsWith('~/')) {
-      throw new ImageError('~ is not expanded; give the path relative to the workspace root')
+      throw new ImageError('~ is not expanded; give the path relative to the workspace root', 'workspace-refused')
     }
     const base = resolvePath(root)
     const lexical = resolvePath(base, path)
-    if (!inside(base, lexical)) throw new ImageError('outside the workspace; only files inside the workspace can be embedded')
+    if (!inside(base, lexical)) throw new ImageError('outside the workspace; only files inside the workspace can be embedded', 'workspace-refused')
     const fs = ctx.fs as unknown as Partial<BinaryFs> | undefined
     if (typeof fs?.resolve !== 'function' || typeof fs.contains !== 'function'
       || typeof fs.stat !== 'function' || typeof fs.readBytes !== 'function') {
-      throw new ImageError('this dsh host cannot read binary workspace files; save the image somewhere with an https URL instead')
+      throw new ImageError('this dsh host cannot read binary workspace files; save the image somewhere with an https URL instead', 'file-unavailable')
     }
     const opts = { cwd: base, signal }
     const [rootTarget, target] = await Promise.all([fs.resolve(base, opts), fs.resolve(lexical, opts)])
     if (!fs.contains(rootTarget, target)) {
-      throw new ImageError('resolves outside the workspace through a symlink; only files inside the workspace can be embedded')
+      throw new ImageError('resolves outside the workspace through a symlink; only files inside the workspace can be embedded', 'workspace-refused')
     }
     // Accepted: a symlink swapped in between contains() and readBytes() could
     // still redirect the read. Doing that needs write access to the
     // workspace, which the agent already has along with tools that read
     // anything this could.
     const info = await fs.stat(target, signal)
-    if (info === undefined) throw new ImageError('not found in the workspace; check the path relative to the workspace root')
-    if (info.type !== 'file') throw new ImageError('not a regular file')
+    if (info === undefined) throw new ImageError('not found in the workspace; check the path relative to the workspace root', 'file-unavailable')
+    if (info.type !== 'file') throw new ImageError('not a regular file', 'file-unavailable')
     if (info.size !== undefined && info.size > maxBytes) throw new TooLarge()
     try {
       return await fs.readBytes(target, signal, maxBytes)
@@ -433,6 +597,10 @@ export interface FetcherOptions {
  * lookup — at most `maxRedirects` redirects, no content encoding, and the body
  * cut off past the cap. A fresh agent per request means no pooled socket
  * skips the lookup.
+ *
+ * Every failure is stamped with the number of redirect responses actually
+ * followed before it happened, so the per-image outcome can report it; a
+ * success returns the count alongside the bytes.
  * @param options - redirect budget and address policy.
  * @returns the fetcher.
  */
@@ -440,38 +608,63 @@ export function urlFetcher(options: FetcherOptions): UrlFetcher {
   const policy = options.policy ?? publicOnly
   return async (url, signal, maxBytes) => {
     let current = url
-    for (let hop = 0; ; hop += 1) {
-      checkUrl(current, policy)
-      const response = await get(current, policy, signal)
-      const status = response.statusCode ?? 0
-      // A body we do not read is destroyed, not drained: resume() would keep
-      // pulling an unbounded one until the deadline. agent:false, so no
-      // pooled socket is lost.
-      if ([301, 302, 303, 307, 308].includes(status)) {
-        response.destroy()
-        const location = response.headers.location
-        if (location === undefined) throw new ImageError(`HTTP ${status} without a Location header`)
-        if (hop >= options.maxRedirects) throw new ImageError(`more than ${options.maxRedirects} redirects`)
-        current = parseUrl(new URL(location, current).href)
-        continue
+    let redirects = 0
+    try {
+      for (let hop = 0; ; hop += 1) {
+        checkUrl(current, policy)
+        const response = await get(current, policy, signal)
+        const status = response.statusCode ?? 0
+        // A body we do not read is destroyed, not drained: resume() would keep
+        // pulling an unbounded one until the deadline. agent:false, so no
+        // pooled socket is lost.
+        if ([301, 302, 303, 307, 308].includes(status)) {
+          response.destroy()
+          // A redirect response was actually received and acted on (or would
+          // have been), so count it before deciding whether the budget allows
+          // following it.
+          redirects += 1
+          const location = response.headers.location
+          if (location === undefined) throw new ImageError(`HTTP ${status} without a Location header`, 'http-status')
+          if (hop >= options.maxRedirects) throw new ImageError(`more than ${options.maxRedirects} redirects`, 'too-many-redirects')
+          current = parseUrl(new URL(location, current).href)
+          continue
+        }
+        if (status !== 200) {
+          response.destroy()
+          throw new ImageError(`the server answered HTTP ${status}`, 'http-status')
+        }
+        const encoding = response.headers['content-encoding']
+        if (encoding !== undefined && encoding !== 'identity') {
+          response.destroy()
+          throw new ImageError(`the server sent a ${encoding}-encoded body, which is not decoded here`, 'http-status')
+        }
+        const length = Number(response.headers['content-length'])
+        if (Number.isFinite(length) && length > maxBytes) {
+          response.destroy()
+          throw new TooLarge()
+        }
+        const data = await readBody(response, maxBytes)
+        return { data, redirects }
       }
-      if (status !== 200) {
-        response.destroy()
-        throw new ImageError(`the server answered HTTP ${status}`)
-      }
-      const encoding = response.headers['content-encoding']
-      if (encoding !== undefined && encoding !== 'identity') {
-        response.destroy()
-        throw new ImageError(`the server sent a ${encoding}-encoded body, which is not decoded here`)
-      }
-      const length = Number(response.headers['content-length'])
-      if (Number.isFinite(length) && length > maxBytes) {
-        response.destroy()
-        throw new TooLarge()
-      }
-      return await readBody(response, maxBytes)
+    } catch (error) {
+      throw annotateRedirects(error, redirects)
     }
   }
+}
+
+/**
+ * Stamp a throw with the redirect count reached when it happened. An existing
+ * stamp (from an inner layer) is kept; the count is attached as a property,
+ * not as a wrapped error, so `instanceof` and the original message survive.
+ * @param error - the throw leaving the redirect loop.
+ * @param redirects - redirect responses actually followed.
+ * @returns the same throw, carrying the count when it did not already.
+ */
+function annotateRedirects(error: unknown, redirects: number): unknown {
+  if (error !== null && typeof error === 'object' && typeof (error as RedirectCarrier).redirects !== 'number') {
+    ;(error as RedirectCarrier).redirects = redirects
+  }
+  return error
 }
 
 /**
@@ -480,11 +673,11 @@ export function urlFetcher(options: FetcherOptions): UrlFetcher {
  * @param policy - address policy.
  */
 function checkUrl(url: URL, policy: AddressPolicy): void {
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new ImageError(`redirected to a ${url.protocol} URL, which is not fetched`)
-  if (url.username !== '' || url.password !== '') throw new ImageError('URLs with credentials are not fetched')
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new ImageError(`redirected to a ${url.protocol} URL, which is not fetched`, 'unsupported-source')
+  if (url.username !== '' || url.password !== '') throw new ImageError('URLs with credentials are not fetched', 'unsupported-source')
   const host = url.hostname.replace(/^\[|\]$/gu, '')
   const family = isIP(host)
-  if (family !== 0 && !policy(host, family as 4 | 6)) throw new ImageError(blockedReason(url.hostname, host))
+  if (family !== 0 && !policy(host, family as 4 | 6)) throw new ImageError(blockedReason(url.hostname, host), 'blocked-address')
 }
 
 /** The SSRF refusal. */
@@ -505,7 +698,9 @@ function guardedLookup(policy: AddressPolicy) {
       if (error !== null) return callback(error)
       const blocked = addresses.find(entry => !policy(entry.address, entry.family as 4 | 6))
       if (blocked !== undefined || addresses.length === 0) {
-        return callback(new ImageError(blocked === undefined ? `${hostname} has no address` : blockedReason(hostname, blocked.address)))
+        return callback(blocked !== undefined
+          ? new ImageError(blockedReason(hostname, blocked.address), 'blocked-address')
+          : new ImageError(`${hostname} has no address`, 'fetch-failed'))
       }
       if (options.all === true) return callback(null, addresses)
       callback(null, addresses[0]!.address, addresses[0]!.family)
@@ -563,19 +758,35 @@ async function readBody(response: IncomingMessage, maxBytes: number): Promise<Ui
 
 /**
  * The model-facing report on a card's images, or undefined when it has none.
+ * Every source gets one checkable line: successes are listed separately from
+ * failures, each carrying its redirect count and — for failures — the
+ * machine-readable category. An all-success card stays a one-line summary:
+ * no empty failure section is ever printed.
  * @param images - embedded images.
- * @param failures - images that were not.
- * @returns one short paragraph.
+ * @param outcomes - one ending per distinct source.
+ * @returns one short paragraph, or undefined for a card without images.
  */
-export function imageReport(images: readonly CardImage[], failures: readonly ImageFailure[]): string | undefined {
-  if (images.length === 0 && failures.length === 0) return undefined
+export function imageReport(images: readonly CardImage[], outcomes: readonly ImageOutcome[]): string | undefined {
+  if (outcomes.length === 0) return undefined
+  const ok = outcomes.filter(outcome => outcome.ok)
+  const failed = failedOutcomes(outcomes)
   const kb = Math.ceil(images.reduce((sum, image) => sum + image.bytes, 0) / 1024)
-  const embedded = images.length === 0
+  const summary = ok.length === 0
     ? ''
-    : `Embedded ${images.length} image${images.length === 1 ? '' : 's'} (${kb} KB, stored beside the card).`
-  if (failures.length === 0) return embedded
-  const head = `${failures.length} image${failures.length === 1 ? '' : 's'} could not be embedded and show${failures.length === 1 ? 's' : ''} `
+    : `Embedded ${ok.length} image${ok.length === 1 ? '' : 's'} (${kb} KB, stored beside the card).`
+  const successLines = failed.length === 0
+    ? []
+    : ok.map(outcome => `- ${JSON.stringify(outcome.src)}: embedded${redirectText(outcome)}`)
+  if (failed.length === 0) return summary
+  const head = `${failed.length} image${failed.length === 1 ? '' : 's'} could not be embedded and show${failed.length === 1 ? 's' : ''} `
     + 'a placeholder; fix each data-viz-src and patch the card:'
-  const lines = failures.map(failure => `- ${JSON.stringify(failure.src)}: ${failure.reason}`)
-  return [embedded, head].filter(part => part.length > 0).join(' ') + '\n' + lines.join('\n')
+  const failureLines = failed.map(failure =>
+    `- ${JSON.stringify(failure.src)}: [${failure.category}] ${failure.reason}${redirectText(failure)}`)
+  return [summary, ...successLines, head].filter(part => part.length > 0).join('\n') + `\n${failureLines.join('\n')}`
+}
+
+/** A parenthetical count of redirects followed, only when at least one happened. */
+function redirectText(entry: { origin: 'url' | 'file'; redirects: number }): string {
+  if (entry.redirects <= 0) return ''
+  return ` (followed ${entry.redirects} redirect${entry.redirects === 1 ? '' : 's'})`
 }
