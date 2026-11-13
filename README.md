@@ -28,6 +28,7 @@ https://mcp.hasdata.com/mcp?apis=google_serp
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
 - [Errors and failure paths](#errors-and-failure-paths)
+- [Collection orchestration](#collection-orchestration)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
 - [How it compares](#how-it-compares)
@@ -471,6 +472,50 @@ The one real HTTP error is a **missing key**. Authorization runs before any tool
 
 Results that carry data also carry a `requestMetadata.id` worth quoting in support, plus `html` and `json` links to the stored artifact of that exact call.
 
+## Collection orchestration
+
+For unattended collection the package ships a reusable orchestration layer, so a batch of searches degrades into per-task outcomes instead of one unhandled rejection. It speaks the same streamable-HTTP JSON-RPC protocol as the launchers and runs entirely over the remote endpoint; nothing is scraped locally.
+
+```js
+import { runCollection, OUTCOMES } from '@hasdata/google-search-mcp/orchestrator';
+
+const summary = await runCollection(
+    [
+        { id: 'shoes', tool: 'hasdata_google_serp_serp_getSearchResults', params: { q: 'best running shoes', gl: 'us' } },
+        { id: 'news',  tool: 'hasdata_google_serp_news_getGoogleNews',           params: { q: 'running' } },
+    ],
+    { apiKey: process.env.HASDATA_API_KEY }
+);
+
+for (const result of summary.results) {
+    if (result.outcome === OUTCOMES.SUCCESS) {
+        const payload = result.payload; // the envelope's `json` block, already unwrapped
+    } else {
+        console.error(result.toolName, result.outcome, result.reason);
+    }
+}
+
+// Re-run only what failed; every entry is the original tool and params.
+if (summary.failed) {
+    const retry = await runCollection(summary.failedTasks, { apiKey: process.env.HASDATA_API_KEY });
+}
+```
+
+Every task ends in exactly one of six outcomes:
+
+| Outcome | Meaning | Retried? |
+| --- | --- | --- |
+| `success` | A tool result whose envelope carried a `json` payload | — |
+| `rate_limited` | The plan's concurrency ceiling answered `concurrency_limit` (or HTTP 429) | Yes, with an increasing wait up to `maxRetries`; the exhausted task is recorded as failed, never thrown |
+| `token_expired` | A stale AI Overview token came back as `400 Bad Request` | No — the token is dead; re-run the SERP for a fresh one |
+| `auth_failed` | A missing or wrong key, `401 Unauthorized` at the HTTP or tool layer | No |
+| `invalid_params` | `MCP error -32602`, including a search with no `q`; nothing is fetched or charged | No |
+| `other_error` | Any other JSON-RPC error, tool `isError`, transport failure or malformed answer | No |
+
+Each result record carries `outcome`, `reason` (a readable explanation), `retries`, `totalAttempts`, the unwrapped `payload`, the full `envelope`, and the last raw response. The summary adds `totalTasks`, `totalCalls`, `totalRetries`, per-outcome counts and the `failedTasks` list to resubmit.
+
+When a SERP succeeds but its `aiOverview` holds only a `pageToken` and no `textBlocks`, the orchestrator appends an AI Overview expansion task automatically and runs it immediately, while the token is still fresh. The expansion is its own outcome record: if it fails, the already-succeeded SERP result is kept and only the expansion is marked failed. Pass `expandAiOverview: false` to turn this off. The lower-level client and the pure response classifier are exported separately from `@hasdata/google-search-mcp/mcp-client`.
+
 ## Pricing, free tier and limits
 
 Credits are per tool. The full SERP, AI Mode, News, Shopping, short videos, immersive product and the AI Overview tool cost **10 credits** a call. SERP Light is **5**. The AI Overview that comes inline with a SERP response is free, part of that 10-credit call, but expanding a token with the AI Overview tool, including every People Also Ask token, is a separate 10-credit call. Response size does not change the price.
@@ -572,6 +617,8 @@ $env:HASDATA_API_KEY = "your_key_here"; npm test
 ```
 
 The last check makes a real search and costs 10 credits, which is the price of a canary that can fail for the right reason. Listing tools succeeds with any non-empty key, so a test that only lists tools stays green with a revoked one.
+
+The orchestration tests in `test/orchestrator.test.mjs` need neither a key nor a network connection: a fake fetch serves hand-written JSON-RPC payloads, so the success, concurrency-retry, retry-exhaustion, expired-token and validation paths run anywhere for free.
 
 ## Contributing
 
