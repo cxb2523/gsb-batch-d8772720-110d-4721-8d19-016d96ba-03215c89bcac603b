@@ -96,3 +96,72 @@ func TestRetryConfig_ContextCancellation(t *testing.T) {
 		t.Error("expected error from cancelled context")
 	}
 }
+
+func TestDoWithAttempts_SingleAttemptWhenRetriesZero(t *testing.T) {
+	rc := &RetryConfig{MaxAttempts: 1, InitDelay: 10 * time.Millisecond}
+	calls := 0
+
+	attempts, err := rc.DoWithAttempts(context.Background(), func() error {
+		calls++
+		return errors.New("transient")
+	}, func(error) bool { return true })
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts != 1 || calls != 1 {
+		t.Errorf("attempts = %d, calls = %d, want 1 and 1", attempts, calls)
+	}
+}
+
+func TestDoWithAttempts_ReportsSuccessAttempts(t *testing.T) {
+	rc := &RetryConfig{MaxAttempts: 3, InitDelay: 10 * time.Millisecond}
+	calls := 0
+
+	attempts, err := rc.DoWithAttempts(context.Background(), func() error {
+		calls++
+		if calls < 2 {
+			return errors.New("transient")
+		}
+		return nil
+	}, func(error) bool { return true })
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestDoWithAttempts_ReportsFailureAttempts(t *testing.T) {
+	rc := &RetryConfig{MaxAttempts: 3, InitDelay: 10 * time.Millisecond}
+	calls := 0
+
+	attempts, err := rc.DoWithAttempts(context.Background(), func() error {
+		calls++
+		return errors.New("always fails")
+	}, func(error) bool { return true })
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts != 3 || calls != 3 {
+		t.Errorf("attempts = %d, calls = %d, want 3 and 3", attempts, calls)
+	}
+}
+
+func TestDoWithAttempts_NonRetryableAttemptsOnce(t *testing.T) {
+	rc := &RetryConfig{MaxAttempts: 3, InitDelay: 10 * time.Millisecond}
+	calls := 0
+	permanent := errors.New("permanent")
+
+	attempts, _ := rc.DoWithAttempts(context.Background(), func() error {
+		calls++
+		return permanent
+	}, func(err error) bool { return err.Error() != "permanent" })
+
+	if attempts != 1 || calls != 1 {
+		t.Errorf("attempts = %d, calls = %d, want 1 and 1", attempts, calls)
+	}
+}

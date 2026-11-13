@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,7 +43,12 @@ Input sources (mutually exclusive):
   File:             ezycopy batch --file urls.txt
   Stdin:            cat urls.txt | ezycopy batch -
 
-Output is always NDJSON to stdout. Progress goes to stderr.`,
+Output is always NDJSON to stdout. Progress goes to stderr.
+
+Each record carries "attempts" (fetch attempts actually made). When -o is set,
+successful records also carry "output_status": written, skipped (--skip-existing),
+renamed (name collision), or failed — a failed write turns the record into an
+error with code "write_failed" and is counted in the summary and exit code.`,
 		RunE: runBatch,
 	}
 
@@ -112,25 +118,14 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	// Writer goroutine — single writer to stdout, no interleaving
 	var writerWg sync.WaitGroup
 	writerWg.Add(1)
-	var okCount, errCount int
-	var errCodes []string
+	var summary batchSummary
 	go func() {
 		defer writerWg.Done()
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetEscapeHTML(false)
-		for r := range results {
-			enc.Encode(r)
-			if r.Status == "ok" {
-				okCount++
-				// Write file in serialized writer goroutine to avoid TOCTOU race
-				if outputFlag != "" && r.Title != nil {
-					writeResultToFile(r)
-				}
-			} else {
-				errCount++
-				errCodes = append(errCodes, r.Error)
-			}
+		var progress io.Writer
+		if !quiet {
+			progress = os.Stderr
 		}
+		summary = consumeResults(results, os.Stdout, progress, len(urls), outputFlag != "")
 	}()
 
 	// Worker pool
@@ -150,14 +145,6 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			result := fetchAndExtract(gctx, seq, rawURL, limiter, retryCfg, pool, bodyLimit)
 			results <- result
 
-			if !quiet {
-				status := "ok"
-				if result.Status == "error" {
-					status = result.Error
-				}
-				fmt.Fprintf(os.Stderr, "[%d/%d] %s (%s)\n", seq+1, len(urls), rawURL, status)
-			}
-
 			if failFast && result.Status == "error" {
 				return fmt.Errorf("failed: %s", rawURL)
 			}
@@ -172,23 +159,68 @@ func runBatch(cmd *cobra.Command, args []string) error {
 
 	// Summary to stderr
 	if !quiet {
-		total := okCount + errCount
-		if errCount > 0 {
-			unique := uniqueStrings(errCodes)
-			fmt.Fprintf(os.Stderr, "%d URLs: %d ok, %d failed (%s)\n", total, okCount, errCount, strings.Join(unique, ", "))
+		total := summary.ok + summary.failed
+		if summary.failed > 0 {
+			unique := uniqueStrings(summary.errCodes)
+			fmt.Fprintf(os.Stderr, "%d URLs: %d ok, %d failed (%s)\n", total, summary.ok, summary.failed, strings.Join(unique, ", "))
 		} else {
-			fmt.Fprintf(os.Stderr, "%d URLs: %d ok\n", total, okCount)
+			fmt.Fprintf(os.Stderr, "%d URLs: %d ok\n", total, summary.ok)
 		}
 	}
 
 	// Exit code
-	if errCount == len(urls) {
+	return batchExitError(summary.failed, len(urls))
+}
+
+// batchExitError maps failure statistics onto the batch exit codes.
+func batchExitError(failed, total int) error {
+	if failed > 0 && failed == total {
 		return &batchError{code: ExitTotalFailure}
 	}
-	if errCount > 0 {
+	if failed > 0 {
 		return &batchError{code: ExitPartial}
 	}
 	return nil
+}
+
+// batchSummary aggregates per-record outcomes for the summary line and exit code.
+type batchSummary struct {
+	ok       int
+	failed   int
+	errCodes []string
+}
+
+// consumeResults drains results, persists files for successful records when
+// persistFiles is set, and writes each record as one NDJSON line to out.
+// Progress lines go to progress when non-nil. A file-write failure flips the
+// record to status "error" before it is emitted, so it counts as failed.
+func consumeResults(results <-chan BatchResult, out io.Writer, progress io.Writer, total int, persistFiles bool) batchSummary {
+	var summary batchSummary
+	enc := json.NewEncoder(out)
+	enc.SetEscapeHTML(false)
+
+	for r := range results {
+		if persistFiles && r.Status == "ok" {
+			r = writeResultToFile(r)
+		}
+		enc.Encode(r)
+
+		if progress != nil {
+			status := "ok"
+			if r.Status == "error" {
+				status = r.Error
+			}
+			fmt.Fprintf(progress, "[%d/%d] %s (%s)\n", r.Seq+1, total, r.OriginalURL, status)
+		}
+
+		if r.Status == "ok" {
+			summary.ok++
+		} else {
+			summary.failed++
+			summary.errCodes = append(summary.errCodes, r.Error)
+		}
+	}
+	return summary
 }
 
 func fetchAndExtract(ctx context.Context, seq int, rawURL string, limiter *batch.DomainLimiter, retryCfg *batch.RetryConfig, pool *extractor.BrowserPool, maxBody int64) BatchResult {
@@ -203,7 +235,7 @@ func fetchAndExtract(ctx context.Context, seq int, rawURL string, limiter *batch
 	var pageResult *extractor.PageResult
 	var extractErr error
 
-	err := retryCfg.Do(ctx, func() error {
+	attempts, err := retryCfg.DoWithAttempts(ctx, func() error {
 		if err := limiter.Wait(ctx, rawURL); err != nil {
 			return err
 		}
@@ -215,6 +247,7 @@ func fetchAndExtract(ctx context.Context, seq int, rawURL string, limiter *batch
 		}
 		return extractErr
 	}, isRetryable)
+	result.Attempts = attempts
 
 	if err != nil {
 		result.Status = "error"
@@ -343,27 +376,53 @@ func isPipeInput() bool {
 	return info.Mode()&os.ModeCharDevice == 0
 }
 
-func writeResultToFile(result BatchResult) {
-	if result.Title == nil || *result.Title == "" {
-		return
+// writeResultToFile persists a successful result and reports the outcome in
+// OutputStatus. A write failure converts the record into an error with code
+// "write_failed" so it is counted in the failure summary and exit code.
+func writeResultToFile(result BatchResult) BatchResult {
+	// Without -o there is nothing to write; failing to have a title also means
+	// there is no filename to derive. Both leave output fields empty.
+	if outputFlag == "" || result.Title == nil || *result.Title == "" {
+		return result
 	}
 
 	// Use output package's resolve path for consistent naming
 	filePath, err := output.ResolveOutputPath(outputFlag, *result.Title)
 	if err != nil {
-		return
+		return outputFailure(result, "", fmt.Errorf("failed to resolve output path: %w", err))
 	}
 
 	if skipExisting {
 		if _, err := os.Stat(filePath); err == nil {
-			return // File exists, skip
+			result.OutputStatus = OutputSkipped
+			result.OutputFile = filePath
+			return result
 		}
 	}
 
 	// Handle collisions by appending -2, -3, etc.
-	filePath = resolveCollision(filePath)
+	resolved := resolveCollision(filePath)
+	if err := output.WriteToFile(resolved, result.Markdown); err != nil {
+		return outputFailure(result, resolved, err)
+	}
 
-	_ = output.WriteToFile(filePath, result.Markdown)
+	result.OutputStatus = OutputWritten
+	if resolved != filePath {
+		result.OutputStatus = OutputRenamed
+	}
+	result.OutputFile = resolved
+	return result
+}
+
+// outputFailure marks a record as failed because its file could not be
+// written. Error stays machine-readable; Message carries the human reason.
+func outputFailure(result BatchResult, path string, err error) BatchResult {
+	result.Status = "error"
+	result.Error = "write_failed"
+	result.OutputStatus = OutputFailed
+	result.OutputFile = path
+	result.Message = fmt.Sprintf("failed to write output file: %v", err)
+	return result
 }
 
 func resolveCollision(path string) string {

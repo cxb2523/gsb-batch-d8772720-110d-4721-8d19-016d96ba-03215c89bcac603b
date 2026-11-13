@@ -21,20 +21,34 @@ type SingleResult struct {
 	ExtractedAt string `json:"extracted_at"`
 }
 
+// Output outcomes reported in BatchResult.OutputStatus. Empty means file
+// output was not requested (no -o) or was never attempted (record failed
+// before the file step).
+const (
+	OutputNotRequested = ""
+	OutputWritten      = "written" // file written at OutputFile
+	OutputSkipped      = "skipped" // existing file left untouched (--skip-existing)
+	OutputRenamed      = "renamed" // name collision resolved, written at OutputFile
+	OutputFailed       = "failed"  // write failed; record status becomes "error"
+)
+
 // BatchResult is one line of NDJSON output from the batch subcommand.
 type BatchResult struct {
-	Seq         int    `json:"seq"`
-	OriginalURL string `json:"original_url"`
-	FinalURL    string `json:"final_url,omitempty"`
-	Title       *string `json:"title"` // null on error
-	Type        string `json:"type"`
-	ContentType string `json:"content_type,omitempty"`
-	Status      string `json:"status"` // "ok" or "error"
-	Error       string `json:"error,omitempty"`
-	Message     string `json:"message,omitempty"`
-	Markdown    string `json:"markdown,omitempty"`
-	DurationMs  int64  `json:"duration_ms"`
-	ExtractedAt string `json:"extracted_at"`
+	Seq          int     `json:"seq"`
+	OriginalURL  string  `json:"original_url"`
+	FinalURL     string  `json:"final_url,omitempty"`
+	Title        *string `json:"title"` // null on error
+	Type         string  `json:"type"`
+	ContentType  string  `json:"content_type,omitempty"`
+	Status       string  `json:"status"` // "ok" or "error"
+	Error        string  `json:"error,omitempty"`
+	Message      string  `json:"message,omitempty"`
+	Markdown     string  `json:"markdown,omitempty"`
+	Attempts     int     `json:"attempts"` // fetch attempts actually made
+	OutputStatus string  `json:"output_status,omitempty"`
+	OutputFile   string  `json:"output_file,omitempty"`
+	DurationMs   int64   `json:"duration_ms"`
+	ExtractedAt  string  `json:"extracted_at"`
 }
 
 // FatalError is the structured error written to stderr for usage/config errors.
@@ -58,4 +72,3 @@ func isUsageError(err error) bool {
 	_, ok := err.(*UsageError)
 	return ok
 }
-
