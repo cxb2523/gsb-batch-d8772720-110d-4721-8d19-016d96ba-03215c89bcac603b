@@ -6,9 +6,15 @@ const style = {
   margin: "40px",
 }
 
+export interface DevicePlotProps {
+  csv: string
+  plot: 'line' | 'table'
+  title?: string
+}
+
 export function DevicePlot(
-  { csv, plot, title }:
-  { csv: string, plot: 'line' | 'table', title?: string})
+  { csv, plot, title }: DevicePlotProps
+)
 {
   const csvData = csv?.trim() || ''
   const tableData = fromFlux(csvData).table || undefined

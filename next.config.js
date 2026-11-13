@@ -1,11 +1,17 @@
+/* @influxdata/giraffe is a browser-only library and references the `self`
+ * global at module load. Next.js evaluates modules during build-time page
+ * data collection where `self` is undefined, so provide a minimal alias for
+ * that phase. In the browser the native `self` is used unchanged.
+ */
+if (typeof globalThis.self === 'undefined') {
+  globalThis.self = globalThis
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-}
-
-module.exports = {
   async rewrites() {
-    return { 
+    return {
       beforeFiles: [
         {
           source: '/api/:endpoint*',
@@ -15,3 +21,5 @@ module.exports = {
     }
   },
 }
+
+module.exports = nextConfig

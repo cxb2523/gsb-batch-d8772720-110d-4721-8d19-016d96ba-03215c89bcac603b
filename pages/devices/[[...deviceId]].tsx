@@ -1,6 +1,6 @@
 import React, {useState} from 'react';
-import {DevicesCard} from './_devicesCard'
-import {Device} from './_device'
+import {DevicesCard} from '../../components/devices/DevicesCard'
+import {Device} from '../../components/devices/Device'
 import {useRouter} from 'next/router'
 
 function Devices() {

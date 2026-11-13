@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "node --test \"tests/*.test.ts\"",
+    "mock-api": "node tools/mock-api.mjs",
+    "acceptance": "node tools/acceptance.mjs"
   },
   "dependencies": {
     "@influxdata/giraffe": "^2.38.1",

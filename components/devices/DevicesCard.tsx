@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
-import DeviceRegistrationButton from './_deviceRegistrationButton'
-import {DevicesList} from './_devicesList'
+import DeviceRegistrationButton from './DeviceRegistrationButton'
+import {DevicesList} from './DevicesList'
 
 export function DevicesCard() {
   const [deviceId, setDeviceId] = useState('')

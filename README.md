@@ -34,6 +34,49 @@ The UI automatically routes all `/api/` requests to your API server.
 `iot-api-ui` uses Next.js' _catch-all_ routing and [**`rewrites`** module](https://nextjs.org/docs/pages/api-reference/next-config-js/rewrites) to act as a proxy for cross-domain requests to the server.
 To customize the URL rewrites, edit `next.config.js`.
 
+## Per-field measurement collection & local acceptance testing
+
+The device detail page collects the three fields (`Humidity`, `Pressure`,
+`Temperature`) independently. Each field has its own
+`POST /api/devices/{deviceId}/measurements` request (JSON body containing the
+Flux query, `Accept: application/csv`), its own line chart and table labelled
+with the field name, and its own success/error state. A failed field shows a
+field-named error with a **Retry** button that re-requests only that field.
+Switching devices discards all in-flight results of the previous device, and
+re-triggering a field keeps only the last request's result. The collection
+logic lives in [`components/devices/fieldData.ts`](./components/devices/fieldData.ts).
+
+Two zero-dependency test layers use only the Node standard library:
+
+```bash
+# Unit tests for the collector (stale sessions, last-request-wins, per-field retry)
+npm test
+
+# End-to-end acceptance against a locally mocked backend (starts its own server)
+npm run acceptance
+```
+
+To drive the real UI by hand, run the mock API and point the dev server at it:
+
+```bash
+npm run mock-api            # http://localhost:4010, devices device-alpha / device-beta
+API_URL=http://localhost:4010 npm run dev
+```
+
+The mock exposes `POST /__control` to script failure scenarios:
+
+```bash
+# Make only Pressure return 502 (the other fields stay 200)
+curl -X POST http://localhost:4010/__control -H 'Content-Type: application/json' \
+  -d '{"pressureFail": true}'
+# Make the write-data endpoint fail (existing charts must remain)
+curl -X POST http://localhost:4010/__control -H 'Content-Type: application/json' \
+  -d '{"generateFail": true}'
+# Add latency to Pressure so a device switch can overtake an in-flight request
+curl -X POST http://localhost:4010/__control -H 'Content-Type: application/json' \
+  -d '{"pressureDelayMs": 400}'
+```
+
 ## Learn More
 
 Follow step-by-step tutorials to build the IoT Starter app:
