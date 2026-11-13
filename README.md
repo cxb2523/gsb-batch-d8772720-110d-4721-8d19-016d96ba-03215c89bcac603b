@@ -509,6 +509,34 @@ No. HasData is an independent service and is not affiliated with, endorsed by, o
 | Node launcher on npm | [@hasdata/google-maps-mcp](https://www.npmjs.com/package/@hasdata/google-maps-mcp) |
 | Python launcher on PyPI | [hasdata-google-maps-mcp](https://pypi.org/project/hasdata-google-maps-mcp/) |
 
+## Collecting every review programmatically
+
+The Node launcher also exports `collectPlaceReviews`, which walks `nextPageToken` for you and reports exactly why a batch ended, so unattended jobs can tell end-of-data apart from a failure. It issues `tools/call` against `hasdata_google_maps_reviews_getMapReviews` on the same endpoint, using `HASDATA_API_KEY`; importing the module does not start the stdio bridge.
+
+```js
+import { collectPlaceReviews } from '@hasdata/google-maps-mcp/index.mjs';
+
+const result = await collectPlaceReviews({
+  placeId: 'ChIJAb0KE0RrkFQRuI4X0By5Mcw', // or dataId — at least one is required
+  sortBy: 'newestFirst',                  // optional
+  hl: 'en',                               // optional
+  maxPages: 20,                           // optional local cap
+  maxReviews: 100,                        // optional local cap
+});
+```
+
+A missing identifier or API key throws before any request is made. A 429 concurrency limit is retried with exponential backoff (three retries by default); exhausting them stops paging with `completed: false`. An empty page or a missing `nextPageToken` finishes with `completed: true`.
+
+| Field | Meaning |
+| --- | --- |
+| `reviews` / `reviewCount` | Every collected review, in page order, and its length |
+| `pagesFetched` | Pages fetched successfully |
+| `pageRecords[]` | One record per attempted page: `page`, `reviewCount`, `collectedCount`, `success`, `attempts`, `failureReason`, `failureMessage`, `hasNextPage`, `truncated` |
+| `completed` | `false` only when a page failed (including retry exhaustion) |
+| `stopReason` | `no_next_page`, `empty_page`, `max_pages`, `max_reviews`, `retry_exhausted` or `page_failed` |
+| `failureReason` | `concurrency_limit`, `unauthorized`, `invalid_place`, `timeout`, `network_error`, `invalid_response` or `unknown`; `null` on success |
+| `truncatedByMaxReviews` | `true` when `maxReviews` cut a page short |
+
 ## Development
 
 This repository is configuration and documentation for a remote server. There is no build step and nothing to containerize.
