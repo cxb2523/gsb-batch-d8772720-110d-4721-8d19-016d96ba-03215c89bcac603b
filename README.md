@@ -27,6 +27,7 @@ https://mcp.hasdata.com/mcp?apis=zillow
 - [Quick start](#quick-start)
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
+- [Paginated listing collector](#paginated-listing-collector)
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
@@ -258,6 +259,60 @@ Returns the full page: `price`, `currency`, `fees`, `beds`, `baths`, `area`, `ye
 }
 ```
 
+## Paginated listing collector
+
+A comps run often needs dozens of listings, but the search tool returns one page at a time and names the next page through `pagination.nextPage`. The package ships a dependency-free collector, `lib/paginate.mjs`, that walks those links for you. It is a standalone library that speaks JSON-RPC to the same hosted endpoint; it does not change the npm or PyPI launchers or how an MCP client connects.
+
+```js
+import { paginateListings } from '@hasdata/zillow-mcp/paginate';
+
+const result = await paginateListings({
+  keyword: 'Austin, TX',
+  type: 'forSale',
+  // Every filter below is sent verbatim on every page, alongside keyword and type.
+  filters: { price_max_: 600_000, beds_min_: 3, homeTypes__: ['house'] },
+  maxPages: 10,
+  apiKey: process.env.HASDATA_API_KEY, // read from HASDATA_API_KEY when omitted
+});
+
+console.log(result.totalCount);        // merged listing count across every page
+console.log(result.stopReason);        // why the walk ended
+console.log(result.pages);             // one audit record per requested page
+```
+
+The first page is called with `keyword`, `type` and the filters exactly as given. Each later page re-sends all of those arguments untouched and adds `url` set to the previous response's `pagination.nextPage`. If a response carries no `nextPage`, the walk stops there: the collector never invents a `page` number or builds a Zillow URL itself.
+
+Every page is checked before its listings are accepted:
+
+- `requestMetadata.status` is inspected on every successful payload. Anything other than `ok` marks the page failed, stops the walk, and leaves the listings already collected in place.
+- An empty `properties` array is a **successful page with no inventory**, recorded with status `empty`, not an error.
+- `result.pages` records, per page: the outcome `status`, `propertyCount`, `hasNextPage`, the `nextPage` URL, retry details, and the `error` text when one exists.
+
+The summary object holds:
+
+| Field | Meaning |
+| :--- | :--- |
+| `properties` | Every page's `properties` merged in page order. |
+| `totalCount` | Length of the merged list. |
+| `pagesRequested` | Page requests actually made. |
+| `stopReason` | One of `max_pages`, `no_next_page`, `page_failed`, `concurrency_limit`, `key_rejected`. |
+| `pages` | The per-page audit trail described above. |
+
+### Concurrency and backoff
+
+The free tier allows **5 requests at a time**. When a request overflows that limit HasData answers HTTP **429** and the body carries `concurrency_limit` (the marker can also arrive on a 200 envelope). The collector treats either shape as throttling and retries that page with exponential backoff (1s, 2s, 4s, capped at 30s by default), with the retry count bounded by `maxConcurrencyRetries` (4, so five attempts in total). Once the budget is exhausted the page is recorded as `concurrency_limit` and the walk stops with `stopReason: 'concurrency_limit'`. A plan limit is reported as such, not as a broken tool contract. No other error is retried.
+
+### The two 401 shapes
+
+Keys fail in two distinct ways and the collector distinguishes them:
+
+- **Missing key at the connection layer** — the server refuses the request with HTTP **401** before any tool runs. The page is recorded `key_rejected` with `errorKind: 'http_401'` and the walk stops.
+- **Wrong key inside a successful call** — the tool call still returns HTTP 200, but the result has `isError: true` and text containing `HasData API error: 401 Unauthorized`. This is never retried: the page is recorded `key_rejected` with `errorKind: 'tool_401'` and the walk stops immediately.
+
+Either way the final `stopReason` is `key_rejected`, and listings from earlier pages are retained.
+
+The collector takes `fetchImpl` and `sleep` injection seams, so it can be driven entirely against a fake transport. Its tests run fully offline.
+
 ## Prompts and resources
 
 The server ships 2 prompts, ready-made workflows a client can offer instead of making the user compose a tool call.
@@ -294,6 +349,8 @@ Your client almost never sees an HTTP error code from a tool call. The MCP layer
 **A missing key is the one real HTTP error.** Authorization runs before any tool, and the connection itself fails with 401. CORS headers are present, and a browser client reads the status and not an opaque network failure.
 
 **An argument that breaks a tool's schema is rejected before it becomes a scrape.** The server answers with `isError: true` and the text `MCP error -32602: Input validation error`, naming the offending field. Nothing is fetched and nothing is charged.
+
+**Overflowing your plan's concurrency comes back as 429.** The free tier allows 5 requests at a time; a request past that limit answers HTTP 429 with `concurrency_limit` in the body (the marker can also appear on a 200 envelope). It is a plan limit rather than a failed call, so back off and retry instead of treating the contract as broken. The [paginated listing collector](#paginated-listing-collector) does this for you, with a bounded retry budget.
 
 **A search with no matches returns a successful result with an empty `properties` array**, not an error. A location and filter set with no inventory still comes back with `requestMetadata.status` set to `ok`. Test for the array length before you iterate.
 
@@ -400,6 +457,14 @@ HASDATA_API_KEY=your_key_here npm test
 # Windows PowerShell
 $env:HASDATA_API_KEY="your_key_here"; npm test
 ```
+
+The pagination collector in `lib/paginate.mjs` has its own suite, `test/pagination.test.mjs`, which injects a fake `fetch` and runs completely offline: no socket, no `HASDATA_API_KEY`. It covers plain JSON and SSE response shapes, empty result pages, the `concurrency_limit` backoff and its retry cap, the `isError` 401 text, the connection-layer 401, and a missing `nextPage`. Run it on its own any time:
+
+```bash
+npm run test:offline
+```
+
+`npm test` runs both suites. Without a key the live contract checks skip while the offline pagination tests still run in full.
 
 The same suite runs in CI on every push and once a week on a schedule, because the upstream tool list can change without anyone touching this repository. A failure means the tool list moved, the key stopped working, or the endpoint was unreachable, and the assertion message says which.
 
