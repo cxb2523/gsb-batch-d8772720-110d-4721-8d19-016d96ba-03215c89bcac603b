@@ -1008,6 +1008,8 @@ def test_calc_iostats():
 
 
 def test_calc_iorates():
+    # Rates are derived from the raw block counts, so a prior calc_iostats
+    # call must not turn them into bytes a second time.
     response = calc_iorates(data, iokinds)
 
     iorates = {
@@ -1020,8 +1022,7 @@ def test_calc_iorates():
             "client  backend/bulkwrite": [
                 numpy.nan, numpy.nan, numpy.nan, numpy.nan, numpy.nan],
             "client backend/normal": [
-                numpy.nan, numpy.nan, numpy.nan, numpy.nan,
-                664377753600.0],
+                numpy.nan, 819200.0, numpy.nan, 819200.0, 819200.0],
             "client backend/vacuum": [numpy.nan, 0.0, numpy.nan, 0.0, 0.0],
             "background worker/normal": [numpy.nan, 0.0, numpy.nan, 0.0, 0.0],
             "background writer/normal": [
@@ -1031,7 +1032,9 @@ def test_calc_iorates():
             "standalone backend/normal": [numpy.nan, 0.0, numpy.nan, 0.0, 0.0],
             "standalone backend/vacuum": [numpy.nan, 0.0, numpy.nan, 0.0, 0.0],
             "client backend/bulkwrite": [
-                numpy.nan, numpy.nan, numpy.nan, numpy.nan, numpy.nan, ]},
+                numpy.nan, numpy.nan, numpy.nan, numpy.nan, numpy.nan, ],
+            "temp relation/client backend/normal": [
+                numpy.nan, numpy.nan, numpy.nan, numpy.nan, 81100800.0]},
         "writes": {
             "autovacuum launcher/normal": [
                 numpy.nan, numpy.nan, numpy.nan, numpy.nan, numpy.nan,
@@ -1044,8 +1047,8 @@ def test_calc_iorates():
             "client  backend/bulkwrite": [
                 numpy.nan, 0.0, numpy.nan, numpy.nan, numpy.nan],
             "client backend/normal": [
-                numpy.nan, numpy.nan, numpy.nan, numpy.nan,
-                3080296857600.0],
+                numpy.nan, 8192000.0, numpy.nan, 8192000.0,
+                16384000.0],
             "client backend/vacuum": [numpy.nan, 0.0, numpy.nan, 0.0, 0.0],
             "background worker/normal": [
                 numpy.nan, numpy.nan, numpy.nan, numpy.nan, numpy.nan,
@@ -1056,6 +1059,8 @@ def test_calc_iorates():
             "standalone backend/vacuum": [
                 numpy.nan, numpy.nan, numpy.nan, numpy.nan, numpy.nan],
             "client backend/bulkwrite": [
-                numpy.nan, numpy.nan, numpy.nan, 0.0, 0.0]}}
+                numpy.nan, numpy.nan, numpy.nan, 0.0, 0.0],
+            "temp relation/client backend/normal": [
+                numpy.nan, numpy.nan, numpy.nan, numpy.nan, 376012800.0]}}
 
     numpy.testing.assert_equal(numpy.array(iorates), numpy.array(response))
