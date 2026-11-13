@@ -1,0 +1,314 @@
+"""Daily digest (plan 07): one Telegram/webhook message a day instead of (or
+on top of) one message per alert. Zero YouTube quota -- it only reads what
+the worker already stored.
+
+NOTIFY_MODE picks the delivery style: `instant` (default, per-event
+messages as before), `digest` (only this summary; per-event delivery in
+application/alerts.py stays silent) or `both`. The worker calls
+send_digest() every cycle; it sends once per local day, not before
+DIGEST_HOUR, and remembers the day in `meta` so a restart never sends twice.
+"Local" is the recipient's own time zone (P2-03, users.timezone), else
+NF_DEFAULT_TIMEZONE, else the container's (TZ in docker-compose.yml).
+"""
+import json
+import os
+from datetime import datetime, timezone
+
+import infrastructure.postgres as db
+from application import channel_tracking as T
+from application import packaging as PKG
+from application import timezone_prefs as TZP
+from domain import i18n
+from domain import periods as P
+from domain import timezones as TZ
+from domain.i18n import tr
+from domain.users import LOCAL_USER_ID, multi_user_enabled
+from infrastructure.notify.null import NullNotifier
+
+DIGEST_HOUR = int(os.environ.get("DIGEST_HOUR", "8"))
+DIGEST_SKIP_EMPTY = os.environ.get("DIGEST_SKIP_EMPTY", "1") not in ("0", "false", "no")
+DASHBOARD_URL = os.environ.get("NOTIFY_DASHBOARD_URL", "http://127.0.0.1:8080").rstrip("/")
+TELEGRAM_LIMIT = 4096
+TITLE_MAX = 80
+LAST_SENT_KEY = "digest_last_sent_date"
+
+# section -> (event kinds, payload field that ranks items, strongest first)
+EVENT_SECTIONS = {
+    "outliers": (("outlier",), "outlierScore"),
+    "acceleration": (("acceleration",), "acceleration"),
+    "gone": (("channel_gone", "video_gone"), None),
+    # plans 17 and 19: digest-mode users get these only here
+    "topics": (("topic_match",), "similarity"),
+    "milestones": (("milestone",), "milestone"),
+    # plan 33: reminders of planned drafts
+    "drafts": (("draft_due",), None),
+}
+
+
+def _esc(s) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _compact(n) -> str:
+    """1234 -> 1.2K, 36800000 -> 36.8M (Telegram text, no locale needed)."""
+    n = n or 0
+    for div, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(n) >= div:
+            return f"{n / div:.1f}".rstrip("0").rstrip(".") + suffix
+    return str(int(n))
+
+
+def _cut(s, n=TITLE_MAX) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n - 1].rstrip() + "…"
+
+
+def _events(conn, kinds, start, *, user_id) -> list:
+    from application.alerts import DELIVERABLE_TO_USER
+    q = ("SELECT id, kind, ref_id, payload, created_at FROM events e WHERE kind IN (%s) AND "
+         % ",".join("?" * len(kinds))) + DELIVERABLE_TO_USER
+    params = list(kinds) + [user_id, user_id]
+    if start:
+        q += " AND created_at >= ?"
+        params.append(start)
+    out = []
+    for r in conn.execute(q + " ORDER BY created_at DESC", params).fetchall():
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        out.append({"id": r["id"], "kind": r["kind"], "createdAt": r["created_at"],
+                    "payload": payload})
+    return out
+
+
+# rising channels looked at before keeping only a user's own (multi-user)
+RISING_SCAN = 500
+
+
+def _own_channels(user_id) -> set:
+    """The user's active watchlist plus every channel with a video in a niche
+    one of those channels' videos is in -- "my channels and my niches"."""
+    conn = db.get_conn()
+    try:
+        tracked = {r["channel_id"] for r in conn.execute(
+            "SELECT channel_id FROM tracked_channels WHERE user_id = ? AND active = 1",
+            (user_id,)).fetchall()}
+        if not tracked:
+            return set()
+        marks = ",".join("?" * len(tracked))
+        niches = [r["niche_slug"] for r in conn.execute(
+            "SELECT DISTINCT vn.niche_slug FROM video_niches vn JOIN videos v "
+            f"ON v.video_id = vn.video_id WHERE v.channel_id IN ({marks})",
+            tuple(tracked)).fetchall()]
+        if not niches:
+            return tracked
+        marks = ",".join("?" * len(niches))
+        return tracked | {r["channel_id"] for r in conn.execute(
+            "SELECT DISTINCT v.channel_id FROM video_niches vn JOIN videos v "
+            f"ON v.video_id = vn.video_id WHERE vn.niche_slug IN ({marks})",
+            tuple(niches)).fetchall()}
+    finally:
+        conn.close()
+
+
+def build_digest(period: str = "24h", top_n: int = 5, *, user_id: int) -> dict:
+    """Everything worth a morning glance for the last `period`: new outliers
+    and accelerating videos on tracked channels, channels that just entered
+    the corpus already outperforming, title/thumbnail swaps, and channels or
+    videos that disappeared. Each section: `total` plus the `top_n` strongest
+    `items`. `eventIds` lists every event the digest covers (not only the
+    shown ones) so digest mode can mark them delivered."""
+    start, _ = P.window(period)
+    conn = db.get_conn()
+    try:
+        out, event_ids = {}, []
+        for name, (kinds, rank_field) in EVENT_SECTIONS.items():
+            evs = _events(conn, kinds, start, user_id=user_id)
+            event_ids += [e["id"] for e in evs]
+            if rank_field:
+                evs.sort(key=lambda e: e["payload"].get(rank_field) or 0, reverse=True)
+            out[name] = {"total": len(evs), "items": evs[:top_n]}
+    finally:
+        conn.close()
+
+    if multi_user_enabled():
+        # P1-05: the corpus also holds what other users collected and track;
+        # a digest names only this user's channels and their niches' channels
+        rc = T.recently_added_outlier_channels(period=period, limit=RISING_SCAN)
+        mine = _own_channels(user_id)
+        rising = [c for c in rc.get("channels", []) if c.get("channelId") in mine]
+        out["risingChannels"] = {"total": len(rising), "items": rising[:top_n]}
+    else:
+        rc = T.recently_added_outlier_channels(period=period, limit=top_n)
+        rising = rc.get("channels", [])
+        out["risingChannels"] = {"total": rc.get("channelsMatched", len(rising)),
+                                 "items": rising[:top_n]}
+    # multi-user: only swaps on this user's watchlist, not everyone's
+    swaps = PKG.packaging_feed(period=period, limit=top_n,
+                               user_id=user_id if multi_user_enabled() else None
+                               ).get("changes", [])
+    out["repackaging"] = {"total": len(swaps), "items": swaps[:top_n]}
+
+    out["period"] = period
+    out["eventIds"] = event_ids
+    out["empty"] = not any(out[s]["total"] for s in
+                           ("outliers", "acceleration", "gone", "risingChannels", "repackaging",
+                            "topics", "milestones", "drafts"))
+    return out
+
+
+# ------------------------------------------------------------ formatting
+
+def _event_line(e) -> str:
+    p = e["payload"]
+    if e["kind"] == "outlier":
+        return f"• ×{p.get('outlierScore')} · {_esc(_cut(p.get('title') or p.get('videoId')))}"
+    if e["kind"] == "acceleration":
+        return f"• ×{p.get('acceleration')} · {_esc(_cut(p.get('title') or p.get('videoId')))}"
+    if e["kind"] == "channel_gone":
+        return tr("• канал {title}", title=_esc(_cut(p.get('title') or p.get('channelId'))))
+    if e["kind"] == "topic_match":
+        return f"• «{_esc(_cut(p.get('topic'), 40))}»: {_esc(_cut(p.get('title') or p.get('videoId')))}"
+    if e["kind"] == "milestone":
+        return tr("• {title} — {n} подп.", title=_esc(_cut(p.get('title') or p.get('channelId'))),
+                  n=_compact(p.get('milestone')))
+    if e["kind"] == "draft_due":
+        from application import content_calendar as CAL
+        return f"• {_esc(_cut(p.get('title') or str(p.get('draftId'))))} — {_esc(CAL.event_text(p))}"
+    if e["kind"] == "video_gone":
+        return tr("• видео {title}", title=_esc(_cut(p.get('title') or p.get('videoId'))))
+    return f"• {_esc(e['kind'])}"
+
+
+def _channel_line(c) -> str:
+    return tr("• {title} — ×{multiplier}, {subscribers} подп.",
+              title=_esc(_cut(c.get('channelTitle') or c.get('channelId'))),
+              multiplier=c.get('multiplier'), subscribers=_compact(c.get('subscribers')))
+
+
+def _swap_line(s) -> str:
+    if s.get("field") == "title":
+        return tr("• заголовок: «{old}» → «{new}»",
+                  old=_esc(_cut(s.get('old'), 50)), new=_esc(_cut(s.get('new'), 50)))
+    return tr("• обложка: {title}", title=_esc(_cut(s.get('title') or s.get('videoId'))))
+
+
+# headers stay Russian here and go through tr() in _render (i18n plan)
+SECTIONS = (
+    ("outliers", "\U0001F680 <b>Новые outlier-видео</b>", _event_line),
+    ("acceleration", "⚡ <b>Ускоряются</b>", _event_line),
+    ("risingChannels", "\U0001F4C8 <b>Растущие каналы</b>", _channel_line),
+    ("repackaging", "✏️ <b>Перепаковки</b>", _swap_line),
+    ("drafts", "\U0001F4C5 <b>Календарь</b>", _event_line),
+    ("topics", "\U0001F3AF <b>Ваши темы</b>", _event_line),
+    ("milestones", "\U0001F3C1 <b>Рубежи</b>", _event_line),
+    ("gone", "\U0001F6AB <b>Пропали</b>", _event_line),
+)
+
+
+def _render(d, per_section: int) -> str:
+    lines = [tr("\U0001F5DE <b>niche-finder — за сутки</b>")]
+    for key, header, line_fn in SECTIONS:
+        sec = d.get(key) or {}
+        if not sec.get("total"):
+            continue
+        shown = sec["items"][:per_section]
+        lines.append("")
+        lines.append(f"{tr(header)} ({sec['total']})")
+        lines += [line_fn(x) for x in shown]
+        if sec["total"] > len(shown):
+            lines.append(tr("…и ещё {n}", n=sec['total'] - len(shown)))
+    lines.append("")
+    lines.append(f'<a href="{DASHBOARD_URL}/#/overview">{tr("открыть дашборд")}</a>')
+    return "\n".join(lines)
+
+
+def format_digest(d: dict) -> str:
+    """Telegram HTML, never longer than TELEGRAM_LIMIT: if the full list does
+    not fit, fewer items are shown per section (the rest become "…и ещё N").
+    Written in the current locale: send_digest() sets the recipient's, while
+    GET /api/digest returns build_digest()'s data, never this text."""
+    most = max((len((d.get(k) or {}).get("items", [])) for k, _, _ in SECTIONS), default=0)
+    for per_section in range(most, -1, -1):
+        text = _render(d, per_section)
+        if len(text) <= TELEGRAM_LIMIT:
+            return text
+    return text[:TELEGRAM_LIMIT]
+
+
+# ------------------------------------------------------------ sending
+
+def _last_sent_key(user_id):
+    # the local user keeps the key digests always used, others get their own
+    return LAST_SENT_KEY if user_id == LOCAL_USER_ID else f"{LAST_SENT_KEY}_u{user_id}"
+
+
+def send_digest(now: datetime = None, force: bool = False, period: str = "24h",
+                *, user_id: int) -> dict:
+    """Send today's digest if it is due. Due = a notifier is configured, the
+    local hour is >= DIGEST_HOUR and nothing was sent yet today (force skips
+    both time checks). An empty day counts as done when DIGEST_SKIP_EMPTY is
+    on; a failed send does not, so the next worker cycle retries. Every
+    event the digest covered is marked delivered, so switching NOTIFY_MODE
+    back to instant does not replay them one by one.
+
+    P2-03: "local" and "today" are the recipient's time zone. The mark is
+    the UTC moment of the last send; it counts for the local DATE it falls
+    on in the zone in force now: a clock turned back (DST) repeats an hour
+    but never a date, a skipped hour cannot skip the send ("not before", not
+    "exactly at"), and a new zone neither repeats nor skips a day. A mark
+    from before P2-03 (a plain server-local date) still counts as that date."""
+    from application import notify_settings as NS
+    notifier = NS.notifier_for(user_id=user_id)
+    if isinstance(notifier, NullNotifier):
+        return {"sent": False, "reason": "no notifier",
+                "hint": "set NOTIFY_TELEGRAM_BOT_TOKEN + NOTIFY_TELEGRAM_CHAT_ID "
+                        "or NOTIFY_WEBHOOK_URL in .env"}
+    zone = TZP.effective(user_id=user_id)
+    now = now or datetime.now().astimezone()
+    today, hour = TZ.local_day(now, zone)
+    mark = now.astimezone(timezone.utc).isoformat()
+
+    conn = db.get_conn()
+    try:
+        if not force:
+            if hour < DIGEST_HOUR:
+                return {"sent": False, "reason": "too early", "digestHour": DIGEST_HOUR,
+                        "timezone": zone}
+            if TZ.sent_today(db.get_meta(conn, _last_sent_key(user_id)), now, zone):
+                return {"sent": False, "reason": "already sent today"}
+
+        d = build_digest(period=period, user_id=user_id)
+        if d["empty"] and DIGEST_SKIP_EMPTY and not force:
+            db.set_meta(conn, _last_sent_key(user_id), mark)
+            conn.commit()
+            return {"sent": False, "reason": "empty"}
+
+        # the recipient's language (worker, CLI and POST /api/digest/send alike):
+        # the text goes to their Telegram/webhook
+        from application.alerts import recipient_locale
+        with i18n.use_locale(recipient_locale(user_id)), TZ.use_timezone(zone):
+            text = format_digest(d)
+        if not notifier.send(text):
+            return {"sent": False, "reason": "send failed"}
+        for event_id in d["eventIds"]:
+            db.mark_alert_delivered(conn, str(event_id), "digest", user_id=user_id)
+        db.set_meta(conn, _last_sent_key(user_id), mark)
+        conn.commit()
+        return {"sent": True, "events": len(d["eventIds"]), "date": today}
+    finally:
+        conn.close()
+
+
+def digest_wanted() -> bool:
+    """Whether anyone gets a digest at all (the worker's cheap pre-check)."""
+    from application import notify_settings as NS
+    return any(NS.mode_for(user_id=uid) in ("digest", "both") for uid in NS.recipients())
+
+
+def send_all_digests(now: datetime = None) -> dict:
+    """plan 15 (5.9): the digest for every user who asked for one."""
+    from application import notify_settings as NS
+    return {str(uid): send_digest(now=now, user_id=uid) for uid in NS.recipients()
+            if NS.mode_for(user_id=uid) in ("digest", "both")}

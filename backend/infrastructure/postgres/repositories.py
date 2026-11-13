@@ -1,0 +1,385 @@
+"""Upsert / record / tracking functions -- the write-side repository API.
+
+All functions take an already-open connection (from connection.get_conn())
+as their first argument, matching the original db.py call convention used
+throughout application/* and interfaces/*.
+"""
+import json
+
+from infrastructure.postgres.schema import now_iso
+
+_CHANNEL_COLS = [
+    "channel_id", "title", "custom_url", "country", "description", "default_language",
+    "subscriber_count", "video_count", "view_count", "thumbnail", "updated_at",
+    "published_at", "topic_categories", "keywords", "uploads_playlist", "hidden_subs",
+]
+
+_VIDEO_COLS = [
+    "video_id", "channel_id", "title", "description", "published_at", "duration_seconds",
+    "view_count", "like_count", "comment_count", "thumbnail", "tags", "default_language",
+    "embedding", "updated_at", "category_id", "region", "is_short", "topic_categories",
+    "live_content", "contains_synthetic_media",
+]
+
+
+def _upsert(conn, table, pk, cols, row, coalesce=()):
+    """Generic upsert keeping NULLs in `coalesce` columns from overwriting data."""
+    data = {c: row.get(c) for c in cols}
+    placeholders = ",".join(f"%({c})s" for c in cols)
+    updates = []
+    for c in cols:
+        if c == pk:
+            continue
+        if c in coalesce:
+            updates.append(f"{c}=COALESCE(excluded.{c}, {table}.{c})")
+        else:
+            updates.append(f"{c}=excluded.{c}")
+    sql = (
+        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT({pk}) DO UPDATE SET {','.join(updates)}"
+    )
+    cur = conn._conn.cursor()
+    cur.execute(sql, data)
+    cur.close()
+
+
+def upsert_channel(conn, ch: dict):
+    ch.setdefault("first_seen_at", ch.get("updated_at") or now_iso())
+    conn.execute(
+        "INSERT INTO channels (channel_id, first_seen_at) VALUES (?,?) "
+        "ON CONFLICT (channel_id) DO NOTHING",
+        (ch["channel_id"], ch["first_seen_at"]),
+    )
+    _upsert(conn, "channels", "channel_id", _CHANNEL_COLS, ch,
+            coalesce=("published_at", "topic_categories", "keywords", "uploads_playlist"))
+
+
+def upsert_video(conn, v: dict):
+    v.setdefault("first_seen_at", v.get("updated_at") or now_iso())
+    conn.execute(
+        "INSERT INTO videos (video_id, first_seen_at) VALUES (?,?) "
+        "ON CONFLICT (video_id) DO NOTHING",
+        (v["video_id"], v["first_seen_at"]),
+    )
+    _upsert(conn, "videos", "video_id", _VIDEO_COLS, v,
+            coalesce=("embedding", "category_id", "region", "topic_categories", "tags"))
+    if v.get("embedding"):
+        sync_embedding_v(conn, v["video_id"], v["embedding"])
+
+
+def sync_embedding_v(conn, video_id: str, embedding_blob: bytes):
+    """Stage 06 dual-write: mirror a just-written BLOB embedding into
+    embedding_v, best-effort. No-op (not an error) when this Postgres image
+    has no pgvector -- schema.pgvector_available() is the single place that
+    decides that, checked once at init_db() and cached for the process."""
+    from infrastructure.postgres.schema import pgvector_available
+    if not pgvector_available():
+        return
+    from infrastructure.embeddings.fastembed_provider import from_blob, to_pgvector_literal
+    literal = to_pgvector_literal(from_blob(embedding_blob))
+    conn.execute("UPDATE videos SET embedding_v = ?::vector WHERE video_id = ?",
+                (literal, video_id))
+
+
+def record_video_stats(conn, video_id, view_count, like_count, comment_count,
+                       title=None, thumbnail=None, captured_at=None):
+    """Append a stats snapshot and log title/thumbnail changes (1of10-style)."""
+    captured_at = captured_at or now_iso()
+    prev = conn.execute(
+        "SELECT title, thumbnail FROM video_stats_history WHERE video_id=? "
+        "ORDER BY captured_at DESC LIMIT 1",
+        (video_id,),
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO video_stats_history "
+        "(video_id, captured_at, view_count, like_count, comment_count, title, thumbnail) "
+        "VALUES (?,?,?,?,?,?,?) "
+        "ON CONFLICT (video_id, captured_at) DO UPDATE SET "
+        "view_count=excluded.view_count, like_count=excluded.like_count, "
+        "comment_count=excluded.comment_count, title=excluded.title, "
+        "thumbnail=excluded.thumbnail",
+        (video_id, captured_at, view_count, like_count, comment_count, title, thumbnail),
+    )
+    if prev:
+        for field, old, new in (("title", prev["title"], title),
+                                ("thumbnail", prev["thumbnail"], thumbnail)):
+            if old and new and old != new:
+                conn.execute(
+                    "INSERT INTO video_changes "
+                    "(video_id, changed_at, field, old_value, new_value) VALUES (?,?,?,?,?) "
+                    "ON CONFLICT (video_id, changed_at, field) DO NOTHING",
+                    (video_id, captured_at, field, old, new),
+                )
+
+
+def record_channel_stats(conn, channel_id, subscriber_count, video_count, view_count,
+                         captured_at=None):
+    conn.execute(
+        "INSERT INTO channel_stats_history "
+        "(channel_id, captured_at, subscriber_count, video_count, view_count) "
+        "VALUES (?,?,?,?,?) "
+        "ON CONFLICT (channel_id, captured_at) DO UPDATE SET "
+        "subscriber_count=excluded.subscriber_count, video_count=excluded.video_count, "
+        "view_count=excluded.view_count",
+        (channel_id, captured_at or now_iso(), subscriber_count, video_count, view_count),
+    )
+
+
+def link_video_niche(conn, video_id: str, niche_slug: str):
+    conn.execute(
+        "INSERT INTO video_niches (video_id, niche_slug) VALUES (?, ?) "
+        "ON CONFLICT (video_id, niche_slug) DO NOTHING",
+        (video_id, niche_slug),
+    )
+
+
+def upsert_niche(conn, slug: str, query: str, label: str):
+    ts = now_iso()
+    conn.execute(
+        """
+        INSERT INTO niches (slug, query, label, created_at, last_collected_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET last_collected_at=excluded.last_collected_at
+        """,
+        (slug, query, label, ts, ts),
+    )
+
+
+def track_channel(conn, channel_id: str, note: str = None, user_id: int = 1):
+    """user_id: whose watchlist (plan 15; 1 = the local user)."""
+    conn.execute(
+        "INSERT INTO tracked_channels (user_id, channel_id, note, added_at, active) VALUES (?,?,?,?,1) "
+        "ON CONFLICT(user_id, channel_id) DO UPDATE SET active=1, "
+        "note=COALESCE(excluded.note, tracked_channels.note)",
+        (user_id, channel_id, note, now_iso()),
+    )
+
+
+def untrack_channel(conn, channel_id: str, user_id: int = 1):
+    conn.execute("UPDATE tracked_channels SET active=0 WHERE channel_id=? AND user_id=?",
+                 (channel_id, user_id))
+
+
+def new_chart_snapshot(conn, region: str, category_id: str, source: str) -> int:
+    row = conn.execute(
+        "INSERT INTO chart_snapshots (captured_at, region, category_id, source) "
+        "VALUES (?,?,?,?) RETURNING snapshot_id",
+        (now_iso(), region, category_id, source),
+    ).fetchone()
+    return row["snapshot_id"]
+
+
+def add_chart_entry(conn, snapshot_id: int, video_id: str, rank: int, view_count: int):
+    conn.execute(
+        "INSERT INTO chart_entries (snapshot_id, video_id, rank, view_count) VALUES (?,?,?,?) "
+        "ON CONFLICT (snapshot_id, video_id) DO UPDATE SET "
+        "rank=excluded.rank, view_count=excluded.view_count",
+        (snapshot_id, video_id, rank, view_count),
+    )
+
+
+def get_meta(conn, key: str):
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(conn, key: str, value):
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+
+
+def login_failures(conn, kind: str, key: str):
+    """(failures, last_failure_at) of one sign-in counter, or (0, None)."""
+    row = conn.execute("SELECT failures, last_failure_at FROM login_attempts "
+                       "WHERE kind = ? AND key = ?", (kind, key)).fetchone()
+    return (row["failures"], row["last_failure_at"]) if row else (0, None)
+
+
+def record_login_failure(conn, kind: str, key: str, now: str, stale_before: str) -> int:
+    """One more failed sign-in; a counter whose last failure is older than
+    stale_before starts again at 1. One statement, so concurrent processes
+    never lose a failure (like incr_meta). Returns the new count."""
+    row = conn.execute(
+        "INSERT INTO login_attempts (kind, key, failures, first_failure_at, last_failure_at) "
+        "VALUES (?, ?, 1, ?, ?) ON CONFLICT (kind, key) DO UPDATE SET "
+        "failures = CASE WHEN login_attempts.last_failure_at < ? THEN 1 "
+        "ELSE login_attempts.failures + 1 END, "
+        "first_failure_at = CASE WHEN login_attempts.last_failure_at < ? "
+        "THEN excluded.first_failure_at ELSE login_attempts.first_failure_at END, "
+        "last_failure_at = excluded.last_failure_at RETURNING failures",
+        (kind, key, now, now, stale_before, stale_before)).fetchone()
+    return row["failures"]
+
+
+def clear_login_failures(conn, kind: str, key: str):
+    conn.execute("DELETE FROM login_attempts WHERE kind = ? AND key = ?", (kind, key))
+
+
+def purge_login_failures(conn, before: str):
+    conn.execute("DELETE FROM login_attempts WHERE last_failure_at < ?", (before,))
+
+
+def incr_meta_capped(conn, key: str, n: int, limit: int) -> bool:
+    """Add n to an integer counter in meta only if the total stays within
+    limit; False (nothing written) otherwise. One statement, so parallel
+    requests cannot both pass a check and then both spend (multi-user plan
+    P0-05: the YouTube budget is reserved before a request is sent)."""
+    if n > limit:
+        return False
+    row = conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=CAST("
+        "CAST(meta.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT) "
+        "WHERE CAST(meta.value AS INTEGER) + CAST(excluded.value AS INTEGER) <= ? "
+        "RETURNING value",
+        (key, str(int(n)), int(limit))).fetchone()
+    return row is not None
+
+
+def incr_meta(conn, key: str, n: int):
+    """Add n to an integer counter in meta, creating it if missing. One
+    statement, so concurrent web/worker/MCP processes never lose an update
+    the way get_meta + set_meta would."""
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=CAST("
+        "CAST(meta.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT)",
+        (key, str(int(n))))
+
+
+def record_channel_llm_labels(conn, channel_id: str, labels: dict, model: str,
+                              labeled_at: str = None):
+    """Stage 03: write the background classifier's verdict for one channel
+    (is_faceless/content_format/topic/...). Always overwrites -- there is no
+    human channel-level label to protect, unlike video_tags."""
+    conn.execute(
+        "UPDATE channels SET llm_labels=?::jsonb, llm_labeled_at=?, llm_model=? "
+        "WHERE channel_id=?",
+        (json.dumps(labels), labeled_at or now_iso(), model, channel_id),
+    )
+
+
+def save_video_insights(conn, video_id: str, task: str, result: dict, model: str):
+    """Cache one LLM analysis run for a video -- task discriminates stage
+    04's 'comment_insights' from stage 05's 'why_viral' on the same
+    video_id. LLM_INSIGHTS_TTL_DAYS / LLM_WHY_VIRAL_TTL_DAYS in
+    application/enrichment.py decide when a cached row is stale, this just
+    stores/overwrites it."""
+    conn.execute(
+        "INSERT INTO video_insights (video_id, task, result, model, created_at) "
+        "VALUES (?, ?, ?::jsonb, ?, ?) "
+        "ON CONFLICT (video_id, task) DO UPDATE SET "
+        "result=excluded.result, model=excluded.model, created_at=excluded.created_at",
+        (video_id, task, json.dumps(result), model, now_iso()))
+
+
+def already_delivered_alert_keys(conn, alert_keys: list, user_id: int = 1) -> set:
+    """Stage 07: which of these events already went to Telegram/webhook --
+    checked before attempting delivery so a restart mid-cycle never re-sends
+    one that already succeeded."""
+    if not alert_keys:
+        return set()
+    out = set()
+    for i in range(0, len(alert_keys), 400):
+        chunk = alert_keys[i:i + 400]
+        q = ("SELECT alert_key FROM alert_deliveries WHERE user_id = ? AND alert_key IN (%s)"
+             % ",".join("?" * len(chunk)))
+        out.update(r["alert_key"] for r in conn.execute(q, [user_id, *chunk]).fetchall())
+    return out
+
+
+def mark_alert_delivered(conn, alert_key: str, channel: str, user_id: int = 1):
+    conn.execute(
+        "INSERT INTO alert_deliveries (user_id, alert_key, channel, sent_at) VALUES (?,?,?,?) "
+        "ON CONFLICT (user_id, alert_key) DO NOTHING",
+        (user_id, alert_key, channel, now_iso()))
+
+
+def upsert_category(conn, category_id, region, title, assignable):
+    conn.execute(
+        "INSERT INTO video_categories (category_id, region, title, assignable, updated_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(category_id, region) DO UPDATE SET "
+        "title=excluded.title, assignable=excluded.assignable, updated_at=excluded.updated_at",
+        (str(category_id), region, title, 1 if assignable else 0, now_iso()),
+    )
+
+
+# 'llm' never overwrites or deletes a tag a human (or Claude, via MCP) set.
+PROTECTED_TAG_SOURCES = ("manual", "claude-mcp")
+
+
+def upsert_video_tag(conn, video_id: str, tag_group: str, tag: str, source: str,
+                     created_at: str = None, protected_sources=PROTECTED_TAG_SOURCES,
+                     proposed: bool = False, created_by: int = None,
+                     may_overwrite: bool = True) -> bool:
+    """Insert or update one (video_id, tag_group, tag) row. A brand new row
+    always writes; overwriting an existing row is blocked only when that
+    row's source is protected and `source` is not. Returns whether the row
+    was actually written.
+
+    proposed=True (stage 03) marks a tag the LLM invented outside the
+    niche's existing taxonomy -- it lands in the table so a reviewer can see
+    it, but application.tags.tag_stats excludes it until accepted (see
+    resolve_proposed_tag).
+
+    created_by / may_overwrite (multi-user plan P0-02): a new row records its
+    author; with may_overwrite=False an existing row is updated only when
+    that author wrote it -- a regular user cannot re-source someone else's
+    tag or quietly accept their proposal by repeating it."""
+    cur = conn._conn.cursor()
+    cur.execute(
+        "INSERT INTO video_tags (video_id, tag_group, tag, source, created_at, proposed, "
+        "created_by) VALUES (%(video_id)s, %(tag_group)s, %(tag)s, %(source)s, %(created_at)s, "
+        "%(proposed)s, %(created_by)s) "
+        "ON CONFLICT (video_id, tag_group, tag) DO UPDATE SET "
+        "source=excluded.source, created_at=excluded.created_at, proposed=excluded.proposed "
+        "WHERE NOT (video_tags.source IN %(protected)s AND excluded.source NOT IN %(protected)s) "
+        "AND (%(may_overwrite)s OR video_tags.created_by = %(created_by)s) "
+        "RETURNING 1",
+        {"video_id": video_id, "tag_group": tag_group, "tag": tag, "source": source,
+         "created_at": created_at or now_iso(), "protected": tuple(protected_sources),
+         "proposed": 1 if proposed else 0, "created_by": created_by,
+         "may_overwrite": bool(may_overwrite)},
+    )
+    written = cur.fetchone() is not None
+    cur.close()
+    return written
+
+
+def replace_video_tags(conn, video_id: str, tag_group: str, tags: list, source: str,
+                       created_at: str = None,
+                       protected_sources=PROTECTED_TAG_SOURCES,
+                       created_by: int = None, may_overwrite: bool = True) -> dict:
+    """Make `tags` the full tag set for (video_id, tag_group): upsert each,
+    delete whatever else was in this group -- except rows protected against
+    `source` (same rule as upsert_video_tag), which are left untouched even
+    though they're not in the new list. With may_overwrite=False only the
+    rows `created_by` wrote are removed (multi-user plan P0-02)."""
+    is_protected_writer = source in protected_sources
+    tags = list(dict.fromkeys(t for t in tags if t))
+
+    cur = conn._conn.cursor()
+    sql = "DELETE FROM video_tags WHERE video_id=%(video_id)s AND tag_group=%(tag_group)s"
+    params = {"video_id": video_id, "tag_group": tag_group}
+    if not is_protected_writer:
+        sql += " AND source NOT IN %(protected)s"
+        params["protected"] = tuple(protected_sources)
+    if not may_overwrite:
+        sql += " AND created_by = %(created_by)s"
+        params["created_by"] = created_by
+    if tags:
+        sql += " AND tag NOT IN %(keep)s"
+        params["keep"] = tuple(tags)
+    cur.execute(sql, params)
+    cur.close()
+
+    created_at = created_at or now_iso()
+    written = blocked = 0
+    for tag in tags:
+        if upsert_video_tag(conn, video_id, tag_group, tag, source, created_at, protected_sources,
+                            created_by=created_by, may_overwrite=may_overwrite):
+            written += 1
+        else:
+            blocked += 1
+    return {"written": written, "blocked": blocked}

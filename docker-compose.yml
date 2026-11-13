@@ -1,0 +1,257 @@
+# niche-finder -- docker compose
+#
+#   cp .env.example .env      # then put your YOUTUBE_API_KEY in it
+#
+# .env is loaded twice: compose reads it for the ${VAR} substitutions below,
+# and worker/web/mcp/mcp-http also get it whole via env_file, so any setting
+# documented in .env.example (LLM, Ollama, notifications, worker intervals)
+# reaches the app without being listed here.
+#
+# The API key is only needed at runtime, not to build: `docker compose build`
+# works with an empty .env. The worker exits with a clear message if the key is
+# missing, and the MCP tools that spend quota say so when you call them.
+#   docker compose up -d postgres web worker   # база + дашборд на http://localhost:8080 + сборщик
+#   docker compose logs -f worker
+#   docker compose run --rm mcp        # MCP server on stdio, for manual testing
+#   docker compose --profile http up -d mcp-http mcp-https   # MCP over HTTPS on :8765 (/mcp)
+#
+# The worker and the MCP server share the same Postgres database, so whatever
+# the worker collects is immediately visible to the tools.
+#
+# Claude Desktop launches its own MCP container OUTSIDE this compose project
+# (see scripts/mcp-docker.sh) -- that container only reaches Postgres because
+# the script joins it to this project's network by name (`niche-finder_default`,
+# derived from `name: niche-finder` below). That network only exists once
+# `docker compose up` has been run at least once.
+
+name: niche-finder
+
+x-common: &common
+  build:
+    context: ./backend
+    args:
+      PREFETCH_MODEL: "${PREFETCH_MODEL:-0}"
+  image: niche-finder:latest
+  # Every service built from this block gets the whole .env (LLM_*, OLLAMA_*,
+  # NOTIFY_*, WORKER_*...). Keys under `environment` win over env_file.
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+    POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+    POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+    POSTGRES_DB: "${POSTGRES_DB:-niches}"
+    POSTGRES_USER: "${POSTGRES_USER:-niches}"
+    POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-niches}"
+    # .env may point this at localhost:5433 for running outside Docker; it beats
+    # POSTGRES_* in _dsn(), so blank it inside containers. Repeated in every
+    # service that overrides `environment` (YAML merge doesn't deep-merge).
+    NICHE_DATABASE_URL: ""
+    TZ: "${TZ:-Asia/Tashkent}"
+  volumes:
+    - models:/models
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # Persistence. Everything worker/web/mcp/mcp-http read and write lives here
+  # now instead of in a SQLite file on the `data` volume.
+  postgres:
+    # stage 06: pgvector/pgvector:pg16 is upstream postgres:16 (debian, not
+    # alpine) plus the pgvector extension pre-installed -- same major
+    # version, same data directory format, so the existing postgres-data
+    # volume survives the swap. schema.py detects the extension at every
+    # init_db() and only uses it when present, so nothing breaks on an
+    # older/plain postgres:16 image either. See README's "pgvector rollback"
+    # section before running `docker compose up -d postgres` on a database
+    # that matters -- back up the volume first, this is a one-way image swap.
+    image: pgvector/pgvector:pg16
+    container_name: niche-finder-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-niches}"
+      POSTGRES_USER: "${POSTGRES_USER:-niches}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-niches}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Published to 127.0.0.1 only (same philosophy as `web` below) so
+    # `python3 server.py` outside Docker, psql, or a GUI client can reach it,
+    # without exposing the database to the local network.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-niches} -d ${POSTGRES_DB:-niches}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Keeps the corpus fresh and writes the stats history that velocity,
+  # acceleration and period-over-period comparisons are computed from.
+  worker:
+    <<: *common
+    container_name: niche-finder-worker
+    command: ["python", "worker.py"]
+    # Код монтируется из папки, а не берётся из образа: образ нужен только
+    # ради Python и зависимостей, поэтому правка в backend/ применяется
+    # обычным `docker compose restart worker`, без пересборки.
+    volumes:
+      - models:/models
+      - ./backend:/app:ro
+    environment:
+      YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      POSTGRES_DB: "${POSTGRES_DB:-niches}"
+      POSTGRES_USER: "${POSTGRES_USER:-niches}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-niches}"
+      NICHE_DATABASE_URL: ""
+      TZ: "${TZ:-Asia/Tashkent}"
+      # how often to re-read counters for videos published in the last WORKER_HOT_PERIOD
+      WORKER_HOT_INTERVAL_MIN: "${WORKER_HOT_INTERVAL_MIN:-180}"
+      WORKER_HOT_PERIOD: "${WORKER_HOT_PERIOD:-7d}"
+      WORKER_HOT_LIMIT: "${WORKER_HOT_LIMIT:-1000}"
+      # backfill embeddings for videos collected without one; WORKER_EMBED=0 turns it off
+      WORKER_EMBED_INTERVAL_MIN: "${WORKER_EMBED_INTERVAL_MIN:-60}"
+      WORKER_EMBED_BATCH: "${WORKER_EMBED_BATCH:-500}"
+      WORKER_EMBED: "${WORKER_EMBED:-1}"
+      WORKER_DAILY_INTERVAL_MIN: "${WORKER_DAILY_INTERVAL_MIN:-1440}"
+      WORKER_FULL_PERIOD: "${WORKER_FULL_PERIOD:-30d}"
+      WORKER_FULL_LIMIT: "${WORKER_FULL_LIMIT:-3000}"
+      WORKER_REGIONS: "${WORKER_REGIONS:-US}"
+      WORKER_TRENDING: "${WORKER_TRENDING:-1}"
+      # comma-separated topics kept continuously fresh (1 search call each per day)
+      WORKER_QUERIES: "${WORKER_QUERIES:-}"
+      WORKER_QUERY_PERIOD: "${WORKER_QUERY_PERIOD:-24h}"
+      WORKER_QUERY_PAGES: "${WORKER_QUERY_PAGES:-1}"
+
+  # Дашборд: FastAPI отдаёт /api/* и статику из ./frontend.
+  # Слушает только 127.0.0.1 -- внутри контейнера лежит ваш ключ YouTube,
+  # выставлять его в локальную сеть незачем.
+  web:
+    <<: *common
+    container_name: niche-finder-web
+    # Самолечение: если образ собран без fastapi/uvicorn (например, Docker Hub
+    # был недоступен и пересобрать не вышло), ставим их при старте с pypi —
+    # это другой хост, он обычно доступен, даже когда registry отвалился.
+    # На нормально собранном образе проверка занимает миллисекунды.
+    command:
+      - sh
+      - -c
+      - |
+        python -c 'import fastapi, uvicorn' 2>/dev/null || {
+          echo 'fastapi/uvicorn нет в образе — ставлю с pypi (разово, ~30 сек)';
+          pip install --quiet --user --no-warn-script-location \
+            'fastapi>=0.115' 'uvicorn[standard]>=0.30' || {
+              echo 'Не удалось поставить зависимости. Нужен доступ к pypi.org'; exit 1; };
+        }
+        exec python -m uvicorn api:app --host 0.0.0.0 --port 8080
+    environment:
+      YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      POSTGRES_DB: "${POSTGRES_DB:-niches}"
+      POSTGRES_USER: "${POSTGRES_USER:-niches}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-niches}"
+      NICHE_DATABASE_URL: ""
+      FRONTEND_DIR: /frontend
+      TZ: "${TZ:-Asia/Tashkent}"
+    volumes:
+      - models:/models
+      - ./backend:/app:ro
+      - ./frontend:/frontend:ro
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
+
+  # MCP over stdio. Not started by `up` -- Claude Desktop launches its own
+  # container via scripts/mcp-docker.sh, joined to this project's network by
+  # name so it can still reach `postgres`. Use `docker compose run --rm mcp`
+  # to poke at it by hand from inside the compose project itself.
+  mcp:
+    <<: *common
+    profiles: ["manual"]
+    stdin_open: true
+    tty: false
+    restart: "no"
+    command: ["python", "server.py"]
+    # Как и остальные сервисы, запускает код прямо из ./backend — образ нужен
+    # только ради Python и зависимостей. Пересборка требуется лишь тогда,
+    # когда меняется requirements.txt.
+    volumes:
+      - models:/models
+      - ./backend:/app:ro
+
+  # MCP over streamable HTTP, for clients that prefer a URL to a subprocess.
+  mcp-http:
+    <<: *common
+    container_name: niche-finder-mcp-http
+    profiles: ["http"]
+    command: ["python", "server.py"]
+    environment:
+      YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      POSTGRES_DB: "${POSTGRES_DB:-niches}"
+      POSTGRES_USER: "${POSTGRES_USER:-niches}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-niches}"
+      NICHE_DATABASE_URL: ""
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      # Without NF_MULTI_USER=1 there is no sign-in, and server.py refuses a
+      # non-loopback address unless told it is intended (plan P1-15). Here it
+      # is: this port is not published, only the compose network and
+      # mcp-https (127.0.0.1 only) reach it. docker-compose.prod.yml turns it off.
+      MCP_ALLOW_UNAUTHENTICATED: "1"
+      MCP_PORT: "8765"
+    # No host port here on purpose -- only mcp-https (below) is published to
+    # the host. Plain HTTP stays inside the niche-finder_default network,
+    # reachable by other containers as mcp-http:8765.
+
+  # TLS front door for mcp-http: terminates HTTPS with a locally-trusted
+  # certificate (Caddy's internal CA) so a same-machine client -- e.g. Claude
+  # Desktop configured with {"url": "https://localhost:8765/mcp", "type": "http"} --
+  # gets a real HTTPS URL without a public domain or tunnel.
+  mcp-https:
+    image: caddy:2-alpine
+    container_name: niche-finder-mcp-https
+    profiles: ["http"]
+    restart: unless-stopped
+    depends_on:
+      - mcp-http
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8765}:8765"
+
+  # Stage 11: fully local LLM enrichment -- nothing leaves the machine.
+  # Opt-in (`docker compose --profile llm-local up -d ollama`) because it
+  # pulls a multi-GB image and model on first run. Point LLM_PROVIDER=ollama
+  # and OLLAMA_URL=http://ollama:11434 at it from `.env` once it's up; web/
+  # worker/mcp reach it by service name on the same compose network. Running
+  # `ollama serve` on the host instead (not in Docker) works too -- that's
+  # what DEFAULT_OLLAMA_URL in factory.py assumes when this service isn't used.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: niche-finder-ollama
+    profiles: ["llm-local"]
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
+
+volumes:
+  postgres-data:
+    name: niche-finder-postgres-data
+  models:
+    name: niche-finder-models
+  caddy-data:
+    name: niche-finder-caddy-data
+  caddy-config:
+    name: niche-finder-caddy-config
+  ollama-data:
+    name: niche-finder-ollama-data

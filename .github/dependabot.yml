@@ -1,0 +1,36 @@
+# Weekly pull requests for outdated dependencies; security fixes come as soon
+# as an advisory is out (Dependabot security updates, repository settings).
+# backend/requirements.txt is `uv pip compile --universal` output (Python
+# 3.10+, every OS). Dependabot's pip updater rewrites it without those markers,
+# so its backend PRs fail CI's lockfile check; they still say what is out of
+# date, and the bump is redone with uv (backend/README.md, "Running without
+# Docker").
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        update-types: [minor, patch]
+
+  # Playwright for the dashboard smoke test
+  - package-ecosystem: pip
+    directory: /frontend/tests
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly

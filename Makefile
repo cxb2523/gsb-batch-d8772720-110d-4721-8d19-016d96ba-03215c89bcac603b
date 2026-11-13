@@ -1,0 +1,167 @@
+# niche-finder -- common tasks
+# Docker path is the default; `make local-*` targets run straight on the host.
+
+COMPOSE ?= docker compose
+IMAGE   ?= niche-finder:latest
+
+# mcp[cli] (see backend/requirements.txt) needs Python 3.10+, but on macOS a
+# bare `python3` often resolves to the Xcode Command Line Tools' Python 3.9 --
+# that silently breaks `local-install` (pip aborts on the first requirement,
+# so nothing after it gets installed either). Prefer a newer interpreter if one
+# is on PATH; override explicitly with `make local-install PYTHON=python3.11`.
+PYTHON  ?= $(shell command -v python3.13 || command -v python3.12 || \
+             command -v python3.11 || command -v python3.10 || command -v python3)
+
+RUFF_VERSION ?= 0.16.9
+RUFF    ?= uvx ruff@$(RUFF_VERSION)
+
+.PHONY: help doctor build up up-db web open down logs worker mcp http shell test seed stats clean local-install local-test lint frontend-test local-run dev cli rotate-secrets api-docs doc-links lock-check extension-zip prod-up prod-down prod-logs prod-cli prod-backup
+
+doctor: ## проверить ключ, сеть и базу (начните отсюда)
+	$(COMPOSE) run --rm mcp python cli.py doctor
+
+help:
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+build:  ## build the image (PREFETCH_MODEL=1 bakes in the embedding model)
+	$(COMPOSE) build
+
+up:     ## поднять дашборд и фоновый сборщик
+	$(COMPOSE) up -d web worker
+	@echo "Дашборд: http://localhost:$${WEB_PORT:-8080}"
+
+web:    ## только дашборд
+	$(COMPOSE) up -d web
+	@echo "Дашборд: http://localhost:$${WEB_PORT:-8080}"
+
+open:   ## открыть дашборд в браузере
+	open "http://localhost:$${WEB_PORT:-8080}"
+
+down:   ## stop everything
+	$(COMPOSE) down
+
+logs:   ## логи сборщика и дашборда
+	$(COMPOSE) logs -f worker web
+
+mcp:    ## run the MCP server on stdio (manual poke)
+	$(COMPOSE) run --rm mcp
+
+http:   ## expose the MCP server over HTTP on :8765
+	$(COMPOSE) --profile http up -d mcp-http
+
+shell:  ## shell inside the image, with the models volume mounted
+	docker run --rm -it --network niche-finder_default -v niche-finder-models:/models $(IMAGE) bash
+
+# Схема make_test переиспользуется между запусками, поэтому чистим её ПЕРЕД
+# прогоном: иначе данные прошлого раза ломают тесты, завязанные на свежий
+# discovered_at (make test был зелёным только при первом запуске).
+test:   ## run the smoke tests inside the image, against postgres (needs: make up-db)
+	@$(COMPOSE) exec -T postgres sh -c \
+	  'psql -q -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "DROP SCHEMA IF EXISTS make_test CASCADE"' >/dev/null
+	docker run --rm --network niche-finder_default -e NICHE_DB_SCHEMA=make_test \
+	  -e POSTGRES_HOST=postgres $(IMAGE) python tests/test_smoke.py
+
+seed:   ## fill the database with synthetic demo data to try the tools (needs: make up-db)
+	docker run --rm --network niche-finder_default -e POSTGRES_HOST=postgres \
+	  $(IMAGE) python tests/seed_demo.py
+
+stats:  ## what is in the database right now (needs: make up-db)
+	docker run --rm --network niche-finder_default -e POSTGRES_HOST=postgres $(IMAGE) \
+	  python -c "import json; from application import search as query; print(json.dumps(query.db_stats(user_id=None), indent=2, default=str))"
+
+up-db:  ## just the database, e.g. before make test/seed/stats
+	$(COMPOSE) up -d postgres
+
+cli:    ## произвольная команда CLI:  make cli ARGS="viral --period 24h"
+	$(COMPOSE) run --rm mcp python cli.py $(ARGS)
+
+rotate-secrets: ## re-encrypt stored secrets with the current OWN_TOKENS_KEY (dry run; ARGS=--apply writes)
+	$(COMPOSE) run --rm mcp python cli.py rotate-secrets $(ARGS)
+
+clean:  ## delete the Postgres data volume (irreversible)
+	docker volume rm niche-finder-postgres-data
+
+local-install:  ## venv + deps, without Docker (needs Python 3.10+, auto-detected -- see PYTHON above)
+	@ver=$$($(PYTHON) -c 'import sys; print("%d.%d" % sys.version_info[:2])'); \
+	  major=$$(echo $$ver | cut -d. -f1); minor=$$(echo $$ver | cut -d. -f2); \
+	  if [ "$$major" -lt 3 ] || { [ "$$major" -eq 3 ] && [ "$$minor" -lt 10 ]; }; then \
+	    echo "ОШИБКА: $(PYTHON) -> Python $$ver, а пакету mcp нужен 3.10+."; \
+	    echo "Поставьте современный Python (например: brew install python@3.12) и повторите,"; \
+	    echo "либо укажите явно:  make local-install PYTHON=python3.12"; \
+	    exit 1; \
+	  fi; \
+	  echo "используется $$($(PYTHON) --version) ($(PYTHON))"
+	cd backend && $(PYTHON) -m venv .venv \
+	  && ./.venv/bin/pip install --upgrade pip \
+	  && ./.venv/bin/pip install -r requirements.txt pytest
+
+# Тесты намеренно не читают .env (им не нужны ни ключ, ни сеть),
+# поэтому NICHE_DATABASE_URL достаём из .env здесь -- иначе хостовый прогон
+# уходит на localhost:5432 и падает с Connection refused.
+# Как в CI: весь tests/ одним процессом pytest. Изоляцию файлов друг от друга
+# даёт tests/conftest.py -- у Postgres-тестов своя свежая схема на файл, а
+# sqlite-двойники живут в отдельном мире модулей, не в sys.modules
+# (tests/module_doubles.py). Код выхода -- как у pytest.
+local-test:     ## run all backend tests on the host in one pytest process
+	@cd backend && export NICHE_DATABASE_URL="$${NICHE_DATABASE_URL:-$$(grep -E '^NICHE_DATABASE_URL=' ../.env 2>/dev/null | sed -E 's/^[^=]+=//; s/^"//; s/"$$//' | tr -d '\r')}"; \
+	  ./.venv/bin/python -m pytest -q -p no:cacheprovider tests/
+
+# Та же версия ruff, что в CI (.github/workflows/ci.yml); конфиг -- в
+# backend/pyproject.toml. uvx (из uv) скачивает ruff сам, в .venv он не нужен;
+# без uv:  make lint RUFF=ruff  (ruff==$(RUFF_VERSION) из pip).
+lint:           ## lint the backend with ruff (same pinned version as CI)
+	$(RUFF) check backend
+
+api-docs:       ## regenerate docs/http-api.md from the HTTP routes (CI checks it is current)
+	python3 scripts/gen_http_api_docs.py
+
+doc-links:      ## check that relative links in the .md files reach tracked files and headings (CI runs it)
+	python3 scripts/check_doc_links.py
+
+UV ?= uvx uv@0.13.5
+lock-check:     ## check backend/requirements.txt is what uv compiles from requirements.in (CI runs it)
+	@cd backend && cp requirements.txt /tmp/nf-lock.txt \
+	  && $(UV) pip compile requirements.in --python-version 3.10 --universal -o /tmp/nf-lock.txt -q \
+	  && grep -v '^ *#' requirements.txt > /tmp/nf-lock.a && grep -v '^ *#' /tmp/nf-lock.txt > /tmp/nf-lock.b \
+	  && if cmp -s /tmp/nf-lock.a /tmp/nf-lock.b; then echo "requirements.txt is uv-compiled"; \
+	     else diff /tmp/nf-lock.a /tmp/nf-lock.b; echo "requirements.txt differs from uv pip compile: recompile it (backend/README.md, Running without Docker)"; exit 1; fi
+
+extension-zip:  ## pack extension/ into dist/niche-finder-extension-v<version>.zip (committed files only)
+	sh scripts/package_extension.sh
+
+# Смоук-тест дашборда в headless Chromium (frontend/tests/test_smoke.py): свой
+# uvicorn на свободном порту + своя схема с демо-данными, рабочую базу не трогает.
+# Один раз: ./backend/.venv/bin/pip install -r frontend/tests/requirements.txt
+#           ./backend/.venv/bin/python -m playwright install chromium
+frontend-test:  ## browser smoke test of every dashboard screen (needs: make up-db)
+	@cd backend && export NICHE_DATABASE_URL="$${NICHE_DATABASE_URL:-$$(grep -E '^NICHE_DATABASE_URL=' ../.env 2>/dev/null | sed -E 's/^[^=]+=//; s/^"//; s/"$$//' | tr -d '\r')}"; \
+	  ./.venv/bin/python -m pytest -q -p no:cacheprovider ../frontend/tests
+
+local-run:      ## run the MCP server on the host
+	cd backend && ./.venv/bin/python server.py
+
+# Требует в .env строку NICHE_DATABASE_URL=postgresql://niches:niches@localhost:5433/niches
+# (база из compose опубликована на 5433, а дефолт в коде -- 5432) и свободный
+# :8080 -- при поднятом контейнере web сначала `docker compose stop web`,
+# иначе хостовый uvicorn перехватит порт и проброс контейнера тихо отвалится.
+dev:    ## run the HTTP dashboard on the host, no Docker (needs: make local-install + NICHE_DATABASE_URL in .env)
+	cd backend && ./.venv/bin/python -m uvicorn api:app --reload --host 127.0.0.1 --port 8080
+
+# Сервер для других людей (docs/hosting.md): Caddy с настоящим сертификатом на
+# NF_DOMAIN, наружу только 80/443, вход по аккаунтам, бэкапы по расписанию.
+PROD = $(COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml
+
+prod-up:        ## production: everything behind Caddy on NF_DOMAIN, with backups (docs/hosting.md)
+	$(PROD) up -d --build postgres web worker mcp-http proxy backup
+
+prod-down:      ## production: stop everything (data and backups stay)
+	$(PROD) down
+
+prod-logs:      ## production: follow the logs
+	$(PROD) logs -f --tail 100 web worker mcp-http proxy backup
+
+prod-cli:       ## production: a CLI command, e.g. make prod-cli ARGS="create-user you@example.com --admin"
+	$(PROD) exec web python cli.py $(ARGS)
+
+prod-backup:    ## production: one backup right now, with the restore check
+	$(PROD) run --rm backup once

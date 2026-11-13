@@ -1,0 +1,384 @@
+# Security
+
+niche-finder is built to run on your own machine for yourself. Everything
+listens on `127.0.0.1`, and nobody else can reach it. Multi-user mode
+(`NF_MULTI_USER=1`, plan 15) lets one server work for several people. This file
+covers what protects each mode and what you have to do yourself before you let
+anyone else in.
+
+## Reporting a problem
+
+Open a private security advisory on GitHub
+(Security → Advisories → Report a vulnerability). Do not open a public issue.
+Please include the steps to reproduce and what an attacker gains.
+
+Fixes land on `main` and ship in the next release; only the
+[latest release](https://github.com/pandich93/youtube-niche-finder/releases/latest)
+and `main` are supported.
+
+## Single-user mode (default)
+
+- **No accounts.** The dashboard, API and MCP work for whoever can reach them,
+  so they are bound to `127.0.0.1`.
+- **Hostile web pages are blocked.** Every request must carry an allow-listed
+  `Host` header, which stops DNS rebinding. Every POST, PUT, PATCH or DELETE
+  must be JSON or carry `X-NF-Client`, so a cross-site form or a simple
+  cross-origin POST is refused. CORS answers only `chrome-extension://`
+  origins: the IDs in `NF_EXTENSION_IDS`, or any extension when it is unset.
+- **Secrets stay local.** Your YouTube key lives in `.env`. The OAuth refresh
+  tokens of your own channels are encrypted with `OWN_TOKENS_KEY` and never
+  returned or logged. The key can be rotated: earlier keys go into
+  `OWN_TOKENS_KEY_OLD` (read-only), and `cli.py rotate-secrets --apply`
+  re-encrypts the stored values. A value no key reads is logged without its
+  content and counted on the admin screen
+  ([docs/hosting.md](docs/hosting.md)).
+- **The YouTube key stays out of URLs and logs.**
+  - The key goes in the `X-Goog-Api-Key` header, never in the request URL
+    (`_get` in `backend/infrastructure/youtube/client.py`).
+  - A network error is re-raised as `YouTubeUnreachable` without the URL.
+  - The worker log and HTTP 500 answers pass through
+    `backend/infrastructure/redact.py`, which masks `key=`, `access_token=`,
+    `refresh_token=` and `client_secret=` parameters, `AIza...` keys and the
+    configured secrets.
+  - A key that ever appeared in a log (older versions put it in the URL) should
+    be rotated in Google Cloud Console.
+
+## Multi-user mode (`NF_MULTI_USER=1`)
+
+What the server does for you:
+
+- **Accounts.**
+  - Without mail (`SMTP_HOST`, `SMTP_FROM`) accounts exist only by invitation:
+    `cli.py create-user` or the admin screen. With mail and
+    `NF_REGISTRATION=open` (the default) anyone can sign up, but only with an
+    address they can read: the password is set from a one-time link mailed to
+    it, so nobody can take someone else's email.
+  - Sign-up and "forgot password" answer the same whether the address is known
+    or not. A known address gets a "you already have an account" email with a
+    reset link instead of a second account; a blocked one gets nothing.
+  - Mailed links (sign-up and email change: 24 hours, reset: 1 hour) are
+    random, single use, and the database keeps only their SHA-256
+    (`email_tokens`). The token travels in the URL fragment, so it is not in
+    server or proxy logs. A new link of the same kind replaces the old one.
+  - At most `NF_MAIL_PER_IP_HOUR` (10) emails per client address and
+    `NF_MAIL_PER_EMAIL_HOUR` (3) per recipient each hour, so the server cannot
+    be used to flood an inbox. The links point at `NF_PUBLIC_URL` or
+    `https://NF_DOMAIN`, never at a host a request names, when either is set.
+  - Changing the email needs the password, and the change happens only when
+    the link mailed to the new address is opened.
+  - Passwords are scrypt hashes and must be at least 10 characters. Common
+    long passwords (`password123`, `1234567890`, keyboard and alphabet runs,
+    one repeated character) and passwords containing the email's name are
+    refused. Nothing is sent to a breach service.
+  - A wrong password and an unknown email get the same answer.
+  - **Guessing is slowed down.** After 5 failed sign-ins for one email in
+    15 minutes, the next attempt waits 1 minute, then 2, 4, up to 15. This
+    applies to the right password too, so guessing cannot simply continue.
+    After 30 failures from one address (any emails), sign-in from it is closed
+    for 15 minutes. The answer is HTTP 429 with `Retry-After`, the same for a
+    known and an unknown email. There is no permanent lock, which would let
+    anyone lock out someone else's account. The counters live in Postgres
+    (`login_attempts`), so restarts do not reset them. The limits can be tuned
+    with `NF_LOGIN_MAX_FAILS`, `NF_LOGIN_MAX_IP_FAILS` and `NF_LOGIN_WINDOW_MIN`.
+- **Two-factor sign-in** (multi-user plan P2-04, optional per account).
+  - Turned on in the profile with an authenticator app: TOTP (RFC 6238),
+    30-second steps, 6 digits, one step of clock drift either way. The same
+    code never works twice: the step of the last accepted code is kept.
+  - The secret is encrypted with `OWN_TOKENS_KEY`, like channel tokens and
+    notification secrets, and `cli.py rotate-secrets` re-encrypts it too.
+    Without the key it cannot be turned on; if the key is lost, the app codes
+    stop working and only backup codes or `cli.py disable-2fa` get the person
+    back in.
+  - The dashboard shows the secret as text and as an `otpauth://` link, not as
+    a QR code: drawing one would need an external service or a QR encoder in
+    the bundle, and neither is worth it for one screen.
+  - Ten backup codes (about 49 bits each) are shown once and kept only as
+    scrypt hashes; each works once. New ones need a current code and replace
+    the old set.
+  - With 2FA on, a right password gives no session, only a one-time
+    challenge (SHA-256 in `mfa_challenges`, 5 minutes, dies after 5 wrong
+    codes). Wrong codes count in the same `login_attempts` counters as wrong
+    passwords, and a right password does not reset the email's counter, so a
+    known password does not buy free guesses.
+  - Turning it on ends your other sessions; turning it off needs the password
+    and a code. A reset by emailed link keeps 2FA: after it comes the code
+    step too. `cli.py set-password` creates no session and says that 2FA is
+    still on; the operator removes it with `cli.py disable-2fa EMAIL`
+    (written to the action log).
+  - API tokens do not ask for a code (they are a factor of their own), but
+    with 2FA on a token can be created only from a session that passed it.
+  - `NF_ADMIN_2FA=required`: an admin without 2FA can sign in but sees only
+    the 2FA setup until they turn it on (the API answers 403
+    `TwoFactorRequired`); they cannot turn it off. Off by default, so an
+    upgrade never locks admins out; it needs `OWN_TOKENS_KEY`.
+  - The action log records turning it on and off, failed codes and every
+    used backup code.
+- **Sessions.**
+  - A session is a random token in an `HttpOnly`, `SameSite=Strict` cookie, and
+    the database keeps only its SHA-256.
+  - Changing a password ends every session of that user (the profile screen
+    keeps the browser it was changed in signed in); a reset by link ends all
+    of them.
+  - A session ends 14 days after the last activity (`NF_SESSION_IDLE_DAYS`)
+    and 90 days after the sign-in whatever happens (`NF_SESSION_MAX_DAYS`).
+    The idle expiry moves forward at most once per 15 minutes
+    (`NF_SESSION_TOUCH_MINUTES`), so a request only reads the database. The
+    absolute limit is checked on every request, so lowering it also ends
+    older sessions.
+  - Every sign-in, sign-up, password reset and password change starts a new
+    token; an old one is never taken over. The cookie is not rotated on its
+    own while the session lives: it never reaches JavaScript, a URL or a log,
+    the idle and absolute limits bound a stolen one, and a mid-session swap
+    would race the dashboard's parallel requests (one that left with the old
+    token would get 401) or need a grace window during which both tokens
+    work.
+  - The profile lists your sessions: when they started and were last active,
+    the client address (as `NF_TRUSTED_PROXIES` resolves it) and the browser
+    (User-Agent, cut to 200 characters). You can end one or all but the
+    current. Tokens and hashes are never shown. Only a dashboard sign-in can
+    do this, never an API token. These rows go when the session ends and with
+    the account.
+  - Without a session, `/api` answers 401. Only sign-in, sign-up and password
+    reset by link, email confirmation, `/api/health` and the Google OAuth
+    return are open.
+- **No CSRF token, on purpose.** Two layers stand in for it:
+  - The browser never sends the `SameSite=Strict` session cookie on a request
+    that starts on another site.
+  - Every POST, PUT, PATCH or DELETE must be JSON or carry `X-NF-Client`. Both
+    force a CORS preflight, and CORS allows only the extension IDs listed in
+    `NF_EXTENSION_IDS` (none when it is unset), so another site or another
+    extension cannot send such a request even if a browser mishandled the
+    cookie. The project's own extension does not need CORS: it has host
+    access to the service the user set.
+
+  A token would guard against the same thing a third time. The API token
+  (`Authorization: Bearer`) is never sent by a browser on its own, so it
+  carries no CSRF risk. Keep this in mind if you add a route that accepts a
+  plain form or a GET that changes data: it would bypass both layers.
+- **Personal API tokens.** They are for the extension and for MCP over HTTP
+  (`Authorization: Bearer nf_...`).
+  - The token is shown once and stored as SHA-256.
+  - It can be revoked, and it cannot create or list other tokens.
+  - It expires: 90 days by default, chosen when it is made (1 to 365 days, or
+    none). An expired token is refused like a wrong one.
+  - It does only what it was made for. `read` covers GET routes, `write`
+    covers routes that change something, and `mcp` covers MCP over HTTP. A
+    script that only reads needs no `write`; the Chrome extension needs
+    `read` + `write` (its list badges are POST requests) and no `mcp`.
+  - The extension sends its token to a remote service only over `https`.
+- **Separated data.** Each user sees and changes only their own:
+  - watchlist, swipe file, drafts and transcript queue;
+  - alert read marks, connected channels, notification settings and API tokens.
+
+  Public YouTube data (channels, videos, niches, transcripts, alert events) is
+  shared. A user sees only the alert events of their own watchlist.
+
+  Two layers keep this apart (multi-user plan P1-02):
+  - every query filters by its user (`AND user_id = ?`);
+  - **Postgres Row-Level Security** catches a query that forgot to. Every
+    personal table (`PERSONAL_TABLES` in
+    `backend/infrastructure/postgres/schema.py`) has the policy
+    `nf_owner_rows`: a row is visible and writable only when its `user_id`
+    is the user the session names. A dashboard or API request (from its
+    session or token) and an MCP tool call (from its token, user 1 over
+    stdio) run as the role `NF_DB_APP_ROLE` (`<POSTGRES_USER>_app` by
+    default), which has no `BYPASSRLS` and owns no tables, and set
+    `app.user_id` with a signature `app.user_sig`. The function
+    `nf_rls_uid()` accepts the number only with the right signature: SHA-256
+    over a random secret in the table `nf_rls_key` (only the owner reads it),
+    the number and the Postgres process id of that connection. So a session
+    cannot name another user with `set_config`, and a signature seen in
+    `pg_stat_activity` is no good in another connection. Without a valid one
+    it sees no personal rows at all. Shared alert events (`user_id` empty)
+    stay visible to everyone.
+
+  How far this goes depends on `POSTGRES_APP_PASSWORD`
+  ([docs/hosting.md](docs/hosting.md#row-level-security)):
+  - **Set (recommended):** the dashboard and MCP open the connections for
+    people's requests with the login `NF_DB_APP_ROLE` itself. It is not the
+    owner, not a member of the owner's role and has no `BYPASSRLS`, so no SQL
+    on such a connection gets out from under the policies: `RESET ROLE`
+    leaves it the same login, `SET ROLE` to the owner is refused, the secret
+    is unreadable, and it is granted no `CREATE` on the schema (on `public`
+    that is the default since Postgres 15). Temporary
+    tables are dropped each time a connection is handed out, so one request
+    cannot plant a look-alike table for the next one. The services set the
+    login's password themselves at start.
+  - **Not set:** the role is entered with `SET ROLE` from the owner's login,
+    as before. That guards against a missing filter, not against someone who
+    can run arbitrary SQL (`RESET ROLE`). The server logs a warning.
+
+  RLS does not apply to the table owner (`POSTGRES_USER`). The worker, the
+  CLI, migrations, and in the dashboard and MCP sign-in, sign-up, password
+  reset, the session and token lookup, the admin routes and admin MCP tools,
+  and the shared LLM budget and transcript delivery (`system_scope`) use the
+  owner's connections, because they act for every user or before anyone is
+  known; there the `user_id` filter in each query is the only guard. These
+  are a small, fixed set of queries that take no user-controlled SQL; every
+  other request runs on the restricted login.
+
+  Not covered by RLS: account tables without a `user_id` column (`users`,
+  `login_attempts`, `audit_log`). A user request can still read them,
+  because it reads and changes its own account there. If the role cannot be
+  created, requests run as the owner, as before, and the server logs a
+  warning.
+- **Limits.**
+  - YouTube quota: each user has a daily share of the installation's one key
+    (`NF_USER_DAILY_UNITS`, `NF_USER_DAILY_SEARCH_CALLS`). Running out stops
+    only that user.
+  - The LLM budget (`NF_USER_DAILY_LLM_USD`) and the request rate limit also
+    count per user.
+- **Notifications.**
+  - A user's webhook must be https to a public address. It is checked when
+    saved and again before every send, and redirects are off, so it cannot
+    reach into the server's own network.
+  - Bot tokens and webhook addresses are encrypted with `OWN_TOKENS_KEY`.
+- **Connecting your own channel.** It can be finished only in the browser that
+  started it, thanks to a short-lived state cookie. So nobody can attach your
+  channel to their account by sending you a link.
+
+What you have to do before you give anyone an account:
+
+1. **Put it behind HTTPS.** `docker-compose.prod.yml` (`make prod-up`, see
+   [docs/hosting.md](docs/hosting.md)) does everything in this point for you.
+   By hand: use a reverse proxy (Caddy, nginx) with a real
+   certificate. Set `NF_COOKIE_SECURE=1` and add your domain to
+   `NF_ALLOWED_HOSTS`. Do not publish port 8080 or Postgres (5433) to the
+   internet. Set `NF_TRUSTED_PROXIES` to the proxy's address or subnet (for
+   example the compose network, `172.16.0.0/12`). Then the request limit and
+   the sign-in limits count each real client from `X-Forwarded-For` instead
+   of lumping everyone together as the proxy. Never use `*` (it is ignored):
+   anyone could then claim any address.
+2. **Set `OWN_TOKENS_KEY`** (a Fernet key) and keep it only in `.env`. Losing
+   it makes stored tokens unreadable. Leaking it exposes them. Set
+   `POSTGRES_APP_PASSWORD` too, so people's requests use a database login
+   that cannot read other people's rows
+   ([docs/hosting.md](docs/hosting.md#row-level-security)).
+3. **Back up Postgres.** It now holds accounts, sessions and encrypted
+   secrets. Protect the backups like the server itself. The production setup
+   dumps it on a schedule and checks each dump by a trial restore; copy the
+   dumps off the server ([docs/hosting.md](docs/hosting.md#backups)).
+4. **Give each person their own account.** Admins are marked `--admin`; over
+   HTTP their extra powers are tariffs and accounts: creating, disabling and
+   deleting them (`/api/admin/*`, signed-in dashboard sessions only).
+   Otherwise accounts are created from the command line on the server.
+5. **Read YouTube's API policies for a service others use.**
+   - III.D.1.c: one API project per application. That is why the installation
+     uses one key, and users do not bring their own.
+   - III.E.4.d: non-authorized YouTube data may be kept at most 30 days, then
+     refreshed or deleted. The worker re-reads every stored video and channel
+     not refreshed for 25 days (`REFRESH_STALE_DAYS`, under a daily cap), so
+     current rows stay fresh. But niche-finder never deletes anything: the
+     stats history, title and thumbnail changes and archived thumbnails are
+     kept without limit.
+   - Keeping statistics longer, and computing scores from them, is allowed
+     only to API clients approved under YouTube's derived-metrics policy
+     (statistics and derived metrics up to 36 months; titles, descriptions
+     and other text still 30 days):
+     <https://developers.google.com/youtube/terms/derived-metrics-policy>.
+     The approval is per Google Cloud project, so each installation's owner
+     applies for their own.
+   - For yourself this is your own risk. For a service other people use, you
+     must solve it before you open the service.
+6. **Letting customers connect their own channels (plan 25).** Use
+   `OWN_OAUTH_MODE=web` with one OAuth client of type Web application and an
+   https `OWN_OAUTH_REDIRECT_URI`; fill `NF_SERVICE_NAME`, `NF_OPERATOR_NAME`
+   and `NF_CONTACT_EMAIL` so `/privacy` and `/terms` name you and a contact.
+   Pass Google's OAuth app verification before inviting more than 100 people,
+   and answer deletion requests sent to that contact (the privacy page promises
+   7 days): `cli.py delete-user EMAIL --yes`, or Delete on the Admin page.
+   People can also delete their own account on the Plan page. Back up first
+   if you delete many at once: deleting cannot be undone.
+7. **Keep MCP over HTTP behind the TLS front door (`mcp-https`)** and set
+   `MCP_PUBLIC_URL` to the address clients use. MCP over stdio is local only.
+
+Known limits (by design, worth knowing before you invite anyone):
+
+- **Shared data has an owner.** A video's transcript (one shared copy) and its
+  curated tags are shared by everyone. Any signed-in user may add them, but
+  only the person who added a transcript or a tag, or an admin, may replace,
+  re-index or remove it; pasting over someone else's transcript returns the
+  existing one (`alreadyExists`). Rows from before this rule, the worker and
+  the CLI have no owner and are the admins'. Accepting or rejecting the
+  background LLM's proposed tags is for admins. Naming niches by collecting
+  them is still open to everyone.
+- **The server's own work is for admins.** Refreshing stats, AI enrichment,
+  the alert scan, thumbnail vectors and recomputing the niche map run on the
+  worker's schedule; starting them by hand (`/api/refresh`, `/api/enrich/*`,
+  `/api/events/scan`, `/api/thumbnails/embed`, `/api/niche-clusters/recompute`
+  and the MCP tools `refresh_stats`, `enrich_channels`, `tag_new_videos`,
+  `scan_for_alerts`, `embed_thumbnails`) needs an admin, by session or API
+  token. Multi-user plan P2-11 lets an admin open two of them to regular users
+  through the tariff limit `manual_runs` (off by default,
+  `NF_USER_MANUAL_RUNS_PER_HOUR=0`): `/api/refresh` and `/api/events/scan` then
+  run over that user's own watchlist only, on their own quota, at most that
+  many times an hour (`429` with `Retry-After` past it, counted in Postgres
+  under a lock); the rest, and the MCP tools, stay admin-only
+  ([docs/manual-runs.md](docs/manual-runs.md)). The first author of a transcript can still paste junk or a prompt
+  injection into it, and the LLM hook review of that text is cached for
+  everyone; an admin can replace it.
+- **Admins.** `users.is_admin` guards `/api/admin/*` (tariffs, users'
+  tariffs, creating, blocking and deleting accounts): only an admin signed in
+  to the dashboard, never an API token. Admins are not limited by tariffs.
+  Blocking an account (`users.disabled_at`) ends its sessions and API tokens
+  (MCP included) at once, and it cannot sign in until unblocked. An admin
+  cannot block or delete themself there, the `local` user (the data from
+  before accounts) can be blocked but not deleted, and the server always
+  keeps one active admin. Each action goes into the action log.
+- **Action log** (multi-user plan P1-07). `audit_log` records sign-ins, failed
+  sign-ins (also the throttled ones), sign-ups, password changes and resets,
+  email changes, API tokens created and revoked, tariff changes, and admins'
+  actions on accounts and tariffs -- with the time, who acted, on whom and
+  the client address (`NF_TRUSTED_PROXIES` decides it, as for the sign-in
+  throttle). Details pass a filter that drops any key that looks like a
+  credential (password, token, secret, hash, key, cookie, auth), so neither a
+  password nor a token nor a reset link can end up there; an unknown email
+  typed at sign-in is not stored either. Only an admin signed in to the
+  dashboard reads it (`GET /api/admin/audit`, the "Admin" page with filters by
+  event, user and period); an API token cannot, even an admin's. Entries
+  survive a deleted account and leave after `NF_AUDIT_RETENTION_DAYS`
+  (default 180). The rows of P0-04's `admin_actions` were moved into it on
+  the first start, and that table is gone.
+- **Support view** (multi-user plan P2-05). An admin signed in to the
+  dashboard can look at an account through its owner's eyes ("Посмотреть
+  как" on the "Admin" page, `POST /api/admin/users/{id}/impersonate`) to
+  answer a support question. It is a mark on the admin's own session
+  (`sessions.impersonating_user_id`), never on an API token or MCP, and:
+  a reason is required; not on another admin, a blocked account or oneself;
+  not nested; it lasts `NF_IMPERSONATION_MINUTES` (30 by default) and then
+  the next request clears it. While it lasts, `_uid` and Row-Level Security
+  (`app.user_id`) are the account's, not the admin's, admin routes are closed
+  (the account is no admin), and so are the account's session list, API
+  tokens and every profile change. **Every request but GET/HEAD/OPTIONS is
+  refused with 403** (`ReadOnlyView`) except leaving the view
+  (`POST /api/auth/impersonation/end`) and signing out. Spending is frozen:
+  the YouTube client refuses before reserving a unit and the LLM gateway
+  answers from its cache only, so a view uses nobody's quota and starts
+  nothing. The start (who, whom, why, until when), the end and the expiry
+  are in the action log; blocking the account, deleting it, making it an
+  admin or removing the admin's role ends the view too. The dashboard shows
+  a banner "Вы смотрите как ... — только чтение" on every screen.
+- **Tokens made before expiry existed do not expire.** New tokens live 90 days
+  by default (1 to 365 days, or no expiry if you choose it). Older tokens keep
+  every scope and no expiry until revoked; the MCP screen marks them
+  "no expiry". Changing a password revokes all of that user's tokens and
+  sessions.
+- **MCP over HTTP needs `NF_MULTI_USER=1` to ask for a token.** Without that
+  flag anyone who reaches it acts as user 1, so `server.py` refuses to listen
+  on anything but loopback (`MCP_HOST` defaults to `127.0.0.1`) unless
+  `MCP_ALLOW_UNAUTHENTICATED=1` says that is intended. The compose `mcp-http`
+  service sets it: its port is not published, and only `mcp-https`, which
+  listens on 127.0.0.1, reaches it. The production file turns it off.
+- **Background work is shared; what you see is yours.** Thumbnail
+  fingerprints, title and thumbnail swaps and stats refreshes run for every
+  channel someone tracks. With accounts on, the feeds built from them show
+  only your own watchlist: title changes, the repackaging feed (dashboard and
+  MCP), the watchlist and change totals, and the digest. In the digest,
+  rising channels are limited to your channels and the niches they are in.
+  `/api/health` tells a visitor who has not signed in only that the server is
+  up. What stays shared is the public corpus itself: channels, videos and
+  niches anyone collected, which is the point of one shared collection.
+
+Security reviews: the plan-14 OAuth flow and each plan-15 sub-stage were
+reviewed. The review of sign-in found a way to attach someone else's channel
+through the OAuth callback, and it was fixed (see CHANGELOG, "Fixed").

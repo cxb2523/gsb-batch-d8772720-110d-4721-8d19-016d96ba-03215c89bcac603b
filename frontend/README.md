@@ -1,0 +1,524 @@
+# frontend
+
+[![CI](https://img.shields.io/github/actions/workflow/status/pandich93/youtube-niche-finder/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/pandich93/youtube-niche-finder/actions/workflows/ci.yml)
+[![No build step](https://img.shields.io/badge/build%20step-none-informational?style=flat-square)](index.html)
+[![Vanilla JS](https://img.shields.io/badge/JS-ES%20modules-F7DF1E?style=flat-square&logo=javascript&logoColor=black)](app.js)
+[![License: MIT](https://img.shields.io/github/license/pandich93/youtube-niche-finder?style=flat-square)](../LICENSE)
+
+The dashboard for niche-finder — the same thing NexLev shows in its own
+Niche Finder, but backed by your local database and with no subscription.
+
+```bash
+cd youtube-niche-finder
+docker compose build            # picked up fastapi + uvicorn
+docker compose up -d web worker
+open http://localhost:8080
+```
+
+Without Docker (the same dashboard, the same `frontend/`, reads files from
+right here):
+
+```bash
+make local-install   # once: venv + backend dependencies
+make dev             # uvicorn api:app --reload on http://localhost:8080
+```
+
+More on running without Docker —
+[backend/README.md](../backend/README.md#running-without-docker).
+
+## How it's built
+
+No build step: plain ES modules, no npm, no `node_modules`, no build. Edit a
+file and see it after a page reload — the folder is mounted into the
+container read-only, no image rebuild needed.
+
+| File | What's inside |
+|---|---|
+| `index.html` | shell: sidebar, header with global filters, screen container |
+| `styles.css` | dark and light themes, components |
+| `ui.js` | formatters, tooltips, toasts, and components (cards, tables, bars, chart) |
+| `app.js` | entry point: theme, global filters, footer, first render |
+| `router.js` | hash routing: route table, active menu item, loading/error state |
+| `shared.js` | shared by screens: `#view`, period labels, the collect form, the quota footer, the niche overview block |
+| `plan-state.js` | the signed-in user's tariff (multi-user mode only): hides menu sections the tariff switches off and fills the footer line "Тариф <name> · квота used/limit" |
+| `manual-runs.js` | buttons that start the server's work by hand (refresh, alert scan): shown to an admin, or to a user whose tariff has `manual_runs`; past the hourly limit they read "Снова можно в HH:MM" (multi-user plan P2-11) |
+| `hook_view.js` | the hook-score result card shared by the Transcripts and Title check screens |
+| `screens/*.js` | one file per screen (`overview.js`, `find.js`, …, `channel.js`, `niche.js`) |
+| `tests/test_smoke.py` | opens every screen in headless Chromium against a seeded backend (`make frontend-test`) |
+
+Data comes from `backend/api.py` (a shim over `interfaces/http/api.py`,
+FastAPI), which calls exactly the same use cases as the MCP server. There's
+no logic in the frontend — every metric is computed on the backend, the UI
+just displays it.
+
+## Screens
+
+The "Niche" and "Period" global filters in the header apply to every screen
+and are remembered in the browser. The UI labels themselves are in Russian;
+the sections below follow the sidebar order.
+
+### Overview
+
+Everything at once, in one call to `/api/overview`: outlier channels,
+upcoming competition, categories, keywords, viral videos. On top, "За сутки"
+(`/api/digest`) — the last 24 hours as the morning digest would send them:
+new outliers, accelerating videos, rising channels, repackaging, gone items.
+
+![Overview](../assets/dashboard.jpg)
+
+### Find a niche (`#/find`)
+
+Semantic search over the already-collected corpus via title+description
+embeddings (`/api/search`) — free, no YouTube quota. The topic is optional;
+without it the screen is a plain browse by the chosen sort. Filters: minimum
+outlier multiplier, max subscribers, estimated RPM range, video length, and
+Shorts (any / exclude / only); they're remembered in the browser, with a
+"reset filters" button for when a stale filter hides everything. RPM is an
+estimate from the YouTube category, not a measured payout, so it tops out
+around $8; cards show it as a range (half to double the model's value, since
+published RPM estimates disagree by up to 7x) and the filter compares the
+middle of that range. A "YPP thresholds" filter keeps only channels past
+the YouTube Partner Program bars they visibly meet (not a monetization
+status). A quota-spending collection form sits underneath.
+
+### Viral videos
+
+Videos from small channels, with filters (subscribers, views, VSR, publish
+window) and a funnel underneath: shows exactly which threshold filtered out
+the results, instead of just an empty list.
+
+![Viral videos](../assets/viral.jpg)
+
+### Outlier channels
+
+The best age-adjusted multiplier among a channel's videos in the window,
+against the median of its previous uploads. Strength bands: <2x, 2–3x,
+3–5x, 5–10x, >10x. Can be narrowed to channels past the visible YPP
+thresholds.
+
+![Outlier channels](../assets/outliers.jpg)
+
+### Categories
+
+YouTube category rankings over a period, with a share shift against the
+previous window of the same length — rank by views or by channel count.
+
+![Categories](../assets/categories.jpg)
+
+### Keywords
+
+Trending phrases: momentum, lift, trendScore, share of videos, and median
+views, with an example video for each phrase.
+
+![Keywords](../assets/keywords.jpg)
+
+### Top tags by category (`#/tags`)
+
+Whole author-supplied tags (not split into words) ranked per YouTube
+category over the period (`/api/tags/top-by-category`): video count, share,
+outlier lift, median views, and an example title. A lift above 1.5 means the
+tag actually correlates with breakouts rather than just being popular.
+
+### Channel tracker
+
+The watchlist the worker builds snapshot history for, plus forms to add a
+channel (by handle/URL) or collect by search query. The list can be filtered
+by AI labels (faceless, content format, topic) once background enrichment
+has classified the channels.
+
+![Channel tracker](../assets/tracker.jpg)
+
+### Alerts (`#/alerts`)
+
+The alert events of your watchlist (`/api/events`) — the same ones Telegram
+or a webhook gets: outliers, acceleration, title changes, a channel breaking
+its silence, a channel or video that disappeared, a subscriber milestone, and
+a match on one of your topics. Filter by type or "only new", and mark
+everything read. "Проверить сейчас" runs the alert scan without waiting for
+the worker (`POST /api/events/scan`): always for an admin, for a regular user
+only over their watchlist and within the tariff's `manual_runs` per hour
+(multi-user plan P2-11; hidden when it is 0). Below, "Мои темы" (`/api/topics`): name a topic in plain
+words with a similarity threshold, pause or remove it; a new video close to it
+raises a "Тема" alert that only you see. Zero quota; ticking "На YouTube"
+(or "Искать на YouTube" on a topic) also searches all of YouTube for it once
+a day -- one of the installation's 100 search calls a day, at most 5 topics.
+
+### Idea checker (`#/ideas`)
+
+One idea per line → a verdict for each against your own corpus
+(`POST /api/ideas/check`): *free*, *covered recently*, *proven demand*, or
+*flopped*. Thresholds (recent window in days, proven/flop outlier cut-offs)
+are adjustable; every idea expands to the matching videos, and the result
+can be exported to CSV client-side.
+
+### Calendar (`#/calendar`)
+
+Drafts by release day (`GET /api/calendar`), a week or a month at a time,
+in the browser's time zone (stored as UTC). Drag a draft -- from the grid or
+from "Без даты" -- onto a day to plan it (`POST /api/drafts/{id}/plan`; the
+time of day is kept, a new draft gets 12:00); click it to set the exact time
+or take it off. The editor shows the best publishing hours of the draft's
+niche (UTC) and whether the time is one of them. States: запланировано,
+просрочено, вышло (linked to a video on "Разбор метаданных"). Reminders come
+to Telegram and the digest the day before and when it is due.
+
+### Collaboration partners (channel screen, "Мои каналы")
+
+A "Партнёры для коллабораций" card on the channel screen and on "Мои каналы"
+(pick one of your channels; `GET /api/channels/{id}/collabs`): similar
+channels between ×0.5 and ×2 of its subscribers, with an upload in the last
+30 days and no high template risk -- subscribers and size ratio, similarity,
+last upload, 30-day growth, a link to YouTube and "В трекер". Under the table:
+how many of the 200 most similar channels were dropped and why. Only
+collected channels; YouTube gives no contacts.
+
+### Net profit (channel and niche screens, cost profiles on "Данные")
+
+A "Чистая прибыль" card on the channel screen (a month) and the niche screen
+(its typical video and a month of them; `GET /api/profit`): revenue, costs and
+profit as low ... high ranges, a verdict chip (в плюсе / в минусе / не ясно) and,
+for a niche, the views a video needs to pay for itself. Pick a cost profile
+and, optionally, the videos per month. A channel below the full YPP tier gets
+a warning that ad revenue may still be zero. Cost profiles are edited on the
+"Данные" screen (`/api/cost-profiles`): price per video, per minute of video,
+monthly overhead; they are personal.
+
+### What outliers share (niche screen, brief)
+
+A card on the niche screen (`GET /api/niches/{slug}/outlier-traits`, loaded
+apart so the screen does not wait): long videos and Shorts separately, the
+features where the niche's outliers differ from its ordinary videos -- "number
+in the title: 61% against 18% (+43 points)", "median length ×0.4" -- each with
+both sample sizes, the rest folded under "Без заметной разницы". A group under
+10 videos says "мало данных"; a warning appears when over half of the outliers
+are one channel's. The same card, for the source video's format, sits in the
+brief. Correlation, not cause.
+
+### Where to enter (`#/enter`)
+
+Every niche in one table (`GET /api/niches/ranking`, cached for an hour,
+"Пересчитать" forces it): a 0-100 score, the trend chip and the six terms it
+is made of -- each cell shows the points and the raw value, a click on a column
+header sorts by it. A niche too small to judge (trend "мало данных") shows
+"без балла" instead of a low number. Tick 2-3 niches and "Сравнить выбранные"
+(`GET /api/niches/compare`) puts all their numbers side by side. Weights are
+a judgement and RPM a guess; the screen says so.
+
+### Other language (`#/language`)
+
+Pick a pair of languages (source -> target; the list shows how many videos each
+has, ⇄ swaps them) and the dashboard shows the source language's outliers with
+a verdict on the target one (`GET /api/language-gaps`): *не снято* (nothing
+similar), *снимали слабо* (similar videos, none an outlier), *уже есть хит*.
+Each row has the multiplier, how many other channels repeated the format at
+home and the closest target-language videos (or how close the nearest one is
+when it is under the threshold). The header says how many videos the target
+language has in the database; under 200 a warning explains that "не снято"
+may mean "не собрано". The niche selector narrows the source side only.
+Zero quota.
+
+### Transcripts (`#/transcripts`)
+
+A ready transcript has a "Крючок" button: the first ~30 seconds scored 0-100 by text rules
+(question, number, promise, intrigue, "you", first sentence, pace, minus filler), with an
+opt-in LLM review checkbox; above the queue, a niche benchmark of outliers' vs ordinary
+hooks ("мало данных: N из 10" until there are enough transcripts). The rendering is shared
+with the title screen in `hook_view.js`.
+
+Transcripts are never downloaded automatically — this screen is the manual
+queue. Request one by video ID (`POST /api/transcripts/request`), paste the
+text copied from YouTube (with or without timestamps) into a pending item
+(`POST /api/transcripts/{id}/save`), and re-index ready ones. Tabs split the
+queue into pending / ready / error (`/api/transcripts/queue`). The search box
+on top is hybrid vector + full-text search over saved transcripts
+(`/api/transcripts/search`).
+
+### Niche map (`#/clusters`)
+
+Channels clustered by the embeddings of their videos — niches found without
+defining them by hand (`/api/niche-clusters`). Each cluster shows its name
+and description, channel count, median outlier score, total velocity
+(views/hour), faceless share, and how many competitors have over 100k
+subscribers. "Recompute" (`POST /api/niche-clusters/recompute`) re-runs
+k-means and names clusters via the LLM (tags-based fallback without one).
+
+### Title check (`#/titles`)
+
+A second card, "Проверить вступление": paste your intro (the first 20-30 seconds of a
+script), get the score, penalties and tips (`POST /api/hooks/score`); the text is never
+stored or sent to an LLM, and the niche comparison uses the global filter.
+
+Needs a niche selected in the global filter. **Score** (`POST
+/api/titles/score`) rates candidate titles 0–100 against the niche's own
+patterns: length, numbers, matched title patterns, near-duplicates of
+already published videos, plus LLM strengths/risks and an improved variant
+when an LLM is configured. **Generate** (`POST /api/titles/suggest`) drafts
+eight titles for a topic and requires `LLM_PROVIDER`.
+
+### Saved (`#/saved`)
+
+The swipe file: videos and channels saved from the extension panel, with a
+snapshot of their metrics at save time, folder, and note (`/api/saved`);
+items can be removed from here.
+
+### Repackaging (`#/packaging`)
+
+Title and thumbnail swaps after publishing (`/api/packaging`), newest first:
+old vs new title, or the archived "before" and "after" thumbnails side by side
+(`/api/thumbnails/{videoId}/{capturedAt}.jpg`), with views per hour in the 48
+hours before vs after the swap. Filters: what changed, tracked channel; the
+period comes from the top bar. Thumbnails are fingerprinted by the worker for
+tracked channels only, so their history starts when a channel is tracked.
+
+### Sponsors (cards on `#/niche/<slug>` and `#/channel/<id>`)
+
+"Спонсоры ниши" (`/api/niches/{slug}/sponsors`) and "Спонсоры канала"
+(`/api/channels/{id}/sponsors`): the share of videos with a named sponsor or
+promo code, top brands, affiliate links listed apart, and average views with
+and without a sponsor. Always labelled a lower bound: only what is written in
+video descriptions. Shares are computed over the videos the worker has already
+scanned, and the card says how many that is.
+
+### Brief (`#/brief/<videoId>`)
+
+Opened from the "бриф" link on any video card (or the extension's "Бриф"
+button). Builds a brief for your own video from one outlier
+(`POST /api/briefs`): the source's numbers, its hook from a pasted transcript,
+niche title patterns and best time, whether the topic is already covered
+(without the source itself), title candidates and similar videos as thumbnail
+references, and a "Формат повторяем?" card (`/api/videos/{id}/repeatability`):
+whether similar videos of other channels became outliers too, or this looks
+like one channel's luck. It opens as a free preview without an LLM; "Добавить LLM-разбор"
+adds the angle and title candidates, "Сохранить в черновики" stores it as a
+draft linked to the source and queues a missing transcript. Parts that could
+not be built are listed with the reason instead of being faked.
+
+### Compare trajectories (`#/compare/<id,id>`)
+
+Opened from the "сравнить" link on any video card or the brief's "Сравнить с
+другими". Up to five videos on one chart of views by age (hours since
+publishing, not dates), from the worker's snapshots
+(`/api/videos/trajectory`); a dashed line of the same colour is what a usual
+video of that channel would have at that age (median views x maturity curve,
+an estimate). Title and thumbnail swaps are marked on the curve. The basket
+is kept in the browser; remove a video with "Убрать". The brief shows the
+source video's own curve the same way. Zero quota.
+
+### Metadata review (`#/metadata`)
+
+Checks a draft title/description/tags against your own corpus (`POST
+/api/metadata/review`) — no single "SEO score", only individual signals, each
+with its own sample size and an *ok / worth fixing / sample too small*
+verdict. Also shows the niche's structural patterns with lift and whether the
+draft has them, and near-duplicate topics already in the database. Drafts
+can be saved (`POST /api/drafts`) and later linked to the published video ID
+(`POST /api/drafts/{id}/link`) to check whether the prediction held up.
+
+### Niches
+
+Everything collected under user-defined labels (a slug plus the original
+query), with video counts and the last collection time for each niche.
+
+![Niches](../assets/niches.jpg)
+
+### Niche (`#/niche/<slug>`)
+
+Opened from the Niches list. Summary tiles (videos, channels, median
+multiplier, median views, viral skew), the share of channels that look like a
+template conveyor (`/api/niches/{slug}/template-risk`), a views-by-publish-date scatter
+(colour per channel, hollow for videos younger than 30 days, filterable by
+channel IDs and Shorts), hit rate by tag group, the niche's videos with a
+manual tag editor, and LLM-proposed tags outside the taxonomy to accept or
+reject (`/api/tags/proposed/resolve`). Comment insights are available per
+video (`POST /api/videos/{id}/insights`) and aggregated across the niche
+(`/api/niches/{slug}/insights`). Header buttons export the niche's videos as
+TSV or CSV (`/api/niche/{slug}/export.tsv|csv`).
+
+### Channel
+
+A detailed breakdown of one channel: subscribers, views, median per video,
+growth rate by window (24h/7d/30d), and a revenue estimate. The "views over
+time" chart is built from the worker's snapshots, because the YouTube API
+only ever returns the state "right now" — the screenshot below shows the
+state with a single snapshot, before the chart has built up any history.
+A "template risk" card (`/api/channels/{id}/template-risk`) scores how much the last
+uploads look like one template repeated, with the reasons; a heuristic, not YouTube's
+verdict. A channel the API stopped returning (confirmed after two misses 6+ hours
+apart) gets a red note at the top: it was deleted, hidden or banned, and the numbers
+are the last ones seen. A "Сигналы по правилам монетизации" card
+(`/api/channels/{id}/policy-signals`, loaded after the screen) shows the three
+"inauthentic content" categories of YouTube's monetization policies with a
+level, the reasons and the policy text -- signals from public data, not
+YouTube's decision, and no overall percentage; the niche screen has the same
+per niche (`/api/niches/{slug}/policy-signals`). Under the revenue card: the YPP-threshold line (with the
+rules from 2027-02-01 next to it until then) and the next subscriber milestones with
+the date they come at the recent pace -- an estimate from the snapshots, not YouTube data.
+Below that: similar channels by video embeddings
+(`/api/channels/{id}/similar`), and per-video buttons for live comments
+(`POST /api/videos/{id}/comments`, 1 quota unit) and a "why did it take
+off" LLM explanation (`/api/video/{id}/why`, cached; shows a hint instead
+when no LLM is configured).
+
+![Channel](../assets/channel.jpg)
+
+### Your channels (`#/own`)
+
+Your own channels' real numbers from the YouTube Analytics API, connected
+through Google OAuth with your own client (read-only scopes). Until
+`OWN_OAUTH_CLIENT_ID`, `OWN_OAUTH_CLIENT_SECRET` and `OWN_TOKENS_KEY` are set,
+the screen shows the one-time setup steps (`/api/own/status`). Once connected:
+views, revenue, RPM and median retention for the last 28 days (ending three
+days ago — Analytics lags), your real RPM against niche-finder's estimate for
+the niche (`/api/own/rpm-calibration`), a "Форматы" card
+(`/api/own/channels/{id}/formats`: Shorts against long videos -- share of
+views, subscribers per 1,000 views, whether their weekly views move together
+-- and long + live watch hours in 365 days toward the YPP bar with an
+estimated date), and "my videos against a niche":
+median views, the ratio and the share of your videos above the niche median
+(`/api/own/channels/{id}/vs-niche`). "Connect a channel" starts the Google
+consent flow (`POST /api/own/connect`), "Refresh numbers" syncs now
+(`POST /api/own/sync`; the worker also syncs daily), "Disconnect" revokes the
+token and deletes everything stored for the channel. The refresh token is
+stored encrypted and never reaches the browser.
+
+### Tariff (`#/plan`)
+
+Only in multi-user mode (`NF_MULTI_USER=1`); without it the screen says tariffs
+need that mode. "Ваш тариф" shows the current tariff and its end date, today's
+use against each daily limit (YouTube units, search calls, LLM dollars) and the
+count of own channels, watchlist channels, topics, saved items, drafts and
+tokens against their limits (`/api/plan`). Below, a card per tariff with its
+price, limits and features. A free tariff has a button that switches to it
+(`POST /api/plan/choose`); a tariff with a price is shown, but only an admin can
+assign it, there are no payments yet. The sidebar footer shows the same tariff
+as "Тариф <name> · квота used/limit" (YouTube units today) and links here.
+`plan-state.js` hides the menu sections a tariff switches off, such as "Мои
+каналы".
+
+### Admin (`#/admin`)
+
+Only in multi-user mode and only for admins (`users.is_admin`); the menu item
+is hidden for everyone else. Two lists: tariffs and users. A tariff is created
+or edited with its price, period, daily limits, count limits and features, and
+can be archived and restored (`/api/admin/plans`). Each user has their tariff
+and an end date that an admin can change (`PUT /api/admin/users/{id}/plan`).
+Admins are not limited by tariffs. Moving a user to a smaller tariff deletes
+nothing: existing rows stay, only new ones are refused. "Журнал действий"
+lists sign-ins and failed sign-ins, password and email changes, API tokens,
+tariff changes and admin actions, filtered by event, user and period and paged
+(`GET /api/admin/audit`, only from a dashboard session, never with an API
+token). A notice counts stored secrets the current encryption keys cannot read.
+"Посмотреть как" next to an ordinary active user asks for a reason and opens
+the dashboard through that user's eyes, read-only, for
+`NF_IMPERSONATION_MINUTES` (`POST /api/admin/users/{id}/impersonate`, P2-05).
+While it lasts a yellow bar on every screen (`impersonation.js`, the
+`#impersonationBanner` in `index.html`) says "Вы смотрите как <email> —
+только чтение" with the end time and "Выйти" (`POST /api/auth/impersonation/end`);
+the page reloads as the admin when the time is up. Changes are refused by the
+server; `/api/auth/me` returns `impersonation` with the account, the admin and
+the expiry.
+
+### Profile (`#/profile`)
+
+"Часовой пояс" (P2-03) is there in both modes: a list of IANA zones from the
+browser, "Как в браузере" (`Intl.DateTimeFormat().resolvedOptions().timeZone`)
+and an empty choice for the server default (`PUT /api/me/timezone`). The
+digest arrives at `DIGEST_HOUR` of that zone and calendar reminders show times
+in it. With `NF_MULTI_USER=1`, a user who has none gets the browser's zone
+saved silently on sign-in (`onlyIfEmpty`, never over a chosen one): otherwise
+their digest would follow the server's clock, which for most people is not
+theirs. Without accounts nothing is saved by itself: the operator's `TZ` /
+`NF_DEFAULT_TIMEZONE` keep working as before. The best publishing hours (the
+brief and the calendar) come from the server in UTC and are shown in the
+browser's zone, like every other time on the dashboard.
+
+The rest only in multi-user mode, for whoever is signed in. "Пароль" changes the
+password with the current one (`POST /api/auth/password`): other sessions and
+API tokens end, this browser stays signed in. "Email" sends a confirmation
+link to the new address (`POST /api/auth/email`) and is disabled when the
+server has no mail set up. "Где выполнен вход" lists the account's sessions
+with browser, address and last activity, the current one marked, and ends one
+or all others (`/api/auth/sessions`). "Двухфакторная защита" is its own card
+(`/api/auth/2fa*`): "Включить" shows the secret in groups of four and an
+`otpauth://` link (opens the authenticator on the same device) -- no QR code,
+which would need an external service or a QR encoder in the bundle -- then a
+code from the app turns it on and the 10 backup codes are shown once. With it
+on, the card makes new backup codes (with a code) and turns it off (with the
+password and a code). An admin without 2FA under `NF_ADMIN_2FA=required` gets
+only this card, with the menu hidden, until it is on (`app.js`,
+`viewTwoFactorSetup`).
+
+With 2FA on, the sign-in screen asks for the code after the password (and
+after a reset by link): an app code or a backup code
+(`POST /api/auth/login/2fa`); the one-time challenge lives only in the page.
+
+Signed out, the sign-in screen also offers "Создать аккаунт" and "Забыли
+пароль?" when the server has mail (`signup` in `/api/auth/me`); the links in
+those emails open `#/signup/<token>`, `#/reset/<token>` and `#/email/<token>`
+(`account.js`), which drop the token from the address bar once read.
+
+### Data
+
+Key, database, and history state (how many channels/videos/snapshots have
+been collected), plus the same collection forms and a manual stats refresh.
+The refresh card is there for an admin (the whole corpus) and, when the
+tariff limit `manual_runs` allows it (multi-user plan P2-11), for a regular
+user too -- then it refreshes only their watchlist, and past the hourly limit
+the button reads "Снова можно в HH:MM" (`/api/manual-runs`, `manual-runs.js`).
+A "Хранение данных" card (`/api/freshness`) shows how many videos and channels were not
+refreshed for 25 days, since when the history goes back, and that the worker
+re-reads the oldest rows daily and never deletes anything.
+
+![Data](../assets/data.jpg)
+
+### Help and FAQ (`#/help`)
+
+What the project is, how the dashboard and MCP server share one database
+and one set of formulas, and a FAQ. At the bottom, "Откуда каждое число"
+(`/api/scores`): every number on the screens, whether it is YouTube data or an
+estimate of niche-finder, how it is computed and from what sample -- the same
+catalog the "?" marks next to scores show on hover.
+
+### MCP connection (`#/mcp`)
+
+Step-by-step instructions for connecting Claude Desktop to the MCP server
+(via Docker or a local venv), the tool groups, and connection checks.
+Static, no API calls.
+
+## Security
+
+The service listens on `127.0.0.1` — your YouTube key lives inside the
+container, and there's no reason to expose it to the local network. The
+port is changed via `WEB_PORT` in `.env`.
+
+Most endpoints only read the local database and cost nothing. The ones that
+spend something are always explicit clicks, never page loads:
+
+| Endpoint | Spends |
+|---|---|
+| `POST /api/collect/*`, `POST /api/refresh` | YouTube quota |
+| `POST /api/videos/{id}/comments` | YouTube quota (1 unit) |
+| `POST /api/videos/{id}/insights` | YouTube quota (1 unit) + an LLM call on a cache miss |
+| `GET /api/video/{id}/why` | an LLM call on a cache miss |
+| `GET /api/niches/{slug}/insights` | an LLM pass over cached per-video reports |
+| `POST /api/enrich/channels`, `POST /api/enrich/videos` | LLM calls (background AI labelling) |
+| `POST /api/titles/score` | an LLM call when a provider is configured |
+| `POST /api/titles/suggest` | an LLM call |
+| `POST /api/niche-clusters/recompute` | LLM calls to name the clusters |
+
+With `LLM_PROVIDER=ollama` the LLM calls run locally and cost no money, only
+time.
+
+## Design
+
+The palette is a validated set from the `dataviz` skill: magnitude is drawn
+with a single series (blue), so no legend is needed; status colors are only
+applied to deltas and always come with a sign and a label, so meaning never
+rests on color alone. Dark and light themes are separate sets of values
+tuned to their own background, not an automatic inversion.
+
+## API
+
+Every route the dashboard calls, with parameters and what it costs:
+[docs/http-api.md](../docs/http-api.md). Live schema on a running backend:
+`http://localhost:8080/api/docs`.

@@ -1,0 +1,2494 @@
+"""HTTP API для дашборда. Тонкая обёртка над теми же модулями, что и MCP-сервер --
+никакой логики здесь нет, только маршруты и раздача статики фронта.
+
+    uvicorn api:app --host 127.0.0.1 --port 8080
+    docker compose up -d web
+
+Разделение по методам осмысленное, а не косметическое: GET ничего не стоит и
+читает локальную базу, POST тратит квоту YouTube. Сервис слушает только
+127.0.0.1 -- внутри лежит ваш API-ключ, наружу его выставлять незачем.
+От чужих сайтов в браузере прикрывает local_only_guard: проверка Host и
+обязательный JSON или X-NF-Client у POST/PUT/PATCH/DELETE.
+"""
+import functools
+import hmac
+import ipaddress
+import logging
+import os
+import re
+import time
+from collections import defaultdict, deque
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:  # pragma: no cover
+    pass
+
+import infrastructure.postgres as db
+import infrastructure.youtube.client as yt
+from application import alerts as AL
+from application import audit as AUD
+from application import auth as AUTH
+from application import briefs as BR
+from application import channel_tracking as T
+from application import collabs as CLB
+from application import collecting as collector
+from application import content_calendar as CAL
+from application import content_gaps as CG
+from application import digest as DG
+from application import discovery as trends
+from application import enrichment as EN
+from application import hook_score as HK
+from application import impersonation as IMP
+from application import inspection as I
+from application import language_gaps as LG
+from application import library as L
+from application import locale_prefs as LP
+from application import manual_runs as MRUN
+from application import maturity_curve
+from application import metadata_review as MR
+from application import niche_clusters as NCL
+from application import niche_export as NE
+from application import niche_ranking as NRK
+from application import notify_settings as NS
+from application import ops_metrics as OPS
+from application import outlier_traits as OT
+from application import own_channels as OWN
+from application import packaging as PKG
+from application import plans as PL
+from application import profit as PF
+from application import repeatability as RP
+from application import saturation as SAT
+from application import search as Q
+from application import secrets_rotation as SR
+from application import signup as SU
+from application import sponsors as SP
+from application import tags as TG
+from application import template_risk as TRK
+from application import thumbnail_search as TS
+from application import timezone_prefs as TZP
+from application import topic_watch as TW
+from application import trajectory as TJ
+from application import transcripts as TR
+from application import two_factor as TF
+from application import users_admin as UA
+from domain import i18n
+from domain import manual_runs as DMR
+from domain import plans as PD
+from domain.i18n import tr
+from domain.users import LOCAL_USER_ID, multi_user_enabled
+from infrastructure import mailer, quota_owner
+from infrastructure import observability as OBS
+from infrastructure.categories import repository as C
+from infrastructure.redact import redact
+
+API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
+FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR")
+                    or (Path(__file__).parent.parent.parent.parent / "frontend"))
+# NOTE: this module now lives two directories deeper than the old flat
+# api.py (backend/interfaces/http/ vs backend/), so the fallback path -- only
+# used when FRONTEND_DIR is not set, e.g. `make local-run` -- climbs two extra
+# levels to keep resolving to <project root>/frontend. Docker always sets
+# FRONTEND_DIR=/frontend explicitly, so this only matters for local runs.
+
+OBS.setup("web")
+db.init_db()
+C.seed_fallback()
+
+app = FastAPI(title="niche-finder", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+# --------------------------------------------------------------- rate limiting
+#
+# Сервис слушает только 127.0.0.1, поэтому это не защита от чужого трафика, а
+# предохранитель от зациклившегося клиента: расширение или скрипт, ушедший в
+# бесконечный ретрай, иначе молча жжёт CPU и коннекты к Postgres.
+#
+# Дефолт подобран под реальное поведение расширения, а не наугад: оно шлёт до
+# 40 id за один /api/inspect/videos с флашем раз в 500 мс (extension/content.js)
+# и до четырёх параллельных запросов на панель канала (extension/background.js).
+# При быстрой прокрутке выдачи это ~120-200 запросов в минуту, так что 600
+# оставляет тройной запас и всё равно ловит цикл, который делает тысячи.
+# RATE_LIMIT_PER_MINUTE=0 выключает лимитер совсем.
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", "600") or 0)
+
+# client -> времена запросов за последнюю минуту. Локально ключей один-два; на
+# публичном сервере их может быть сколько угодно, поэтому, когда словарь больше
+# _RATE_MAX_KEYS, из него выбрасываются клиенты без запросов за минуту (P0-03).
+_rate_hits = defaultdict(deque)
+_RATE_MAX_KEYS = 10_000
+
+
+@functools.lru_cache(maxsize=8)
+def _trusted_proxies(value: str) -> tuple:
+    """NF_TRUSTED_PROXIES: addresses or subnets of the reverse proxy in front
+    of the API (multi-user plan P0-03). '*' is refused: anyone could then
+    claim any address in X-Forwarded-For."""
+    nets = []
+    for part in value.replace(",", " ").split():
+        if part == "*":
+            logging.getLogger(__name__).warning(
+                "NF_TRUSTED_PROXIES='*' is ignored: name the proxy's address or subnet")
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logging.getLogger(__name__).warning("NF_TRUSTED_PROXIES: %r is not an address", part)
+    return tuple(nets)
+
+
+def _is_trusted(addr: str, nets: tuple) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in nets)
+
+
+def _client_ip(request) -> str:
+    """The client's address. Behind a proxy listed in NF_TRUSTED_PROXIES it is
+    the nearest X-Forwarded-For hop that is not a trusted proxy itself; from
+    anyone else the header is ignored, so it cannot be forged."""
+    host = request.client.host if request.client else "unknown"
+    nets = _trusted_proxies(os.environ.get("NF_TRUSTED_PROXIES", ""))
+    if not nets or not _is_trusted(host, nets):
+        return host
+    hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+    for hop in reversed(hops):
+        if not _is_trusted(hop, nets):
+            return hop
+    return hops[0] if hops else host
+
+
+@app.middleware("http")
+async def audit_scope(request, call_next):
+    """Многопользовательский план P1-07: адрес клиента (тот же _client_ip, что
+    у лимитов входа) -- для записей журнала действий, сделанных этим запросом."""
+    with AUD.client_ip_scope(_client_ip(request)):
+        return await call_next(request)
+
+
+@app.middleware("http")
+async def rate_limit(request, call_next):
+    """Скользящее окно в одну минуту на /api/*. Статику фронта не трогаем:
+    одна загрузка дашборда стоит десятка файлов и съедала бы бюджет."""
+    if RATE_LIMIT_PER_MINUTE <= 0 or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+
+    client = _client_ip(request)
+    # plan 15 (5.10): a signed-in user has their own window, so several people
+    # behind one address do not throttle each other (sign-in itself has its
+    # own limits per email and address: application/auth.py login)
+    user = getattr(request.state, "user", None)
+    if user:
+        client = f"user:{user['id']}"
+    now = time.monotonic()
+    if len(_rate_hits) > _RATE_MAX_KEYS:
+        for idle in [k for k, h in _rate_hits.items() if not h or h[-1] <= now - 60.0]:
+            del _rate_hits[idle]
+    hits = _rate_hits[client]
+    while hits and hits[0] <= now - 60.0:
+        hits.popleft()
+
+    if len(hits) >= RATE_LIMIT_PER_MINUTE:
+        retry_after = max(1, int(60.0 - (now - hits[0])) + 1)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": tr("Больше {limit} запросов в минуту к /api. Повторите через "
+                                  "{retry_after} с или поднимите RATE_LIMIT_PER_MINUTE в .env.",
+                                  limit=RATE_LIMIT_PER_MINUTE, retry_after=retry_after)},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    hits.append(now)
+    return await call_next(request)
+
+
+# ------------------------------------------------ язык ответа (план i18n)
+#
+# Тексты для человека (подсказки, ошибки, каталог оценок) -- на языке читателя:
+# X-NF-Locale (дашборд шлёт всегда) -> язык, сохранённый пользователем ->
+# Accept-Language -> NF_DEFAULT_LOCALE. Объявлено ВЫШЕ session_guard, поэтому
+# работает внутри него и уже знает пользователя (request.state.user_id).
+
+@app.middleware("http")
+async def locale_scope(request, call_next):
+    loc = i18n.normalize(request.headers.get("x-nf-locale"))
+    uid = getattr(request.state, "user_id", None)
+    if loc is None and uid is not None and request.url.path.startswith("/api/"):
+        loc = await run_in_threadpool(_saved_locale, uid)
+    if loc is None:
+        loc = i18n.from_accept_language(request.headers.get("accept-language"))
+    token = i18n.set_locale(loc)
+    try:
+        return await call_next(request)
+    finally:
+        i18n.reset(token)
+
+
+def _saved_locale(user_id):
+    try:
+        return LP.get(user_id=user_id)
+    except Exception:
+        # язык -- не повод ронять запрос (например, до init_db на пустой базе)
+        return None
+
+
+def _header_locale(request):
+    """Язык для ответов middleware, которые стоят СНАРУЖИ locale_scope
+    (session_guard, local_only_guard): только заголовки, без базы."""
+    return (i18n.normalize(request.headers.get("x-nf-locale"))
+            or i18n.from_accept_language(request.headers.get("accept-language")))
+
+
+# ------------------------------------------------ вход (план 15)
+#
+# NF_MULTI_USER=1: без живой сессии /api отвечает 401. Сессия -- случайный
+# токен в cookie nf_session (HttpOnly, SameSite=Strict); в базе только его
+# SHA-256. Открыты без входа: сам вход и «кто я», /api/health (healthcheck
+# контейнера) и возврат из Google OAuth (пользователя там называет одноразовый
+# state, а Strict-cookie при переходе с чужого сайта не приходит). Middleware
+# стоит внутри защиты Host: чужое имя получает 400 раньше, чем 401, и ответы
+# 401 тоже уезжают с заголовками CORS. Без NF_MULTI_USER всё как раньше:
+# пользователь 1, без входа.
+
+AUTH_COOKIE = "nf_session"
+_PUBLIC_API = frozenset({"/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/health",
+                         "/api/own/oauth/callback",
+                         # multi-user plan P1-06: sign-up and reset by emailed link
+                         "/api/auth/register", "/api/auth/register/link",
+                         "/api/auth/register/complete", "/api/auth/password/forgot",
+                         "/api/auth/password/reset", "/api/auth/email/confirm",
+                         # multi-user plan P2-04: второй шаг входа (по промежуточному токену)
+                         "/api/auth/login/2fa"})
+# P2-05: что можно отправить не-GET из режима просмотра под пользователем --
+# выйти из режима и выйти из дашборда совсем (оба меняют только сессию админа)
+_VIEW_WRITES = frozenset({"/api/auth/impersonation/end", "/api/auth/logout"})
+# P2-04, NF_ADMIN_2FA=required: администратору без 2FA открыта только её
+# настройка (и язык); остальное -- 403 TwoFactorRequired, пока не включит
+_MFA_SETUP_API = frozenset({"/api/auth/2fa", "/api/auth/2fa/setup", "/api/auth/2fa/enable",
+                            "/api/me/locale"})
+
+
+# SaaS sub-project 1: route -> the tariff feature it needs. Methods None = any.
+# /api/own/status and the OAuth callback stay open (the screen explains what
+# is missing), and DELETE of an own channel always works -- disconnecting and
+# revoking the token must never depend on the plan.
+_FEATURE_ROUTES = (
+    (frozenset({"GET", "POST", "PUT"}), re.compile(r"^/api/own/(?!status$|oauth/callback$)"),
+     "own_channels"),
+    (None, re.compile(r"^/api/own/rpm-calibration$"), "own_revenue"),
+    (frozenset({"GET"}), re.compile(r"^/api/niche/[^/]+/export\.[a-z]+$"), "export"),
+    (frozenset({"PUT"}), re.compile(r"^/api/settings/notifications$"), "notifications"),
+    (frozenset({"POST"}), re.compile(r"^/api/settings/notifications/test$"), "notifications"),
+)
+
+
+def _feature_block(request, user_id):
+    """The first tariff feature this request needs and the user lacks, else
+    None. Touches the database only when a feature is at stake."""
+    path, method = request.url.path, request.method
+    needed = [f for methods, rx, f in _FEATURE_ROUTES
+              if (methods is None or method in methods) and rx.search(path)]
+    if getattr(request.state, "via", None) == "token":
+        needed.insert(0, "api_access")
+    if not needed:
+        return None
+    features = PL.plan_for(user_id).features
+    return next((f for f in needed if not features[f]), None)
+
+
+async def _rls_call(request, call_next, user_id):
+    """P1-02: соединения этого запроса видят в личных таблицах только строки
+    user_id (Row-Level Security, infrastructure/postgres/connection.py).
+    Открытые маршруты (_PUBLIC_API: вход, выход, OAuth) сами выясняют, чей
+    это запрос, и остаются ролью владельца, как и всё вне /api/."""
+    path = request.url.path
+    if user_id is None or not path.startswith("/api/") or path in _PUBLIC_API:
+        return await call_next(request)
+    token = db.set_rls_user(user_id)
+    try:
+        return await call_next(request)
+    finally:
+        db.reset_rls_user(token)
+
+
+@app.middleware("http")
+async def session_guard(request, call_next):
+    request.state.user = request.state.session_id = request.state.impersonation = None
+    if not multi_user_enabled():
+        request.state.user_id = LOCAL_USER_ID
+        return await _rls_call(request, call_next, LOCAL_USER_ID)
+    # with accounts nobody is anybody until signed in (P1-01): a public route
+    # must not end up acting as user 1
+    request.state.user_id = None
+    token = request.cookies.get(AUTH_COOKIE, "")
+    # P1-04: the session also learns its address and browser (for the list in
+    # the profile) and slides its idle expiry forward
+    session = await run_in_threadpool(
+        AUTH.session_for_token, token, _client_ip(request),
+        request.headers.get("user-agent")) if token else None
+    user = session["user"] if session else None
+    request.state.session_id = session["id"] if session else None
+    request.state.via = "session" if user else None
+    # P2-05: сессия админа в режиме просмотра -- дальше запрос идёт глазами
+    # пользователя (_uid, RLS, тариф), а сам админ -- в state.impersonation
+    view = (await run_in_threadpool(IMP.resolve, session)
+            if session and session.get("impersonating") else None)
+    request.state.impersonation = view
+    if view:
+        user = view["user"]
+        request.state.via = "impersonation"
+    if not user:
+        # plan 15 (5.7): the extension (and scripts) send a personal API token
+        # instead of the cookie; bearer auth is not sent by browsers on their
+        # own, so it carries no CSRF risk
+        auth = request.headers.get("authorization", "")
+        if auth[:7].lower() == "bearer ":
+            user = await run_in_threadpool(AUTH.user_for_api_token, auth[7:].strip())
+            request.state.via = "token" if user else None
+    if user:
+        request.state.user_id, request.state.user = user["id"], user
+    path = request.url.path
+    if user and request.state.via == "token" and path.startswith("/api/"):
+        # P1-03: a token reads with `read` and changes things with `write`
+        need = "read" if request.method in ("GET", "HEAD", "OPTIONS") else "write"
+        if not AUTH.token_allows(user, need):
+            with i18n.use_locale(_header_locale(request)):
+                detail = tr("У этого API-токена нет права «{scope}». Создайте токен с ним "
+                            "на экране «MCP».", scope=need)
+            return JSONResponse(status_code=403, content={
+                "error": "TokenScope", "scope": need, "detail": detail})
+    if (view and path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS")
+            and path not in _VIEW_WRITES):
+        # P2-05: поддержка смотрит, но ничего не меняет за пользователя
+        with i18n.use_locale(_header_locale(request)):
+            detail = tr("Режим просмотра под пользователем: только чтение. Чтобы что-то "
+                        "изменить, выйдите из режима.")
+        return JSONResponse(status_code=403, content={"error": "ReadOnlyView", "detail": detail})
+    if (path.startswith("/api/") and path not in _PUBLIC_API and not user
+            and request.method != "OPTIONS"):
+        with i18n.use_locale(_header_locale(request)):
+            # без заголовка языка -- прежний двуязычный текст: на него смотрят скрипты
+            detail = tr("Sign in first: NF_MULTI_USER is on -- войдите в дашборде.")
+        return JSONResponse(status_code=401, content={"detail": detail})
+    if (user and request.state.via == "session" and user.get("isAdmin") and TF.admin_required()
+            and path.startswith("/api/") and path not in _PUBLIC_API
+            and path not in _MFA_SETUP_API
+            and await run_in_threadpool(TF.setup_required, user)):
+        with i18n.use_locale(_header_locale(request)):
+            detail = tr("Администраторам этого сервера нужна двухфакторная защита: включите "
+                        "её на экране «Профиль».")
+        return JSONResponse(status_code=403, content={"error": "TwoFactorRequired",
+                                                      "detail": detail})
+    if user and path.startswith("/api/") and path not in _PUBLIC_API:
+        blocked = await run_in_threadpool(_feature_block, request, user["id"])
+        if blocked:
+            with i18n.use_locale(_header_locale(request)):
+                detail = str(PD.FeatureOff(blocked))
+            return JSONResponse(status_code=403, content={
+                "error": "FeatureOff", "feature": blocked, "detail": detail})
+    # plan 15 (5.5): YouTube calls made for this request count against the
+    # signed-in user's daily budget (infrastructure/quota_owner.py)
+    owner = quota_owner.set_owner(user["id"]) if user else None
+    # P2-05: просмотр под пользователем не тратит ничью квоту и ничего не
+    # запускает -- только то, что уже есть в базе и кэше LLM
+    frozen = quota_owner.freeze() if view else None
+    try:
+        return await _rls_call(request, call_next, user["id"] if user else None)
+    finally:
+        if frozen is not None:
+            quota_owner.unfreeze(frozen)
+        if owner is not None:
+            quota_owner.reset(owner)
+
+
+# ------------------------------------------------ защита от чужих сайтов
+#
+# Аутентификации нет, а 127.0.0.1 доступен любой открытой в браузере вкладке.
+# Две дыры, которые это открывает, и чем они закрыты:
+#
+# 1. DNS rebinding: чужой домен начинает резолвиться в 127.0.0.1, и его
+#    страница читает /api/* как свой origin. Браузер при этом шлёт Host с
+#    чужим именем -- отвечаем 400 на всё, чего нет в ALLOWED_HOSTS.
+# 2. "Простой" cross-origin POST (form/fetch без своих заголовков, text/plain)
+#    уходит без CORS-preflight. Тела с JSON FastAPI и так отсекает по
+#    content-type, но маршруты, которые берут параметры только из query
+#    (enrich, events/scan, reindex, recompute), выполнились бы. Поэтому любой
+#    изменяющий запрос обязан нести Content-Type JSON или X-NF-Client: оба
+#    заставляют браузер сначала спросить preflight, а его CORS пропускает
+#    только для chrome-extension://.
+#
+# Своё middleware, а не starlette TrustedHostMiddleware: тот режет Host по
+# первому ":" и ломает [::1]:8080, отвечает plain text вместо нашего JSON с
+# detail и фиксирует список при создании (тесты не могут его подменить).
+
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]",
+                # имя сервиса и container_name из docker-compose.yml -- так web
+                # видят другие контейнеры в сети niche-finder_default
+                "web", "niche-finder-web")
+
+
+def _host_name(value):
+    """Имя из заголовка Host без порта, в нижнем регистре; "" -- если заголовок
+    кривой (порт не число, незакрытая скобка IPv6)."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        if end == -1:
+            return ""
+        name, rest = value[:end + 1], value[end + 1:]
+        if rest and not (rest.startswith(":") and rest[1:].isdigit()):
+            return ""
+        return name
+    name, sep, port = value.partition(":")
+    if sep and not port.isdigit():
+        return ""
+    return name
+
+
+def _allowed_hosts(extra):
+    """Локальные имена плюс NF_ALLOWED_HOSTS (через запятую, порт можно
+    указывать -- он отбрасывается)."""
+    hosts = set(_LOCAL_HOSTS)
+    for item in (extra or "").split(","):
+        name = _host_name(item)
+        if name:
+            hosts.add(name)
+    return hosts
+
+
+ALLOWED_HOSTS = _allowed_hosts(os.environ.get("NF_ALLOWED_HOSTS"))
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_json(content_type):
+    media = (content_type or "").split(";", 1)[0].strip().lower()
+    return media == "application/json" or (
+        media.startswith("application/") and media.endswith("+json"))
+
+
+@app.middleware("http")
+async def local_only_guard(request, call_next):
+    host = request.headers.get("host")
+    if _host_name(host) not in ALLOWED_HOSTS:
+        shown = (host or "")[:100]
+        with i18n.use_locale(_header_locale(request)):
+            detail = tr("Недопустимый заголовок Host: {host}. API отвечает только на 127.0.0.1, "
+                        "localhost и [::1]; другое имя добавьте в NF_ALLOWED_HOSTS в .env.",
+                        host=repr(shown))
+        return JSONResponse(status_code=400, content={"detail": detail})
+    if (request.method in _UNSAFE_METHODS
+            and not _is_json(request.headers.get("content-type"))
+            and not request.headers.get("x-nf-client", "").strip()):
+        with i18n.use_locale(_header_locale(request)):
+            detail = tr("Изменяющий запрос без Content-Type: application/json и без заголовка "
+                        "X-NF-Client отклонён -- так выглядит запрос с чужого сайта. Добавьте "
+                        "заголовок X-NF-Client: <имя клиента>.")
+        return JSONResponse(status_code=403, content={"detail": detail})
+    return await call_next(request)
+
+
+# Лимитер и защита объявлены ВЫШЕ CORS намеренно: последний добавленный
+# middleware в Starlette оказывается внешним, поэтому так CORS оборачивает их
+# обоих и ответы 429/403/400 тоже уезжают с нужными заголовками -- иначе
+# расширение увидело бы вместо честной ошибки непрозрачную ошибку CORS. По той
+# же причине preflight (OPTIONS) CORS отвечает сам и до защиты он не доходит.
+# Расширение для Chrome ходит сюда со своего origin (chrome-extension://...).
+# Service worker с host-разрешением обошёлся бы и без CORS, но с заголовками
+# запросы можно отлаживать прямо из консоли страницы.
+#
+# P1-16: какие именно расширения пускать. NF_EXTENSION_IDS -- ID своих
+# расширений через запятую (с chrome://extensions или из Web Store); с ним
+# CORS отвечает только им. Без него:
+#   * локальный режим -- любое chrome-extension://, как раньше: у распакованного
+#     расширения ID свой на каждой машине, а сервис слушает только 127.0.0.1;
+#   * сервер с входом (NF_MULTI_USER=1) -- ни одно: на домене чужое расширение
+#     с CORS могло бы читать API, а своему он не нужен (ходит с
+#     host-разрешением и токеном), так что пустой список -- это запрет.
+_EXTENSION_ORIGIN = "chrome-extension://"
+
+
+def _extension_ids(raw):
+    """ID из NF_EXTENSION_IDS: через запятую, пробелы и регистр не важны."""
+    return frozenset(item.strip().lower() for item in (raw or "").split(",") if item.strip())
+
+
+EXTENSION_IDS = _extension_ids(os.environ.get("NF_EXTENSION_IDS"))
+
+
+def _extension_origin_allowed(origin):
+    if not (origin or "").startswith(_EXTENSION_ORIGIN):
+        return False
+    ext_id = origin[len(_EXTENSION_ORIGIN):]
+    if not ext_id or "/" in ext_id:
+        return False
+    if EXTENSION_IDS:
+        return ext_id.lower() in EXTENSION_IDS
+    return not multi_user_enabled()
+
+
+class _ExtensionCORS(CORSMiddleware):
+    """CORSMiddleware, который решает про origin на каждом запросе: список и
+    режим читаются в момент запроса, поэтому тесты подменяют их на лету."""
+
+    def is_allowed_origin(self, origin):
+        return _extension_origin_allowed(origin)
+
+
+app.add_middleware(
+    _ExtensionCORS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _need_key():
+    if not API_KEY:
+        raise HTTPException(
+            status_code=428,
+            detail=tr("YOUTUBE_API_KEY не задан. Впишите его в .env рядом с "
+                      "docker-compose.yml и перезапустите: docker compose up -d web"),
+        )
+
+
+@app.exception_handler(yt.QuotaExceeded)
+async def _quota_exceeded(request, exc):
+    if isinstance(exc, yt.SpendingFrozen):
+        # P2-05: просмотр под пользователем не ходит в YouTube -- это не «квота кончилась»
+        return JSONResponse(status_code=403, content={"error": "ReadOnlyView", "detail": tr(
+            "Режим просмотра под пользователем: новые данные из YouTube не запрашиваются, "
+            "показано только уже собранное.")})
+    return JSONResponse(status_code=429, content={"error": "QuotaExceeded",
+                                                  "detail": str(exc)[:800]})
+
+
+@app.exception_handler(PD.PlanLimitReached)
+async def _plan_limit(request, exc):
+    return JSONResponse(status_code=403, content={"error": "PlanLimit", "limit": exc.key,
+                                                  "max": exc.max, "detail": str(exc)})
+
+
+@app.exception_handler(DMR.ManualRunLimited)
+async def _manual_run_limited(request, exc):
+    """P2-11: ручной запуск чаще лимита тарифа -- 429 с Retry-After и временем,
+    когда можно снова (nextAt, UTC), для кнопки дашборда."""
+    return JSONResponse(status_code=429, headers={"Retry-After": str(exc.retry_after)},
+                        content={"error": "ManualRunLimit", "operation": exc.operation,
+                                 "limit": exc.limit, "retryAfter": exc.retry_after,
+                                 "nextAt": exc.at.isoformat(), "detail": str(exc)})
+
+
+@app.exception_handler(PD.FeatureOff)
+async def _feature_off(request, exc):
+    return JSONResponse(status_code=403, content={"error": "FeatureOff", "feature": exc.key,
+                                                  "detail": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request, exc):  # pragma: no cover
+    msg = redact(str(exc))
+    return JSONResponse(status_code=500, content={"error": type(exc).__name__,
+                                                  "detail": msg[:800]})
+
+
+# ------------------------------------------------------------------ статус
+
+def _feed_user(request):
+    """Whose watchlist scopes a feed gathered for every tracked channel
+    (multi-user plan P1-05): the signed-in user with accounts on, nobody
+    (the whole feed) without them."""
+    return _uid(request) if multi_user_enabled() else None
+
+
+@app.get("/api/health")
+def health(request: Request):
+    # public route: with accounts on, a visitor who did not sign in learns
+    # only that the server is up -- the corpus and watchlist totals are for
+    # signed-in users (P1-05)
+    if multi_user_enabled() and getattr(request.state, "user_id", None) is None:
+        return {"ok": True}
+    s = Q.db_stats(user_id=_feed_user(request))
+    conn = db.get_conn()
+    try:
+        calls_today = collector.search_calls_today(conn)
+        units_today = collector.units_today(conn)
+        curve = maturity_curve.status(conn)
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "hasApiKey": bool(API_KEY),
+        "db": s,
+        "historyAvailable": bool(s["history_since"]),
+        "searchQuota": {
+            "callsToday": calls_today,
+            "dailyLimit": yt.SEARCH_DAILY_CALL_LIMIT,
+            "callsLeft": max(0, yt.SEARCH_DAILY_CALL_LIMIT - calls_today),
+        },
+        "unitQuota": {
+            "unitsToday": units_today,
+            "dailyLimit": yt.DAILY_UNIT_LIMIT,
+            "unitsLeft": max(0, yt.DAILY_UNIT_LIMIT - units_today),
+        },
+        "maturityCurve": curve,
+    }
+
+
+@app.get("/api/stats")
+def stats(request: Request):
+    return Q.db_stats(user_id=_feed_user(request))
+
+
+@app.get("/api/coverage")
+def coverage(period: str = "24h"):
+    return trends.coverage(period)
+
+
+# ------------------------------------------------------------------ разделы
+
+@app.get("/api/viral")
+def viral(period: str = "7d", period_by: str = "published",
+          max_subscribers: int = 10000, min_views: int = 10000,
+          min_views_per_subscriber: float = 1.0,
+          min_outlier_score: float = None, niche: str = None,
+          region: str = None, category_id: str = None,
+          exclude_shorts: bool = True, only_shorts: bool = False,
+          sort_by: str = "viral", limit: int = 24, preset: str = None):
+    return trends.viral_videos_small_channels(
+        period=period, period_by=period_by, max_subscribers=max_subscribers,
+        min_views=min_views, min_views_per_subscriber=min_views_per_subscriber,
+        min_outlier_score=min_outlier_score, niche=niche, region=region,
+        category_id=category_id, exclude_shorts=exclude_shorts,
+        only_shorts=only_shorts, sort_by=sort_by, limit=limit, preset=preset)
+
+
+@app.get("/api/categories")
+def categories(period: str = "7d", period_by: str = "published", niche: str = None,
+               region: str = None, rank_by: str = "views",
+               exclude_shorts: bool = False, min_videos: int = 1, limit: int = 25):
+    return trends.most_popular_categories(
+        period=period, period_by=period_by, niche=niche, region=region,
+        rank_by=rank_by, exclude_shorts=exclude_shorts, min_videos=min_videos,
+        limit=limit)
+
+
+@app.get("/api/keywords")
+def keywords(period: str = "24h", period_by: str = "published", niche: str = None,
+             region: str = None, category_id: str = None, source: str = "both",
+             sort_by: str = "momentum", min_videos: int = 2, top_n: int = 30,
+             keywords_mode: str = "ngram", semantic_similarity: float = 0.85):
+    return trends.trending_keywords(
+        period=period, period_by=period_by, niche=niche, region=region,
+        category_id=category_id, source=source, sort_by=sort_by,
+        min_videos=min_videos, top_n=top_n, keywords_mode=keywords_mode,
+        semantic_similarity=semantic_similarity)
+
+
+@app.get("/api/tags/top-by-category")
+def top_tags_by_category(period: str = "7d", period_by: str = "published", niche: str = None,
+                         region: str = None, exclude_shorts: bool = False,
+                         min_videos: int = 3, top_n: int = 15):
+    return trends.top_tags_by_category(
+        period=period, period_by=period_by, niche=niche, region=region,
+        exclude_shorts=exclude_shorts, min_videos=min_videos, top_n=top_n)
+
+
+@app.get("/api/outlier-channels")
+def outlier_channels(period: str = "24h", period_by: str = "discovered",
+                     min_multiplier: float = 2.0, max_subscribers: int = None,
+                     min_subscribers: int = None,
+                     niche: str = None, limit: int = 25, min_ypp_status: str = None):
+    try:
+        return T.recently_added_outlier_channels(
+            period=period, period_by=period_by, min_multiplier=min_multiplier,
+            max_subscribers=max_subscribers, min_subscribers=min_subscribers,
+            niche=niche, limit=limit, min_ypp_status=min_ypp_status or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/competition")
+def competition(period: str = "30d", niche: str = None, limit: int = 15):
+    return T.high_future_competition(period=period, niche=niche, limit=limit)
+
+
+@app.get("/api/search")
+def search(query: str = None, niche: str = None, period: str = "all",
+           min_outlier_score: float = 0.0, max_subscribers: int = None,
+           exclude_shorts: bool = False, only_shorts: bool = False,
+           min_video_length: int = None, max_video_length: int = None,
+           min_rpm: float = None, max_rpm: float = None,
+           sort_by: str = "outlier", limit: int = 30, min_ypp_status: str = None):
+    try:
+        return {"results": Q.search_outliers(
+            query=query or None, niche=niche, period=period,
+            min_outlier_score=min_outlier_score, max_subscribers=max_subscribers,
+            exclude_shorts=exclude_shorts, only_shorts=only_shorts,
+            min_video_length=min_video_length, max_video_length=max_video_length,
+            min_rpm=min_rpm, max_rpm=max_rpm,
+            sort_by=sort_by, limit=limit, min_ypp_status=min_ypp_status or None)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/ideas/check")
+def check_ideas(payload: dict = Body(...)):
+    """Stage 17: batch verdicts (free/recent/proven/flopped) for a list of
+    content ideas, against whatever is already collected locally."""
+    try:
+        return Q.check_ideas(
+            payload.get("ideas") or [], niche=payload.get("niche"),
+            min_similarity=payload.get("minSimilarity", 0.55),
+            recent_days=payload.get("recentDays", 90),
+            proven_outlier=payload.get("provenOutlier", 2.0),
+            flop_outlier=payload.get("flopOutlier", 0.5))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/overview")
+def overview(request: Request, period: str = "24h", niche: str = None):
+    """Всё для главной одним запросом -- иначе страница делает шесть.
+
+    Периоды разные намеренно: 24h для того, что действительно обновляется за
+    сутки, и более широкие окна для срезов, которым нужна статистика.
+    """
+    wide = "30d" if period in ("1h", "6h", "24h", "48h") else period
+    return {
+        "period": period,
+        "widePeriod": wide,
+        "coverage": trends.coverage(period),
+        "stats": Q.db_stats(user_id=_feed_user(request)),
+        "outlierChannels": T.recently_added_outlier_channels(
+            period=period, period_by="discovered", min_multiplier=1.5,
+            niche=niche, limit=6),
+        "competition": T.high_future_competition(period=wide, niche=niche, limit=6),
+        "keywords": trends.trending_keywords(
+            period=period, niche=niche, min_videos=2, top_n=12, sort_by="trend"),
+        "categories": trends.most_popular_categories(
+            period=period, niche=niche, rank_by="channels", min_videos=1, limit=8),
+        "viral": trends.viral_videos_small_channels(
+            period=period, period_by="discovered", niche=niche,
+            max_subscribers=100000, min_views=1000,
+            min_views_per_subscriber=0.5, limit=8),
+    }
+
+
+# ------------------------------------------------------------------ каналы
+
+@app.get("/api/niches")
+def niches():
+    return {"niches": Q.list_niches()}
+
+
+@app.get("/api/niches/saturation")
+def niches_saturation():
+    """Plan 08: every niche's trend (growing / stable / cooling / saturated /
+    insufficient-data) in one pass, for the niche list. Zero quota. Declared
+    before /api/niches/{slug} so "saturation" is not taken for a slug."""
+    return SAT.all_niches_saturation()
+
+
+@app.get("/api/niches/ranking")
+def niches_ranking(refresh: bool = False):
+    """Plan 27: every niche with a 0-100 score and the breakdown behind it,
+    best first (cached an hour). Zero quota. Declared before
+    /api/niches/{slug} so "ranking" is not taken for a slug."""
+    return NRK.rank_niches(refresh=refresh)
+
+
+@app.get("/api/niches/compare")
+def niches_compare(slugs: str):
+    """Plan 27: 2-3 comma-separated niches side by side."""
+    try:
+        return NRK.compare_niches([x.strip() for x in slugs.split(",") if x.strip()])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/niches/{slug}")
+def niche_detail(slug: str, period: str = "all", top_n: int = 5):
+    return Q.niche_overview(slug, period=period, top_n=top_n)
+
+
+@app.get("/api/niches/{slug}/videos")
+def niche_videos(slug: str, period: str = "all", channels: str = None,
+                 include_shorts: bool = True):
+    """Flat per-video list for the stage 15 scatter chart. channels is a
+    comma-separated list of channel_id to narrow the niche to (frontend
+    channel filter); omit for every channel in the niche."""
+    channel_ids = [c for c in (channels or "").split(",") if c] or None
+    return Q.niche_videos(slug, period=period, channel_ids=channel_ids,
+                          include_shorts=include_shorts)
+
+
+@app.get("/api/niches/{slug}/outlier-traits")
+def niche_outlier_traits(slug: str, period: str = "all", min_outlier: float = 3.0,
+                         max_ordinary: float = 1.5):
+    """Plan 29: what the niche's outliers have in common (title, length, tags,
+    publishing time) against ordinary videos, long-form and Shorts apart.
+    Zero quota."""
+    return OT.outlier_traits(slug, period=period, min_outlier=min_outlier, max_ordinary=max_ordinary)
+
+
+@app.get("/api/niches/{slug}/sponsors")
+def niche_sponsors(slug: str, period: str = "all", top_n: int = 10):
+    """Sponsor map (plan 09): share of the niche's videos with a named sponsor,
+    top brands, affiliate brands apart. A lower bound -- descriptions only."""
+    try:
+        return SP.sponsor_map(slug, period=period, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/channels/tracked")
+def tracked(request: Request, faceless: bool = None, content_format: str = None,
+            topic: str = None):
+    return {"channels": T.list_tracked(faceless=faceless, content_format=content_format,
+                                       topic=topic, user_id=_uid(request))}
+
+
+@app.get("/api/channels/{channel_id}")
+def channel(channel_id: str, period: str = "30d"):
+    res = T.channel_analytics(channel_id, period=period)
+    if not res.get("found"):
+        raise HTTPException(status_code=404, detail=res.get("hint", tr("канал не найден")))
+    return res
+
+
+@app.get("/api/channels/{channel_id}/velocity")
+def channel_velocity(channel_id: str, period: str = "30d", limit: int = 25):
+    return T.channel_velocity(channel_id, period=period, limit=limit)
+
+
+@app.get("/api/channels/{channel_id}/history")
+def channel_history(channel_id: str, limit: int = 400):
+    return T.channel_history(channel_id, limit=limit)
+
+
+@app.get("/api/channels/{channel_id}/similar")
+def similar_channels(channel_id: str, niche: str = None, limit: int = 10):
+    return Q.similar_channels(channel_id, niche=niche, limit=limit)
+
+
+@app.get("/api/channels/{channel_id}/niche-overview")
+def channel_niche_overview(channel_id: str, period: str = "all", limit: int = 15):
+    return Q.niche_overview_from_channel(channel_id, limit=limit, period=period)
+
+
+@app.get("/api/channels/{channel_id}/sponsors")
+def channel_sponsors(channel_id: str, period: str = "all", top_n: int = 10):
+    try:
+        return SP.channel_sponsors(channel_id, period=period, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/videos/{video_id}/similar")
+def similar_videos(video_id: str, niche: str = None, limit: int = 10,
+                   exclude_same_channel: bool = False):
+    return Q.similar_videos(video_id, niche=niche, limit=limit,
+                            exclude_same_channel=exclude_same_channel)
+
+
+# ------------------------------------------------------------ swipe file
+
+@app.get("/api/saved")
+def saved_items(request: Request, kind: str = None, folder: str = None, limit: int = 200):
+    return {"items": L.list_items(kind=kind, folder=folder, limit=limit, user_id=_uid(request))}
+
+
+@app.get("/api/saved/folders")
+def saved_folders(request: Request):
+    return {"folders": L.list_folders(user_id=_uid(request))}
+
+
+@app.post("/api/saved")
+def save_item(request: Request, payload: dict = Body(...)):
+    try:
+        return L.save_item(payload.get("kind"), payload.get("refId") or payload.get("ref_id"),
+                           payload=payload.get("payload"), note=payload.get("note"),
+                           folder=payload.get("folder"), user_id=_uid(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/saved/{item_id}")
+def delete_saved_item(request: Request, item_id: int):
+    out = L.delete_item(item_id, user_id=_uid(request))
+    if "deleted" in out and out["deleted"] is None:     # not this user's item
+        raise HTTPException(status_code=404, detail="saved item not found")
+    return out
+
+
+# ------------------------------------------------------------ video tags (16)
+
+@app.get("/api/tags")
+def list_video_tags(niche: str = None, video_id: str = None):
+    try:
+        return {"tags": TG.list_video_tags(niche=niche, video_id=video_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/tags")
+def tag_videos(request: Request, payload: dict = Body(...)):
+    try:
+        return TG.tag_videos(payload.get("items") or [], source=payload.get("source"),
+                             replace=bool(payload.get("replace", False)),
+                             user_id=_uid(request), may_overwrite=_is_admin(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/tags/stats")
+def tag_stats(niche: str, tag_group: str, outlier_threshold: float = 3.0,
+             exclude_recent_days: int = 30):
+    return TG.tag_stats(niche, tag_group, outlier_threshold=outlier_threshold,
+                        exclude_recent_days=exclude_recent_days)
+
+
+@app.get("/api/tags/proposed")
+def proposed_tags(niche: str):
+    return {"proposed": TG.list_proposed_tags(niche)}
+
+
+@app.post("/api/tags/proposed/resolve")
+def resolve_proposed_tag(request: Request, payload: dict = Body(...)):
+    return TG.resolve_proposed_tag(payload.get("videoId") or payload.get("video_id"),
+                                   payload.get("tagGroup") or payload.get("tag_group"),
+                                   payload.get("tag"), bool(payload.get("accept")),
+                                   user_id=_uid(request), may_overwrite=_is_admin(request))
+
+
+# ------------------------------------------------------------ AI enrichment (03)
+
+@app.post("/api/enrich/channels")
+def enrich_channels(request: Request, limit: int = 50):
+    require_admin(request)
+    return EN.classify_channels(limit=limit)
+
+
+@app.post("/api/enrich/videos")
+def enrich_videos(request: Request, limit: int = 100):
+    require_admin(request)
+    return EN.tag_new_videos(limit=limit)
+
+
+# ---------------------------------------------------- metadata review (8.8)
+
+@app.post("/api/metadata/review")
+def metadata_review(payload: dict = Body(...)):
+    return MR.review_metadata(
+        payload.get("title") or "",
+        description=payload.get("description") or "",
+        tags=payload.get("tags") or [],
+        niche=payload.get("niche"),
+        channel_id=payload.get("channelId") or payload.get("channel_id"),
+        is_short=bool(payload.get("isShort") or payload.get("is_short") or False),
+        period=payload.get("period") or "180d",
+    )
+
+
+@app.post("/api/drafts")
+def create_draft(request: Request, payload: dict = Body(...)):
+    return MR.save_draft(
+        payload.get("title") or "",
+        description=payload.get("description") or "",
+        tags=payload.get("tags") or [],
+        niche=payload.get("niche"),
+        channel_id=payload.get("channelId") or payload.get("channel_id"),
+        is_short=bool(payload.get("isShort") or payload.get("is_short") or False),
+        review=payload.get("review"),
+        user_id=_uid(request),
+    )
+
+
+@app.get("/api/drafts")
+def get_drafts(request: Request, channel_id: str = None, unpublished_only: bool = False,
+               limit: int = 100):
+    return {"drafts": MR.list_drafts(channel_id=channel_id, unpublished_only=unpublished_only,
+                                     limit=limit, user_id=_uid(request))}
+
+
+@app.post("/api/drafts/{draft_id}/link")
+def link_draft(request: Request, draft_id: int, payload: dict = Body(...)):
+    video_id = payload.get("videoId") or payload.get("video_id")
+    if not video_id:
+        raise HTTPException(status_code=400, detail="videoId required")
+    try:
+        return MR.link_draft(draft_id, video_id, user_id=_uid(request))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/drafts/{draft_id}/plan")
+def plan_draft(request: Request, draft_id: int, payload: dict = Body(default={})):
+    """Plan 33: give a draft a release time (`plannedAt`, ISO UTC; null takes it
+    off the calendar), with the best hours of its niche or channel."""
+    try:
+        return CAL.plan_draft(draft_id, payload.get("plannedAt"), user_id=_uid(request))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/calendar")
+def content_calendar(request: Request, start: str = None, end: str = None):
+    """Plan 33: planned and published drafts between start and end (ISO UTC;
+    default: this week and the next three), plus the unplanned ones."""
+    try:
+        return CAL.content_calendar(start, end, user_id=_uid(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/drafts/outcomes")
+def draft_outcomes(request: Request, min_age_days: float = 7.0):
+    return {"outcomes": MR.draft_outcomes(min_age_days=min_age_days, user_id=_uid(request))}
+
+
+# ------------------------------------------------------------- alerts (8.9)
+
+@app.get("/api/events")
+def get_events(request: Request, unseen_only: bool = False, kind: str = None, limit: int = 100):
+    uid = _uid(request)
+    return {"events": AL.list_events(unseen_only=unseen_only, kind=kind, limit=limit, user_id=uid),
+           "unseenCount": AL.unseen_count(user_id=uid)}
+
+
+@app.post("/api/events/seen")
+def mark_events_seen(request: Request, payload: dict = Body(default={})):
+    ids = payload.get("ids")
+    all_unseen = bool(payload.get("all") or not ids)
+    return AL.mark_seen(ids=ids, all_unseen=all_unseen, user_id=_uid(request))
+
+
+@app.post("/api/events/scan")
+def scan_events(request: Request):
+    """Manual trigger -- the worker already runs this on WORKER_ALERTS_INTERVAL_MIN,
+    this is for "check right now" from the dashboard/popup without waiting.
+    An admin scans every watchlist; a regular user (P2-11, plan limit
+    `manual_runs`) only their own channels, a few times an hour."""
+    if _is_admin(request):
+        require_admin(request)
+        return AL.scan()
+    return _user_run(request, "scan",
+                     lambda uid: AL.scan(channel_ids=T.user_channel_ids(user_id=uid)))
+
+
+# ------------------------------------------------------ topic alerts (plan 19)
+
+@app.get("/api/topics")
+def get_topics(request: Request):
+    return {"topics": TW.list_topics(user_id=_uid(request)), "note": TW.NOTE}
+
+
+@app.post("/api/topics")
+def add_topic(request: Request, payload: dict = Body(default={})):
+    """Watch a topic: a new video whose embedding is close enough raises a
+    personal topic_match alert. Zero quota."""
+    try:
+        return TW.add_topic(payload.get("text"), threshold=float(
+            payload.get("threshold") or TW.DEFAULT_THRESHOLD), user_id=_uid(request),
+            search_youtube=bool(payload.get("searchYoutube")))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/topics/{topic_id}/pause")
+def pause_topic(request: Request, topic_id: int, payload: dict = Body(default={})):
+    try:
+        return TW.set_paused(topic_id, bool(payload.get("paused", True)), user_id=_uid(request))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="topic not found")
+
+
+@app.post("/api/topics/{topic_id}/search")
+def topic_search_toggle(request: Request, topic_id: int, payload: dict = Body(default={})):
+    """Turn a topic's daily YouTube search (one search.list call a day) on or off."""
+    try:
+        return TW.set_search(topic_id, bool(payload.get("on", True)), user_id=_uid(request))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="topic not found")
+
+
+@app.delete("/api/topics/{topic_id}")
+def delete_topic(request: Request, topic_id: int):
+    out = TW.remove_topic(topic_id, user_id=_uid(request))
+    if not out["removed"]:
+        raise HTTPException(status_code=404, detail="topic not found")
+    return out
+
+
+@app.get("/api/channels/{channel_id}/collabs")
+def channel_collabs(channel_id: str, min_ratio: float = 0.5, max_ratio: float = 2.0,
+                    active_days: int = 30, niche: str = None, limit: int = 10):
+    """Plan 31: channels for a collaboration -- similar topic, your size,
+    active, not templated -- each with the numbers that picked it. Zero quota."""
+    try:
+        return CLB.collab_candidates(channel_id, min_ratio=min_ratio, max_ratio=max_ratio,
+                                     active_days=active_days, niche=niche, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/cost-profiles")
+def cost_profiles(request: Request):
+    """Plan 30: your cost profiles (what a video costs to make)."""
+    return {"profiles": PF.list_profiles(user_id=_uid(request))}
+
+
+@app.post("/api/cost-profiles")
+def save_cost_profile(request: Request, payload: dict = Body(default={})):
+    """Plan 30: create a cost profile, or change one (`id`, or the same `name`)."""
+    try:
+        return PF.save_profile(payload.get("name"), per_video_usd=payload.get("perVideoUsd"),
+                               per_minute_usd=payload.get("perMinuteUsd"),
+                               monthly_usd=payload.get("monthlyUsd"), profile_id=payload.get("id"),
+                               user_id=_uid(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/cost-profiles/{profile_id}")
+def delete_cost_profile(request: Request, profile_id: int):
+    out = PF.delete_profile(profile_id, user_id=_uid(request))
+    if not out["removed"]:
+        raise HTTPException(status_code=404, detail="profile not found")
+    return out
+
+
+@app.get("/api/profit")
+def profit(request: Request, channel_id: str = None, video_id: str = None, niche: str = None,
+           profile: str = None, videos_per_month: int = None):
+    """Plan 30: revenue range minus a cost profile's costs, for a channel (a
+    month), a video or a niche's typical video. Zero quota."""
+    try:
+        return PF.profit_estimate(channel_id=channel_id, video_id=video_id, niche=niche,
+                                  profile=profile, videos_per_month=videos_per_month,
+                                  user_id=_uid(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/channels/{channel_id}/policy-signals")
+def channel_policy_signals(channel_id: str):
+    """Plan 22: signals for YouTube's three inauthentic-content categories."""
+    from application import policy_signals as PSA
+    return PSA.channel_policy_signals(channel_id)
+
+
+@app.get("/api/niches/{slug}/policy-signals")
+def niche_policy_signals(slug: str):
+    """Plan 22: how many channels of a niche show each category's signals."""
+    from application import policy_signals as PSA
+    return PSA.niche_policy_signals(slug)
+
+
+@app.get("/api/freshness")
+def data_freshness():
+    """Plan 16: how many stored rows are older than the refresh age. Its own
+    route -- two full-table counts are too heavy for /api/health, which the
+    extension and the footer poll."""
+    from application import freshness as FR
+    return FR.status()
+
+
+@app.get("/api/scores")
+def scores(key: str = None):
+    """Plan 23: what every number is -- YouTube data or an estimate of
+    niche-finder, its formula, inputs and minimum sample."""
+    from domain import score_catalog as SC
+    try:
+        return SC.catalog(key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no score {key!r}")
+
+
+@app.get("/api/videos/trajectory")
+def videos_trajectory(ids: str):
+    """Plan 20: views by age for up to 5 comma-separated video ids, each with
+    its channel's expected curve. Zero quota."""
+    try:
+        return TJ.video_trajectory(ids.split(","))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/videos/{video_id}/repeatability")
+def video_repeatability(video_id: str, min_similarity: float = RP.DEFAULT_MIN_SIMILARITY,
+                        niche: str = None):
+    """Plan 21: did this video's format work for other channels too? Zero quota."""
+    return RP.format_repeatability(video_id, min_similarity=min_similarity, niche=niche)
+
+
+@app.get("/api/language-gaps")
+def language_gaps(source: str, target: str, niche: str = None, min_outlier: float = 3.0,
+                  min_similarity: float = LG.L.MIN_SIMILARITY, limit: int = 30):
+    """Plan 26: outliers in one language and whether anything like them exists
+    in another (open / thin / covered). Zero quota."""
+    try:
+        return LG.language_gaps(source, target, niche=niche, min_outlier=min_outlier,
+                                min_similarity=min_similarity, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/videos/{video_id}/language-gap")
+def video_language_gap(video_id: str, target: str = None,
+                       min_similarity: float = LG.L.MIN_SIMILARITY):
+    """Plan 26: is there something like this video in another language? Without
+    `target` the biggest other language in the database. Zero quota."""
+    try:
+        return LG.video_language_gap(video_id, target_lang=target, min_similarity=min_similarity)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/language-gaps/languages")
+def language_gaps_languages():
+    """Languages we hold videos in (code, videos, channels), biggest first."""
+    return {"languages": LG.languages()}
+
+
+@app.get("/api/title-changes")
+def title_changes(request: Request, period: str = "7d", channel_id: str = None, limit: int = 50):
+    return T.title_changes(period=period, channel_id=channel_id, limit=limit,
+                           user_id=_feed_user(request))
+
+
+@app.get("/api/packaging")
+def packaging_feed(request: Request, period: str = "30d", channel_id: str = None,
+                   field: str = None, limit: int = 50):
+    """Repackaging feed (plan 05): title and thumbnail swaps with before/after
+    and the views-per-hour effect. Zero quota."""
+    try:
+        return PKG.packaging_feed(period=period, channel_id=channel_id, field=field,
+                                  limit=limit, user_id=_feed_user(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/digest")
+def digest_preview(request: Request, period: str = "24h", top_n: int = 5):
+    """What the daily digest (plan 07) would contain right now -- read-only."""
+    return DG.build_digest(period=period, top_n=top_n, user_id=_uid(request))
+
+
+@app.post("/api/digest/send")
+def digest_send(request: Request):
+    """Send the digest now, ignoring DIGEST_HOUR and "already sent today" --
+    for checking the Telegram/webhook setup. To the caller's own notifier."""
+    return DG.send_digest(force=True, user_id=_uid(request))
+
+
+# ------------------------------------------------------ notification settings (plan 15, 5.9)
+
+@app.get("/api/settings/notifications")
+def notification_settings(request: Request):
+    """Whether Telegram/webhook are set and the mode -- never the secrets."""
+    return NS.get(user_id=_uid(request))
+
+
+@app.put("/api/settings/notifications")
+def save_notification_settings(request: Request, payload: dict = Body(...)):
+    try:
+        return NS.save(_uid(request),
+                       telegram_bot_token=payload.get("telegramBotToken"),
+                       telegram_chat_id=payload.get("telegramChatId"),
+                       webhook_url=payload.get("webhookUrl"),
+                       mode=payload.get("mode"), clear=bool(payload.get("clear")))
+    except NS.SettingsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/settings/notifications/test")
+def test_notification(request: Request):
+    notifier = NS.notifier_for(user_id=_uid(request))
+    if NS.target_name(user_id=_uid(request)) == "none":
+        raise HTTPException(status_code=409, detail="no Telegram or webhook set up yet")
+    return {"sent": bool(notifier.send(tr("\U0001F9EA niche-finder: тестовое сообщение. "
+                                          "Если вы это видите, уведомления настроены верно.")))}
+
+
+@app.post("/api/briefs")
+def make_brief(request: Request, payload: dict = Body(...)):
+    """Outlier -> brief (plan 02). save=false previews without writing anything;
+    save=true also stores a draft linked to the source video. Zero quota."""
+    video_id = payload.get("videoId") or payload.get("video_id")
+    if not video_id:
+        raise HTTPException(status_code=400, detail="videoId required")
+    brief = BR.build_brief(
+        video_id, niche=payload.get("niche"),
+        use_llm=payload.get("useLlm", payload.get("use_llm", True)),
+        save=payload.get("save", True),
+        gap_topic=payload.get("gapTopic", payload.get("gap_topic")),
+        user_id=_uid(request))
+    if not brief.get("found", True):
+        raise HTTPException(status_code=404, detail=brief.get("hint") or "video not found")
+    return brief
+
+
+@app.get("/api/channels/{channel_id}/template-risk")
+def channel_template_risk(channel_id: str, last_n: int = 30):
+    """How templated a channel's recent uploads look (plan 01) -- a heuristic
+    over local data, zero quota."""
+    return TRK.template_risk(channel_id, last_n=last_n)
+
+
+@app.get("/api/niches/{slug}/template-risk")
+def niche_template_risk(slug: str, last_n: int = 30, top_n: int = 10):
+    return TRK.niche_template_risk(slug, last_n=last_n, top_n=top_n)
+
+
+@app.get("/api/videos/{video_id}/packaging")
+def packaging_history(video_id: str):
+    return PKG.packaging_history(video_id)
+
+
+# ------------------------------------------------------ sign-in (plan 15)
+
+def _cookie_secure(request) -> bool:
+    forced = os.environ.get("NF_COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes")
+    return forced or request.url.scheme == "https"
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    if not multi_user_enabled():
+        return {"multiUser": False, "user": {"id": LOCAL_USER_ID, "email": "local", "isAdmin": True},
+                "locale": _saved_locale(LOCAL_USER_ID), **_timezone_info(LOCAL_USER_ID)}
+    user = request.state.user
+    return {"multiUser": True, "user": user,
+            "quota": yt.user_usage(user["id"]) if user else None,
+            "plan": PL.summary(user["id"]) if user else None,
+            "locale": _saved_locale(user["id"]) if user else None,
+            **_timezone_info(user["id"] if user else None),
+            # P1-06: what the sign-in screen offers (both need SMTP)
+            "signup": SU.options(),
+            # P2-05: an admin's read-only support view -- user above is the account
+            "impersonation": _view_info(request),
+            # P2-04: setupRequired -- администратор без 2FA при NF_ADMIN_2FA=required
+            **({"twoFactor": {"setupRequired": TF.setup_required(user)}} if user else {})}
+
+
+def _view_info(request):
+    view = getattr(request.state, "impersonation", None)
+    if not view:
+        return None
+    return {"userId": view["user"]["id"], "email": view["user"]["email"],
+            "admin": view["admin"], "startedAt": view["startedAt"],
+            "expiresAt": view["expiresAt"], "reason": view["reason"], "readOnly": True}
+
+
+@app.put("/api/me/locale")
+def me_locale(request: Request, payload: dict = Body(...)):
+    """План i18n: язык интерфейса -- для дашборда на другом устройстве и для
+    алертов и дайджеста этого пользователя."""
+    try:
+        return {"locale": LP.save(payload.get("locale"), user_id=_uid(request))}
+    except LP.LocaleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _timezone_info(user_id) -> dict:
+    """P2-03: сохранённый пояс (None -- не выбран) и что действует без него."""
+    return {"timezone": TZP.get(user_id=user_id) if user_id is not None else None,
+            "defaultTimezone": TZP.server_name()}
+
+
+@app.put("/api/me/timezone")
+def me_timezone(request: Request, payload: dict = Body(...)):
+    """P2-03: часовой пояс IANA (Europe/Moscow) -- дайджест уходит в DIGEST_HOUR
+    по нему, напоминания календаря пишут время в нём. Пусто -- сбросить на
+    NF_DEFAULT_TIMEZONE / время сервера. onlyIfEmpty: дашборд молча предлагает
+    пояс браузера при первом входе и не перебивает уже выбранный."""
+    try:
+        saved = TZP.save(payload.get("timezone"), user_id=_uid(request),
+                         only_if_empty=bool(payload.get("onlyIfEmpty")))
+    except TZP.TimezoneError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"timezone": saved, "defaultTimezone": TZP.server_name()}
+
+
+@app.post("/api/auth/login")
+def auth_login(request: Request, response: Response, payload: dict = Body(...)):
+    """Accounts are created by an admin (`cli.py create-user`). The session
+    token goes only into the HttpOnly cookie, never into the JSON body."""
+    try:
+        s = AUTH.login(str(payload.get("email") or ""), str(payload.get("password") or ""),
+                       client_ip=_client_ip(request))
+    except AUTH.LoginThrottled as e:
+        raise HTTPException(status_code=429, headers={"Retry-After": str(e.retry_after)},
+                            detail=tr("Слишком много неудачных попыток входа. Повторите через "
+                                      "{retry_after} с.", retry_after=e.retry_after))
+    except AUTH.AuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    return _signed_in(request, response, s)
+
+
+def _signed_in(request, response, s) -> dict:
+    """Put a new session into the HttpOnly cookie (never into the body). The
+    cookie may outlive the idle expiry: the server decides (P1-04), so it is
+    kept up to the absolute limit and never has to be set again. With
+    two-factor sign-in (P2-04) there is no session yet: the answer carries the
+    one-time challenge for POST /api/auth/login/2fa, and no cookie is set."""
+    if s.get("mfaRequired"):
+        return {"mfaRequired": True, "challenge": s["challenge"], "expiresAt": s["expiresAt"]}
+    response.set_cookie(AUTH_COOKIE, s["token"], max_age=AUTH.SESSION_MAX_DAYS * 86400, path="/",
+                        httponly=True, samesite="strict", secure=_cookie_secure(request))
+    user = AUTH.user_for_token(s["token"], client_ip=_client_ip(request),
+                               user_agent=request.headers.get("user-agent"))
+    return {"user": user, "expiresAt": s["expiresAt"]}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request, response: Response):
+    if getattr(request.state, "impersonation", None):
+        # P2-05: the support view ends with the session, and the log says so
+        IMP.end(request.state.session_id, why="logout")
+    AUTH.logout(request.cookies.get(AUTH_COOKIE, ""))
+    response.delete_cookie(AUTH_COOKIE, path="/")
+    return {"signedOut": True}
+
+
+# ------------------------------------------- sign-up and reset (P1-06)
+
+def _public_url(request) -> str:
+    """The dashboard address emailed links point to: NF_PUBLIC_URL, else
+    https://NF_DOMAIN, else the address of this request -- whose Host is one
+    of NF_ALLOWED_HOSTS (local_only_guard), so it cannot be forged."""
+    base = (os.environ.get("NF_PUBLIC_URL") or "").strip()
+    if not base and (os.environ.get("NF_DOMAIN") or "").strip():
+        base = "https://" + os.environ["NF_DOMAIN"].strip()
+    return (base or str(request.base_url)).rstrip("/")
+
+
+def _mail_link(request):
+    base = _public_url(request)
+    # the token rides in the #fragment: browsers never send it to a server or a log
+    return lambda kind, token: f"{base}/#/{kind}/{token}"
+
+
+def _signup_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except SU.SignupClosed as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SU.TooManyRequests as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except (SU.SignupError, AUTH.AuthError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except mailer.MailError:
+        raise HTTPException(status_code=503, detail=tr("Не удалось отправить письмо. "
+                                                       "Попробуйте позже."))
+
+
+def _sent():
+    return {"sent": True, "detail": tr("Если адрес верный, письмо со ссылкой уже в пути. "
+                                       "Проверьте почту, в том числе папку «Спам».")}
+
+
+@app.post("/api/auth/register")
+def auth_register(request: Request, payload: dict = Body(...)):
+    """Open sign-up: mails a one-time link (24 h) to finish it. The same reply
+    whether or not the address already has an account."""
+    _signup_call(SU.register, str(payload.get("email") or ""), client_ip=_client_ip(request),
+                 link=_mail_link(request))
+    return _sent()
+
+
+@app.post("/api/auth/register/link")
+def auth_register_link(payload: dict = Body(...)):
+    """The address a sign-up link is for, to show it on the password form."""
+    return {"email": _signup_call(SU.signup_email, str(payload.get("token") or ""))}
+
+
+@app.post("/api/auth/register/complete")
+def auth_register_complete(request: Request, response: Response, payload: dict = Body(...)):
+    """Choose the password from the emailed link: the account is created and
+    signed in."""
+    s = _signup_call(SU.complete_signup, str(payload.get("token") or ""),
+                     str(payload.get("password") or ""))
+    return _signed_in(request, response, s)
+
+
+@app.post("/api/auth/password/forgot")
+def auth_password_forgot(request: Request, payload: dict = Body(...)):
+    """Mails a one-time reset link (1 h) to an active account; the same reply
+    for an unknown address."""
+    _signup_call(SU.forgot_password, str(payload.get("email") or ""),
+                 client_ip=_client_ip(request), link=_mail_link(request))
+    return _sent()
+
+
+@app.post("/api/auth/password/reset")
+def auth_password_reset(request: Request, response: Response, payload: dict = Body(...)):
+    """A new password from a reset link: every session and API token of the
+    account ends, this browser is signed in."""
+    s = _signup_call(SU.reset_password, str(payload.get("token") or ""),
+                     str(payload.get("password") or ""))
+    return _signed_in(request, response, s)
+
+
+@app.post("/api/auth/email/confirm")
+def auth_email_confirm(payload: dict = Body(...)):
+    """Open the link sent to a new address: it becomes the account's email."""
+    return {"email": _signup_call(SU.confirm_email_change, str(payload.get("token") or ""))}
+
+
+def _own_session(request) -> int:
+    """Profile changes need a dashboard sign-in, never an API token."""
+    if not multi_user_enabled():
+        raise HTTPException(status_code=409, detail="accounts exist only with NF_MULTI_USER=1")
+    if getattr(request.state, "via", None) != "session":
+        raise HTTPException(status_code=403, detail="sign in to the dashboard to change this")
+    return request.state.user_id
+
+
+@app.post("/api/auth/password")
+def auth_password_change(request: Request, response: Response, payload: dict = Body(...)):
+    """Change your password with the current one: other sign-ins and API
+    tokens end, this browser stays signed in."""
+    uid = _own_session(request)
+    # P2-04: новая сессия наследует пройденный второй фактор (старую смена пароля завершит)
+    verified = TF.session_verified(request.state.session_id)
+    s = _signup_call(SU.change_password, uid,
+                     str(payload.get("currentPassword") or ""), str(payload.get("password") or ""))
+    if verified:
+        TF.mark_session(s["token"])
+    return _signed_in(request, response, s)
+
+
+@app.post("/api/auth/email")
+def auth_email_change(request: Request, payload: dict = Body(...)):
+    """Change your email: with your password, a confirmation link goes to the
+    new address."""
+    sent_to = _signup_call(SU.request_email_change, _own_session(request),
+                           str(payload.get("password") or ""), str(payload.get("email") or ""),
+                           client_ip=_client_ip(request), link=_mail_link(request))
+    return {"sentTo": sent_to}
+
+
+# ------------------------------------------- two-factor sign-in (P2-04)
+
+def _tf_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except AUTH.LoginThrottled as e:
+        raise HTTPException(status_code=429, headers={"Retry-After": str(e.retry_after)},
+                            detail=tr("Слишком много неудачных попыток входа. Повторите через "
+                                      "{retry_after} с.", retry_after=e.retry_after))
+    except TF.TwoFactorUnavailable as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except AUTH.AuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except TF.TwoFactorError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/auth/login/2fa")
+def auth_login_second_step(request: Request, response: Response, payload: dict = Body(...)):
+    """The second sign-in step: the `challenge` from POST /api/auth/login (or a
+    password reset) and a `code` from the authenticator app or a backup code.
+    The session cookie is set only now; wrong codes slow down like wrong
+    passwords, and the challenge dies after a few of them or a few minutes."""
+    if not multi_user_enabled():
+        raise HTTPException(status_code=409, detail="accounts exist only with NF_MULTI_USER=1")
+    s = _tf_call(TF.complete_login, str(payload.get("challenge") or ""),
+                 str(payload.get("code") or ""), client_ip=_client_ip(request))
+    return _signed_in(request, response, s)
+
+
+@app.get("/api/auth/2fa")
+def auth_2fa_status(request: Request):
+    """Your two-factor sign-in: on or off, setup started, backup codes left,
+    whether this server can turn it on (OWN_TOKENS_KEY) and whether it is
+    required for you (NF_ADMIN_2FA=required, admins). Dashboard sign-in only."""
+    uid = _own_session(request)
+    return TF.status(uid, bool(request.state.user.get("isAdmin")))
+
+
+@app.post("/api/auth/2fa/setup")
+def auth_2fa_setup(request: Request):
+    """Start turning two-factor sign-in on: a new secret and its otpauth://
+    link for the authenticator app, shown only now. Nothing changes until
+    POST /api/auth/2fa/enable confirms a code."""
+    uid = _own_session(request)
+    return _tf_call(TF.setup, uid, request.state.user["email"])
+
+
+@app.post("/api/auth/2fa/enable")
+def auth_2fa_enable(request: Request, payload: dict = Body(...)):
+    """Confirm the setup with a `code` from the app: two-factor sign-in is on,
+    10 backup codes come back ONCE, your other sessions end."""
+    uid = _own_session(request)
+    return _tf_call(TF.enable, uid, str(payload.get("code") or ""), request.state.session_id)
+
+
+@app.post("/api/auth/2fa/disable")
+def auth_2fa_disable(request: Request, payload: dict = Body(...)):
+    """Turn two-factor sign-in off with your `password` and a `code` (app or
+    backup). Not for admins when NF_ADMIN_2FA=required."""
+    uid = _own_session(request)
+    return _tf_call(TF.disable, uid, str(payload.get("password") or ""),
+                    str(payload.get("code") or ""), bool(request.state.user.get("isAdmin")),
+                    client_ip=_client_ip(request))
+
+
+@app.post("/api/auth/2fa/backup-codes")
+def auth_2fa_backup_codes(request: Request, payload: dict = Body(...)):
+    """New backup codes for a current `code`; the old ones stop working. The
+    new ones come back ONCE."""
+    uid = _own_session(request)
+    return _tf_call(TF.regenerate_backup_codes, uid, str(payload.get("code") or ""),
+                    client_ip=_client_ip(request))
+
+
+# ------------------------------------------- your sessions (P1-04)
+
+@app.get("/api/auth/sessions")
+def auth_sessions(request: Request):
+    """Where you are signed in: when, from which address and browser, the
+    current session marked. Never a token or its hash; a dashboard sign-in
+    only, never an API token."""
+    uid = _own_session(request)
+    return {"sessions": AUTH.list_sessions(uid, current_id=request.state.session_id),
+            "idleDays": AUTH.SESSION_IDLE_DAYS, "maxDays": AUTH.SESSION_MAX_DAYS}
+
+
+@app.delete("/api/auth/sessions/{session_id}")
+def auth_session_end(request: Request, response: Response, session_id: int):
+    """Sign out one of your sessions; ending the current one signs this
+    browser out too."""
+    uid = _own_session(request)
+    if not AUTH.end_session(uid, session_id):
+        raise HTTPException(status_code=404, detail=tr("Такого входа нет: возможно, он уже завершён."))
+    current = session_id == request.state.session_id
+    if current:
+        response.delete_cookie(AUTH_COOKIE, path="/")
+    return {"ended": session_id, "current": current}
+
+
+@app.post("/api/auth/sessions/end-others")
+def auth_sessions_end_others(request: Request):
+    """Sign out on every other device; this browser stays signed in."""
+    uid = _own_session(request)
+    return {"ended": AUTH.end_other_sessions(uid, request.state.session_id)}
+
+
+def _uid(request) -> int:
+    """Whose personal data this request works on (multi-user plan P1-01): the
+    local user without accounts, else whoever signed in -- never user 1 by
+    default. session_guard already answers 401 off the public routes; this
+    keeps a public route that asks for a user from acting as the admin."""
+    if not multi_user_enabled():
+        return LOCAL_USER_ID
+    uid = getattr(request.state, "user_id", None)
+    if uid is None:
+        raise HTTPException(status_code=401,
+                            detail=tr("Sign in first: NF_MULTI_USER is on -- войдите в дашборде."))
+    return uid
+
+
+def _is_admin(request) -> bool:
+    """The local operator in single-user mode; with accounts, an admin signed
+    in by session or API token (unlike _admin, which tariffs keep to a session)."""
+    if not multi_user_enabled():
+        return True
+    user = getattr(request.state, "user", None)
+    return bool(user and user.get("isAdmin"))
+
+
+def require_admin(request):
+    """Work on the shared corpus or the server's own schedule -- the worker
+    does it anyway (multi-user plan P0-02)."""
+    if not _is_admin(request):
+        raise HTTPException(status_code=403, detail=str(PD.AdminOnly()))
+    _as_system()
+
+
+def _user_run(request, operation, run):
+    """P2-11: ручной запуск обычного пользователя -- по его каналам и в лимит
+    тарифа `manual_runs`. Лимит 0 -- 403, как до P2-11 (только администратор);
+    исчерпан -- 429 с Retry-After (_manual_run_limited). Запуск, который упал
+    (нет ключа, кончилась квота), не в счёт. Работает в области пользователя
+    (RLS), квоту и LLM платит он сам (quota_owner)."""
+    uid = _uid(request)
+    try:
+        run_id = MRUN.start(operation, user_id=uid)
+    except PD.AdminOnly as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    try:
+        return run(uid)
+    except BaseException:
+        MRUN.release(run_id, user_id=uid)
+        raise
+
+
+@app.get("/api/manual-runs")
+def manual_runs_status(request: Request):
+    """P2-11: which manual runs (refresh, scan) this user may start now and,
+    past the plan's hourly limit, when the next one is allowed (nextAt, UTC).
+    An admin is never limited; perHour 0 means admins only."""
+    return MRUN.status(user_id=_uid(request), is_admin=_is_admin(request))
+
+
+def _as_system():
+    """P1-02: дальше этот маршрут работает за всех, как worker, -- ролью
+    владельца, без политик RLS. Без reset: синхронный маршрут идёт в потоке
+    со своей копией контекста, и она кончается вместе с ним."""
+    db.set_rls_user(None)
+
+
+def _session_user(request):
+    """Token management needs a real sign-in: a leaked API token must not be
+    able to mint more tokens or list them."""
+    if not multi_user_enabled():
+        raise HTTPException(status_code=409, detail="API tokens exist only with NF_MULTI_USER=1")
+    if getattr(request.state, "via", None) != "session":
+        raise HTTPException(status_code=403, detail="sign in to the dashboard to manage tokens")
+    return request.state.user_id
+
+
+@app.get("/api/auth/tokens")
+def api_tokens_list(request: Request):
+    return {"tokens": AUTH.list_api_tokens(_session_user(request))}
+
+
+@app.post("/api/auth/tokens")
+def api_tokens_create(request: Request, payload: dict = Body(default={})):
+    """A personal token for the extension or MCP over HTTP, shown ONCE.
+    expiresInDays: 1..365 (default 90), 0 = no expiry; scopes: any of read,
+    write, mcp (default all). With two-factor sign-in on, only from a session
+    that passed the second factor (P2-04)."""
+    uid = _session_user(request)
+    if TF.enabled(uid) and not TF.session_verified(request.state.session_id):
+        raise HTTPException(status_code=403, detail=tr(
+            "Создать API-токен можно только из входа, прошедшего двухфакторную проверку: "
+            "выйдите и войдите снова."))
+    try:
+        return AUTH.create_api_token(uid, payload.get("name"),
+                                     expires_in_days=payload.get("expiresInDays"),
+                                     scopes=payload.get("scopes"))
+    except AUTH.AuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/auth/tokens/{token_id}")
+def api_tokens_revoke(request: Request, token_id: int):
+    if not AUTH.revoke_api_token(_session_user(request), token_id):
+        raise HTTPException(status_code=404, detail="token not found")
+    return {"revoked": token_id}
+
+
+# ------------------------------------------------------ tariffs (SaaS sub-project 1)
+
+def _plans_on():
+    if not multi_user_enabled():
+        raise HTTPException(status_code=409, detail="tariffs exist only with NF_MULTI_USER=1")
+
+
+def _admin(request) -> int:
+    """Admins signed in to the dashboard; an API token never edits tariffs."""
+    _plans_on()
+    user = getattr(request.state, "user", None)
+    if getattr(request.state, "via", None) != "session" or not (user and user.get("isAdmin")):
+        raise HTTPException(status_code=403, detail="admins only, signed in to the dashboard")
+    _as_system()
+    return user["id"]
+
+
+def _plan_call(fn, *args):
+    try:
+        return fn(*args)
+    except PL.PlanError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/plan")
+def plan_get(request: Request):
+    _plans_on()
+    return {**PL.summary(_uid(request)), "plans": PL.public_plans(), "catalog": PL.catalog()}
+
+
+@app.post("/api/plan/choose")
+def plan_choose(request: Request, payload: dict = Body(...)):
+    """Free plans only until payments exist; a paid one is set by an admin."""
+    _plans_on()
+    try:
+        plan_id = int(payload.get("planId") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=tr("planId: нужен номер тарифа"))
+    _plan_call(PL.choose, _uid(request), plan_id)
+    return PL.summary(_uid(request))
+
+
+@app.get("/api/admin/plans")
+def admin_plans(request: Request):
+    _admin(request)
+    return {"plans": PL.list_plans(), "catalog": PL.catalog()}
+
+
+def _plan_logged(admin: int, event: str, plan: dict) -> dict:
+    """P1-07: an admin's change to a tariff goes into the action log."""
+    AUD.log(event, actor_id=admin, details={"id": plan["id"], "slug": plan["slug"]})
+    return plan
+
+
+@app.post("/api/admin/plans")
+def admin_plan_create(request: Request, payload: dict = Body(...)):
+    admin = _admin(request)
+    return _plan_logged(admin, "plan_create", _plan_call(PL.create_plan, payload))
+
+
+@app.put("/api/admin/plans/{plan_id}")
+def admin_plan_update(request: Request, plan_id: int, payload: dict = Body(...)):
+    admin = _admin(request)
+    return _plan_logged(admin, "plan_update", _plan_call(PL.update_plan, plan_id, payload))
+
+
+@app.post("/api/admin/plans/{plan_id}/archive")
+def admin_plan_archive(request: Request, plan_id: int):
+    admin = _admin(request)
+    return _plan_logged(admin, "plan_archive", _plan_call(PL.set_archived, plan_id, True))
+
+
+@app.post("/api/admin/plans/{plan_id}/restore")
+def admin_plan_restore(request: Request, plan_id: int):
+    admin = _admin(request)
+    return _plan_logged(admin, "plan_restore", _plan_call(PL.set_archived, plan_id, False))
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request):
+    """The accounts, the shared YouTube pool and (P1-12) how many stored
+    secrets the current keys cannot read -- counts only, never a value."""
+    _admin(request)
+    return {"users": PL.list_users(), "pool": PL.pool_summary(), "secrets": SR.health()}
+
+
+@app.put("/api/admin/users/{user_id}/plan")
+def admin_user_plan(request: Request, user_id: int, payload: dict = Body(...)):
+    admin = _admin(request)
+    try:
+        plan_id = int(payload.get("planId") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=tr("planId: нужен номер тарифа"))
+    _plan_call(PL.assign, admin, user_id, plan_id, payload.get("expiresAt"))
+    return {"userId": user_id, **PL.summary(user_id)}
+
+
+# ------------------------------------------- accounts: block and delete (P0-04)
+# Admin actions need an admin signed in to the dashboard, like tariffs: a leaked
+# API token must not be able to delete accounts.
+
+def _users_call(fn, *args):
+    try:
+        return fn(*args)
+    except UA.UserNotFound:
+        raise HTTPException(status_code=404, detail="user not found")
+    except (UA.UserAdminError, AUTH.AuthError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/admin/users")
+def admin_user_create(request: Request, payload: dict = Body(...)):
+    """A new account; its one-time password is in this answer only."""
+    admin = _admin(request)
+    return _users_call(UA.create, admin, str(payload.get("email") or ""),
+                       bool(payload.get("isAdmin")))
+
+
+@app.post("/api/admin/users/{user_id}/disable")
+def admin_user_disable(request: Request, user_id: int):
+    return _users_call(UA.set_disabled, _admin(request), user_id, True)
+
+
+@app.post("/api/admin/users/{user_id}/enable")
+def admin_user_enable(request: Request, user_id: int):
+    return _users_call(UA.set_disabled, _admin(request), user_id, False)
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_user_delete(request: Request, user_id: int, payload: dict = Body(default={})):
+    return _users_call(UA.delete, _admin(request), user_id, str(payload.get("confirmEmail") or ""))
+
+
+# ------------------------------------------- support view (P2-05)
+# An admin looks at an account read-only, from the dashboard only: the session
+# is marked (application/impersonation.py), session_guard does the rest.
+
+@app.post("/api/admin/users/{user_id}/impersonate")
+def admin_user_impersonate(request: Request, user_id: int, payload: dict = Body(default={})):
+    """Admin, signed in to the dashboard: look at this account through its
+    owner's eyes, read-only, for NF_IMPERSONATION_MINUTES (30 by default).
+    reason is required and goes into the action log. Not an admin, not a
+    blocked account, not from inside another view; never by API token."""
+    if not multi_user_enabled():
+        raise HTTPException(status_code=409, detail="accounts exist only with NF_MULTI_USER=1")
+    admin = _admin(request)
+    try:
+        return IMP.start(admin, request.state.session_id, user_id, payload.get("reason"))
+    except IMP.NotFound:
+        raise HTTPException(status_code=404, detail="user not found")
+    except IMP.ImpersonationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/auth/impersonation/end")
+def auth_impersonation_end(request: Request):
+    """Leave the support view: the session is the admin's again. The one
+    change a support view may send; ended: false when there was no view."""
+    view = getattr(request.state, "impersonation", None)
+    if not view:
+        return {"ended": False}
+    IMP.end(request.state.session_id, why="exit")
+    return {"ended": True, "user": {**view["admin"], "isAdmin": True}}
+
+
+@app.delete("/api/auth/me")
+def auth_delete_me(request: Request, response: Response, payload: dict = Body(default={})):
+    """Delete your own account and everything that is yours; needs your password
+    and a dashboard sign-in, never an API token."""
+    if not multi_user_enabled():
+        raise HTTPException(status_code=409, detail="accounts exist only with NF_MULTI_USER=1")
+    if getattr(request.state, "via", None) != "session":
+        raise HTTPException(status_code=403, detail="sign in to the dashboard to delete your account")
+    result = _users_call(UA.delete_self, request.state.user_id, str(payload.get("password") or ""))
+    response.delete_cookie(AUTH_COOKIE, path="/")
+    return result
+
+
+# ------------------------------------------------------ action log (P1-07)
+
+@app.get("/api/admin/audit")
+def admin_audit(request: Request, event: str = None, user: str = None, since: str = None,
+                until: str = None, page: int = 1, perPage: int = 50):
+    """Admin: the action log, newest first -- sign-ins and failed ones,
+    password and email changes, sign-ups, API tokens, tariffs, account and
+    tariff actions. Filters: event (a name or a group), user (id or email, as
+    actor or target), since/until (YYYY-MM-DD, both included); page/perPage
+    (at most 200). Never a password or a token. With accounts it needs an
+    admin signed in to the dashboard: an API token does not read client
+    addresses."""
+    require_admin(request)
+    if multi_user_enabled() and getattr(request.state, "via", None) != "session":
+        raise HTTPException(status_code=403, detail="admins only, signed in to the dashboard")
+    try:
+        return AUD.search(event=event, user=user, since=since, until=until, page=page,
+                          per_page=perPage)
+    except AUD.AuditError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ------------------------------------------------------ own channels (plan 14)
+# Personal data of the local user. The refresh token never leaves
+# application/own_channels.py; nothing below returns or logs it.
+
+def _own_call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except OWN.NotConfigured as e:
+        raise HTTPException(status_code=428, detail=str(e))
+    except OWN.NotConnected:
+        raise HTTPException(status_code=404, detail="this channel is not connected")
+
+
+# ------------------------------------------- public legal pages (plan 25)
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+def privacy_page(lang: str = None):
+    """Public (outside /api, no sign-in): Google's OAuth verification needs it.
+    ?lang=en|ru, else the request's language."""
+    from interfaces.http import legal
+    return HTMLResponse(legal.privacy_html(lang))
+
+
+@app.get("/terms", response_class=HTMLResponse, include_in_schema=False)
+def terms_page(lang: str = None):
+    from interfaces.http import legal
+    return HTMLResponse(legal.terms_html(lang))
+
+
+@app.get("/api/own/status")
+def own_status(request: Request):
+    """Plan 25: in multi-user mode only an admin sees which settings are
+    missing; a customer is told the service is not set up yet, nothing more."""
+    st = OWN.status(user_id=_uid(request))
+    user = getattr(request.state, "user", None)
+    is_admin = not multi_user_enabled() or bool(user and user.get("isAdmin"))
+    if is_admin:
+        return {**st, "isAdmin": True}
+    return {"configured": st["configured"], "mode": st["mode"], "isAdmin": False,
+            "adminOnly": True, "connectedChannels": st["connectedChannels"]}
+
+
+OAUTH_STATE_COOKIE = "nf_oauth_state"
+_OAUTH_CALLBACK_PATH = "/api/own/oauth/callback"
+
+
+@app.post("/api/own/connect")
+def own_connect(request: Request, response: Response, payload: dict = Body(default={})):
+    """A Google consent URL; the browser opens it and Google sends the user
+    back to /api/own/oauth/callback. The state also goes into a short-lived
+    cookie of THIS browser: a consent link opened anywhere else (someone else's
+    link, forwarded to a victim) cannot attach a channel to the account that
+    started it. Lax, so it rides along on Google's top-level redirect back."""
+    # Come back to the loopback name the dashboard is open on (localhost vs
+    # 127.0.0.1 are different cookie hosts); the Host is already allow-listed.
+    host = request.headers.get("host", "")
+    redirect = (f"{request.url.scheme}://{host}{_OAUTH_CALLBACK_PATH}"
+                if _host_name(host) in ("127.0.0.1", "localhost", "[::1]") else None)
+    want = (payload or {}).get("includeRevenue")
+    out = dict(_own_call(OWN.start_connect, user_id=_uid(request), redirect_uri=redirect,
+                         include_revenue=None if want is None else bool(want)))
+    state = out.pop("state", None)
+    if state:
+        response.set_cookie(OAUTH_STATE_COOKIE, state, max_age=OWN.STATE_TTL_MINUTES * 60,
+                            path=_OAUTH_CALLBACK_PATH, httponly=True, samesite="lax",
+                            secure=_cookie_secure(request))
+    return out
+
+
+@app.get("/api/own/oauth/callback")
+def own_oauth_callback(request: Request, state: str = "", code: str = "", error: str = ""):
+    """Google's redirect after consent. Always lands on the dashboard's "Мои
+    каналы" screen with a short result -- never a stack trace or a token."""
+    def done(fragment):
+        resp = RedirectResponse(f"/#/own?{fragment}", status_code=303)
+        resp.delete_cookie(OAUTH_STATE_COOKIE, path=_OAUTH_CALLBACK_PATH)
+        return resp
+
+    if error or not code:
+        return done(f"error={quote(error or 'no code from Google', safe='')}")
+    started_here = request.cookies.get(OAUTH_STATE_COOKIE, "")
+    if not state or not started_here or not hmac.compare_digest(started_here, state):
+        return done("error=" + quote("this sign-in link was started in another browser or has "
+                                     "expired -- start the connection again from this browser", safe=""))
+    try:
+        out = OWN.finish_connect(state, code)
+    except (OWN.ConnectError, OWN.NotConfigured) as e:
+        return done(f"error={quote(str(e)[:200], safe='')}")
+    return done(f"connected={quote(out.get('title') or out['channelId'], safe='')}")
+
+
+@app.get("/api/own/channels")
+def own_channels_list(request: Request):
+    return OWN.list_channels(user_id=_uid(request))
+
+
+@app.post("/api/own/sync")
+def own_sync(request: Request, channel_id: str = None):
+    return _own_call(OWN.sync, user_id=_uid(request), channel_id=channel_id)
+
+
+@app.get("/api/own/rpm-calibration")
+def own_rpm_calibration(request: Request):
+    return OWN.rpm_calibration(user_id=_uid(request))
+
+
+@app.get("/api/own/channels/{channel_id}/vs-niche")
+def own_vs_niche(request: Request, channel_id: str, niche: str):
+    return _own_call(OWN.own_vs_niche, channel_id, niche, user_id=_uid(request))
+
+
+@app.get("/api/own/channels/{channel_id}/formats")
+def own_formats(request: Request, channel_id: str):
+    """Plan 24: Shorts against long videos and watch hours toward YPP."""
+    from application import own_formats as OFA
+    return _own_call(OFA.formats, channel_id, user_id=_uid(request))
+
+
+@app.delete("/api/own/channels/{channel_id}")
+def own_disconnect(request: Request, channel_id: str):
+    return _own_call(OWN.disconnect, channel_id, user_id=_uid(request))
+
+
+@app.get("/api/thumbnails/search")
+def search_thumbnails(q: str = "", niche: str = None, limit: int = 12):
+    """Plan 13: thumbnails matching a short visual description (CLIP). Zero quota."""
+    try:
+        return TS.search_thumbnails(q, niche=niche, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/thumbnails/embed")
+def embed_thumbnails(request: Request, limit: int = 200, niche: str = None):
+    """Plan 13: vectors for thumbnails that have none -- by click, like the
+    WORKER_THUMB_EMBED step. Downloads from i.ytimg.com, zero API quota."""
+    require_admin(request)
+    return TS.embed_thumbnails(limit=limit, niche=niche)
+
+
+@app.get("/api/videos/{video_id}/similar-thumbnails")
+def similar_thumbnails(video_id: str, niche: str = None, limit: int = 12,
+                       exclude_same_channel: bool = False):
+    return TS.similar_thumbnails(video_id, niche=niche, limit=limit,
+                                 exclude_same_channel=exclude_same_channel)
+
+
+@app.get("/api/niches/{slug}/thumbnail-styles")
+def thumbnail_styles(slug: str, k: int = None):
+    return TS.thumbnail_styles(slug, k=k)
+
+
+@app.get("/api/thumbnails/{video_id}/{captured_at}.jpg")
+def thumbnail_image(video_id: str, captured_at: str):
+    """An archived thumbnail version -- the only copy of a "before" image once
+    YouTube serves the new one at the same URL. Immutable, so cacheable."""
+    data = PKG.thumbnail_image(video_id, captured_at)
+    if not data:
+        raise HTTPException(status_code=404, detail="no archived thumbnail for this time")
+    return Response(content=data, media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/api/best-time")
+def best_time(niche: str = None, channel_id: str = None, period: str = "90d",
+              min_samples: int = 2, timezone_offset_hours: int = 0):
+    return T.best_time_to_publish(niche=niche, channel_id=channel_id, period=period,
+                                  min_samples=min_samples,
+                                  timezone_offset_hours=timezone_offset_hours)
+
+
+@app.get("/api/title-patterns")
+def title_patterns(niche: str = None, channel_id: str = None, period: str = "90d",
+                   min_videos: int = 3, top_n: int = 20):
+    return T.title_patterns(niche=niche, channel_id=channel_id, period=period,
+                            min_videos=min_videos, top_n=top_n)
+
+
+# ------------------------------------------- операции, которые тратят квоту
+
+@app.post("/api/collect/channel")
+def collect_channel(request: Request, payload: dict = Body(...)):
+    _need_key()
+    ref = (payload.get("channel") or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail=tr("нужно поле channel"))
+    res = collector.collect_channel(API_KEY, ref,
+                                    max_videos=int(payload.get("max_videos", 100)),
+                                    niche=payload.get("niche") or None)
+    if res.get("error"):
+        raise HTTPException(status_code=404, detail=res["error"])
+    if payload.get("track"):
+        T.track(res["channelId"], payload.get("note"), user_id=_uid(request))
+        res["tracked"] = True
+    return res
+
+
+@app.post("/api/collect/niche")
+def collect_niche(payload: dict = Body(...)):
+    _need_key()
+    q = (payload.get("query") or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail=tr("нужно поле query"))
+    return collector.collect_niche(
+        API_KEY, q, label=payload.get("label") or None,
+        language=payload.get("language") or None,
+        period=payload.get("period") or None,
+        region=payload.get("region") or None,
+        pages=int(payload.get("pages", 1)))
+
+
+@app.post("/api/refresh")
+def refresh(request: Request, payload: dict = Body(default={})):
+    """Fresh counters now instead of waiting for the worker. An admin
+    refreshes the corpus (scope/period/limit, every tracked channel); a
+    regular user (P2-11, plan limit `manual_runs`) refreshes only their own
+    watchlist and its videos from `period`, on their own YouTube quota."""
+    if _is_admin(request):
+        require_admin(request)
+        _need_key()
+        stats_res = collector.refresh_stats(API_KEY, scope=payload.get("scope", "recent"),
+                                            period=payload.get("period", "30d"),
+                                            limit=int(payload.get("limit", 1000)))
+        chan_res = collector.refresh_channels(API_KEY, only_tracked=True)
+        return {"videos": stats_res, "channels": chan_res}
+
+    def mine(uid):
+        _need_key()
+        return collector.refresh_watchlist(API_KEY, T.user_channel_ids(user_id=uid),
+                                           period=payload.get("period") or "30d")
+    return _user_run(request, "refresh", mine)
+
+
+@app.post("/api/videos/{video_id}/comments")
+def video_comments(video_id: str, payload: dict = Body(default={})):
+    _need_key()
+    return collector.video_comments(
+        API_KEY, video_id, max_results=int(payload.get("max_results", 100)),
+        order=payload.get("order", "relevance"))
+
+
+@app.post("/api/videos/{video_id}/insights")
+def comment_insights(video_id: str, payload: dict = Body(default={})):
+    """Stage 04: by-click only (never automatic) -- costs 1 YouTube quota
+    unit plus an LLM call on a cache miss."""
+    _need_key()
+    return EN.comment_insights(
+        API_KEY, video_id, max_comments=int(payload.get("max_comments", 200)),
+        force_refresh=bool(payload.get("force_refresh", False)))
+
+
+@app.get("/api/niches/{slug}/insights")
+def niche_comment_insights(slug: str, top_n: int = 5):
+    return EN.niche_comment_insights(slug, top_n=top_n)
+
+
+@app.get("/api/niches/{slug}/content-gaps")
+def niche_content_gaps(slug: str, top_videos: int = 10, limit: int = 20, use_llm: bool = None):
+    """Content gaps (plan 03) from cached comments only -- zero quota. Videos
+    whose comments were never read are listed in skippedVideos."""
+    return CG.content_gaps(API_KEY, slug, top_videos=top_videos, use_llm=use_llm,
+                           fetch=False, limit=limit)
+
+
+@app.post("/api/niches/{slug}/content-gaps")
+def fetch_content_gaps(slug: str, payload: dict = Body(default={})):
+    """Content gaps, reading the comments of uncached videos first: 1 quota
+    unit per such video (plus an LLM call each in LLM mode). By click only."""
+    _need_key()
+    use_llm = payload.get("useLlm", payload.get("use_llm"))
+    try:
+        return CG.content_gaps(
+            API_KEY, slug,
+            top_videos=int(payload.get("topVideos", payload.get("top_videos", 10))),
+            use_llm=None if use_llm is None else bool(use_llm), fetch=True,
+            limit=int(payload.get("limit", 20)))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/transcripts/request")
+def request_transcript(request: Request, payload: dict = Body(...)):
+    video_id = payload.get("videoId") or payload.get("video_id")
+    if not video_id:
+        raise HTTPException(status_code=400, detail="videoId is required")
+    return TR.request_transcript(video_id, reason=payload.get("reason"),
+                                 compare_group=payload.get("compareGroup"),
+                                 requested_by=payload.get("requestedBy") or "dashboard",
+                                 user_id=_uid(request))
+
+
+@app.get("/api/transcripts/queue")
+def transcript_queue(request: Request, status: str = None):
+    return {"queue": TR.list_transcript_queue(status=status, user_id=_uid(request))}
+
+
+@app.post("/api/transcripts/{video_id}/save")
+def save_transcript(request: Request, video_id: str, payload: dict = Body(...)):
+    text = payload.get("text") or ""
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    return TR.save_transcript(video_id, text, language=payload.get("language"),
+                              user_id=_uid(request), may_overwrite=_is_admin(request))
+
+
+@app.post("/api/transcripts/{video_id}/reindex")
+def reindex_transcript(request: Request, video_id: str):
+    try:
+        return TR.reindex_transcript(video_id, user_id=_uid(request),
+                                     may_overwrite=_is_admin(request))
+    except TR.TranscriptNotYours:
+        raise HTTPException(status_code=403, detail=tr(
+            "Транскрипт этого видео сохранил другой пользователь; пересчитать его может "
+            "он или администратор."))
+
+
+@app.get("/api/transcripts/search")
+def search_transcripts(request: Request, query: str, niche: str = None,
+                       compare_group: str = None, k: int = 10):
+    try:
+        return TR.search_transcripts(query, niche=niche, compare_group=compare_group, k=k,
+                                     user_id=_uid(request))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/videos/{video_id}/hook")
+def video_hook(video_id: str, niche: str = None, llm: bool = False,
+               force_refresh: bool = False):
+    return HK.hook_report(video_id, niche=niche or None, llm=llm, force_refresh=force_refresh)
+
+
+@app.get("/api/niches/{slug}/hook-benchmark")
+def niche_hook_benchmark(slug: str):
+    return HK.niche_hook_benchmark(slug)
+
+
+@app.post("/api/hooks/score")
+def score_hook_text(payload: dict = Body(...)):
+    # the draft travels in the body, never in the URL, and is not stored
+    try:
+        return HK.score_hook_text(payload.get("text") or "", niche=payload.get("niche") or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/titles/score")
+def score_titles(payload: dict = Body(...)):
+    try:
+        return EN.score_titles(payload.get("candidates") or [],
+                               niche_slug=payload.get("niche"),
+                               channel_id=payload.get("channelId"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/titles/suggest")
+def suggest_titles(payload: dict = Body(...)):
+    try:
+        return EN.suggest_titles(payload.get("topic"), niche_slug=payload.get("niche"),
+                                 channel_id=payload.get("channelId"),
+                                 n=int(payload.get("n", 10)))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/niche-clusters")
+def niche_clusters():
+    return NCL.niche_map()
+
+
+@app.post("/api/niche-clusters/recompute")
+def recompute_niche_clusters(request: Request, k: int = None):
+    require_admin(request)
+    return NCL.compute_clusters(k=k)
+
+
+@app.get("/api/niche/{slug}/export.{fmt}")
+def export_niche(slug: str, fmt: str):
+    try:
+        out = NE.export_niche(slug, fmt=fmt)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    media_type = "text/tab-separated-values" if fmt == "tsv" else "text/csv"
+    return Response(
+        content=out["content"], media_type=f"{media_type}; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{out["filename"]}"'})
+
+
+@app.get("/api/video/{video_id}/why")
+def why_viral(video_id: str, force_refresh: bool = False):
+    """Stage 05: 204 (no body) when LLM_PROVIDER=none or the daily budget is
+    exhausted -- the plan's contract for "feature is off", distinct from a
+    normal empty result."""
+    result = EN.explain_outlier(video_id, force_refresh=force_refresh)
+    if result.get("hint") and "LLM_PROVIDER" in result["hint"]:
+        return Response(status_code=204)
+    return result
+
+
+@app.post("/api/channels/track")
+def track(request: Request, payload: dict = Body(...)):
+    raw = (payload.get("channel_id") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail=tr("нужно поле channel_id"))
+    conn = db.get_conn()
+    try:
+        cid = T.resolve_channel_id(conn, API_KEY or None, raw)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+    return T.track(cid, payload.get("note"), user_id=_uid(request))
+
+
+@app.delete("/api/channels/tracked/{channel_id}")
+def untrack(request: Request, channel_id: str):
+    return T.untrack(channel_id, user_id=_uid(request))
+
+
+# ------------------------------------- разбор произвольной страницы YouTube
+# Эти три маршрута обслуживают браузерное расширение: пользователь открыл
+# случайный ролик, которого может не быть в базе. Сначала смотрим Postgres,
+# при промахе добираем 1-2 units и сохраняем — см. application/inspection.py.
+
+@app.get("/api/inspect/video")
+def inspect_video(request: Request, video_id: str, refresh: bool = False, fetch: bool = True):
+    return I.inspect_video(API_KEY, video_id, refresh=refresh, fetch=fetch, user_id=_uid(request))
+
+
+@app.get("/api/inspect/channel")
+def inspect_channel(request: Request, ref: str, refresh: bool = False, fetch: bool = True):
+    return I.inspect_channel(API_KEY, ref, refresh=refresh, fetch=fetch, user_id=_uid(request))
+
+
+@app.post("/api/inspect/videos")
+def inspect_videos(payload: dict = Body(...)):
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail=tr("ids должен быть списком"))
+    return I.inspect_videos(API_KEY, ids, fetch=bool(payload.get("fetch", True)))
+
+
+# ---------------------------------------------------------------- статика
+
+@app.middleware("http")
+async def _no_cache_static(request, call_next):
+    """Локальный дашборд правят на живую, поэтому кэш браузера тут только мешает:
+    поправил styles.css — перезагрузил страницу и сразу видишь результат."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
+# ------------------------------------------------- наблюдаемость (P1-14)
+#
+# Объявлено последним, поэтому снаружи всех остальных middleware: считает и
+# 401/403/429 от них. Метка маршрута -- шаблон (/api/videos/{video_id}), не
+# сам путь: ни id, ни запрос в метрики и строку доступа не попадают.
+
+@app.middleware("http")
+async def observe_requests(request, call_next):
+    started, status = time.perf_counter(), 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        if request.url.path.startswith("/api/"):
+            route = getattr(request.scope.get("route"), "path", None) or "unmatched"
+            seconds = time.perf_counter() - started
+            OBS.inc("nf_http_requests_total", method=request.method, route=route, status=status)
+            OBS.observe("nf_http_request_duration_seconds", seconds, route=route)
+            OBS.access(request.method, route, status, seconds,
+                       getattr(request.state, "user_id", None))
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics(request: Request):
+    """Prometheus scrape (P1-14). Off (404) unless NF_METRICS_TOKEN is set;
+    then only for `Authorization: Bearer <that token>`. Numbers only: no
+    names, emails or addresses."""
+    token = os.environ.get("NF_METRICS_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(status_code=404)
+    got = request.headers.get("authorization", "")
+    if got[:7].lower() != "bearer " or not hmac.compare_digest(got[7:].strip(), token):
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    return PlainTextResponse(OBS.render(OPS.collect()), media_type="text/plain; version=0.0.4")
+
+
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+else:  # pragma: no cover
+    @app.get("/")
+    def _no_frontend():
+        return {"error": tr("Папка фронта не найдена: {path}", path=FRONTEND_DIR),
+                "hint": tr("Задайте FRONTEND_DIR или смонтируйте ./frontend в контейнер")}

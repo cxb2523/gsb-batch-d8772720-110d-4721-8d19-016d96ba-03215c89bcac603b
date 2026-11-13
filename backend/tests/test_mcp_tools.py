@@ -1,0 +1,818 @@
+"""Tests for the MCP tool layer (interfaces/mcp/server.py) and the search-quota
+accounting it depends on. Run with pytest, or directly: python3 tests/test_mcp_tools.py
+
+Same throwaway-schema setup as test_smoke.py (tests/schema_scope.py: own schema
+per process, dropped at exit) -- no YouTube API key and no network required
+(comment_threads is monkeypatched).
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+# Выставляет NICHE_DB_SCHEMA (своя одноразовая схема на процесс) и вешает её
+# удаление на atexit -- импорт нужен именно ради этого побочного эффекта.
+import schema_scope  # noqa: F401,E402
+
+import infrastructure.postgres as db  # noqa: E402
+import infrastructure.youtube.client as yt  # noqa: E402
+
+_REAL_SEARCH_VIDEOS = yt.search_videos
+import interfaces.mcp.server as srv  # noqa: E402
+from application import collecting as collector  # noqa: E402
+from application import discovery as trends  # noqa: E402
+from application import search as query  # noqa: E402
+from application import worker_cycle as worker  # noqa: E402
+from domain import periods as P  # noqa: E402
+from infrastructure.categories import repository as C  # noqa: E402
+
+
+def setup_module(_=None):
+    db.init_db()
+    C.seed_fallback()
+    srv.API_KEY = "test-key"
+
+
+# --------------------------------------------------- persistent search quota
+
+class _Ok:
+    status_code = 200
+    text = "{}"
+
+    def json(self):
+        return {"items": []}
+
+
+def test_search_calls_accumulate_across_calls_same_day(monkeypatch):
+    # the YouTube client counts every search.list it sends (multi-user plan P0-05)
+    monkeypatch.setattr(yt.requests, "get", lambda *a, **k: _Ok())
+    conn = db.get_conn()
+    before = collector.search_calls_today(conn)
+    conn.close()
+    for _ in range(5):
+        yt._get("search", "KEY")
+    conn = db.get_conn()
+    after = collector.search_calls_today(conn)
+    conn.close()
+    assert after == before + 5
+
+
+def test_quota_reports_daily_total_not_just_this_call():
+    conn = db.get_conn()
+    db.incr_meta(conn, yt.search_meta_key(), 10)
+    conn.commit()
+    calls_today = collector.search_calls_today(conn)
+    conn.close()
+    q = collector._quota(search_calls=1, n_videos=0, n_channels=0, calls_today=calls_today)
+    assert q["search_calls"] == 1
+    assert q["search_calls_today"] == calls_today
+    assert q["search_calls_left_today"] == max(0, yt.SEARCH_DAILY_CALL_LIMIT - calls_today)
+
+
+def test_db_stats_exposes_search_quota_and_worker_flag():
+    s = query.db_stats(user_id=None)
+    assert "search_quota" in s
+    assert s["search_quota"]["search_calls_left_today"] <= yt.SEARCH_DAILY_CALL_LIMIT
+    assert "worker_quota_blocked_until" in s
+
+
+def test_db_stats_exposes_videos_without_embedding():
+    s = query.db_stats(user_id=None)
+    assert "videos_without_embedding" in s
+    assert isinstance(s["videos_without_embedding"], int)
+
+
+def test_data_coverage_exposes_search_quota():
+    cov = trends.coverage(period="30d")
+    assert "searchCallsToday" in cov
+    assert "searchCallsLeftToday" in cov
+
+
+# --------------------------------------------------- worker quota backoff
+
+def test_worker_blocked_flag_is_read_not_just_written():
+    conn = db.get_conn()
+    db.set_meta(conn, "worker_quota_blocked_until", P.pacific_date_key())
+    conn.commit()
+    conn.close()
+    assert worker._search_quota_blocked_today() is True
+
+    conn = db.get_conn()
+    db.set_meta(conn, "worker_quota_blocked_until", "2000-01-01")
+    conn.commit()
+    conn.close()
+    assert worker._search_quota_blocked_today() is False
+
+
+# --------------------------------------------------- video_comments MCP tool
+
+def test_video_comments_tool_shapes_raw_comments(monkeypatch):
+    fake_items = [
+        {
+            "snippet": {
+                "totalReplyCount": 2,
+                "topLevelComment": {"snippet": {
+                    "authorDisplayName": "@viewer1",
+                    "textDisplay": "great video",
+                    "likeCount": 5,
+                    "publishedAt": "2026-01-01T00:00:00Z",
+                }},
+            }
+        },
+    ]
+    monkeypatch.setattr(yt, "comment_threads", lambda *a, **k: fake_items)
+    out = srv.video_comments("vid123")
+    assert out["video_id"] == "vid123"
+    assert out["count"] == 1
+    c = out["comments"][0]
+    assert c == {
+        "author": "@viewer1", "text": "great video", "likeCount": 5,
+        "publishedAt": "2026-01-01T00:00:00Z", "replyCount": 2,
+    }
+
+
+# --------------------------------------------------- backfill_embeddings
+
+def test_backfill_embeddings_fills_in_missing_vectors():
+    conn = db.get_conn()
+    db.upsert_channel(conn, {
+        "channel_id": "UCbackfill000000000000000", "title": "Backfill Channel",
+        "custom_url": None, "country": None, "description": "", "default_language": None,
+        "subscriber_count": 500, "video_count": 1, "view_count": 500,
+        "thumbnail": None, "published_at": None, "topic_categories": None,
+        "keywords": None, "uploads_playlist": None, "hidden_subs": 0,
+    })
+    db.upsert_video(conn, {
+        "video_id": "vbackfill1", "channel_id": "UCbackfill000000000000000",
+        "title": "unembedded video", "description": "needs a vector",
+        "published_at": "2026-01-01T00:00:00Z", "duration_seconds": 300,
+        "view_count": 10, "like_count": 1, "comment_count": 0, "thumbnail": None,
+        "tags": "[]", "default_language": "en", "embedding": None,
+        "updated_at": "2026-01-01T00:00:00Z", "category_id": None, "region": None,
+        "is_short": 0, "topic_categories": None, "live_content": None,
+    })
+    conn.commit()
+    before = conn.execute(
+        "SELECT embedding FROM videos WHERE video_id='vbackfill1'").fetchone()
+    assert before["embedding"] is None
+    conn.close()
+
+    out = srv.backfill_embeddings(limit=10000)
+    assert out["embedded"] >= 1
+
+    conn = db.get_conn()
+    after = conn.execute(
+        "SELECT embedding FROM videos WHERE video_id='vbackfill1'").fetchone()
+    conn.close()
+    assert after["embedding"] is not None
+
+
+# --------------------------------------------------- similar_channels
+
+def test_similar_channels_without_embeddings_gives_a_hint():
+    conn = db.get_conn()
+    db.upsert_channel(conn, {
+        "channel_id": "UCnoembed00000000000000", "title": "No Embeddings Channel",
+        "custom_url": None, "country": None, "description": "", "default_language": None,
+        "subscriber_count": 1000, "video_count": 10, "view_count": 100000,
+        "thumbnail": None, "published_at": None, "topic_categories": None,
+        "keywords": None, "uploads_playlist": None, "hidden_subs": 0,
+    })
+    conn.commit()
+    conn.close()
+    out = srv.similar_channels("UCnoembed00000000000000")
+    assert out["similar"] == []
+    assert "hint" in out
+
+
+def test_similar_channels_ranks_by_cosine_similarity():
+    import infrastructure.embeddings.fastembed_provider as emb
+
+    conn = db.get_conn()
+    for cid in ("UCtarget0000000000000000", "UCclose00000000000000000",
+                "UCfar000000000000000000"):
+        db.upsert_channel(conn, {
+            "channel_id": cid, "title": cid, "custom_url": None, "country": None,
+            "description": "", "default_language": None, "subscriber_count": 1000,
+            "video_count": 1, "view_count": 1000, "thumbnail": None,
+            "published_at": None, "topic_categories": None, "keywords": None,
+            "uploads_playlist": None, "hidden_subs": 0,
+        })
+
+    def video_row(video_id, channel_id, text):
+        return {
+            "video_id": video_id, "channel_id": channel_id, "title": text,
+            "description": "", "published_at": "2026-01-01T00:00:00Z",
+            "duration_seconds": 600, "view_count": 1000, "like_count": 10,
+            "comment_count": 1, "thumbnail": None, "tags": "[]",
+            "default_language": "en", "embedding": emb.to_blob(emb.embed(text)),
+            "updated_at": "2026-01-01T00:00:00Z", "category_id": None,
+            "region": None, "is_short": 0, "topic_categories": None,
+            "live_content": None,
+        }
+
+    db.upsert_video(conn, video_row("vtarget1", "UCtarget0000000000000000",
+                                    "faceless space exploration documentary"))
+    db.upsert_video(conn, video_row("vclose1", "UCclose00000000000000000",
+                                    "faceless space exploration documentary"))
+    db.upsert_video(conn, video_row("vfar1", "UCfar000000000000000000",
+                                    "recipe for chocolate chip cookies"))
+    conn.commit()
+    conn.close()
+
+    out = srv.similar_channels("UCtarget0000000000000000", limit=5)
+    ids = [c["channelId"] for c in out["similar"]]
+    assert ids[0] == "UCclose00000000000000000"
+    assert ids.index("UCclose00000000000000000") < ids.index("UCfar000000000000000000")
+
+
+def test_video_comments_requires_api_key(monkeypatch):
+    monkeypatch.setattr(srv, "API_KEY", None)
+    try:
+        srv.video_comments("vid123")
+    except RuntimeError as e:
+        assert "YOUTUBE_API_KEY" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError without an API key")
+
+
+# ============================================================================
+# Тулы, которые ходят в YouTube: collect_* / refresh_* / track_channel.
+#
+# Ни один тест ниже не выходит в сеть и не требует ключа -- клиент
+# infrastructure.youtube.client монкипатчится целиком, как в
+# test_video_comments_tool_shapes_raw_comments выше. Проверяем именно функции
+# из interfaces.mcp.server, а не слои под ними: иначе интерфейсный слой
+# остаётся непокрытым.
+#
+# Тесты обязаны быть независимыми от порядка: самодельный раннер внизу файла
+# гоняет их в алфавитном порядке, pytest -- в порядке объявления.
+
+
+def _api_channel(cid, title="Fake Channel", subs=1000, videos=10, views=100000,
+                 uploads="UUfake"):
+    """Ответ channels.list в том виде, в каком его разбирает store_channels."""
+    return {
+        "id": cid,
+        "snippet": {"title": title, "description": "fake channel",
+                    "publishedAt": "2020-01-01T00:00:00Z",
+                    "thumbnails": {"high": {"url": "https://i.ytimg.com/c.jpg"}}},
+        "statistics": {"subscriberCount": str(subs), "videoCount": str(videos),
+                       "viewCount": str(views)},
+        "contentDetails": {"relatedPlaylists": {"uploads": uploads}},
+    }
+
+
+def _no_network(monkeypatch):
+    """Затыкает все пути в сеть, которыми может пойти resolve_channel.
+
+    Без этого опечатка в id канала (CHANNEL_ID_RE ждёт ровно UC + 22 символа)
+    тихо уводит тест в ветку @handle и в живой googleapis.com."""
+    def boom(*a, **k):
+        raise AssertionError("тест ушёл в сеть: незапатченный вызов YouTube API")
+    for name in ("search_videos", "videos_list", "channels_list", "channel_by_handle",
+                 "playlist_items", "most_popular", "video_categories",
+                 "videos_batch_get_stats", "comment_threads"):
+        monkeypatch.setattr(yt, name, boom)
+
+
+def _api_video(vid, cid, title="Fake Video", views=1000,
+               published="2026-01-01T00:00:00Z"):
+    """Ответ videos.list в том виде, в каком его разбирает store_videos."""
+    return {
+        "id": vid,
+        "snippet": {"channelId": cid, "title": title, "description": "fake video",
+                    "publishedAt": published, "tags": ["fake"], "categoryId": "22",
+                    "thumbnails": {"high": {"url": "https://i.ytimg.com/v.jpg"}}},
+        "statistics": {"viewCount": str(views), "likeCount": "10", "commentCount": "2"},
+        "contentDetails": {"duration": "PT10M"},
+        "status": {},
+    }
+
+
+def _count(sql, params=()):
+    conn = db.get_conn()
+    n = conn.execute(sql, params).fetchone()[0]
+    conn.close()
+    return n
+
+
+# --------------------------------------------------- collect_channel
+
+def test_collect_channel_stores_videos_without_spending_search(monkeypatch):
+    _no_network(monkeypatch)
+    cid = "UCcollectch0000000000001"
+    monkeypatch.setattr(yt, "channels_list",
+                        lambda k, ids, **kw: [_api_channel(cid, uploads="UUcollectch")])
+    monkeypatch.setattr(yt, "playlist_items",
+                        lambda k, pl, max_items=200: (
+                            [{"video_id": "vcollectch1"}, {"video_id": "vcollectch2"}], 1))
+    monkeypatch.setattr(yt, "videos_list",
+                        lambda k, ids, **kw: [_api_video(v, cid) for v in ids])
+
+    out = srv.collect_channel(cid, max_videos=50)
+
+    assert out["channelId"] == cid
+    assert out["videos_found"] == 2
+    assert out["videos_stored"] == 2
+    # весь смысл тула: идём через uploads-плейлист и не трогаем дневной лимит поиска
+    assert out["quota"]["search_calls"] == 0
+
+    conn = db.get_conn()
+    stored = {r["video_id"] for r in conn.execute(
+        "SELECT video_id FROM videos WHERE channel_id=?", (cid,)).fetchall()}
+    conn.close()
+    assert stored == {"vcollectch1", "vcollectch2"}
+
+
+# --------------------------------------------------- collect_niche
+
+def test_collect_niche_spends_one_search_call_per_page(monkeypatch):
+    _no_network(monkeypatch)
+    cid = "UCcollectniche0000000001"
+    pages_served = []
+
+    class Page:
+        status_code = 200
+        text = "{}"
+
+        def __init__(self, n):
+            self.n = n
+
+        def json(self):
+            return {"items": [{"id": {"videoId": f"vcollectniche{self.n}"}}],
+                    "nextPageToken": "tok" if self.n < 2 else None}
+
+    def fake_get(url, params=None, **kw):
+        # search.list through the real client, so each page is charged as in production
+        assert url.endswith("/search")
+        pages_served.append((params or {}).get("pageToken"))
+        return Page(len(pages_served))
+
+    monkeypatch.setattr(yt, "search_videos", _REAL_SEARCH_VIDEOS)      # _no_network stubbed it
+    monkeypatch.setattr(yt.requests, "get", fake_get)
+    monkeypatch.setattr(yt, "videos_list",
+                        lambda k, ids, **kw: [_api_video(v, cid) for v in ids])
+    monkeypatch.setattr(yt, "channels_list", lambda k, ids, **kw: [_api_channel(cid)])
+
+    conn = db.get_conn()
+    before = collector.search_calls_today(conn)
+    conn.close()
+
+    out = srv.collect_niche("fake niche query", label="fake-niche", pages=2)
+
+    conn = db.get_conn()
+    after = collector.search_calls_today(conn)
+    conn.close()
+
+    assert pages_served == [None, "tok"], "вторая страница должна идти по nextPageToken"
+    assert after == before + 2, "каждая страница search.list списывается со счётчика"
+    assert out["niche"] == "fake-niche"
+    assert out["videos_stored"] == 2
+
+
+# --------------------------------------------------- collect_trending
+
+def test_collect_trending_writes_a_ranked_chart_snapshot(monkeypatch):
+    _no_network(monkeypatch)
+    cid = "UCcollecttrend0000000001"
+    monkeypatch.setattr(yt, "most_popular",
+                        lambda k, region_code="US", video_category_id=None, pages=2:
+                        [_api_video("vtrend1", cid), _api_video("vtrend2", cid)])
+    monkeypatch.setattr(yt, "channels_list", lambda k, ids, **kw: [_api_channel(cid)])
+
+    out = srv.collect_trending(regions=["US"], pages=1)
+    snap = out["snapshots"][0]
+    assert snap["videos"] == 2
+    assert snap["snapshotId"]
+
+    conn = db.get_conn()
+    rows = conn.execute(
+        'SELECT video_id, "rank" FROM chart_entries WHERE snapshot_id=? ORDER BY "rank"',
+        (snap["snapshotId"],)).fetchall()
+    conn.close()
+    assert [r["rank"] for r in rows] == [1, 2]
+    assert [r["video_id"] for r in rows] == ["vtrend1", "vtrend2"]
+
+
+# --------------------------------------------------- refresh_stats
+
+def test_refresh_stats_appends_history_instead_of_overwriting(monkeypatch):
+    _no_network(monkeypatch)
+    cid, vid = "UCrefreshstats0000000001", "vrefreshstats1"
+    monkeypatch.setattr(yt, "channels_list", lambda k, ids, **kw: [_api_channel(cid)])
+    monkeypatch.setattr(yt, "playlist_items",
+                        lambda k, pl, max_items=200: ([{"video_id": vid}], 1))
+    monkeypatch.setattr(yt, "videos_list",
+                        lambda k, ids, **kw: [_api_video(v, cid) for v in ids])
+    srv.collect_channel(cid)
+
+    monkeypatch.setattr(yt, "videos_batch_get_stats",
+                        lambda k, ids, **kw: ([_api_video(vid, cid, views=2222)], []))
+
+    sql = "SELECT COUNT(*) FROM video_stats_history WHERE video_id=?"
+    before = _count(sql, (vid,))
+    srv.refresh_stats(scope="all", limit=5000)
+    once = _count(sql, (vid,))
+    srv.refresh_stats(scope="all", limit=5000)
+    twice = _count(sql, (vid,))
+
+    # Ровно то поведение, на котором стоит idempotentHint=False у refresh_stats:
+    # captured_at ставится в now(), поэтому ON CONFLICT никогда не срабатывает.
+    assert once == before + 1
+    assert twice == once + 1
+
+
+# --------------------------------------------------- packaging_changes
+
+def test_packaging_changes_routes_to_feed_or_one_video_history(monkeypatch):
+    from application import packaging as packaging_mod
+    calls = []
+    monkeypatch.setattr(packaging_mod, "packaging_feed",
+                        lambda **kw: calls.append(("feed", kw)) or {"feed": True})
+    monkeypatch.setattr(packaging_mod, "packaging_history",
+                        lambda vid: calls.append(("history", vid)) or {"history": True})
+    assert srv.packaging_changes(field="title", channel_id="UC1") == {"feed": True}
+    assert calls[-1] == ("feed", {"period": "30d", "channel_id": "UC1",
+                                  "field": "title", "limit": 50, "user_id": None})
+    assert srv.packaging_changes(video_id="v1") == {"history": True}
+    assert calls[-1] == ("history", "v1")
+
+
+# --------------------------------------------------- build_brief
+
+def test_build_brief_delegates_with_its_options(monkeypatch):
+    from application import briefs as briefs_mod
+    calls = []
+    monkeypatch.setattr(briefs_mod, "build_brief",
+                        lambda vid, **kw: calls.append((vid, kw)) or {"found": True})
+    assert srv.build_brief("v1") == {"found": True}
+    assert srv.build_brief("v2", niche="n1", use_llm=False, save=False) == {"found": True}
+    assert srv.build_brief("v3", gap_topic="how to X?") == {"found": True}
+    assert calls == [("v1", {"niche": None, "use_llm": True, "save": True, "gap_topic": None,
+                             "user_id": 1}),
+                     ("v2", {"niche": "n1", "use_llm": False, "save": False,
+                             "gap_topic": None, "user_id": 1}),
+                     ("v3", {"niche": None, "use_llm": True, "save": True,
+                             "gap_topic": "how to X?", "user_id": 1})]
+
+
+# --------------------------------------------------- content_gaps
+
+def test_content_gaps_reads_the_cache_by_default_and_fetches_only_on_request(monkeypatch):
+    from application import content_gaps as cg
+    calls = []
+    monkeypatch.setattr(cg, "content_gaps",
+                        lambda key, niche, **kw: calls.append((key, niche, kw)) or {"gaps": []})
+    assert srv.content_gaps("n1") == {"gaps": []}
+    assert srv.content_gaps("n1", top_videos=5, use_llm=False, fetch=True, limit=7) == {"gaps": []}
+    assert calls == [
+        (srv.API_KEY, "n1", {"top_videos": 10, "use_llm": None, "fetch": False, "limit": 20}),
+        (srv.API_KEY, "n1", {"top_videos": 5, "use_llm": False, "fetch": True, "limit": 7})]
+
+
+def test_content_gaps_fetch_needs_a_key(monkeypatch):
+    monkeypatch.setattr(srv, "API_KEY", None)
+    try:
+        srv.content_gaps("n1", fetch=True)
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "YOUTUBE_API_KEY" in str(e)
+
+
+# --------------------------------------------------- template risk
+
+def test_template_risk_tools_delegate_with_their_arguments(monkeypatch):
+    from application import template_risk as trk
+    calls = []
+    monkeypatch.setattr(trk, "template_risk",
+                        lambda cid, last_n: calls.append(("ch", cid, last_n)) or {"ch": 1})
+    monkeypatch.setattr(trk, "niche_template_risk",
+                        lambda n, last_n, top_n: calls.append(("niche", n, last_n, top_n)) or {"n": 1})
+    assert srv.template_risk("UC1", last_n=12) == {"ch": 1}
+    assert srv.niche_template_risk("abc", top_n=4) == {"n": 1}
+    assert calls == [("ch", "UC1", 12), ("niche", "abc", 30, 4)]
+
+
+# --------------------------------------------------- sponsor_map / channel_sponsors
+
+def test_sponsor_tools_route_to_the_application_layer(monkeypatch):
+    from application import sponsors as sponsors_mod
+    calls = []
+    monkeypatch.setattr(sponsors_mod, "sponsor_map",
+                        lambda *a, **kw: calls.append(("niche", a, kw)) or {"niche": True})
+    monkeypatch.setattr(sponsors_mod, "channel_sponsors",
+                        lambda *a, **kw: calls.append(("channel", a, kw)) or {"channel": True})
+    assert srv.sponsor_map("n1", period="30d", top_n=3) == {"niche": True}
+    assert calls[-1] == ("niche", ("n1",), {"period": "30d", "top_n": 3})
+    assert srv.channel_sponsors("UC1") == {"channel": True}
+    assert calls[-1] == ("channel", ("UC1",), {"period": "all", "top_n": 10})
+
+
+# --------------------------------------------------- daily_digest
+
+def test_daily_digest_reads_the_summary_without_sending(monkeypatch):
+    from application import digest as digest_mod
+    calls = []
+    monkeypatch.setattr(digest_mod, "build_digest",
+                        lambda **kw: calls.append(kw) or {"empty": True})
+    monkeypatch.setattr(digest_mod, "send_digest",
+                        lambda **kw: (_ for _ in ()).throw(AssertionError("must not send")))
+    assert srv.daily_digest(period="48h") == {"empty": True}
+    assert calls == [{"period": "48h", "top_n": 5, "user_id": 1}]
+
+
+# --------------------------------------------------- refresh_channels
+
+def test_refresh_channels_appends_a_growth_snapshot_each_call(monkeypatch):
+    _no_network(monkeypatch)
+    cid = "UCrefreshchans0000000001"
+    monkeypatch.setattr(yt, "channels_list",
+                        lambda k, ids, **kw: [_api_channel(cid, subs=4242)])
+
+    sql = "SELECT COUNT(*) FROM channel_stats_history WHERE channel_id=?"
+    before = _count(sql, (cid,))
+    out = srv.refresh_channels(channel_ids=[cid])
+    once = _count(sql, (cid,))
+    srv.refresh_channels(channel_ids=[cid])
+    twice = _count(sql, (cid,))
+
+    assert out["refreshed"] == 1
+    assert once == before + 1
+    assert twice == once + 1
+
+
+# --------------------------------------------------- refresh_categories
+
+def test_refresh_categories_upserts_and_does_not_duplicate(monkeypatch):
+    _no_network(monkeypatch)
+    monkeypatch.setattr(yt, "video_categories",
+                        lambda k, region_code="US", hl="en_US":
+                        [{"id": "9999", "title": "Fake Category", "assignable": True}])
+
+    srv.refresh_categories(regions=["ZZ"])
+    srv.refresh_categories(regions=["ZZ"])
+
+    # Единственный из collect/refresh, который идемпотентен: истории нет, только
+    # upsert по (category_id, region).
+    assert _count("SELECT COUNT(*) FROM video_categories "
+                  "WHERE category_id='9999' AND region='ZZ'") == 1
+
+
+# --------------------------------------------------- track / untrack / list
+
+def test_track_then_untrack_keeps_what_was_already_collected(monkeypatch):
+    _no_network(monkeypatch)
+    cid = "UCtrackflow0000000000001"
+    monkeypatch.setattr(yt, "channels_list",
+                        lambda k, ids, **kw: [_api_channel(cid, uploads="UUtrackflow")])
+    monkeypatch.setattr(yt, "playlist_items",
+                        lambda k, pl, max_items=200: ([{"video_id": "vtrackflow1"}], 1))
+    monkeypatch.setattr(yt, "videos_list",
+                        lambda k, ids, **kw: [_api_video(v, cid) for v in ids])
+
+    out = srv.track_channel(cid, note="следим")
+    assert out["tracked"] is True
+    assert cid in {c["channel_id"] for c in srv.list_tracked_channels()}
+
+    srv.untrack_channel(cid)
+    assert cid not in {c["channel_id"] for c in srv.list_tracked_channels()}
+
+    # Ровно то, что обещает докстринг untrack_channel и что стоит за
+    # destructiveHint=True: канал уходит из списка, собранное остаётся.
+    assert _count("SELECT COUNT(*) FROM videos WHERE channel_id=?", (cid,)) == 1
+
+
+# --------------------------------------------------- alerts
+
+def test_scan_for_alerts_never_duplicates_and_seen_can_be_cleared():
+    srv.scan_for_alerts()
+    first = _count("SELECT COUNT(*) FROM events")
+    srv.scan_for_alerts()
+    second = _count("SELECT COUNT(*) FROM events")
+    assert second == first, "повторный скан не создаёт дубль по тому же (kind, ref_id)"
+
+    srv.mark_events_seen(all_unseen=True)
+    assert srv.list_events(unseen_only=True, limit=1000) == []
+
+
+# --------------------------------------------------- swipe file
+
+def test_saved_item_roundtrip_and_delete_is_safe_to_repeat():
+    saved = srv.save_item("video", "vswipe1", note="хороший ролик")
+    item_id = saved["id"]
+    assert item_id in {i["id"] for i in srv.list_saved_items(kind="video")}
+
+    srv.delete_saved_item(item_id)
+    assert item_id not in {i["id"] for i in srv.list_saved_items(kind="video")}
+
+    # delete_saved_item несёт destructiveHint=True, но idempotentHint=True:
+    # повторный вызов обязан быть безобидным.
+    srv.delete_saved_item(item_id)
+
+
+# --------------------------------------------------- calibrate_maturity_curve
+
+def test_calibrate_maturity_curve_only_reads():
+    tables = ("videos", "channels", "video_stats_history", "events", "saved_items")
+
+    def snapshot():
+        return {t: _count(f"SELECT COUNT(*) FROM {t}") for t in tables}
+
+    before = snapshot()
+    srv.calibrate_maturity_curve(min_videos=1)
+    # Вопреки названию тул ничего не калибрует в базе -- он считает кривую и
+    # отдаёт её текстом. На этом стоит readOnlyHint=True.
+    assert snapshot() == before
+
+
+# --------------------------------------------------- video tags
+
+def test_tag_videos_tool_writes_and_reports_protection():
+    conn = db.get_conn()
+    db.upsert_channel(conn, {
+        "channel_id": "UCtagmcp0000000000000001", "title": "t", "custom_url": None,
+        "country": None, "description": "", "default_language": None,
+        "subscriber_count": 100, "video_count": 1, "view_count": 100,
+        "thumbnail": None, "published_at": None, "topic_categories": None,
+        "keywords": None, "uploads_playlist": None, "hidden_subs": 0,
+    })
+    db.upsert_video(conn, {
+        "video_id": "vtagmcp1", "channel_id": "UCtagmcp0000000000000001",
+        "title": "t", "description": "", "published_at": "2026-01-01T00:00:00Z",
+        "duration_seconds": 300, "view_count": 100, "like_count": 0, "comment_count": 0,
+        "thumbnail": None, "tags": "[]", "default_language": "en", "embedding": None,
+        "updated_at": "2026-01-01T00:00:00Z", "category_id": None, "region": None,
+        "is_short": 0, "topic_categories": None, "live_content": None,
+    })
+    conn.commit()
+    conn.close()
+
+    r = srv.tag_videos([{"video_id": "vtagmcp1", "tag_group": "theme", "tags": ["fear"]}],
+                       source="manual")
+    assert r["written"] == 1
+
+    r2 = srv.tag_videos([{"video_id": "vtagmcp1", "tag_group": "theme", "tags": ["fear"]}],
+                        source="llm")
+    assert r2["blockedByProtection"] == 1
+
+    rows = srv.list_video_tags(video_id="vtagmcp1")
+    assert [row["source"] for row in rows] == ["manual"]
+
+
+def test_tag_videos_tool_reports_a_bad_source_as_an_error_not_an_exception():
+    out = srv.tag_videos([{"video_id": "v1", "tag_group": "theme", "tags": ["x"]}],
+                         source="not-real")
+    assert "error" in out
+
+
+def test_tag_stats_tool_on_an_empty_niche_gives_a_hint():
+    out = srv.tag_stats("no-such-niche-mcp", "theme")
+    assert out["found"] is False
+    assert "hint" in out
+
+
+# --------------------------------------------------- тонкие делегаты
+
+def test_thin_read_only_tools_answer_on_an_empty_corpus():
+    assert isinstance(srv.list_niches(), list)
+
+    sim = srv.similar_videos("vdoesnotexist")
+    assert sim["similar"] == []
+    assert "hint" in sim, "без эмбеддинга тул обязан объяснить, почему пусто"
+
+    ov = srv.niche_overview_from_channel("UCdoesnotexist0000000001")
+    assert ov["found"] is False
+    assert "hint" in ov
+
+    # data_coverage и title_changes проверялись только на уровне application;
+    # дёргаем и сами тулы, иначе интерфейсный слой остаётся без теста.
+    cov = srv.data_coverage(period="30d")
+    assert "searchCallsToday" in cov
+
+    changes = srv.title_changes(period="7d", limit=5)
+    assert isinstance(changes, dict)
+
+
+if __name__ == "__main__":
+    setup_module()
+
+    class _Monkeypatch:
+        def __init__(self):
+            self._undo = []
+
+        def setattr(self, obj, name, value):
+            self._undo.append((obj, name, getattr(obj, name)))
+            setattr(obj, name, value)
+
+        def undo(self):
+            for obj, name, value in reversed(self._undo):
+                setattr(obj, name, value)
+
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for fn in fns:
+        mp = _Monkeypatch()
+        try:
+            if "monkeypatch" in fn.__code__.co_varnames[:fn.__code__.co_argcount]:
+                fn(mp)
+            else:
+                fn()
+            print(f"  PASS  {fn.__name__}")
+        except Exception as e:
+            failed += 1
+            import traceback
+            print(f"  FAIL  {fn.__name__}: {e}")
+            traceback.print_exc()
+        finally:
+            mp.undo()
+    print(f"\n{len(fns) - failed}/{len(fns)} passed")
+    sys.exit(1 if failed else 0)
+
+
+# --------------------------------------------------- thumbnails (plan 13)
+
+def test_thumbnail_tools_route_to_the_application_layer(monkeypatch):
+    from application import thumbnail_search as ts
+    calls = []
+    for name in ("similar_thumbnails", "search_thumbnails", "thumbnail_styles", "embed_thumbnails"):
+        monkeypatch.setattr(ts, name, (lambda n: lambda *a, **kw: calls.append((n, a, kw)) or {n: 1})(name))
+    assert srv.similar_thumbnails("v1", limit=5) == {"similar_thumbnails": 1}
+    assert srv.search_thumbnails("red arrow", niche="n1") == {"search_thumbnails": 1}
+    assert srv.thumbnail_styles("n1") == {"thumbnail_styles": 1}
+    assert srv.embed_thumbnails(limit=50, niche="n1") == {"embed_thumbnails": 1}
+    assert calls == [
+        ("similar_thumbnails", ("v1",), {"niche": None, "limit": 5, "exclude_same_channel": False}),
+        ("search_thumbnails", ("red arrow",), {"niche": "n1", "limit": 12}),
+        ("thumbnail_styles", ("n1",), {"k": None}),
+        ("embed_thumbnails", (), {"limit": 50, "niche": "n1"}),
+    ]
+
+
+# --------------------------------------------------- own channels (plan 14)
+
+def test_own_channel_tools_route_to_the_application_layer(monkeypatch):
+    from application import own_channels as own
+    calls = []
+    monkeypatch.setattr(own, "status", lambda user_id=1: {"configured": True})
+    monkeypatch.setattr(own, "list_channels", lambda user_id=1: calls.append(("list", user_id))
+                        or {"channels": []})
+    monkeypatch.setattr(own, "own_vs_niche", lambda cid, niche, user_id=1:
+                        calls.append(("vs", cid, niche, user_id)) or {"v": 1})
+    monkeypatch.setattr(own, "rpm_calibration", lambda user_id=1: calls.append(("rpm", user_id))
+                        or {"r": 1})
+    monkeypatch.setattr(own, "sync", lambda **kw: calls.append(("sync", kw)) or {"s": 1})
+    assert srv.own_channels() == {"status": {"configured": True}, "channels": []}
+    assert srv.own_vs_niche("UC1", "n1") == {"v": 1}
+    assert srv.rpm_calibration() == {"r": 1}
+    assert srv.sync_own_channels(channel_id="UC1") == {"s": 1}
+    assert calls == [("list", 1), ("vs", "UC1", "n1", 1), ("rpm", 1),
+                     ("sync", {"user_id": 1, "channel_id": "UC1"})]
+
+# --------------------------------------------------- MCP over HTTP sign-in (plan 15, 5.8)
+
+def test_stdio_needs_no_token_and_acts_as_the_local_user(monkeypatch):
+    from interfaces.mcp import auth as mcp_auth
+    monkeypatch.setenv("NF_MULTI_USER", "1")
+    monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+    assert mcp_auth.http_auth_enabled() is False
+    assert srv._uid() == 1
+
+
+def test_http_with_multi_user_requires_tokens(monkeypatch):
+    from interfaces.mcp import auth as mcp_auth
+    monkeypatch.setenv("NF_MULTI_USER", "1")
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+    assert mcp_auth.http_auth_enabled() is True
+    server = srv._build_server()
+    assert server.settings.auth is not None
+    monkeypatch.setenv("NF_MULTI_USER", "0")
+    assert mcp_auth.http_auth_enabled() is False
+
+
+def test_the_token_verifier_maps_a_token_to_its_user(monkeypatch):
+    import anyio
+
+    from application import auth
+    from interfaces.mcp import auth as mcp_auth
+    users = {"nf_ok": {"id": 42, "email": "a@x", "isAdmin": False, "scopes": ["read", "mcp"]},
+             "nf_web_only": {"id": 43, "email": "b@x", "isAdmin": False, "scopes": ["read", "write"]}}
+    monkeypatch.setattr(auth, "user_for_api_token", users.get)
+    v = mcp_auth.ApiTokenVerifier()
+    tok = anyio.run(v.verify_token, "nf_ok")
+    assert tok.client_id == "42" and mcp_auth.SCOPE in tok.scopes
+    assert anyio.run(v.verify_token, "nf_bad") is None
+    # P1-03: a token without the mcp scope is no MCP token
+    assert anyio.run(v.verify_token, "nf_web_only") is None
+
+
+def test_tools_act_as_the_tokens_user(monkeypatch):
+    from mcp.server.auth.provider import AccessToken
+
+    from interfaces.mcp import auth as mcp_auth
+    monkeypatch.setattr(mcp_auth, "get_access_token",
+                        lambda: AccessToken(token="nf_x", client_id="42", scopes=[mcp_auth.SCOPE]))
+    seen = {}
+    monkeypatch.setattr(srv.T, "list_tracked", lambda user_id=1: seen.setdefault("uid", user_id) and [])
+    srv.list_tracked_channels()
+    assert seen["uid"] == 42

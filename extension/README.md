@@ -1,0 +1,204 @@
+# Chrome extension — analytics on top of YouTube
+
+A local replacement for the vidIQ / NexLev panels: the same metrics, but the
+data comes from your own `niche-finder` backend, not someone else's cloud.
+By default the extension talks only to `127.0.0.1`; it can also work with a
+copy hosted on your own domain ([below](#a-service-on-your-domain)) — and with
+nothing else.
+
+## What it shows
+
+**Video page** (right-hand column):
+
+* outlier multiplier against the median of the channel's recent videos of
+  the same format (Shorts are compared with Shorts), falling back to the
+  channel's lifetime average when there isn't enough history — this is the
+  NexLev metric;
+* views per hour over the last 24 hours from our own snapshots, acceleration
+  (day vs. week), views per subscriber, engagement;
+* a day-30 views forecast along the maturation curve, and a revenue
+  estimate;
+* the video's tags — as a list and copied to the clipboard in one click;
+* similar videos from your database (by embeddings), marking ones from the
+  same channel;
+* "Repackaged N times" — when the backend saw this video's title or
+  thumbnail change, with a link to the before/after on the dashboard;
+* "Brief" — opens the dashboard's brief for your own video built from this one;
+* "Show comments" — a live fetch of up to 50 comments (1 quota unit) with how
+  many arrived in the first 24 hours; raw text, no sentiment analysis;
+* a small chart of the video's views by age from the worker's snapshots,
+  with the channel's usual curve dashed (`/api/videos/trajectory`);
+* "Is the format repeatable?" — whether similar videos of other channels in your
+  database became outliers too (`/api/videos/{id}/repeatability`, zero quota);
+* "In another language?" — whether a similar video exists in the biggest other
+  language of your database and whether it is an outlier there: "nothing similar"
+  / "covered, but weakly" / "there's already a hit" (`/api/videos/{id}/language-gap`,
+  zero quota; says so when that language is thinly collected);
+* "Why did it take off?" — an LLM explanation of why the video beat its
+  channel (`/api/video/{id}/why`, cached). The button only appears when an
+  LLM provider is configured on the backend;
+* buttons: "collect channel", "track", "watch this topic" (a topic alert from
+  the video's title, see the dashboard's "Alerts" screen), "save" (to the swipe file, see
+  below), and a link to the dashboard.
+
+**Channel page** (under the header): subscribers, average views per video,
+growth estimate and momentum, revenue forecast, a net-profit line (the month's revenue range minus
+the first cost profile's costs, `/api/profit`; warns below the full YPP tier), a template-risk line (how much the
+recent uploads look like one template; a heuristic, not YouTube's verdict), a YPP-threshold
+line (which Partner Program thresholds it visibly meets — not a monetization status; until
+2027-02-01 it says the bar rises then), the next subscriber milestone with its estimated date, a line with the
+monetization-policy categories it shows signals for (not YouTube's decision), the channel's best
+outliers, the best time to publish in your time zone, title phrases that
+produce outliers, and similar channels. When background enrichment has
+classified the channel, an AI-label chip shows faceless / on-camera and the
+content format. The sections below the first block appear once the database
+holds at least 5 of the channel's videos — until then, just press "Collect
+channel". A "save" button stores the channel in the swipe file.
+
+**Video lists** (search, home, recommendations, channel tab): a badge with
+the multiplier on the thumbnail. The colour matches the outlier strength. An
+optional second badge (blue, under the thumbnail) shows views per hour — over
+24 hours when there's history, otherwise over the video's lifetime.
+
+**Saving to the swipe file.** "Save" on a video or channel panel stores it via
+`POST /api/saved` together with a snapshot of its metrics at that moment. The
+saved items are listed on the dashboard's "Saved" screen (`#/saved`).
+
+## Popup (click the extension icon)
+
+Besides the settings below, the popup has:
+
+* **Alerts** — events from the backend's alert scan: new outlier videos,
+  view acceleration, title changes, channels breaking a long silence, and
+  channels or outlier videos that disappeared from YouTube. "Check now" triggers a scan
+  (`POST /api/events/scan`) without waiting for the worker; "Mark as read"
+  clears the unseen counter.
+* **Draft metadata review** — the same check as the dashboard's "Metadata
+  review" screen: enter a title, description, tags, niche and optionally a
+  channel ID and get per-signal verdicts from your own corpus
+  (`POST /api/metadata/review`); "Save draft" stores it (`POST /api/drafts`)
+  so you can link it to the published video later from the dashboard.
+* "Check connection" and a link to the dashboard.
+
+## Installation
+
+1. Start the project backend if it isn't running yet:
+   `make dev` (without Docker) or `docker compose up -d postgres web`.
+   Check: <http://127.0.0.1:8080/api/health>.
+2. Get the extension: download `niche-finder-extension-<version>.zip` from
+   the [latest release](https://github.com/pandich93/youtube-niche-finder/releases/latest)
+   and unzip it, or use the `extension/` folder of your clone (it stays in
+   sync with your backend when you `git pull`).
+3. Open `chrome://extensions` and turn on "Developer mode".
+4. "Load unpacked" → pick the unzipped folder (or `extension/`).
+5. Open any video on YouTube. The panel appears in the right-hand column.
+
+To update, replace the folder's contents and press ⟳ on the extension's card
+in `chrome://extensions`. The extension is not in the Chrome Web Store yet;
+what publishing it takes is in [docs/chrome-web-store.md](../docs/chrome-web-store.md).
+
+## A service on your domain
+
+When niche-finder runs on a server for a group of people
+([docs/hosting.md](../docs/hosting.md)), point the extension at it:
+
+1. On the dashboard's MCP screen ("Personal tokens") create a token with the
+   scopes `read` and `write`. That is the minimum: `read` covers the panels,
+   `write` the POST requests — list badges (`POST /api/inspect/videos`),
+   comments, "collect", "track", "save", "watch this topic", alerts and the
+   metadata review. `mcp` is not needed.
+2. In the popup set the service address to `https://YOUR-DOMAIN`. Chrome asks
+   to allow access to that host — allow it. If you closed the prompt, the popup
+   shows an "Allow access to this address" button.
+3. Paste the token into "Access token".
+
+How it behaves:
+
+* Access is requested for that one host only (`optional_host_permissions`).
+  Changing the address back to localhost or to another host gives the old
+  host's access back; you can also revoke it on `chrome://extensions`.
+* The token is sent as `Authorization: Bearer` only to `127.0.0.1` /
+  `localhost` or over `https`. To a remote `http://` address it is not sent at
+  all, and the popup says so.
+* The popup warns when the service is reachable but no token is saved. A 401
+  from the service (no token, revoked, expired) shows the same hint on the
+  panels; a 403 names the scope the token lacks.
+
+The extension icon's badge tells you the state. A red `!` means the backend
+is unreachable: check that it's running and that the address in the
+extension settings matches the port (default `http://127.0.0.1:8080`). A
+blue number is the count of unseen alerts. The badge is refreshed via
+`chrome.alarms` — backend health every 5 minutes, alerts every 10.
+
+## Settings (click the icon)
+
+| Setting | What it does |
+|---|---|
+| Service address | your local backend by default (`http://127.0.0.1:8080`); if you changed `WEB_PORT`, enter the new address. Another host — a [service on your domain](#a-service-on-your-domain): Chrome asks for access to it |
+| Fetch from the YouTube API | the video isn't in the database — pull it with one request (1 unit) and save it. Turn off to work strictly from the collected database |
+| Badges on cards | multipliers on thumbnails in lists |
+| Outliers only | the badge appears from ×1.5 and up |
+| Views-per-hour badge | a second, blue badge under the thumbnail with views per hour |
+| Access token | only for a server with sign-in (`NF_MULTI_USER=1`): a personal token with `read` + `write` from the dashboard's MCP screen ("Personal tokens"). Kept in `chrome.storage.local` (not synced to your other browsers), sent as `Authorization: Bearer` to the service address only (to a remote one only over `https`), never shown back in the popup |
+
+## Language
+
+The interface follows the browser language: Russian for a Russian Chrome, English
+for everything else (texts live in `_locales/{en,ru}/messages.json`). Every request
+to the backend carries `X-NF-Locale: ru|en` (`ru` for ru/uk/be/kk/uz/ky/tg browser
+languages, `en` otherwise), so hints and errors coming from the server use that
+language too.
+
+## What it costs in quota
+
+Fetching one video costs 1 unit (`videos.list`), plus 1 unit for the channel
+if it's unknown (`channels.list`). List badges cost 1 unit per 50 videos. For
+comparison, the shared pool is 10,000 units a day, and `search.list` (which
+the extension never calls) is capped separately at 100 calls a day — see
+[Quota essentials](../backend/README.md#quota-essentials-changed-june-1-2026). Everything fetched goes into the same Postgres, so viewing the same
+page again is free: a video is re-read from the database until it goes stale
+(6 hours), a channel — for a day. The ⟳ button in the panel header forces a
+re-read.
+
+The "Collect channel" button is more expensive: it walks the uploads
+playlist (1 unit per 50 videos + 1 unit per 50 videos for stats), which is
+why it's an explicit action. "Show comments" costs 1 unit per click.
+"Why did it take off?" costs no quota — only an LLM call on a cache miss.
+
+## How it's built
+
+```
+content.js     panels and badges, knows nothing about the network
+     |  chrome.runtime.sendMessage
+background.js  the only way out to the network + response cache + icon badge
+     |  http://127.0.0.1:8080/api/*  (inspect, channels, video/why,
+     |                                saved, events, metadata, drafts, ...)
+backend/application/inspection.py (and the other use cases)
+     |  Postgres first, on a miss — a targeted request to the YouTube Data API
+```
+
+Why the network lives only in the service worker: the YouTube page is served
+over https, and a request to `http://127.0.0.1` from the page context is
+treated by the browser as mixed content. The extension has its own origin,
+and with `host_permissions` that request goes through normally. The same goes
+for a remote service once its host is allowed. `service_url.js` (shared by the
+service worker and the popup) decides what is local and what access is needed.
+
+CORS on the backend: with `NF_EXTENSION_IDS` set (comma-separated extension
+IDs) it answers only those extensions. Without it, a local copy answers any
+`chrome-extension://` origin as before (an unpacked extension gets a different
+ID on every machine, and the service listens on `127.0.0.1` only), and a server
+with sign-in answers none. The extension itself doesn't depend on CORS: host
+access is enough.
+
+Every request carries an `X-NF-Client: extension` header. The backend rejects
+POST/PUT/PATCH/DELETE that have neither this header nor a JSON body (403), so
+an arbitrary website open in the same browser can't trigger quota- or
+LLM-spending actions on your local backend. If you call the API from your own
+scripts, send the same header (any non-empty value).
+
+Permissions: `storage` (settings, synced via `chrome.storage.sync`),
+`alarms` (periodic health/alert checks for the icon badge), host access
+to `127.0.0.1` / `localhost`, and optional host access (`https://*/*`,
+`http://*/*`) that Chrome grants only for the one service address you enter,
+after asking you.

@@ -1,0 +1,413 @@
+"""Alerts orchestration (plan item 8.9): the worker calls scan() on a
+schedule; it reads whatever collect_*/refresh_stats already stored (zero
+YouTube quota), runs the pure detectors in domain/alerts.py, and writes any
+NEW events to the `events` table -- "new" meaning no row with the same
+(kind, ref_id) exists yet, which is what makes repeated cycles idempotent
+without needing a separate "already processed" cursor.
+"""
+import json
+import os
+from datetime import datetime, timedelta, timezone
+
+import infrastructure.postgres as db
+from application import channel_tracking as T
+from application import discovery as trends
+from application import locale_prefs as LP
+from application import milestones as MSA
+from application import timezone_prefs as TZP
+from domain import alerts as A
+from domain import i18n
+from domain import timezones as TZ
+from domain.i18n import tr
+from infrastructure.notify.null import NullNotifier
+
+DEFAULT_SILENCE_DAYS = A.SILENCE_DAYS_DEFAULT
+DEFAULT_PERIOD = "30d"
+NOTIFY_MAX_PER_CYCLE = int(os.environ.get("NOTIFY_MAX_PER_CYCLE", "10"))
+# multi-user plan P1-11: only this recent a history is read for delivery, so a
+# person who turns notifications on (or a new install) gets news, not a backlog,
+# and the worker does not read every event ever raised for every user
+NOTIFY_WINDOW_DAYS = int(os.environ.get("NOTIFY_WINDOW_DAYS", "7") or 7)
+
+
+def _delivery_since() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=NOTIFY_WINDOW_DAYS)).isoformat()
+DASHBOARD_URL = os.environ.get("NOTIFY_DASHBOARD_URL", "http://127.0.0.1:8080").rstrip("/")
+# instant (one message per event, default) | digest (only the daily summary,
+# application/digest.py) | both
+NOTIFY_MODE = os.environ.get("NOTIFY_MODE", "instant").strip().lower() or "instant"
+
+
+def _already_emitted(conn, kind, ref_id) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM events WHERE kind=? AND ref_id=? LIMIT 1", (kind, ref_id)
+    ).fetchone()
+    return row is not None
+
+
+def _emit(conn, kind, ref_id, payload, *, user_id) -> bool:
+    """Insert one event unless (kind, ref_id) already exists. Returns whether
+    a new row was written -- the caller uses this to report counts, not to
+    make decisions, so a race between two workers double-inserting the same
+    (kind, ref_id) is a harmless duplicate row, not a correctness bug.
+    `user_id` makes the event personal (plan 19): only that user sees it."""
+    if _already_emitted(conn, kind, ref_id):
+        return False
+    conn.execute(
+        "INSERT INTO events (kind, ref_id, payload, created_at, channel_id, user_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (kind, ref_id, json.dumps(payload, ensure_ascii=False), db.now_iso(),
+         (payload or {}).get("channelId"), user_id),
+    )
+    return True
+
+
+def _latest_snapshot_at(conn, video_ids: list) -> dict:
+    """video_id -> most recent video_stats_history.captured_at, for folding
+    into acceleration's dedupe key (see domain/alerts.py docstring)."""
+    if not video_ids:
+        return {}
+    out = {}
+    for i in range(0, len(video_ids), 400):
+        chunk = video_ids[i:i + 400]
+        q = ("SELECT video_id, MAX(captured_at) AS captured_at FROM video_stats_history "
+             "WHERE video_id IN (%s) GROUP BY video_id" % ",".join("?" * len(chunk)))
+        for r in conn.execute(q, chunk).fetchall():
+            out[r["video_id"]] = r["captured_at"]
+    return out
+
+
+def _gone_rows(conn, channel_ids: list) -> list:
+    """Confirmed gone_items (plan 04) scoped like every other detector: only
+    tracked channels, and only those tracked channels' videos that were
+    already alerted as outliers -- ordinary videos get hidden or deleted all
+    the time, a vanished outlier is the signal worth a message. Joined with
+    the last numbers we stored before the item disappeared."""
+    placeholders = ",".join("?" * len(channel_ids))
+    rows = [dict(r, kind="channel") for r in conn.execute(
+        "SELECT g.ref_id, g.first_missing_at, g.confirmed_at, c.title, "
+        "c.subscriber_count, c.view_count, c.video_count, c.updated_at AS last_seen_at "
+        "FROM gone_items g LEFT JOIN channels c ON c.channel_id = g.ref_id "
+        "WHERE g.kind='channel' AND g.confirmed_at IS NOT NULL "
+        f"AND g.ref_id IN ({placeholders})", channel_ids).fetchall()]
+
+    outlier_scores = {}
+    for r in conn.execute("SELECT ref_id, payload FROM events WHERE kind='outlier'").fetchall():
+        try:
+            outlier_scores[r["ref_id"]] = (json.loads(r["payload"]) or {}).get("outlierScore")
+        except (TypeError, ValueError):
+            outlier_scores[r["ref_id"]] = None
+    for r in conn.execute(
+            "SELECT g.ref_id, g.first_missing_at, g.confirmed_at, v.title, v.channel_id, "
+            "v.view_count FROM gone_items g JOIN videos v ON v.video_id = g.ref_id "
+            "WHERE g.kind='video' AND g.confirmed_at IS NOT NULL "
+            f"AND v.channel_id IN ({placeholders})", channel_ids).fetchall():
+        if r["ref_id"] in outlier_scores:
+            rows.append(dict(r, kind="video", outlier_score=outlier_scores[r["ref_id"]]))
+    return rows
+
+
+def scan(outlier_threshold: float = A.OUTLIER_THRESHOLD_DEFAULT,
+        acceleration_threshold: float = A.ACCELERATION_THRESHOLD_DEFAULT,
+        silence_days: float = DEFAULT_SILENCE_DAYS, period: str = DEFAULT_PERIOD,
+        channel_ids=None) -> dict:
+    """Run every detector against TRACKED channels only -- alerts are about
+    channels you asked to watch, not the whole database. Safe to call every
+    worker cycle: see _emit for why repeats never duplicate.
+
+    channel_ids narrows the scan to those channels (multi-user plan P2-11: a
+    regular user's manual run covers their own watchlist only)."""
+    # every user's tracked channels, each once: an event is a shared fact, who
+    # sees it is decided when reading (list_events)
+    channel_ids = T.tracked_channel_ids() if channel_ids is None else list(channel_ids)
+    empty_counts = {"outlier": 0, "acceleration": 0, "title_change": 0, "silence_break": 0,
+                    "channel_gone": 0, "video_gone": 0, "milestone": 0}
+    if not channel_ids:
+        return {"channelsScanned": 0, "videosScanned": 0, "emitted": empty_counts,
+                "hint": "no tracked channels -- track_channel first"}
+
+    rows = trends.load_window(period=period, channel_ids=channel_ids)
+    conn = db.get_conn()
+
+    snap_at = _latest_snapshot_at(conn, [r["video_id"] for r in rows])
+    outlier_rows = [{"video_id": r["video_id"], "title": r["title"],
+                     "channel_id": r["channel_id"], "view_count": r["view_count"],
+                     "outlier_score": (r.get("outlierScoreAgeAdjusted")
+                                       or r.get("outlierScore") or r.get("outlierScoreNexlev"))}
+                    for r in rows]
+    accel_rows = [{"video_id": r["video_id"], "title": r["title"],
+                   "channel_id": r["channel_id"], "acceleration": r.get("acceleration"),
+                   "vph24h": r.get("vph24h"), "captured_at": snap_at.get(r["video_id"])}
+                  for r in rows if r.get("acceleration") is not None]
+
+    placeholders = ",".join("?" * len(channel_ids))
+    tc_rows = [dict(r) for r in conn.execute(
+        "SELECT ch.video_id, ch.changed_at, ch.old_value, ch.new_value, v.channel_id "
+        "FROM video_changes ch JOIN videos v ON v.video_id = ch.video_id "
+        f"WHERE ch.field='title' AND v.channel_id IN ({placeholders})",
+        channel_ids).fetchall()]
+
+    upload_rows = conn.execute(
+        "SELECT channel_id, video_id, title, published_at FROM videos "
+        f"WHERE channel_id IN ({placeholders}) AND published_at IS NOT NULL",
+        channel_ids).fetchall()
+    channel_uploads = {}
+    for r in upload_rows:
+        channel_uploads.setdefault(r["channel_id"], []).append(
+            (r["published_at"], r["video_id"], r["title"]))
+
+    candidates = {
+        "outlier": A.detect_outliers(outlier_rows, threshold=outlier_threshold),
+        "acceleration": A.detect_acceleration(accel_rows, threshold=acceleration_threshold),
+        "title_change": A.detect_title_changes(tc_rows),
+        "silence_break": A.detect_silence_breaks(channel_uploads, silence_days=silence_days),
+        "channel_gone": [],
+        "video_gone": [],
+        "milestone": A.detect_milestones(MSA.latest_pairs(conn, channel_ids)),
+    }
+    for ev in A.detect_gone(_gone_rows(conn, channel_ids)):
+        candidates[ev["kind"]].append(ev)
+    emitted = dict(empty_counts)
+    for kind, evs in candidates.items():
+        for ev in evs:
+            if _emit(conn, ev["kind"], ev["refId"], ev["payload"], user_id=None):
+                emitted[kind] += 1
+    conn.commit()
+    conn.close()
+    return {"channelsScanned": len(channel_ids), "videosScanned": len(rows), "emitted": emitted}
+
+
+# plan 15 (5.4): an event is a shared fact; a user sees it when its channel
+# (events.channel_id, set when it is emitted) is on their watchlist. "Seen" is
+# personal (event_reads), not events.seen_at.
+# plan 19: a personal event (events.user_id set, a topic match) is seen by its
+# owner only, whatever the watchlist. Both conditions take the user id TWICE.
+VISIBLE_TO_USER = ("(e.user_id = ? OR (e.user_id IS NULL AND EXISTS (SELECT 1 FROM "
+                   "tracked_channels t WHERE t.user_id = ? AND t.channel_id = e.channel_id)))")
+# What is SENT (Telegram/webhook, digest) needs the channel to still be on the
+# watchlist: untracking a channel stops its alerts, while the feed keeps its
+# history.
+DELIVERABLE_TO_USER = ("(e.user_id = ? OR (e.user_id IS NULL AND EXISTS (SELECT 1 FROM "
+                       "tracked_channels t WHERE t.user_id = ? AND t.channel_id = e.channel_id "
+                       "AND t.active = 1)))")
+
+
+def _shape_event(r) -> dict:
+    try:
+        payload = json.loads(r["payload"]) if r["payload"] else {}
+    except (TypeError, ValueError):
+        payload = {}
+    return {"id": r["id"], "kind": r["kind"], "refId": r["ref_id"], "payload": payload,
+           "createdAt": r["created_at"], "seenAt": r["seen_at"]}
+
+
+def list_events(unseen_only: bool = False, kind: str = None, limit: int = 100,
+                *, user_id: int) -> list:
+    where, params = [VISIBLE_TO_USER], [user_id, user_id, user_id]
+    if unseen_only:
+        where.append("r.seen_at IS NULL")
+    if kind:
+        where.append("e.kind = ?")
+        params.append(kind)
+    sql = ("SELECT e.id, e.kind, e.ref_id, e.payload, e.created_at, r.seen_at FROM events e "
+           "LEFT JOIN event_reads r ON r.event_id = e.id AND r.user_id = ? "
+           "WHERE " + " AND ".join(where) + " ORDER BY e.created_at DESC LIMIT ?")
+    params.append(limit)
+    conn = db.get_conn()
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [_shape_event(r) for r in rows]
+
+
+def unseen_count(*, user_id: int) -> int:
+    conn = db.get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM events e WHERE " + VISIBLE_TO_USER + " AND NOT EXISTS "
+        "(SELECT 1 FROM event_reads r WHERE r.event_id = e.id AND r.user_id = ?)",
+        (user_id, user_id, user_id)).fetchone()
+    conn.close()
+    return (row["n"] if row else 0) or 0
+
+
+def mark_seen(ids: list = None, all_unseen: bool = False, *, user_id: int) -> dict:
+    """This user's read marks only, and only on events this user can see."""
+    conn = db.get_conn()
+    now = db.now_iso()
+    sql = ("INSERT INTO event_reads (user_id, event_id, seen_at) SELECT ?, e.id, ? FROM events e "
+           "WHERE " + VISIBLE_TO_USER)
+    params = [user_id, now, user_id, user_id]
+    if not all_unseen:
+        ids = [int(i) for i in (ids or [])]
+        if not ids:
+            conn.close()
+            return {"ok": True}
+        sql += " AND e.id IN (%s)" % ",".join("?" * len(ids))
+        params += ids
+    conn.execute(sql + " ON CONFLICT DO NOTHING", params)
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ------------------------------------------------------------ delivery (07)
+
+def _html_escape(s) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def recipient_locale(user_id) -> str:
+    """The language one person's Telegram/webhook messages (alerts, digest)
+    are written in (i18n plan): the one they chose (user_prefs), else the
+    current request's (POST /api/digest/send from the dashboard), else
+    NF_DEFAULT_LOCALE -- the worker has no request, so there this is exactly
+    locale_prefs.effective(). A failed lookup never stops a delivery."""
+    try:
+        saved = LP.get(user_id=user_id)
+    except Exception:
+        saved = None
+    return saved or i18n.current_locale()
+
+
+def _format_message(ev: dict) -> str:
+    """Telegram HTML for one event, in the current locale (deliver() sets the
+    recipient's). Data is escaped before it goes into the template."""
+    p = ev["payload"]
+    kind = ev["kind"]
+    if kind == "outlier":
+        text = tr("\U0001F680 <b>Outlier</b>: {title}\n×{score} · {views} просмотров",
+                  title=_html_escape(p.get('title')), score=p.get('outlierScore'),
+                  views=p.get('views'))
+    elif kind == "acceleration":
+        text = tr("⚡ <b>Ускорение</b>: {title}\n×{acceleration} · {vph} VPH за 24ч",
+                  title=_html_escape(p.get('title')), acceleration=p.get('acceleration'),
+                  vph=p.get('vph24h'))
+    elif kind == "title_change":
+        text = tr("✏️ <b>Смена заголовка</b>\n«{old}» → «{new}»",
+                  old=_html_escape(p.get('oldTitle')), new=_html_escape(p.get('newTitle')))
+    elif kind == "silence_break":
+        text = tr("\U0001F514 <b>Вернулись после паузы</b>: {title}\nмолчали {days} дней",
+                  title=_html_escape(p.get('title')), days=p.get('gapDays'))
+    elif kind == "channel_gone":
+        text = tr("\U0001F6AB <b>Канал больше не доступен</b>: {title}\n"
+                  "было {subscribers} подписчиков · {views} просмотров · {videos} видео\n"
+                  "не отвечает API с {since}",
+                  title=_html_escape(p.get('title')), subscribers=p.get('subscribers'),
+                  views=p.get('views'), videos=p.get('videoCount'),
+                  since=(p.get('goneSince') or '')[:10])
+    elif kind == "milestone":
+        text = tr("\U0001F3C1 <b>Рубеж</b>: {title}\n{milestone} подписчиков (сейчас {subscribers})",
+                  title=_html_escape(p.get('title')), milestone=p.get('milestone'),
+                  subscribers=p.get('subscribers'))
+    elif kind == "topic_match":
+        text = tr("\U0001F3AF <b>Тема «{topic}»</b>: {title}\n{channel} · похожесть {similarity}",
+                  topic=_html_escape(p.get('topic')), title=_html_escape(p.get('title')),
+                  channel=_html_escape(p.get('channelTitle') or ''),
+                  similarity=p.get('similarity'))
+    elif kind == "draft_due":
+        # plan 33: a planned draft -- the day before and when its time comes
+        from application import content_calendar as CAL
+        text = tr('\U0001F4C5 <b>Черновик</b>: {title}\n{when}\n'
+                  '<a href="{url}/#/calendar">календарь</a>',
+                  title=_html_escape(p.get('title')), when=_html_escape(CAL.event_text(p)),
+                  url=DASHBOARD_URL)
+    elif kind == "video_gone":
+        text = tr("\U0001F6AB <b>Видео больше не доступно</b>: {title}\n"
+                  "было outlier ×{score} · {views} просмотров",
+                  title=_html_escape(p.get('title')), score=p.get('outlierScore'),
+                  views=p.get('views'))
+    else:
+        text = f"{_html_escape(kind)}: {_html_escape(json.dumps(p, ensure_ascii=False))}"
+
+    links = []
+    if p.get("videoId"):
+        links.append(f'<a href="https://www.youtube.com/watch?v={p["videoId"]}">YouTube</a>')
+    if p.get("channelId"):
+        links.append(f'<a href="{DASHBOARD_URL}/#/channel/{p["channelId"]}">{tr("дашборд")}</a>')
+    if links:
+        text += "\n" + " · ".join(links)
+    return text
+
+
+def deliver(max_per_cycle: int = NOTIFY_MAX_PER_CYCLE, *, user_id: int) -> dict:
+    """Stage 07: send every event not yet delivered to Telegram/webhook, up
+    to max_per_cycle individually plus one summary line for the rest.
+    Skips entirely (no DB read at all) when no notifier is configured --
+    NullNotifier means "feature off", not "queue forever". A send failure
+    is logged by the notifier itself and simply leaves that event
+    undelivered for the next cycle to retry; it never raises, so a bad
+    token/URL cannot take the worker down (mirrors _safe() in
+    worker_cycle.py, which also wraps this call)."""
+    from application import notify_settings as NS
+    mode = NS.mode_for(user_id=user_id)
+    if mode == "off":
+        return {"skipped": True, "hint": "notifications are off for this user"}
+    if mode == "digest":
+        return {"skipped": True,
+               "hint": "NOTIFY_MODE=digest -- events go out in the daily digest "
+                       "(application/digest.py), not one by one"}
+    notifier = NS.notifier_for(user_id=user_id)
+    if isinstance(notifier, NullNotifier):
+        return {"skipped": True,
+               "hint": "no NOTIFY_TELEGRAM_BOT_TOKEN/NOTIFY_TELEGRAM_CHAT_ID or "
+                       "NOTIFY_WEBHOOK_URL configured"}
+
+    conn = db.get_conn()
+    try:
+        # this user's channels only, to this user's own Telegram/webhook (plan 15, 5.9)
+        rows = conn.execute(
+            "SELECT e.id, e.kind, e.ref_id, e.payload, e.created_at, NULL AS seen_at FROM events e "
+            "WHERE " + DELIVERABLE_TO_USER + " AND e.created_at >= ? ORDER BY e.created_at ASC",
+            (user_id, user_id, _delivery_since())
+        ).fetchall()
+        events = [_shape_event(r) for r in rows]
+        keys = [str(e["id"]) for e in events]
+        delivered_keys = db.already_delivered_alert_keys(conn, keys, user_id=user_id)
+        pending = [e for e in events if str(e["id"]) not in delivered_keys]
+        if not pending:
+            return {"sent": 0, "summarized": 0, "failed": 0}
+
+        channel = NS.target_name(user_id=user_id)
+        to_send, rest = pending[:max_per_cycle], pending[max_per_cycle:]
+        # written in THIS user's language, whoever else the worker sends to,
+        # and with times in THIS user's time zone (P2-03: calendar reminders)
+        locale = recipient_locale(user_id)
+        zone = TZP.effective(user_id=user_id)
+
+        sent = failed = 0
+        for ev in to_send:
+            with i18n.use_locale(locale), TZ.use_timezone(zone):
+                text = _format_message(ev)
+            if notifier.send(text):
+                db.mark_alert_delivered(conn, str(ev["id"]), channel, user_id=user_id)
+                sent += 1
+            else:
+                failed += 1
+        conn.commit()
+
+        summarized = 0
+        if rest:
+            by_kind = {}
+            for ev in rest:
+                by_kind[ev["kind"]] = by_kind.get(ev["kind"], 0) + 1
+            with i18n.use_locale(locale):
+                lines = [tr("\U0001F4EC И ещё {n} алертов:", n=len(rest))]
+                lines += [f"• {_html_escape(k)}: {n}" for k, n in by_kind.items()]
+                lines.append(f'<a href="{DASHBOARD_URL}/#/data">{tr("открыть дашборд")}</a>')
+            if notifier.send("\n".join(lines)):
+                for ev in rest:
+                    db.mark_alert_delivered(conn, str(ev["id"]), channel, user_id=user_id)
+                summarized = len(rest)
+            else:
+                failed += len(rest)
+            conn.commit()
+
+        return {"sent": sent, "summarized": summarized, "failed": failed}
+    finally:
+        conn.close()
+
+
+def deliver_all(max_per_cycle: int = NOTIFY_MAX_PER_CYCLE) -> dict:
+    """plan 15 (5.9): instant alerts for every user with a notifier -- the
+    local user (.env or saved settings) and whoever saved their own."""
+    from application import notify_settings as NS
+    return {str(uid): deliver(max_per_cycle, user_id=uid) for uid in NS.recipients()}
