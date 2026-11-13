@@ -1,0 +1,230 @@
+:root {
+  --primary: #0D9488;
+  --primary-hover: #14B8A6;
+  --background: #FAFAFA;
+  --surface: #FFFFFF;
+  --text-primary: #1A1A1A;
+  --text-secondary: #666666;
+  --error: #D32F2F;
+  --border: #E0E0E0;
+  --toggle-off: #BDBDBD;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 320px;
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  color: var(--text-primary);
+}
+
+.popup-container {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Main Action - now at bottom */
+.main {
+  padding: 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+/* Hero Button - 3D style */
+.btn-hero {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px 24px;
+  background: linear-gradient(180deg, #14B8A6 0%, #0D9488 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 17px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow:
+    0 4px 0 #0a7568,
+    0 6px 12px rgba(13, 148, 136, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  position: relative;
+  top: 0;
+}
+
+.btn-hero:hover {
+  background: linear-gradient(180deg, #2DD4BF 0%, #14B8A6 100%);
+  box-shadow:
+    0 4px 0 #0a7568,
+    0 8px 16px rgba(13, 148, 136, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.btn-hero:active {
+  top: 3px;
+  box-shadow:
+    0 1px 0 #0a7568,
+    0 2px 4px rgba(13, 148, 136, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.btn-hero:disabled {
+  background: linear-gradient(180deg, #BDBDBD 0%, #9E9E9E 100%);
+  box-shadow:
+    0 4px 0 #757575,
+    0 6px 12px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  cursor: not-allowed;
+  top: 0;
+}
+
+.hero-logo {
+  flex-shrink: 0;
+}
+
+.hero-text {
+  letter-spacing: 0.5px;
+}
+
+/* Settings Section */
+.settings {
+  padding: 16px;
+  background: var(--background);
+  border-top: 1px solid var(--border);
+}
+
+.settings-first {
+  border-top: none;
+  padding-top: 16px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setting-row + .setting-row {
+  margin-top: 12px;
+}
+
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.setting-description {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Child setting (indented under parent) */
+.setting-row.setting-child {
+  margin-left: 16px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+/* Conditional setting row (can be hidden) */
+.setting-row.hidden {
+  display: none;
+}
+
+/* Toggle Switch */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--toggle-off);
+  transition: background-color 0.2s ease;
+  border-radius: 24px;
+}
+
+.toggle-slider::before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  transition: transform 0.2s ease;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.toggle input:checked + .toggle-slider {
+  background-color: var(--primary);
+}
+
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(20px);
+}
+
+.toggle input:focus + .toggle-slider {
+  outline: 2px solid var(--primary-hover);
+  outline-offset: 2px;
+}
+
+/* Experimental Section */
+.experimental-section {
+  border-top: 1px dashed #ffa726;
+  margin-top: 0;
+  padding-top: 12px;
+}
+
+.experimental-header {
+  margin-bottom: 12px;
+}
+
+.experimental-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #ffa726;
+  letter-spacing: 0.5px;
+}
+
+/* Error Message */
+.error-message {
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  color: #DC2626;
+  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  text-align: center;
+}
