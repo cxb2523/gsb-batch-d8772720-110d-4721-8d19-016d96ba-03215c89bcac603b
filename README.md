@@ -54,6 +54,10 @@ using `tls_client`; Reqvexa itself does not send or replay those requests.
 - Generates an ordered Python `tls_client` flow from selected analysis
   requests or a standalone script for one selected request, with synchronous
   and asynchronous output modes.
+- Emits a read-only, JSON-serializable analysis checklist of the planned
+  requests (method, path, role, consumes, produces) and the values that have
+  no producing response, masked by default and labeled with the current
+  depth; raw values appear only in an explicit unsafe mode.
 - Provides CLI output and an optional Flet desktop viewer with Traffic, Logs,
   and Analysis tabs.
 
@@ -106,6 +110,7 @@ reqvexa requests fixtures/minimal.har.json
 reqvexa trace fixtures/minimal.har.json --request -1
 reqvexa plan fixtures/minimal.har.json --request -1
 reqvexa report fixtures/minimal.har.json --request -1 --format markdown
+reqvexa checklist fixtures/minimal.har.json --request -1
 reqvexa gui fixtures/minimal.har.json
 ```
 
@@ -163,6 +168,7 @@ not mean that the value is invalid.
 from reqvexa.capture import HarProvider
 from reqvexa.provenance import ProvenanceEngine
 from reqvexa.planning import plan_flow, safe_report
+from reqvexa.checklist import build_checklist
 
 capture = HarProvider().load_file("capture.har")
 target = capture.requests[-1]
@@ -172,11 +178,20 @@ analysis = ProvenanceEngine().analyze(
 )
 plan = plan_flow(analysis, target.id)
 report = safe_report(analysis, target.id)
+# Shareable, masked checklist of every planned request and the values with
+# no producing response. Pass recursive=False for the one-level mode and
+# unsafe_raw=True to include original values.
+checklist = build_checklist(analysis, target.id)
+payload = checklist.to_dict()
 ```
 
 The analysis reads the capture from disk and does not make network requests.
 Pass `recursive=False` to `analyze` to stop at each value's first producer;
-`plan_flow` and `safe_report` inherit that depth unless told otherwise.
+`plan_flow`, `safe_report`, and `build_checklist` inherit that depth unless
+told otherwise. A checklist masks every value by default (digest and masked
+display only); `build_checklist(..., unsafe_raw=True)` is the only way to add
+the original captured values, and unresolved values are listed as-is without
+a guessed producer.
 
 ## Development
 
@@ -194,7 +209,7 @@ The repository includes a deterministic benchmark:
 python -c "from tests.benchmark.runner import run_benchmark; print(run_benchmark())"
 ```
 
-Current checks pass with 152 tests and 16 benchmark cases. The benchmark uses
+Current checks pass with 164 tests and 16 benchmark cases. The benchmark uses
 synthetic traffic; `16/16 passing` is a regression result, not a claim about
 accuracy on every real-world HAR.
 
@@ -215,6 +230,10 @@ Implemented:
 - Raw-text matching in earlier responses, including URL/Base64/Bearer forms.
 - Temporal versions, evidence-bearing provenance, and recursive flow plans.
 - Reports in JSON, markdown, and Mermaid formats.
+- A masked, deterministic analysis checklist (`reqvexa checklist`) listing
+  each planned request's role/consumes/produces and separately the values
+  whose source never appears in the capture, with recursive and one-level
+  depth labels.
 - Selectable request-flow export as synchronous or asynchronous Python using
   `tls_client`, plus standalone single-request scripts.
 - CLI and optional Flet GUI with live logs, analysis tabs, cancellation, and

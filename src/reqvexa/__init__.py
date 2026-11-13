@@ -1,5 +1,11 @@
 """Reqvexa deterministic traffic provenance core."""
 
+from .checklist import (
+    AnalysisChecklist,
+    ChecklistStep,
+    ChecklistValue,
+    build_checklist,
+)
 from .models import (
     Capture,
     Cookie,
@@ -26,7 +32,10 @@ from .models import (
 from .planning import FlowPlan, FlowStep, plan_flow, report_markdown, safe_report
 
 __all__ = [
+    "AnalysisChecklist",
     "Capture",
+    "ChecklistStep",
+    "ChecklistValue",
     "Cookie",
     "DependencyCategory",
     "Edge",
@@ -49,6 +58,7 @@ __all__ = [
     "SourceLocation",
     "ValueObservation",
     "ValueVersion",
+    "build_checklist",
     "plan_flow",
     "report_markdown",
     "safe_report",

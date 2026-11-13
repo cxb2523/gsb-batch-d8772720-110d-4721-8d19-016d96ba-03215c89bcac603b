@@ -5,6 +5,22 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Read-only analysis checklist (`reqvexa.checklist.build_checklist`,
+  `reqvexa checklist` CLI). For one target request it lists every planned
+  request in capture order with `method`, `path`, `role` (`target` or
+  `producer`), and the values each step `consumes`/`produces`, plus a
+  separate list of values with no producing response anywhere in the
+  capture. Values are masked by default and carry only a SHA-256 digest,
+  a masked display, and a status; `--unsafe-raw`/`unsafe_raw=True` adds the
+  original value. Both `recursive` and `one_level` depths are supported and
+  labeled per checklist and per step (the step depth is its hop distance
+  from the target). Unresolved values are reported verbatim with no
+  fabricated producer. The artifact serializes to JSON under stable field
+  names and is deterministic: re-analyzing the same HAR yields identical
+  output.
+
 ## [0.2.0a1] - 2026-10-25
 
 ### Added

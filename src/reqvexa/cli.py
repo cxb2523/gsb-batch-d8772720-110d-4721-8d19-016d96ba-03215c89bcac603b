@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from reqvexa.capture import HarFormatError, HarProvider
+from reqvexa.checklist import build_checklist
 from reqvexa.models import Capture
 from reqvexa.planning import plan_flow, report_markdown, report_mermaid, safe_path, safe_report
 from reqvexa.provenance import Analysis, ProvenanceEngine, TraceNode
@@ -24,11 +25,14 @@ if _package_version is not None:
 else:  # pragma: no cover
     __version__ = "0.0.0+unknown"
 
-TARGET_COMMANDS = {"trace", "plan", "report"}
+TARGET_COMMANDS = {"trace", "plan", "report", "checklist"}
 
 
-def _analysis(capture: Capture, request_id: str | None) -> Analysis:
-    return ProvenanceEngine().analyze(capture, target_request_id=request_id)
+def _analysis(capture: Capture, request_id: str | None,
+              recursive: bool = True) -> Analysis:
+    return ProvenanceEngine().analyze(
+        capture, target_request_id=request_id, recursive=recursive,
+    )
 
 
 def _target_id(request_id: str | None) -> str:
@@ -181,6 +185,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--format", choices=("json", "markdown", "mermaid"), default="json"
     )
 
+    checklist = subparsers.add_parser(
+        "checklist",
+        help="Write a masked, shareable request/value checklist for one request",
+    )
+    checklist.add_argument("capture", type=Path)
+    checklist.add_argument(
+        "--request", required=True,
+        help="Request ID, entry index (e.g. -1), or URL substring",
+    )
+    checklist.add_argument("--output", type=Path)
+    checklist.add_argument(
+        "--one-level", action="store_true",
+        help="Keep only the target and each value's first producer (no further expansion)",
+    )
+    checklist.add_argument(
+        "--unsafe-raw", action="store_true",
+        help="Include original captured values (may contain secrets)",
+    )
+
     gui = subparsers.add_parser("gui", help="Open the desktop viewer")
     gui.add_argument("capture", type=Path, nargs="?")
     gui.add_argument("--request")
@@ -218,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {error}", file=sys.stderr)
             return 2
 
-    analysis = _analysis(capture, request_id)
+    recursive = not (args.command == "checklist" and args.one_level)
+    analysis = _analysis(capture, request_id, recursive=recursive)
     if args.command == "analyze":
         print(json.dumps({
             "requests": len(analysis.capture.requests),
@@ -247,6 +271,14 @@ def main(argv: list[str] | None = None) -> int:
             payload = report_mermaid(report_payload)
         else:
             payload = json.dumps(report_payload, indent=2, sort_keys=True) + "\n"
+        _emit(payload, args.output)
+    elif args.command == "checklist":
+        checklist = build_checklist(
+            analysis, _target_id(request_id),
+            recursive=not args.one_level,
+            unsafe_raw=args.unsafe_raw,
+        )
+        payload = json.dumps(checklist.to_dict(), indent=2, sort_keys=True) + "\n"
         _emit(payload, args.output)
     else:
         payload = "\n".join(_trace_lines(analysis, _target_id(request_id), args.unsafe_raw)) + "\n"
