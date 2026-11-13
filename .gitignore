@@ -1,0 +1,109 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ── Build / packaging ───────────────────────────────────────────────────────
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# ── Release archives (published as GitHub Release assets, not committed) ────
+biosuite-ultra-*.zip
+biosuite_ultra-*.tar.gz
+*.whl
+
+# ── Virtual environments ────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Testing / coverage ─────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.benchmarks/
+.hypothesis/
+
+# ── Type checkers / linters ────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# ── Editors / IDEs ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS noise ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Secrets / credentials — never commit ───────────────────────────────────
+.env
+.env.*
+# the template carries no secrets and must be tracked:
+!.env.example
+.pypirc
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# ── Backup / editor leftovers ──────────────────────────────────────────────
+*.bak
+*.orig
+*.rej
+*.tmp
+*.old
+
+# ── BioSuite runtime state & generated output ──────────────────────────────
+biosuite_session.json
+biosuite_config.json.local*
+*.log
+logs/
+
+# ── Generated figures (regenerate from code, don't track) ──────────────────
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+!docs/**/*.png
+!docs/**/*.svg
+
+# ── Local tooling scratch directories ──────────────────────────────────────
+_tmp_repo/
+
+# ── Notebook checkpoints ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Docs build output ──────────────────────────────────────────────────────
+docs/_build/
+docs/_autosummary/
+*.patch
+bio_suite_cache/
+.coverage
+coverage/
+# Runtime plot-story export (tests write to cwd)
+story.md
+
+# ── Local user state (never commit: may contain API keys) ───────────────────
+biosuite_config.json
+biosuite_session.json
+.env

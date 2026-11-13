@@ -1,0 +1,218 @@
+"""
+Batch processor — run the same analysis on hundreds of samples in parallel.
+Tracks progress, collects results, handles failures gracefully.
+"""
+import threading
+import time
+import traceback
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+class BatchJob:
+    """Single batch job for one sample."""
+
+    def __init__(self, sample_id, func, args=None, kwargs=None):
+        self.sample_id = sample_id
+        self.func = func
+        self.args = args or []
+        self.kwargs = kwargs or {}
+        self.result = None
+        self.error = None
+        # Set here as well as in run(): reading `traceback` from a job that has
+        # not run yet raised AttributeError, while a job that had run always had it.
+        self.traceback = None
+        self.elapsed = 0.0
+        self.status = "pending"
+
+    def run(self):
+        # Clear state from any earlier run so a retried job does not keep
+        # reporting the previous failure.
+        self.status = "running"
+        self.result = None
+        self.error = None
+        self.traceback = None
+        start = time.time()
+        try:
+            self.result = self.func(self.sample_id, *self.args, **self.kwargs)
+            self.status = "done"
+        except Exception as e:
+            self.error = str(e)
+            self.traceback = traceback.format_exc()
+            self.status = "failed"
+        self.elapsed = time.time() - start
+        return self.result
+
+    def to_dict(self):
+        return {
+            "sample_id": self.sample_id,
+            "status": self.status,
+            "elapsed": round(self.elapsed, 2),
+            "error": self.error,
+        }
+
+
+class BatchProcessor:
+    """Process multiple samples with the same function in parallel."""
+
+    def __init__(self, name="batch"):
+        self.name = name
+        self.jobs = []
+        self.results = OrderedDict()
+        self._log = []
+        self._progress = 0
+        self._total = 0
+        self._lock = threading.Lock()
+
+    def add_job(self, sample_id, func, args=None, kwargs=None):
+        """Queue one sample.
+
+        Raises:
+            ValueError: if *sample_id* is already queued.  Results are keyed by
+                sample id, so duplicates used to silently collapse three jobs
+                into two results.
+        """
+        if any(job.sample_id == sample_id for job in self.jobs):
+            raise ValueError(
+                f"duplicate sample id {sample_id!r}; batch results are keyed by "
+                "sample id, so ids must be unique")
+        self.jobs.append(BatchJob(sample_id, func, args, kwargs))
+        return self
+
+    def add_samples(self, sample_ids, func, args=None, kwargs=None):
+        for sid in sample_ids:
+            self.add_job(sid, func, args, kwargs)
+        return self
+
+    def run(self, max_workers=4, progress_callback=None):
+        """Run every queued job.
+
+        ``results`` holds one entry per *successful* job, in the order the jobs
+        were added.  A failed job contributes nothing to it — its error is in
+        ``get_failures()``, ``summary()`` and ``to_dict()`` — because a failed
+        job and a job whose function legitimately returned ``None`` used to look
+        identical to the caller, and ``batch_run``'s dict was the only thing a
+        script got back.
+        """
+        self._log = []
+        self.results = OrderedDict()
+        self._progress = 0
+        self._total = len(self.jobs)
+        start = time.time()
+        for job in self.jobs:
+            job.status = "pending"
+            job.result = None
+            job.error = None
+            job.traceback = None
+            job.elapsed = 0.0
+
+        if max_workers <= 1:
+            self._run_sequential(progress_callback)
+        else:
+            self._run_parallel(max_workers, progress_callback)
+
+        total = time.time() - start
+        n_done = sum(1 for j in self.jobs if j.status == "done")
+        n_fail = sum(1 for j in self.jobs if j.status == "failed")
+        self._log.append(f"Batch '{self.name}' finished: {n_done} done, {n_fail} failed in {total:.2f}s")
+        return self
+
+    def _run_sequential(self, progress_callback):
+        for job in self.jobs:
+            self._log.append(f"Processing: {job.sample_id}")
+            job.run()
+            self._progress += 1
+            if progress_callback:
+                progress_callback(self._progress, self._total, job.sample_id)
+            if job.status == "failed":
+                self._log.append(f"  {job.sample_id} FAILED: {job.error}")
+            else:
+                self._log.append(f"  {job.sample_id} done in {job.elapsed:.2f}s")
+        self._collect()
+
+    def _run_parallel(self, max_workers, progress_callback):
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(job.run): job for job in self.jobs}
+            for future in as_completed(futures):
+                job = futures[future]
+                with self._lock:
+                    self._progress += 1
+                    progress = self._progress
+                if progress_callback:
+                    progress_callback(progress, self._total, job.sample_id)
+                if job.status == "failed":
+                    self._log.append(f"  {job.sample_id} FAILED: {job.error}")
+                else:
+                    self._log.append(f"  {job.sample_id} done in {job.elapsed:.2f}s")
+        # Rebuilt from the job list, not from completion order: results used to
+        # arrive in whatever order the threads finished, so an OrderedDict could
+        # hand back two different sequences for the same batch.
+        self._collect()
+
+    def _collect(self):
+        """Index the successful jobs by sample id, in the order they were added."""
+        self.results = OrderedDict(
+            (job.sample_id, job.result) for job in self.jobs if job.status == "done")
+
+    def summary(self):
+        n_done = sum(1 for j in self.jobs if j.status == "done")
+        n_fail = sum(1 for j in self.jobs if j.status == "failed")
+        lines = [
+            f"Batch: {self.name}",
+            f"Samples: {len(self.jobs)}",
+            f"Completed: {n_done}",
+            f"Failed: {n_fail}",
+            "",
+        ]
+        for job in self.jobs:
+            icon = "+" if job.status == "done" else "X" if job.status == "failed" else "-"
+            lines.append(f"  [{icon}] {job.sample_id} ({job.elapsed:.2f}s)")
+            if job.error:
+                lines.append(f"      {job.error}")
+        lines.append("")
+        lines.extend(self._log)
+        return "\n".join(lines)
+
+    def get_results(self):
+        return self.results
+
+    def get_failures(self):
+        return [(j.sample_id, j.error) for j in self.jobs if j.status == "failed"]
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "total": len(self.jobs),
+            "done": sum(1 for j in self.jobs if j.status == "done"),
+            "failed": sum(1 for j in self.jobs if j.status == "failed"),
+            "jobs": [j.to_dict() for j in self.jobs],
+        }
+
+
+def batch_run(func, sample_ids, *args, max_workers=4, **kwargs):
+    """Quick batch run — apply func to each sample_id.
+
+    Args:
+        func: callable(sample_id, *args, **kwargs)
+        sample_ids: list of sample identifiers; they must be unique, because the
+            results are keyed by them (a duplicate raises ValueError)
+        *args: positional args passed to func
+        max_workers: parallel workers
+        **kwargs: keyword args passed to func
+
+    Returns:
+        dict mapping sample_id -> result, for the jobs that succeeded.  A job
+        that raised is missing from this dict; to see it, use a BatchProcessor
+        and read ``get_failures()`` instead, because nothing here can tell a
+        failed sample from one whose function legitimately returned ``None``.
+    """
+    bp = BatchProcessor()
+    for sid in sample_ids:
+        bp.add_job(sid, func, args=args, kwargs=kwargs)
+    bp.run(max_workers=max_workers)
+    return bp.get_results()
+
+
+def format_batch_report(processor):
+    """Format batch results as text report."""
+    return processor.summary()

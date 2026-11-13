@@ -1,0 +1,379 @@
+"""
+Genomics tabs: NGS/VCF, Assembly, Metagenomics, 16S rRNA, SV/CNV, BigWig.
+"""
+from tkinter import filedialog
+
+import customtkinter as ctk
+
+
+class GenomicsTabMixin:
+    """Provides NGS, Assembly, Metagenomics, 16S rRNA, SV/CNV, and BigWig tabs."""
+
+    def _build_ngs_frame(self):
+        T = self.T
+        f = ctk.CTkFrame(self.content, fg_color=T['bg'])
+        self.frames['ngs'] = f
+        self._section_header(f, "NGS / VCF Analysis")
+        card = self._card(f)
+        card.pack(fill='both', expand=True)
+        inner = ctk.CTkFrame(card, fg_color='transparent')
+        inner.pack(fill='both', expand=True, padx=16, pady=12)
+
+        file_row = ctk.CTkFrame(inner, fg_color='transparent')
+        file_row.pack(fill='x', pady=(0, 8))
+        self.vcf_path = self._input_entry(file_row, "VCF file path...")
+        self.vcf_path.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self._action_button(file_row, "Browse",
+                            lambda: self._browse_file(self.vcf_path, [("VCF", "*.vcf")])
+                            ).pack(side='right')
+        self._action_button(inner, "Load VCF & Show Manhattan Plot", self._load_vcf).pack(pady=(0, 8))
+        self.vcf_result = self._text_box(inner, height=240)
+        self.vcf_result.pack(fill='both', expand=True)
+
+    def _load_vcf(self):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        from ...core.ngs import manhattan_from_vcf, read_vcf
+        path = self.vcf_path.get().strip()
+        if not path:
+            self._msg_warning("No file", "Select a VCF file first.")
+            return
+        try:
+            df = read_vcf(path)
+            if df is None:
+                self.vcf_result.delete("1.0", "end")
+                self.vcf_result.insert("end", "Failed to read VCF.")
+                return
+            self.vcf_result.delete("1.0", "end")
+            self.vcf_result.insert("end", f"Loaded {len(df)} variants.\n\n")
+            self.vcf_result.insert("end", df.head(20).to_string())
+            manh = manhattan_from_vcf(df)
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.scatter(manh['POS'], manh['neg_log10'], s=2, alpha=0.6)
+            ax.axhline(-np.log10(5e-8), color='red', linestyle='--')
+            ax.set_xlabel('Position')
+            ax.set_ylabel('-log10(p)')
+            ax.set_title('Manhattan Plot from VCF')
+            self._show_plot_from_figure(fig, "Manhattan Plot - VCF Analysis")
+            self._set_status("VCF loaded, Manhattan plot displayed")
+        except Exception as e:
+            self._msg_error("Error", str(e))
+
+    # ─── Assembly Tab ────────────────────────────────────────────────────────
+
+    def _build_assembly_frame(self):
+        T = self.T
+        f = ctk.CTkFrame(self.content, fg_color=T['bg'])
+        self.frames['assembly'] = f
+        self._section_header(f, "Genome Assembly")
+        card = self._card(f)
+        card.pack(fill='both', expand=True)
+        inner = ctk.CTkFrame(card, fg_color='transparent')
+        inner.pack(fill='both', expand=True, padx=16, pady=12)
+
+        file_row = ctk.CTkFrame(inner, fg_color='transparent')
+        file_row.pack(fill='x', pady=(0, 8))
+        self.asm_path = self._input_entry(file_row, "Reads FASTQ file...")
+        self.asm_path.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self._action_button(file_row, "Browse",
+                            lambda: self._browse_file(self.asm_path, [("FASTQ", "*.fastq *.fq")])
+                            ).pack(side='right')
+
+        self._action_button(inner, "Run Assembly", self._run_assembly).pack(pady=(0, 8))
+        self.asm_result = self._text_box(inner, height=200)
+        self.asm_result.pack(fill='both', expand=True)
+
+    def _run_assembly(self):
+        path = self.asm_path.get().strip()
+        if not path:
+            self._msg_warning("No file", "Select a reads file.")
+            return
+        try:
+            from ...core.assembly import assemble, format_assembly_report
+            result = assemble(path)
+            self.asm_result.delete("1.0", "end")
+            self.asm_result.insert("end", format_assembly_report(result))
+            self._set_status(f"Assembly: {result.num_contigs} contigs, N50={result.n50}")
+        except Exception as e:
+            self._msg_error("Error", str(e))
+
+    # ─── Metagenomics Tab ────────────────────────────────────────────────────
+
+    def _build_metagenomics_frame(self):
+        T = self.T
+        f = ctk.CTkFrame(self.content, fg_color=T['bg'])
+        self.frames['metagenomics'] = f
+        self._section_header(f, "Metagenomics Analysis")
+        card = self._card(f)
+        card.pack(fill='both', expand=True)
+        inner = ctk.CTkFrame(card, fg_color='transparent')
+        inner.pack(fill='both', expand=True, padx=16, pady=12)
+
+        file_row = ctk.CTkFrame(inner, fg_color='transparent')
+        file_row.pack(fill='x', pady=(0, 8))
+        # NOTE: metabolomics.py also uses self.meta_path / self.meta_result —
+        # share nothing or the two tabs clobber each other's attributes.
+        self.mg_path = self._input_entry(file_row, "Reads FASTQ file...")
+        self.mg_path.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self._action_button(file_row, "Browse",
+                            lambda: self._browse_file(self.mg_path, [("FASTQ", "*.fastq *.fq")])
+                            ).pack(side='right')
+
+        self._action_button(inner, "Run Classification", self._run_meta).pack(pady=(0, 8))
+        self.mg_result = self._text_box(inner, height=250)
+        self.mg_result.pack(fill='both', expand=True)
+
+        div_row = ctk.CTkFrame(inner, fg_color='transparent')
+        div_row.pack(fill='x', pady=(8, 0))
+        self.mg_div_paths = self._input_entry(
+            div_row, "Abundance CSVs (taxon,count), comma-separated paths...")
+        self.mg_div_paths.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self._action_button(div_row, "Analyze Diversity",
+                            self._run_diversity).pack(side='right')
+
+    def _run_meta(self):
+        path = self.mg_path.get().strip()
+        if not path:
+            self._msg_warning("No file", "Select a reads file.")
+            return
+        try:
+            from ...core.metagenomics import classify_reads, format_metagenomics_report
+            result = classify_reads(path)
+            self.mg_result.delete("1.0", "end")
+            self.mg_result.insert("end", format_metagenomics_report(result))
+            # 'classified' was the count of reads that were read: a FASTQ of
+            # ambiguous reads showed '3 reads classified' with nothing classified.
+            self._set_status(
+                f"Metagenomics: {len(result.classifications)} reads processed")
+        except Exception as e:
+            self._msg_error("Error", str(e))
+
+    def _run_diversity(self):
+        import pandas as pd
+
+        from ...core.metagenomics import analyze_diversity
+        raw = self.mg_div_paths.get().strip()
+        paths = [p.strip() for p in raw.split(',') if p.strip()]
+        if not paths:
+            self._msg_warning("No files", "Enter abundance CSV paths (comma-separated).")
+            return
+        tables = []
+        for path in paths:
+            try:
+                tables.append(pd.read_csv(path))
+            except (OSError, ValueError) as e:
+                self._msg_error("Error", f"Could not read {path}: {e}")
+                return
+        try:
+            result = analyze_diversity(tables)
+        except ValueError as e:
+            self._msg_error("Error", str(e))
+            return
+        self.mg_result.delete("1.0", "end")
+        self.mg_result.insert("end", f"{result.message}\n\n")
+        for alpha in result.alpha_diversity:
+            self.mg_result.insert(
+                "end",
+                f"{alpha['sample']}: observed={alpha['observed_taxa']}  "
+                f"shannon={alpha['shannon']}  simpson={alpha['simpson']}  "
+                f"chao1={alpha['chao1']}\n")
+        if result.beta_diversity is not None:
+            self.mg_result.insert("end", "\nBeta diversity (Bray-Curtis):\n")
+            self.mg_result.insert("end", result.beta_diversity.to_string())
+            self.mg_result.insert("end", "\n")
+        self._set_status(f"Diversity: {len(tables)} sample(s) analyzed")
+
+    # ─── 16S rRNA Pipeline Tab ──────────────────────────────────────────────
+
+    def _build_16srna_frame(self):
+        T = self.T
+        f = ctk.CTkFrame(self.content, fg_color=T['bg'])
+        self.frames['16srna'] = f
+        self._section_header(f, "16S rRNA Classification Pipeline")
+        body = ctk.CTkFrame(f, fg_color='transparent')
+        body.pack(fill='both', expand=True)
+
+        left = self._card(body)
+        left.pack(side='left', fill='both', expand=True, padx=(0, 6))
+        self._label(left, 'Enter 16S sequences (name:sequence)', 'sub').pack(padx=14, pady=(14, 4), anchor='w')
+        self.rna_text = self._text_box(left, height=200)
+        self.rna_text.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+        self.rna_text.insert("1.0", "Ecoli_16S:TGGAGGAAGGTGGGGACGACGTCAGTATCGAATCTTGGATCAGGATCACCTCCGGA\nStaph_16S:AGCCATGCAGCACCTGTCTCAGCTTCCCGAAGGCACTATACGTAGATCGAAAGTTGAT")
+        btn_row = ctk.CTkFrame(left, fg_color='transparent')
+        btn_row.pack(fill='x', padx=10, pady=(0, 10))
+        self._action_button(btn_row, "Classify", self._run_16s).pack(side='left', padx=(0, 6))
+
+        right = self._card(body)
+        right.pack(side='right', fill='both', expand=True, padx=(6, 0))
+        self._label(right, 'Results', 'sub').pack(padx=14, pady=(14, 4), anchor='w')
+        self.rna_results = self._text_box(right, height=280)
+        self.rna_results.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+
+    def _run_16s(self):
+        from ...core.metagenomics import classify_16s_rna, format_16s_report
+        text = self.rna_text.get("1.0", "end").strip()
+        if not text:
+            self._msg_warning("No sequences", "Enter 16S sequences first.")
+            return
+        seqs = []
+        for line in text.split('\n'):
+            line = line.strip()
+            if ':' in line:
+                name, seq = line.split(':', 1)
+                seqs.append((name.strip(), seq.strip().upper()))
+        if not seqs:
+            self._msg_warning("Invalid format", "Use name:sequence format.")
+            return
+        try:
+            result = classify_16s_rna(seqs)
+            self.rna_results.delete("1.0", "end")
+            self.rna_results.insert("end", format_16s_report(result))
+        except Exception as e:
+            self._msg_error("Error", str(e))
+
+    # ─── SV / CNV Detection Tab ─────────────────────────────────────────────
+
+    def _build_svcnv_frame(self):
+        T = self.T
+        f = ctk.CTkFrame(self.content, fg_color=T['bg'])
+        self.frames['svcinv'] = f
+        self._section_header(f, "SV / CNV Detection from Coverage")
+        body = ctk.CTkFrame(f, fg_color='transparent')
+        body.pack(fill='both', expand=True)
+
+        left = self._card(body)
+        left.pack(side='left', fill='both', expand=True, padx=(0, 6))
+        self._label(left, 'Input', 'sub').pack(padx=14, pady=(14, 4), anchor='w')
+        self._label(left, 'Load CSV coverage or use demo', 'body').pack(padx=14, anchor='w')
+        btn_row = ctk.CTkFrame(left, fg_color='transparent')
+        btn_row.pack(fill='x', padx=14, pady=(0, 10))
+        self._action_button(btn_row, "Load CSV", self._svcnv_load).pack(side='left', padx=(0, 6))
+        self._action_button(btn_row, "Demo Data", self._svcnv_demo).pack(side='left')
+
+        right = self._card(body)
+        right.pack(side='right', fill='both', expand=True, padx=(6, 0))
+        self._label(right, 'Results', 'sub').pack(padx=14, pady=(14, 4), anchor='w')
+        self.svcnv_results = self._text_box(right, height=280)
+        self.svcnv_results.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+
+    def _svcnv_load(self):
+        import numpy as np
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Text", "*.txt")])
+        if not path:
+            return
+        try:
+            # atleast_1d: a CSV holding one number makes loadtxt return a 0-d array,
+            # and the len() a few lines below sits outside this try, so its
+            # TypeError escaped the handler instead of reaching the user.
+            data = np.atleast_1d(np.loadtxt(path, delimiter=','))
+        except (OSError, ValueError) as e:
+            self._msg_error("Error", f"Could not load coverage CSV: {e}")
+            return
+        if data.size == 0:
+            self._msg_error("Error", "The coverage file holds no values.")
+            return
+        bad = ~np.isfinite(data)
+        if bad.any():
+            self._msg_error(
+                "Error",
+                f"The coverage file holds {int(bad.sum())} missing or non-finite value(s).")
+            return
+        self._svcnv_data = data
+        self.svcnv_results.delete("1.0", "end")
+        self.svcnv_results.insert("end",
+                                  f"Loaded {len(self._svcnv_data)} coverage values\n\n")
+        # The loaded data used to sit in self._svcnv_data with no analysis
+        # path (only "Demo Data" ran the detectors); run them on the input:
+        try:
+            from ...core.variant_calling import (
+                detect_cnv,
+                detect_structural_variants,
+                format_cnv_report,
+                format_sv_report,
+            )
+            cov = np.asarray(self._svcnv_data, dtype=float)
+            ref = np.full_like(cov, float(np.median(cov)))
+            svs = detect_structural_variants(cov, ref)
+            cnv = detect_cnv(cov, ref)
+            self.svcnv_results.insert("end", format_sv_report(svs))
+            self.svcnv_results.insert("end", f"\n{format_cnv_report(cnv)}")
+            self._set_status(f"SV/CNV: analysed {len(cov)} coverage values")
+        except Exception as e:
+            self._msg_error("Error", str(e))
+
+    def _svcnv_demo(self):
+        import numpy as np
+
+        from ...core.variant_calling import (
+            detect_cnv,
+            detect_structural_variants,
+            format_cnv_report,
+            format_sv_report,
+        )
+        rng = np.random.default_rng(42)
+        cov = rng.poisson(30, 5000).astype(float)
+        cov[1500:2000] *= 0.3
+        cov[3000:3500] *= 2.5
+        ref = np.ones(5000) * 30
+        svs = detect_structural_variants(cov, ref)
+        cnv = detect_cnv(cov, ref)
+        self.svcnv_results.delete("1.0", "end")
+        self.svcnv_results.insert("end", format_sv_report(svs))
+        self.svcnv_results.insert("end", f"\n{format_cnv_report(cnv)}")
+
+    # ─── BigWig Reader Tab ──────────────────────────────────────────────────
+
+    def _build_bigwig_frame(self):
+        T = self.T
+        f = ctk.CTkFrame(self.content, fg_color=T['bg'])
+        self.frames['bigwig'] = f
+        self._section_header(f, "BigWig Reader")
+        body = ctk.CTkFrame(f, fg_color='transparent')
+        body.pack(fill='both', expand=True)
+
+        left = self._card(body)
+        left.pack(side='left', fill='both', expand=True, padx=(0, 6))
+        self._label(left, 'BigWig File', 'sub').pack(padx=14, pady=(14, 4), anchor='w')
+        btn_row = ctk.CTkFrame(left, fg_color='transparent')
+        btn_row.pack(fill='x', padx=14, pady=(0, 10))
+        self._action_button(btn_row, "Browse File", self._bigwig_browse).pack(side='left', padx=(0, 6))
+        self._action_button(btn_row, "Read File", self._bigwig_read).pack(side='left')
+
+        right = self._card(body)
+        right.pack(side='right', fill='both', expand=True, padx=(6, 0))
+        self._label(right, 'Info', 'sub').pack(padx=14, pady=(14, 4), anchor='w')
+        self.bigwig_info = self._text_box(right, height=280)
+        self.bigwig_info.pack(fill='both', expand=True, padx=10, pady=(0, 6))
+        self._bigwig_path = None
+
+    def _bigwig_browse(self):
+        path = filedialog.askopenfilename(filetypes=[("BigWig", "*.bw *.bigwig"), ("All", "*.*")])
+        if path:
+            self._bigwig_path = path
+            self.bigwig_info.delete("1.0", "end")
+            self.bigwig_info.insert("end", f"Selected: {path}\n")
+
+    def _bigwig_read(self):
+        if not self._bigwig_path:
+            self._msg_warning("No file", "Browse for a BigWig file first.")
+            return
+        from ...core.file_formats import (
+            bigwig_summary,
+            format_bigwig_summary,
+            read_bigwig,
+        )
+        try:
+            data = read_bigwig(self._bigwig_path)
+            self.bigwig_info.delete("1.0", "end")
+            if "error" in data:
+                self.bigwig_info.insert("end", f"Error: {data['error']}\n")
+            elif "chroms" in data:
+                self.bigwig_info.insert("end", f"Chromosomes: {len(data['chroms'])}\n\n")
+                for chrom, values in list(data['chroms'].items())[:10]:
+                    self.bigwig_info.insert("end", f"  {chrom}: {len(values)} values\n")
+            else:
+                summary = bigwig_summary(self._bigwig_path)
+                self.bigwig_info.insert("end", format_bigwig_summary(summary))
+        except Exception as e:
+            self._msg_error("Error", str(e))

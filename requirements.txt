@@ -1,0 +1,59 @@
+# Runtime requirements for the BioSuite Ultra library and CLI.
+#
+# This file mirrors the `dependencies` table in pyproject.toml.  Optional
+# feature sets live in the extras (`pip install "biosuite-ultra[bio,api,gui]"`)
+# and are listed at the bottom for reference only - they are NOT installed by
+# `pip install -r requirements.txt`.
+#
+# Development tooling belongs in the `dev` extra, not here.
+
+numpy>=1.24,<3
+pandas>=2.0,<3
+# 3.9 is a real floor, not a preference: Axes.boxplot() only took tick_labels=
+# from 3.9 (matplotlib names the rename in its own deprecation warning), and
+# plot_api.boxplot / interactive_plots call it that way.  On 3.7 or 3.8 the call
+# died with "unexpected keyword argument 'tick_labels'".
+matplotlib>=3.9,<4
+seaborn>=0.12,<1
+scipy>=1.10,<2
+scikit-learn>=1.3,<2
+tqdm>=4.65,<5
+biopython>=1.81,<2
+networkx>=3.0,<4
+plotly>=5.0,<7
+
+# === Desktop GUI: pip install "biosuite-ultra[gui]" =========================
+# Also needs the Tk bindings for your interpreter, which are not on PyPI:
+#   Debian/Ubuntu: apt-get install python3-tk
+# customtkinter>=5.2,<6
+
+# === REST API: pip install "biosuite-ultra[api]" ============================
+# fastapi>=0.100
+# uvicorn>=0.23
+# python-jose[cryptography]>=3.3
+# slowapi>=0.1.9
+# pydantic>=2.0,<3
+
+# === Extended bioinformatics: pip install "biosuite-ultra[bio]" =============
+# goatools>=1.3
+# gseapy>=1.0
+# cutadapt>=4.0
+# scanpy>=1.9
+# anndata>=0.9
+# scikit-bio>=0.5
+# biotite>=0.37
+# ete3>=3.1
+# cobra>=0.26          # cobra is a 0.x series; ">=3.0" could never resolve
+# shap>=0.42
+# statsmodels>=0.14
+# umap-learn>=0.5
+
+# === Jupyter helpers: pip install "biosuite-ultra[notebook]" ================
+# ipython>=8.0
+# ipywidgets>=8.0
+
+# === Not installable everywhere (C toolchain / large downloads) =============
+# pysam>=0.21       # BAM/CRAM support (complex install on Windows)
+# openmm>=8.0       # Molecular dynamics
+# pymzml>=2.5       # Metabolomics
+# torch, esm        # ESMFold structure prediction

@@ -1,0 +1,50 @@
+cff-version: 1.2.0
+title: "BioSuite Ultra"
+message: "If you use this software, please cite it using the metadata from this file and the associated GitHub repository."
+type: software
+authors:
+  - family-names: Touri
+    given-names: Sahand
+repository-code: "https://github.com/sahandtkod-byte/BioSuite-Ultra"
+doi: "10.5281/zenodo.21256296"
+url: "https://github.com/sahandtkod-byte/BioSuite-Ultra"
+abstract: >-
+  BioSuite Ultra is an integrated open-source bioinformatics platform written
+  in pure Python. It provides 47 analysis modules covering sequence analysis,
+  alignment, phylogenetics, transcriptomics, genomics, population genetics,
+  proteomics and metabolism; a plotting library of 105 public functions;
+  molecular cloning tools with a 169-enzyme restriction table; and
+  reproducible workflows with provenance tracking. The same core is exposed
+  as a Python library, an interactive command-line interface, a CustomTkinter
+  desktop application and a 38-endpoint FastAPI REST service. Core
+  functionality requires no external bioinformatics binaries; where optional
+  external tools are available they are used in preference to the built-in
+  approximations. Released under the MIT license.
+keywords:
+  - bioinformatics
+  - computational-biology
+  - genomics
+  - proteomics
+  - transcriptomics
+  - sequence-analysis
+  - ngs
+  - phylogenetics
+  - population-genetics
+  - molecular-cloning
+  - restriction-enzymes
+  - crispr
+  - single-cell
+  - scientific-computing
+license: MIT
+version: 6.0.0
+date-released: "2026-11-13"
+preferred-citation:
+  type: software
+  title: "BioSuite Ultra: Comprehensive Open-Source Bioinformatics Platform"
+  authors:
+    - family-names: Touri
+      given-names: Sahand
+  year: 2026
+  version: 6.0.0
+  doi: "10.5281/zenodo.21256296"
+  url: "https://github.com/sahandtkod-byte/BioSuite-Ultra"

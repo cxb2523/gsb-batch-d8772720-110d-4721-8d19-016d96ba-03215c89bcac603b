@@ -1,0 +1,33 @@
+name: Security question / hardening
+description: Non-sensitive security discussion. Do NOT report vulnerabilities here.
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Do not disclose vulnerability details, exploits, or proof-of-concept code in this public form.**
+
+        To report an actual vulnerability, use the private channel instead:
+        email **sahandtkod@gmail.com** with subject `[SECURITY] BioSuite Ultra`, or
+        **Security → Report a vulnerability** when private reporting is enabled.
+        See [SECURITY.md](../SECURITY.md).
+
+        This form is only for non-sensitive hardening suggestions or general security questions.
+
+  - type: textarea
+    id: topic
+    attributes:
+      label: Topic
+      description: A non-sensitive hardening suggestion or general security question. No exploit details.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Disclosure
+      options:
+        - label: >-
+            I confirm this contains no vulnerability details or exploit code, and that
+            actual vulnerabilities are reported through the private channel.
+          required: true
