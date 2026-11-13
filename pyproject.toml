@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-enrichment"
+version = "2.0.0"
+description = "Free open-source business data enrichment engine. The open-source alternative to Apollo, ZoomInfo, and Clearbit."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Nuclear Marmalade", email = "hello@nuclearmarmalade.com"},
+]
+keywords = ["data-enrichment", "business-data", "web-scraping", "email-extraction", "ollama", "gemma"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "aiohttp>=3.9",
+    "aiolimiter>=1.1",
+    "httpx>=0.25",
+    "dnspython>=2.4",
+    "anthropic>=0.25",
+    "duckdb>=1.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "sse-starlette>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "coverage>=7.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "hypothesis>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nuclear-Marmalade/dataforge"
+Documentation = "https://github.com/Nuclear-Marmalade/dataforge#readme"
+Repository = "https://github.com/Nuclear-Marmalade/dataforge"
+Issues = "https://github.com/Nuclear-Marmalade/dataforge/issues"
+
+[project.scripts]
+forge = "forge.cli:main"
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_configs = true
+exclude = ["build", "dist", ".venv"]
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = ["psycopg2.*", "duckdb.*", "anthropic.*", "aiohttp.*", "aiolimiter.*", "httpx.*", "_pytest.*", "pytest.*", "starlette.*", "fastapi.*", "uvicorn.*", "sse_starlette.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "B904",    # raise from (style preference)
+    "SIM105",  # contextlib.suppress (style preference)
+    "SIM115",  # open context manager (style preference)
+    "RUF012",  # mutable class variable annotation
+    "RUF059",  # unused unpacked variable
+    "RUF005",  # collection literal concatenation
+    "N806",    # variable in function should be lowercase
+    "N801",    # class name casing
+    "N818",    # exception name suffix
+    "B905",    # zip strict (Python 3.10+ only)
+    "C401",    # unnecessary generator (style)
+    "B008",    # function call in default arg
+    "B007",    # unused loop variable
+    "RUF043",  # implicit concatenation in collection
+    "SIM102",  # collapsible if (style)
+    "SIM103",  # return condition directly (style)
+    "SIM108",  # ternary operator (style)
+    "SIM110",  # reimplemented builtin (style)
+    "SIM118",  # key in dict.keys() (style)
+    "SIM201",  # negate equal comparison (style)
+]
+
+[tool.coverage.run]
+source = ["forge"]
+omit = ["forge/tests/*", "forge/__main__.py"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 45
+show_missing = true
+skip_covered = false
+
+[tool.pytest.ini_options]
+testpaths = ["forge/tests"]
+addopts = "-v --strict-markers"
+markers = [
+    "unit: fast unit tests",
+    "integration: tests against a real database",
+    "slow: tests over 1 second",
+    "postgres: tests requiring a PostgreSQL backend",
+]
+
+[tool.setuptools.packages.find]
+include = ["forge*"]
+
+[tool.setuptools.package-data]
+"forge.dashboard" = ["templates/*", "static/*"]
+"forge.discovery" = ["*.py"]

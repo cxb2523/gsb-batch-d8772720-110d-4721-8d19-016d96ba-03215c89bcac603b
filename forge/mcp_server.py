@@ -1,0 +1,632 @@
+"""MCP server that exposes FORGE tools over JSON-RPC on stdin/stdout.
+
+No external MCP SDK needed. See README for config.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sys
+import traceback
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+# All logging goes to stderr; stdout is the MCP transport
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("forge.mcp")
+
+
+# ── Tool Definitions ────────────────────────────────────────────────────────
+
+TOOL_DEFINITIONS = [
+    {
+        "name": "forge_discover",
+        "description": (
+            "Discover businesses by US ZIP code using the Overture Maps open dataset. "
+            "Returns name, address, phone, website, and category for each business found. "
+            "Optionally filter by industry (e.g., restaurant, healthcare, legal, beauty)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "zip_code": {
+                    "type": "string",
+                    "description": "5-digit US ZIP code to search around",
+                },
+                "industry": {
+                    "type": "string",
+                    "description": (
+                        "Optional industry filter (e.g., restaurant, healthcare, legal, "
+                        "beauty, automotive, retail, fitness, education)"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default 100)",
+                    "default": 100,
+                },
+            },
+            "required": ["zip_code"],
+        },
+    },
+    {
+        "name": "forge_enrich_record",
+        "description": (
+            "Enrich a single business record by adding it to the FORGE database "
+            "and returning the stored record. Provide at minimum a name and city/state. "
+            "Optionally include a website URL for deeper enrichment."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Business name",
+                },
+                "city": {
+                    "type": "string",
+                    "description": "City where the business is located",
+                },
+                "state": {
+                    "type": "string",
+                    "description": "Two-letter state abbreviation (e.g., FL, CA, NY)",
+                },
+                "website": {
+                    "type": "string",
+                    "description": "Optional website URL for deeper enrichment",
+                },
+            },
+            "required": ["name", "city", "state"],
+        },
+    },
+    {
+        "name": "forge_stats",
+        "description": (
+            "Get current FORGE database statistics including total records, "
+            "records with email, tech stack, NPI numbers, and enrichment activity."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "forge_search",
+        "description": (
+            "Search the FORGE database for businesses matching criteria. "
+            "Supports text search on name, filtering by state and industry."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search text to match against business names",
+                },
+                "state": {
+                    "type": "string",
+                    "description": "Optional two-letter state filter (e.g., FL, CA)",
+                },
+                "industry": {
+                    "type": "string",
+                    "description": "Optional industry filter",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default 20)",
+                    "default": 20,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "forge_export",
+        "description": (
+            "Export enriched business data from the FORGE database to a CSV file. "
+            "Optionally filter by state, industry, or other criteria."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "output_path": {
+                    "type": "string",
+                    "description": "File path for the exported CSV",
+                },
+                "filter": {
+                    "type": "string",
+                    "description": (
+                        "Optional filter expression. Examples: "
+                        "'state=FL', 'industry=restaurant', 'has_email=true'"
+                    ),
+                },
+            },
+            "required": ["output_path"],
+        },
+    },
+]
+
+
+# ── Database Initialization ─────────────────────────────────────────────────
+
+_db = None
+
+
+def _get_db():
+    """
+    Lazily initialize and return the ForgeDB instance.
+
+    Uses SQLite by default, storing the database at ~/.forge/forge.db.
+    Auto-creates the directory and schema if they don't exist.
+    """
+    global _db
+    if _db is not None:
+        return _db
+
+    from forge.db import ForgeDB
+
+    # Determine database path
+    db_path = os.environ.get("FORGE_DB_PATH")
+    if not db_path:
+        forge_dir = Path.home() / ".forge"
+        forge_dir.mkdir(parents=True, exist_ok=True)
+        db_path = str(forge_dir / "forge.db")
+
+    logger.info("Initializing ForgeDB at: %s", db_path)
+    _db = ForgeDB.from_config({"db_path": db_path})
+    _db.ensure_schema()
+    logger.info("ForgeDB ready (%d records)", _db.count())
+    return _db
+
+
+# ── Tool Implementations ────────────────────────────────────────────────────
+
+
+def _insert_discovered_businesses(db, results: list) -> int:
+    """Insert discovered businesses into the DB. Returns count inserted."""
+    inserted = 0
+    for biz in results:
+        try:
+            record = {
+                "name": biz.get("name"),
+                "address_line1": biz.get("address"),
+                "city": biz.get("city"),
+                "state": biz.get("state"),
+                "zip": biz.get("zip"),
+                "phone": biz.get("phone"),
+                "website_url": biz.get("website"),
+                "industry": biz.get("category"),
+                "latitude": biz.get("lat"),
+                "longitude": biz.get("lon"),
+            }
+            record = {k: v for k, v in record.items() if v is not None}
+            if record.get("name"):
+                db.upsert_business(record)
+                inserted += 1
+        except Exception as e:  # Non-critical: skip failed record, continue importing
+            logger.warning("Failed to insert discovered business: %s", e)
+    return inserted
+
+
+def _tool_forge_discover(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Discover businesses by ZIP code using Overture Maps."""
+    zip_code = arguments.get("zip_code", "")
+    industry = arguments.get("industry")
+    limit = arguments.get("limit", 100)
+
+    if not zip_code or len(zip_code) != 5 or not zip_code.isdigit():
+        return {"error": f"Invalid ZIP code: '{zip_code}'. Must be a 5-digit US ZIP code."}
+
+    try:
+        from forge.discovery.overture import OvertureDiscovery
+    except ImportError:
+        return {
+            "error": "DuckDB is required for Overture Maps discovery. Install it with: pip install duckdb"
+        }
+
+    try:
+        disco = OvertureDiscovery()
+        results = disco.search(zip_code=zip_code, industry=industry, limit=limit)
+        disco.close()
+
+        db = _get_db()
+        inserted = _insert_discovered_businesses(db, results)
+        return {
+            "businesses": results,
+            "count": len(results),
+            "inserted_to_db": inserted,
+            "zip_code": zip_code,
+            "industry": industry,
+        }
+    except Exception as e:  # Non-critical: return error dict to MCP client
+        return {"error": str(e)}
+
+
+def _tool_forge_enrich_record(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Enrich a single business record."""
+    name = arguments.get("name", "").strip()
+    city = arguments.get("city", "").strip()
+    state = arguments.get("state", "").strip().upper()
+    website = arguments.get("website", "").strip()
+
+    if not name:
+        return {"error": "Business name is required."}
+    if not city:
+        return {"error": "City is required."}
+    if not state or len(state) != 2:
+        return {"error": f"Invalid state: '{state}'. Must be a 2-letter abbreviation."}
+
+    db = _get_db()
+    record: Dict[str, Any] = {"name": name, "city": city, "state": state}
+    if website:
+        record["website_url"] = website
+
+    try:
+        business_id = db.upsert_business(record)
+        full_record = db.get_business(business_id)
+        if full_record:
+            clean = _clean_for_json([full_record])[0]
+            return {"status": "created", "business_id": business_id, "record": clean}
+        return {
+            "status": "created",
+            "business_id": business_id,
+            "note": "Record created but could not be retrieved.",
+        }
+    except Exception as e:  # Non-critical: return error dict to MCP client
+        return {"error": f"Failed to enrich record: {e}"}
+
+
+def _tool_forge_stats(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Get current enrichment statistics."""
+    db = _get_db()
+    try:
+        stats = db.get_stats()
+        # Ensure all values are JSON-serializable
+        clean_stats: Dict[str, Any] = {}
+        for k, v in stats.items():
+            if v is None:
+                clean_stats[k] = None
+            elif isinstance(v, (str, int, float, bool)):
+                clean_stats[k] = v
+            else:
+                clean_stats[k] = str(v)
+        return clean_stats
+    except Exception as e:  # Non-critical: return error dict to MCP client
+        return {"error": f"Failed to get stats: {e}"}
+
+
+def _build_search_query(
+    db, query: str, state: Optional[str], industry: Optional[str], limit: int
+) -> tuple:
+    """Build a parameterized search query. Returns (sql, params)."""
+    conditions = []
+    params = []
+    ph = "%s" if db.is_postgres else "?"
+    like = "ILIKE" if db.is_postgres else "LIKE"
+
+    conditions.append(f"name {like} {ph}")
+    params.append(f"%{query}%")
+    if state:
+        conditions.append(f"state = {ph}")
+        params.append(state)
+    if industry:
+        conditions.append(f"industry {like} {ph}")
+        params.append(f"%{industry}%")
+
+    where_clause = " AND ".join(conditions)
+    sql = f"SELECT * FROM businesses WHERE {where_clause} ORDER BY name LIMIT {limit}"
+    return sql, params
+
+
+def _clean_for_json(rows: list) -> list:
+    """Ensure all values in row dicts are JSON-serializable."""
+    clean_results = []
+    for row in rows:
+        clean: Dict[str, Any] = {}
+        for k, v in row.items():
+            if v is None or isinstance(v, (str, int, float, bool)):
+                clean[k] = v
+            else:
+                clean[k] = str(v)
+        clean_results.append(clean)
+    return clean_results
+
+
+def _tool_forge_search(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Search the database for businesses matching criteria."""
+    query = arguments.get("query", "").strip()
+    state = arguments.get("state", "").strip().upper() if arguments.get("state") else None
+    industry = arguments.get("industry", "").strip().lower() if arguments.get("industry") else None
+    limit = min(arguments.get("limit", 20), 100)
+
+    if not query:
+        return {"error": "Search query is required."}
+
+    db = _get_db()
+    sql, params = _build_search_query(db, query, state, industry, limit)
+
+    try:
+        results = db.fetch_dicts(sql, tuple(params))
+        clean_results = _clean_for_json(results)
+        return {
+            "results": clean_results,
+            "count": len(clean_results),
+            "query": query,
+            "filters": {"state": state, "industry": industry},
+        }
+    except Exception as e:  # Non-critical: return error dict to MCP client
+        return {"error": f"Search failed: {e}"}
+
+
+def _tool_forge_export(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Export enriched data to CSV."""
+    import csv
+
+    output_path = arguments.get("output_path", "").strip()
+    filter_expr = arguments.get("filter", "").strip() if arguments.get("filter") else None
+
+    if not output_path:
+        return {"error": "output_path is required."}
+
+    # Resolve relative paths
+    output_path = os.path.abspath(output_path)
+    # Reject paths outside current directory or home
+    home = os.path.expanduser("~")
+    cwd = os.getcwd()
+    if not (
+        output_path.startswith(cwd)
+        or output_path.startswith(home)
+        or output_path.startswith("/tmp")
+    ):
+        return {"error": "Export path must be within home directory or current directory"}
+    if ".." in output_path:
+        return {"error": "Path traversal not allowed"}
+
+    db = _get_db()
+
+    # Build query with parameterized filters (same pattern as forge_search)
+    query = "SELECT * FROM businesses"
+    params: list = []
+
+    if filter_expr:
+        conditions, params = _parse_filter(filter_expr, db)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+    query += " ORDER BY name ASC"
+
+    # Write CSV directly, bypassing db.export_csv's _resolve_where
+    try:
+        rows = db.fetch_dicts(query, tuple(params)) if params else db.fetch_dicts(query)
+        with open(output_path, "w", newline="", encoding="utf-8") as f:
+            if rows:
+                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            else:
+                f.write("")  # empty file
+        return {"status": "success", "row_count": len(rows), "output_path": output_path}
+    except Exception as e:  # Non-critical: return error dict to MCP client
+        return {"error": f"Export failed: {e}", "row_count": 0}
+
+
+def _parse_single_filter(key: str, value: str, ph: str, is_pg: bool) -> tuple:
+    """Parse a single key=value filter. Returns (condition_or_None, param_or_None)."""
+    if key == "state":
+        return f"state = {ph}", value.upper()
+    if key == "industry":
+        like = "ILIKE" if is_pg else "LIKE"
+        return f"industry {like} {ph}", f"%{value}%"
+    if key == "has_email" and value.lower() == "true":
+        return "email IS NOT NULL AND email != ''", None
+    if key == "has_website" and value.lower() == "true":
+        return "website_url IS NOT NULL AND website_url != ''", None
+    if key == "city":
+        return f"city = {ph}", value
+    if key == "zip":
+        return f"zip = {ph}", value
+    return None, None
+
+
+def _parse_filter(filter_expr: str, db) -> tuple:
+    """Parse a filter expression into (conditions, params)."""
+    conditions = []
+    params = []
+    parts = [p.strip() for p in filter_expr.split(",")]
+    ph = db.placeholder
+
+    for part in parts:
+        if "=" in part:
+            key, value = part.split("=", 1)
+            cond, param = _parse_single_filter(
+                key.strip().lower(), value.strip(), ph, db.is_postgres
+            )
+            if cond:
+                conditions.append(cond)
+            if param is not None:
+                params.append(param)
+        elif part == "has_email":
+            conditions.append("email IS NOT NULL AND email != ''")
+        elif part == "has_website":
+            conditions.append("website_url IS NOT NULL AND website_url != ''")
+        elif part == "enriched":
+            conditions.append("last_enriched_at IS NOT NULL")
+
+    return conditions, params
+
+
+# ── Tool Dispatch ───────────────────────────────────────────────────────────
+
+TOOL_HANDLERS = {
+    "forge_discover": _tool_forge_discover,
+    "forge_enrich_record": _tool_forge_enrich_record,
+    "forge_stats": _tool_forge_stats,
+    "forge_search": _tool_forge_search,
+    "forge_export": _tool_forge_export,
+}
+
+
+def dispatch_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Dispatch a tool call to the appropriate handler."""
+    handler = TOOL_HANDLERS.get(tool_name)
+    if not handler:
+        return {"error": f"Unknown tool: {tool_name}"}
+    try:
+        return handler(arguments)
+    except Exception as e:  # MCP boundary: catch any tool error, return structured error
+        logger.error("Tool '%s' raised an exception: %s", tool_name, e)
+        logger.error(traceback.format_exc())
+        return {"error": f"Tool execution failed: {e}"}
+
+
+# ── JSON-RPC MCP Protocol Handler ───────────────────────────────────────────
+
+
+def _handle_initialize(req_id: Any) -> Dict[str, Any]:
+    """Handle MCP initialize request."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "forge", "version": "1.0.0"},
+        },
+    }
+
+
+def _handle_tools_list(req_id: Any) -> Dict[str, Any]:
+    """Handle MCP tools/list request."""
+    return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOL_DEFINITIONS}}
+
+
+def _handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle MCP tools/call request."""
+    tool_name = params.get("name", "")
+    arguments = params.get("arguments", {})
+    result = dispatch_tool(tool_name, arguments)
+    is_error = "error" in result
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps(result, indent=2, default=str)}],
+            "isError": is_error,
+        },
+    }
+
+
+def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Handle a single MCP JSON-RPC request."""
+    method = request.get("method", "")
+    req_id = request.get("id")
+    params = request.get("params", {})
+    logger.info("Received request: method=%s id=%s", method, req_id)
+
+    if req_id is None and method == "notifications/initialized":
+        logger.info("Client initialized notification received")
+        return None
+
+    dispatch = {
+        "initialize": lambda: _handle_initialize(req_id),
+        "tools/list": lambda: _handle_tools_list(req_id),
+        "tools/call": lambda: _handle_tools_call(req_id, params),
+        "ping": lambda: {"jsonrpc": "2.0", "id": req_id, "result": {}},
+    }
+    handler = dispatch.get(method)
+    if handler:
+        return handler()
+
+    if req_id is not None:
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
+    return None
+
+
+# ── Main Loop ───────────────────────────────────────────────────────────────
+
+
+def _read_message() -> Optional[Dict[str, Any]]:
+    """Read a Content-Length framed JSON-RPC message from stdin.
+
+    Returns the parsed dict, or None on EOF. Raises on parse error.
+    """
+    content_length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None  # EOF
+        line_str = line.decode("utf-8").strip()
+        if line_str == "":
+            break
+        if line_str.lower().startswith("content-length:"):
+            content_length = int(line_str.split(":", 1)[1].strip())
+
+    if content_length is None:
+        raise ValueError("No Content-Length header")
+
+    body = sys.stdin.buffer.read(content_length)
+    if not body:
+        return None  # EOF
+    return json.loads(body.decode("utf-8"))
+
+
+def _write_error(code: int, message: str) -> None:
+    """Send a JSON-RPC error response."""
+    _send_response({"jsonrpc": "2.0", "id": None, "error": {"code": code, "message": message}})
+
+
+def run_server():
+    """Run the MCP server over stdin/stdout with Content-Length framing."""
+    logger.info("FORGE MCP Server starting...")
+    logger.info("Reading JSON-RPC messages from stdin, writing to stdout.")
+
+    while True:
+        try:
+            request = _read_message()
+            if request is None:
+                logger.info("Client disconnected (EOF). Shutting down.")
+                return
+            response = handle_request(request)
+            if response is not None:
+                _send_response(response)
+        except json.JSONDecodeError as e:
+            logger.error("Invalid JSON received: %s", e)
+            _write_error(-32700, f"Parse error: {e}")
+        except ValueError as e:
+            logger.warning("%s", e)
+        except KeyboardInterrupt:
+            logger.info("Received interrupt. Shutting down.")
+            return
+        except Exception as e:  # Server boundary: catch all to keep MCP server alive
+            logger.error("Unexpected error in main loop: %s", e)
+            logger.error(traceback.format_exc())
+            try:
+                _write_error(-32603, f"Internal error: {e}")
+            except Exception:  # Non-critical: stdout may be broken; swallow to avoid crash
+                pass
+
+
+def _send_response(response: Dict[str, Any]) -> None:
+    """Send a JSON-RPC response with Content-Length framing to stdout."""
+    body = json.dumps(response).encode("utf-8")
+    header = f"Content-Length: {len(body)}\r\n\r\n"
+    sys.stdout.buffer.write(header.encode("utf-8"))
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+    logger.info("Sent response: id=%s", response.get("id"))
+
+
+# ── Entry point ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    run_server()
