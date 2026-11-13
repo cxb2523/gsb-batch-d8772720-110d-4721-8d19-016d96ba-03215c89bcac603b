@@ -1,0 +1,18 @@
+{% extends "admin/change_list.html" %}
+{% load static i18n %}
+
+{% block extrahead %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static 'admin_list_charts/css/charts.css' %}">
+<script defer src="{% static 'admin_list_charts/js/chart.bundle.min.js' %}"></script>
+{% endblock %}
+
+{% block content %}
+{% get_current_language as chart_language %}
+{% if chart_payload or chart_endpoint %}
+<section hidden class="alc" aria-label="{% translate 'Charts' %}" {% if chart_endpoint %}data-endpoint="{{ chart_endpoint }}"{% endif %} data-locale="{{ chart_language }}" data-count-label="{% translate 'Count' %}" data-top-label="{% translate 'Top categories' %}" data-keyboard-label="{% translate 'Use arrow keys to explore; Enter to filter.' %}" data-empty-label="{% translate 'No chart data for this selection.' %}" data-error-label="{% translate 'Charts could not be loaded.' %}" data-retry-label="{% translate 'Retry' %}">
+    {% if chart_endpoint %}<p class="alc-status" role="status">{% translate 'Loading charts…' %}</p>{% else %}{{ chart_payload|json_script:'admin-list-charts-data' }}{% endif %}
+</section>
+{% endif %}
+{{ block.super }}
+{% endblock %}
