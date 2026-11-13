@@ -17,10 +17,15 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
-from .batch import asin_to_url, run_batch
+from .batch import run_fetch_batch, summarize
 from .detect import detect
 from .export import PRODUCT_COLUMNS, to_csv, to_json
-from .fetch import fetch_with_retry
+from .fetch import (
+    OUTCOME_CAPTCHA_EXHAUSTED,
+    OUTCOME_REQUEST_ERROR,
+    OUTCOME_SUCCESS,
+    fetch_with_retry,
+)
 
 
 def _cmd_detect(args: argparse.Namespace) -> int:
@@ -63,30 +68,53 @@ def _cmd_batch(args: argparse.Namespace) -> int:
         for line in Path(args.input).read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     ]
-    if args.as_asin:
-        items = [asin_to_url(x, domain=args.domain) for x in items]
 
-    def worker(url: str) -> dict:
-        outcome = fetch_with_retry(url, max_attempts=args.max_attempts, timeout=args.timeout)
-        return {
-            "url": url,
-            "status": outcome.response.status_code,
-            "is_captcha": outcome.is_captcha,
-            "risk_level": outcome.detection.risk_level,
-            "matched_markers": outcome.detection.matched_markers,
-        }
+    records = run_fetch_batch(
+        items,
+        as_asin=args.as_asin,
+        domain=args.domain,
+        max_workers=args.workers,
+        max_attempts=args.max_attempts,
+        timeout=args.timeout,
+        desc="batch",
+    )
 
-    result = run_batch(items, worker, max_workers=args.workers, desc="batch")
-    to_json({"ok": result.ok, "errors": result.errors}, args.output)
-    print(f"done: {len(result.ok)} ok, {len(result.errors)} errors -> {args.output}")
-    return 0 if not result.errors else 1
+    rows = [record.to_dict() for record in records]
+    summary = summarize(records)
+    payload = {"summary": summary, "records": rows}
+    to_json(payload, args.output)
+
+    # Emit one auditable line per input on stdout as well.
+    for row in rows:
+        print(json.dumps(row, ensure_ascii=False))
+
+    failed = summary.get(OUTCOME_REQUEST_ERROR, 0) + summary.get(OUTCOME_CAPTCHA_EXHAUSTED, 0)
+    print(
+        "done: {success} success, {captcha} captcha-exhausted, "
+        "{errors} request-error ({total} total) -> {output}".format(
+            success=summary.get(OUTCOME_SUCCESS, 0),
+            captcha=summary.get(OUTCOME_CAPTCHA_EXHAUSTED, 0),
+            errors=summary.get(OUTCOME_REQUEST_ERROR, 0),
+            total=summary["total"],
+            output=args.output,
+        )
+    )
+    # Non-zero when any item did not end in a normal page retrieval.
+    return 0 if failed == 0 else 1
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
     data = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    rows = data if isinstance(data, list) else data.get("ok") or data.get("products") or []
+    rows = (
+        data
+        if isinstance(data, list)
+        else data.get("records") or data.get("ok") or data.get("products") or []
+    )
     if not isinstance(rows, list):
-        print("expected a JSON list or an object with 'ok'/'products'", file=sys.stderr)
+        print(
+            "expected a JSON list or an object with 'records'/'ok'/'products'",
+            file=sys.stderr,
+        )
         return 2
     path = to_csv(rows, args.output, columns=PRODUCT_COLUMNS if args.product else None)
     print(f"wrote {len(rows)} rows -> {path}")

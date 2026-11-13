@@ -16,6 +16,7 @@ See ``README.md`` and the GitHub Pages site for the full tutorial.
 
 from __future__ import annotations
 
+from .batch import BatchRecord, run_fetch_batch, summarize
 from .detect import (
     CAPTCHA_MARKERS,
     CHALLENGE_STATUS_CODES,
@@ -25,7 +26,18 @@ from .detect import (
     looks_like_captcha,
 )
 from .export import PRODUCT_COLUMNS, to_csv, to_json
-from .fetch import FetchError, FetchOutcome, fetch_once, fetch_with_retry
+from .fetch import (
+    FETCH_OUTCOMES,
+    OUTCOME_CAPTCHA_EXHAUSTED,
+    OUTCOME_REQUEST_ERROR,
+    OUTCOME_SUCCESS,
+    FetchError,
+    FetchOutcome,
+    FetchRecord,
+    fetch_once,
+    fetch_record,
+    fetch_with_retry,
+)
 from .headers import (
     BROWSER_PROFILES,
     BrowserProfile,
@@ -48,8 +60,17 @@ __all__ = [
     "to_json",
     "FetchError",
     "FetchOutcome",
+    "FetchRecord",
     "fetch_once",
+    "fetch_record",
     "fetch_with_retry",
+    "FETCH_OUTCOMES",
+    "OUTCOME_SUCCESS",
+    "OUTCOME_CAPTCHA_EXHAUSTED",
+    "OUTCOME_REQUEST_ERROR",
+    "BatchRecord",
+    "run_fetch_batch",
+    "summarize",
     "BROWSER_PROFILES",
     "BrowserProfile",
     "get_profile",
