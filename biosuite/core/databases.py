@@ -143,6 +143,21 @@ class _RateLimiter:
 _rate_limiter = _RateLimiter()
 
 
+# Retry observation.  collect_all() classifies a source as "rate-limited, then
+# succeeded", which it can only know if the retry loop inside _http_get says a
+# retry happened — the search_*() functions deliberately hide that detail behind
+# DBResult.  The tally lives in a thread-local so concurrent collectors never
+# mix their counts; _http_get adds to it only while a collector is watching.
+_retry_state = threading.local()
+
+
+def _note_retry(service: str) -> None:
+    """Record one retried attempt for *service*, if a collector is watching."""
+    counts = getattr(_retry_state, 'counts', None)
+    if counts is not None:
+        counts[service] = counts.get(service, 0) + 1
+
+
 class _Cache:
     """Simple in-memory TTL cache keyed by (service, args_hash)."""
 
@@ -318,6 +333,7 @@ def _http_get(url: str, *, timeout: int = DEFAULT_TIMEOUT,
             wait = _backoff_wait(attempt, exc.headers)
             logger.warning(f"[{service}] HTTP {status} from {_redact_url(url)}, retrying in {wait:.1f}s "
                            f"(attempt {attempt}/{DEFAULT_MAX_RETRIES})")
+            _note_retry(service)
             time.sleep(wait)
 
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
@@ -326,6 +342,7 @@ def _http_get(url: str, *, timeout: int = DEFAULT_TIMEOUT,
             wait = _backoff_wait(attempt, None)
             logger.warning(f"[{service}] Connection error ({exc}), retrying in {wait:.1f}s "
                            f"(attempt {attempt}/{DEFAULT_MAX_RETRIES})")
+            _note_retry(service)
             time.sleep(wait)
 
     # Every attempt either returned or raised; the loop cannot fall through.
@@ -940,6 +957,22 @@ SEARCHABLE_SERVICES = ('ncbi', 'uniprot', 'pdb', 'kegg', 'ensembl')
 DEFAULT_SEARCH_DATABASES = ('ncbi', 'uniprot', 'pdb', 'kegg')
 
 
+def _search_dispatch() -> Dict[str, Any]:
+    """Map service name to its search function, resolved on every call.
+
+    Built here, not at import time: the mapping has to resolve the module
+    attribute on every call, or patching search_ncbi() would not reach the
+    callers that go through it.
+    """
+    return {
+        'ncbi': search_ncbi,
+        'uniprot': search_uniprot,
+        'pdb': search_pdb,
+        'kegg': search_kegg,
+        'ensembl': search_ensembl,
+    }
+
+
 def search_all(query: str, databases: Optional[List[str]] = None) -> Dict[str, DBResult]:
     """Search multiple databases sequentially.
 
@@ -957,15 +990,7 @@ def search_all(query: str, databases: Optional[List[str]] = None) -> Dict[str, D
     if databases is None:
         databases = list(DEFAULT_SEARCH_DATABASES)
 
-    # Built here, not at import time: the mapping has to resolve the module
-    # attribute on every call, or patching search_ncbi() would not reach this.
-    search_funcs = {
-        'ncbi': search_ncbi,
-        'uniprot': search_uniprot,
-        'pdb': search_pdb,
-        'kegg': search_kegg,
-        'ensembl': search_ensembl,
-    }
+    search_funcs = _search_dispatch()
 
     results = {}
     for service in databases:
@@ -988,6 +1013,165 @@ def search_all(query: str, databases: Optional[List[str]] = None) -> Dict[str, D
             )
 
     return results
+
+
+# ── Batch collection ─────────────────────────────────────────────────────────
+
+# Per-source outcome categories reported by collect_all().
+OUTCOME_SUCCESS = 'success'        # records returned, no retry needed
+OUTCOME_NO_RECORDS = 'no_records'  # the service answered, but found nothing
+OUTCOME_RETRIED = 'retried'        # transient failure (429/5xx/connection), then success
+OUTCOME_FAILED = 'failed'          # the source ended in DBResult.error
+
+
+@dataclass
+class SourceReport:
+    """The outcome of one source inside a collect_all() run.
+
+    Attributes:
+        source: Database name, as the caller spelled it.
+        status: One of OUTCOME_SUCCESS / OUTCOME_NO_RECORDS / OUTCOME_RETRIED /
+            OUTCOME_FAILED.
+        result: The DBResult the source produced (an error result on failure).
+        elapsed: Wall-clock seconds this source took, retries included.
+        retries: How many retry attempts _http_get made for this source.
+    """
+    source: str
+    status: str
+    result: DBResult
+    elapsed: float = 0.0
+    retries: int = 0
+
+
+@dataclass
+class BatchSearchResult:
+    """Aggregate of one collect_all() run; a rerun of failures merges into it.
+
+    Attributes:
+        query: The search term every source was asked for.
+        reports: Per-source SourceReport, keyed by source name.
+        elapsed: Wall-clock seconds the collecting pass took.
+    """
+    query: str
+    reports: Dict[str, SourceReport] = field(default_factory=dict)
+    elapsed: float = 0.0
+
+    @property
+    def results(self) -> Dict[str, DBResult]:
+        """The plain source → DBResult mapping, as search_all() would return."""
+        return {name: report.result for name, report in self.reports.items()}
+
+    @property
+    def failed_sources(self) -> List[str]:
+        """Names of the sources whose last known outcome is OUTCOME_FAILED."""
+        return [name for name, report in self.reports.items()
+                if report.status == OUTCOME_FAILED]
+
+    @property
+    def succeeded_sources(self) -> List[str]:
+        """Names of the sources that produced records (retried or not)."""
+        return [name for name, report in self.reports.items()
+                if report.status in (OUTCOME_SUCCESS, OUTCOME_RETRIED)]
+
+    def summary(self) -> Dict[str, str]:
+        """Source → outcome category, for a compact overview of the run."""
+        return {name: report.status for name, report in self.reports.items()}
+
+    def rerun_failed(self) -> "BatchSearchResult":
+        """Re-run only the failed sources and merge their new reports in.
+
+        Sources that already succeeded, answered empty, or were retried into
+        success are not asked again — their reports carry over unchanged.  A
+        source that fails again simply keeps OUTCOME_FAILED with the fresh
+        error, so reruns can be chained until failed_sources is empty.
+        """
+        failed = self.failed_sources
+        if not failed:
+            return BatchSearchResult(query=self.query, reports=dict(self.reports))
+        rerun = collect_all(self.query, databases=failed)
+        merged = dict(self.reports)
+        merged.update(rerun.reports)
+        return BatchSearchResult(query=self.query, reports=merged,
+                                 elapsed=rerun.elapsed)
+
+
+def _classify_outcome(result: DBResult, retries: int) -> str:
+    """Reduce a finished DBResult plus its retry tally to one outcome category."""
+    if result.error:
+        return OUTCOME_FAILED
+    if retries > 0:
+        # The request eventually succeeded, so the retries it needed were the
+        # transient kind _http_get retries: 429, 5xx, or a dropped connection.
+        return OUTCOME_RETRIED
+    if not result.records:
+        return OUTCOME_NO_RECORDS
+    return OUTCOME_SUCCESS
+
+
+def _collect_one(service: str, query: str, search_funcs: Dict[str, Any]) -> SourceReport:
+    """Run one source for collect_all(), isolating its failure from the rest."""
+    func = search_funcs.get(service)
+    if func is None:
+        logger.warning("[collect_all] Unknown database: %s", service)
+        return SourceReport(
+            source=service, status=OUTCOME_FAILED,
+            result=DBResult(
+                source=service, query=query,
+                error=f"Unknown database: {service}. "
+                      f"Known: {', '.join(sorted(search_funcs))}."))
+
+    counts = getattr(_retry_state, 'counts', None)
+    if counts is None:
+        counts = {}
+        _retry_state.counts = counts
+    retries_before = counts.get(service, 0)
+
+    start = time.monotonic()
+    try:
+        result = func(query)
+    except Exception as exc:  # a search_*() should never raise, but the batch must not
+        logger.warning("[collect_all] %s failed: %s", service, exc)
+        result = DBResult(source=service, query=query, error=str(exc))
+    elapsed = time.monotonic() - start
+
+    retries = counts.get(service, 0) - retries_before
+    return SourceReport(source=service,
+                        status=_classify_outcome(result, retries),
+                        result=result, elapsed=elapsed, retries=retries)
+
+
+def collect_all(query: str, databases: Optional[List[str]] = None) -> BatchSearchResult:
+    """Search several databases for *query* and report how each one ended.
+
+    Args:
+        query: Search term.
+        databases: List of database names.  The default is
+            ``DEFAULT_SEARCH_DATABASES`` — ncbi, uniprot, pdb and kegg; name
+            'ensembl' explicitly to include its gene-symbol lookup.
+
+    Returns:
+        A BatchSearchResult with one SourceReport per requested source: the
+        DBResult, an outcome category (success / no_records / retried / failed)
+        and the time that source took.  One source failing — or being unknown —
+        never interrupts the others, and every requested name appears in the
+        reports.  Pass the result's rerun_failed() to re-ask only the failed
+        sources and merge their new outcomes in.
+
+    All network access still goes through the search_*() functions and their
+    _http_get retry / rate-limit / Retry-After handling; a result served from
+    the cache keeps cached=True.
+    """
+    if databases is None:
+        databases = list(DEFAULT_SEARCH_DATABASES)
+
+    search_funcs = _search_dispatch()
+
+    reports = {}
+    start = time.monotonic()
+    for service in databases:
+        reports[service] = _collect_one(service, query, search_funcs)
+    return BatchSearchResult(query=query, reports=reports,
+                             elapsed=time.monotonic() - start)
 
 
 def format_search_results(results: Any, source: Optional[str] = None) -> str:
