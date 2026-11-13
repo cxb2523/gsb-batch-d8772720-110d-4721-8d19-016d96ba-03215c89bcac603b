@@ -9,8 +9,9 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-// Keep enough room for all four tool schemas without letting descriptions grow unchecked.
-const BUDGET = Number(process.env.BUDGET_TOKENS ?? 13000);
+// Keep room for all five tool schemas without letting descriptions grow unchecked.
+// Raised from 13000 when foura_batch joined the list; it stays an upper bound, not a target.
+const BUDGET = Number(process.env.BUDGET_TOKENS ?? 14500);
 const CHARS_PER_TOKEN = 3.5;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

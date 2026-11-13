@@ -71,7 +71,7 @@ The npx command downloads the package on first launch and runs it as a subproces
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 | VS Code (MCP extension) | `.vscode/mcp.json` in your workspace |
 
-Restart the client and `foura_auto`, `foura_single`, `foura_proxy`, `foura_browser` show up in your tool list, plus six prompts under `/prompts`.
+Restart the client and `foura_auto`, `foura_batch`, `foura_single`, `foura_proxy`, `foura_browser` show up in your tool list, plus six prompts under `/prompts`.
 
 ## Quick Start - hosted (Streamable HTTP)
 
@@ -105,9 +105,9 @@ For Claude Desktop, use the stdio config above. You can also bridge the hosted e
 
 ## The Tools
 
-`foura_auto` is the **default** - give it a URL and it returns the content, choosing the fetch method for you. The other three tools give you direct control over HTTP, proxy rotation, and browser rendering.
+`foura_auto` is the **default** - give it a URL and it returns the content, choosing the fetch method for you. The other three fetch tools give you direct control over HTTP, proxy rotation, and browser rendering, and `foura_batch` runs many `foura_auto` fetches in one call.
 
-All four are marked `readOnlyHint: true` and `openWorldHint: true` per the [MCP specification](https://modelcontextprotocol.io/specification). Clients can use those annotations when deciding how to present or approve tool calls.
+All five are marked `readOnlyHint: true` and `openWorldHint: true` per the [MCP specification](https://modelcontextprotocol.io/specification). Clients can use those annotations when deciding how to present or approve tool calls.
 
 Every response carries human-readable text (`content`) plus a typed `structuredContent` JSON object validated against the tool's `outputSchema`. Your agent gets a predictable response contract instead of parsing prose.
 
@@ -208,6 +208,26 @@ Use this when an HTTP response isn't enough. `checkText` validates the rendered 
 
 `structuredContent` shape is intentionally different from single/proxy: `{status, headers (object, not array), body (not data), cookies (full browser cookie shape), userAgent}`.
 
+### `foura_batch` - many URLs in one call
+
+Fetch 1 to 50 public URLs in a single call and get one outcome per URL. Every entry runs the same request path and SSRF check as `foura_auto`, and entries are independent: one blocked or timed-out URL never abandons the rest. A per-URL failure stays inside that entry's result, so the batch itself is never marked an error for it.
+
+```jsonc
+{
+  "urls": ["https://example.com/a", "https://example.com/b"],
+  "timeout_ms": 30000, // optional, per-URL budget: 5000-180000, default 30000
+  "concurrency": 3    // optional, 1-8 URLs in flight at once, default 3
+}
+```
+
+`structuredContent` shape: `{summary, results, retry}`.
+
+- `summary` is `{total, succeeded, failed}`, with `succeeded + failed = total`.
+- `results` has one object per input URL, in input order: `{url, ok, status, code, error, duration_ms, request_id?, credits?}`. `status` is `null` when no HTTP status exists (for example an SSRF block before any request) and `0` when a request ran but got no response. `code` and `error` are `null` on success.
+- `retry` lists only the failed entries as `{url, code}`, the URL exactly as submitted and the stable code (`ssrf_blocked`, `rate_limited`, `upstream_error`, `plan_limit_*`, and so on). Resubmit those URLs verbatim to continue the batch; it is an empty array when every entry succeeded.
+
+Only an invalid batch input makes the tool return an error: an empty list, more than 50 URLs, or an entry that is not an `http`/`https` URL comes back as the standard envelope with `code: "bad_request"`, and no fetch is performed.
+
 ## Built-in Prompts
 
 Six workflow templates surfaced under `/prompts` in your MCP client. They orchestrate one or more tools without you spelling out the steps.
@@ -227,7 +247,7 @@ Full recipe text + manual fallback prompts: [foura.ai/docs/mcp/recipes](https://
 
 ## Authentication
 
-Use `FOURA_API_KEY` in stdio mode or an `Authorization: Bearer pk_live_...` header with the hosted endpoint. One key authenticates all four tools.
+Use `FOURA_API_KEY` in stdio mode or an `Authorization: Bearer pk_live_...` header with the hosted endpoint. One key authenticates all five tools.
 
 Keys are managed in the [dashboard](https://foura.ai/dashboard/#api-keys), where you can create, reveal, rotate, or deactivate them. See [foura.ai/docs/getting-started/authentication](https://foura.ai/docs/getting-started/authentication) for the full key-management walkthrough.
 
@@ -265,6 +285,8 @@ Where the upstream returned a status, you also get `status` (HTTP code) and on r
 A `plan_limit_` code names which of your plan's limits refused the call: `credits`, `bandwidth`, `rate`, `concurrency`, `browser_daily`, `premium`, or `feature`. It is not the target blocking you, so retrying the same work through another tool spends the rest of the allowance for nothing. Wait out `retryAfter` where there is one, or change the plan.
 
 LLM agents can read `code` directly for retry logic without parsing prose. Spec reference: [foura.ai/docs/api/errors](https://foura.ai/docs/api/errors).
+
+`foura_batch` never wraps a per-URL failure in this envelope: the entry's own `code` in `results[]` (and in `retry[]`) carries it, and the batch result stays a normal success. The envelope appears for the batch tool itself only on invalid batch input, with `service: "batch"` and `code: "bad_request"`.
 
 ### What every result carries
 

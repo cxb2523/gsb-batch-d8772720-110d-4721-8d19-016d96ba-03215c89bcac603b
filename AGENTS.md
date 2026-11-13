@@ -9,7 +9,7 @@ Fetches arbitrary **public** web pages for you: static pages, JSON APIs, JavaScr
 SPAs, and anti-bot-protected targets. It wraps the FourA web scraping API. All tools are
 read-only (`readOnlyHint: true`) and reach the open web (`openWorldHint: true`).
 
-## Tools (four)
+## Tools (five)
 
 - **`foura_auto`** - the default. Give it a `url`; it returns the content and picks the fetch
   method for you. Use this first unless you need explicit control. Optional
@@ -25,6 +25,13 @@ read-only (`readOnlyHint: true`) and reach the open web (`openWorldHint: true`).
   from pages your own `validate` rule rejected.
 - **`foura_browser`** - a real browser session; JavaScript runs and the DOM finishes rendering.
   Use for SPAs and lazy-loaded content.
+- **`foura_batch`** - 1 to 50 public URLs in one call, each run through the `foura_auto` request
+  path and SSRF check, independently. Results come back in input order with per-entry
+  `{url, ok, status, code, error, duration_ms}`, a `{total, succeeded, failed}` summary, and a
+  `retry` list of only the failed entries (`{url, code}`) ready to resubmit verbatim. A per-URL
+  failure never marks the batch an error; only invalid batch input (empty or over-50 list, a
+  non-http(s) entry) returns `code: "bad_request"`. Optional `timeout_ms` (5000-180000, default
+  30000) is the per-URL budget and `concurrency` (1-8, default 3) bounds parallel fetches.
 
 The primitives compose: `foura_proxy` returns a base36 proxy ID; pass it into
 `foura_single.proxy` or `foura_browser.proxy` to reuse the same exit.

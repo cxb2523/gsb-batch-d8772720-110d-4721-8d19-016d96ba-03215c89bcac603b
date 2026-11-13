@@ -86,8 +86,9 @@ async function main() {
   const listResp = await send("tools/list", {});
   const tools = listResp.result?.tools ?? [];
   const names = tools.map((t) => t.name).sort();
-  assert(`4 tools registered (got ${names.length}: ${names.join(", ")})`, names.length === 4);
+  assert(`5 tools registered (got ${names.length}: ${names.join(", ")})`, names.length === 5);
   assert("foura_auto present", names.includes("foura_auto"));
+  assert("foura_batch present", names.includes("foura_batch"));
   assert("foura_single present", names.includes("foura_single"));
   assert("foura_proxy present", names.includes("foura_proxy"));
   assert("foura_browser present", names.includes("foura_browser"));

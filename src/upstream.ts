@@ -1,6 +1,6 @@
 /**
  * Signals the FourA API publishes in response HEADERS rather than in the body,
- * plus the plan-refusal contract shared by all four tools.
+ * plus the plan-refusal contract shared by all fetch tools.
  *
  * The body is not the whole answer. Credits are charged per call and reported in a
  * header; the class of exit that delivered is reported in a header on every route and

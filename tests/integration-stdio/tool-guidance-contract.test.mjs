@@ -50,16 +50,18 @@ describe("tools/list workflow guidance", () => {
     assert.match(text, /foura_browser/);
   });
 
-  test("every auth_failed code points to the FourA API key", () => {
+  test("every fetch tool's auth_failed code points to the FourA API key", () => {
     for (const tool of tools) {
+      if (tool.name === "foura_batch") continue; // batch surfaces per-entry codes, not its own code field
       const codeDescription = tool.outputSchema?.properties?.code?.description ?? "";
       assert.match(codeDescription, /auth_failed.*FourA API key/i, `${tool.name} auth guidance`);
       assert.match(codeDescription, /not target-site credentials/i, `${tool.name} credential boundary`);
     }
   });
 
-  test("every offload path names the standard resource read operation", () => {
+  test("every offload-capable tool names the standard resource read operation", () => {
     for (const tool of tools) {
+      if (tool.name === "foura_batch") continue; // batch never offloads bodies itself
       const inputDescription = tool.inputSchema?.properties?.offload_large?.description ?? "";
       const outputDescription = tool.outputSchema?.properties?.offloaded_resource_uri?.description ?? "";
       assert.match(inputDescription, /resources\/read/, `${tool.name} offload input guidance`);

@@ -194,7 +194,7 @@ export function registerBrowserTool(server: McpServer): void {
         "reuse that same exit, instead of starting a new selection here; with no proxy the session " +
         "leaves from one fixed address. Set unblocker:false " +
         "when you want the page exactly as it loads, challenge included. It is the most expensive of the " +
-        "four tools and the slowest, so prefer foura_single or foura_proxy whenever the content is already " +
+        "fetch tools and the slowest, so prefer foura_single or foura_proxy whenever the content is already " +
         "in the HTML. One FourA API key authenticates every call, the result reports the credits it spent, " +
         "and a refusal by your own plan arrives as a plan_limit_ code, including plan_limit_browser_daily " +
         "when the daily browser allowance is spent.",

@@ -43,7 +43,7 @@ function deriveCode(status: number, envelope: Record<string, unknown>): string {
 }
 
 // This API route is exact and must not have a trailing slash.
-const AUTO_API_URL =
+export const AUTO_API_URL =
   (process.env.FOURA_API_BASE ?? "https://api.foura.ai/api") + "/auto";
 
 // Apply the client's success criteria to every fetch attempt.
@@ -213,6 +213,177 @@ const autoInputShape = {
     .describe("If true, response bodies of 50 KB or more are returned as a resource_link instead of inlined. Default false. Read the returned offloaded_resource_uri with resources/read."),
 };
 
+// The parsed foura_auto input. The batch tool drives one run per URL through the
+// same SSRF check and upstream request path as the standalone tool.
+export type AutoInput = z.infer<z.ZodObject<typeof autoInputShape>>;
+
+// The CallToolResult-shaped object an auto run produces. Failures keep the same
+// shape with isError:true and a {service, code, error} structuredContent envelope.
+export interface AutoCallResult {
+  isError?: boolean;
+  content: Array<Record<string, unknown>>;
+  structuredContent: Record<string, unknown>;
+}
+
+/**
+ * Run one foura_auto fetch: the same SSRF check and /auto upstream request the
+ * standalone tool performs, including its error-envelope contract. Never throws
+ * for an expected failure - the result carries isError:true instead. Extracted
+ * so foura_batch can execute several URLs independently without re-implementing
+ * the request path.
+ */
+export async function executeAutoFetch(input: AutoInput): Promise<AutoCallResult> {
+  try {
+    await assertPublicTarget(input.url);
+  } catch (e) {
+    if (e instanceof SsrfBlockedError) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: e.message }],
+        structuredContent: { service: "auto" as const, code: "ssrf_blocked", error: e.message },
+      };
+    }
+    throw e;
+  }
+
+  // Strip MCP-layer-only fields before forwarding upstream.
+  const { offload_large, ...upstreamBody } = input;
+
+  // auto can run up to its 180s budget; give undici a generous ceiling so it
+  // never cuts the orchestrator short (the server-side budget is the real cap).
+  const res = await request(AUTO_API_URL, {
+    method: "POST",
+    headers: {
+      "X-API-Key": getApiKey(),
+      "Content-Type": "application/json",
+      "User-Agent": "foura-mcp/0.8.3 (auto)",
+    },
+    body: JSON.stringify(upstreamBody),
+    headersTimeout: 200_000,
+    bodyTimeout: 200_000,
+  });
+
+  const upstreamMeta = readUpstreamMeta(res.headers);
+
+  const text = await res.body.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `FourA auto - non-JSON response (${res.statusCode}): ${text.slice(0, 200)}`,
+        },
+      ],
+      structuredContent: {
+        ...upstreamMeta,
+        service: "auto" as const,
+        code: "upstream_non_json",
+        status: res.statusCode,
+        error: `Upstream returned non-JSON (${res.statusCode}): ${text.slice(0, 200)}`,
+      },
+    };
+  }
+
+  // Handle transport-level rate-limit, authentication, and capacity errors.
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    const e = parsed as Record<string, unknown>;
+    const errMsg = typeof e.error === "string" ? e.error : "Unknown";
+    // A refusal raised by the caller's own plan names the limit; keeping that name is the
+    // difference between "wait, or change the plan" and "the site blocked us, try again".
+    const planCode = planLimitCode(e, res.headers);
+    const retryAfter = typeof e.retryAfter === "number" ? e.retryAfter : planRetryAfter(e);
+    const retryStr = typeof retryAfter === "number" ? ` · retry ${retryAfter}s` : "";
+    return {
+      isError: true,
+      content: [{ type: "text", text: `FourA auto error ${res.statusCode}: ${errMsg}${retryStr}` }],
+      structuredContent: {
+        ...upstreamMeta,
+        ...e,
+        service: "auto" as const,
+        code: planCode ?? deriveCode(res.statusCode, e),
+        status: typeof e.status === "number" ? e.status : res.statusCode,
+        ...(retryAfter !== undefined ? { retryAfter } : {}),
+      },
+    };
+  }
+
+  const parsedObj = parsed as {
+    status?: number;
+    data?: unknown;
+    headers?: unknown;
+    meta?: unknown;
+    session?: unknown;
+    error?: unknown;
+    attempts?: number;
+  };
+
+  // A non-empty error marks failure. A validated non-2xx status can still be successful.
+  if (typeof parsedObj.error === "string" && parsedObj.error.length > 0) {
+    const innerStatus = typeof parsedObj.status === "number" ? parsedObj.status : 0;
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `FourA auto - could not deliver content (status ${innerStatus}): ${parsedObj.error}`,
+        },
+      ],
+      structuredContent: {
+        ...upstreamMeta,
+        ...(parsedObj as Record<string, unknown>),
+        service: "auto" as const,
+        code: innerStatus > 0 ? deriveCode(innerStatus, parsedObj as Record<string, unknown>) : "upstream_error",
+        status: innerStatus,
+      },
+    };
+  }
+
+  const data = parsedObj.data;
+  let bodyStr: string | null = null;
+  if (typeof data === "string") bodyStr = data;
+  else if (data && typeof data === "object") bodyStr = JSON.stringify(data);
+
+  const statusLabel = parsedObj.status ?? "?";
+  const meta = (parsedObj.meta ?? {}) as { rung?: string; credits?: number };
+  const rungLabel = meta.rung ? ` · ${meta.rung}` : "";
+  const creditLabel = typeof meta.credits === "number" ? ` · ${meta.credits}cr` : "";
+
+  const shouldOffload = offload_large === true
+    && bodyStr
+    && Buffer.byteLength(bodyStr, "utf8") >= THRESHOLD_BYTES;
+
+  if (shouldOffload && bodyStr) {
+    const ct = extractContentType(parsedObj.headers) ?? "text/plain";
+    const stored = await storePayload(bodyStr, ct, "response-body");
+    const sizeKb = (stored.size / 1024).toFixed(1);
+    return {
+      content: [
+        { type: "text", text: `${statusLabel} · offloaded ${sizeKb} KB${rungLabel}${creditLabel}` },
+        { type: "resource_link", uri: stored.uri, name: stored.name, mimeType: stored.mimeType },
+      ],
+      structuredContent: {
+        ...upstreamMeta,
+        status: parsedObj.status,
+        headers: parsedObj.headers,
+        meta: parsedObj.meta,
+        session: parsedObj.session,
+        offloaded_resource_uri: stored.uri,
+        size_bytes: stored.size,
+      },
+    };
+  }
+
+  const sizeKb = bodyStr ? (Buffer.byteLength(bodyStr, "utf8") / 1024).toFixed(1) : "0";
+  return {
+    content: [{ type: "text", text: `${statusLabel} OK · ${sizeKb} KB${rungLabel}${creditLabel}` }],
+    structuredContent: { ...upstreamMeta, ...(parsedObj as Record<string, unknown>) },
+  };
+}
+
 // Convert handler and output-validation failures into the documented error envelope.
 async function guardHandler(
   service: "auto",
@@ -284,159 +455,9 @@ export function registerAutoTool(server: McpServer): void {
         openWorldHint: true,
       },
     },
-    async (input) => guardHandler("auto", z.object(autoOutputShape), async () => {
-      try {
-        await assertPublicTarget(input.url);
-      } catch (e) {
-        if (e instanceof SsrfBlockedError) {
-          return {
-            isError: true,
-            content: [{ type: "text", text: e.message }],
-            structuredContent: { service: "auto" as const, code: "ssrf_blocked", error: e.message },
-          };
-        }
-        throw e;
-      }
-
-      // Strip MCP-layer-only fields before forwarding upstream.
-      const { offload_large, ...upstreamBody } = input;
-
-      // auto can run up to its 180s budget; give undici a generous ceiling so it
-      // never cuts the orchestrator short (the server-side budget is the real cap).
-      const res = await request(AUTO_API_URL, {
-        method: "POST",
-        headers: {
-          "X-API-Key": getApiKey(),
-          "Content-Type": "application/json",
-          "User-Agent": "foura-mcp/0.8.3 (auto)",
-        },
-        body: JSON.stringify(upstreamBody),
-        headersTimeout: 200_000,
-        bodyTimeout: 200_000,
-      });
-
-      const upstreamMeta = readUpstreamMeta(res.headers);
-
-      const text = await res.body.text();
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `FourA auto - non-JSON response (${res.statusCode}): ${text.slice(0, 200)}`,
-            },
-          ],
-          structuredContent: {
-            ...upstreamMeta,
-            service: "auto" as const,
-            code: "upstream_non_json",
-            status: res.statusCode,
-            error: `Upstream returned non-JSON (${res.statusCode}): ${text.slice(0, 200)}`,
-          },
-        };
-      }
-
-      // Handle transport-level rate-limit, authentication, and capacity errors.
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        const e = parsed as Record<string, unknown>;
-        const errMsg = typeof e.error === "string" ? e.error : "Unknown";
-        // A refusal raised by the caller's own plan names the limit; keeping that name is the
-        // difference between "wait, or change the plan" and "the site blocked us, try again".
-        const planCode = planLimitCode(e, res.headers);
-        const retryAfter = typeof e.retryAfter === "number" ? e.retryAfter : planRetryAfter(e);
-        const retryStr = typeof retryAfter === "number" ? ` · retry ${retryAfter}s` : "";
-        return {
-          isError: true,
-          content: [{ type: "text", text: `FourA auto error ${res.statusCode}: ${errMsg}${retryStr}` }],
-          structuredContent: {
-            ...upstreamMeta,
-            ...e,
-            service: "auto" as const,
-            code: planCode ?? deriveCode(res.statusCode, e),
-            status: typeof e.status === "number" ? e.status : res.statusCode,
-            ...(retryAfter !== undefined ? { retryAfter } : {}),
-          },
-        };
-      }
-
-      const parsedObj = parsed as {
-        status?: number;
-        data?: unknown;
-        headers?: unknown;
-        meta?: unknown;
-        session?: unknown;
-        error?: unknown;
-        attempts?: number;
-      };
-
-      // A non-empty error marks failure. A validated non-2xx status can still be successful.
-      if (typeof parsedObj.error === "string" && parsedObj.error.length > 0) {
-        const innerStatus = typeof parsedObj.status === "number" ? parsedObj.status : 0;
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `FourA auto - could not deliver content (status ${innerStatus}): ${parsedObj.error}`,
-            },
-          ],
-          structuredContent: {
-            ...upstreamMeta,
-            ...(parsedObj as Record<string, unknown>),
-            service: "auto" as const,
-            code: innerStatus > 0 ? deriveCode(innerStatus, parsedObj as Record<string, unknown>) : "upstream_error",
-            status: innerStatus,
-          },
-        };
-      }
-
-      const data = parsedObj.data;
-      let bodyStr: string | null = null;
-      if (typeof data === "string") bodyStr = data;
-      else if (data && typeof data === "object") bodyStr = JSON.stringify(data);
-
-      const statusLabel = parsedObj.status ?? "?";
-      const meta = (parsedObj.meta ?? {}) as { rung?: string; credits?: number };
-      const rungLabel = meta.rung ? ` · ${meta.rung}` : "";
-      const creditLabel = typeof meta.credits === "number" ? ` · ${meta.credits}cr` : "";
-
-      const shouldOffload = offload_large === true
-        && bodyStr
-        && Buffer.byteLength(bodyStr, "utf8") >= THRESHOLD_BYTES;
-
-      if (shouldOffload && bodyStr) {
-        const ct = extractContentType(parsedObj.headers) ?? "text/plain";
-        const stored = await storePayload(bodyStr, ct, "response-body");
-        const sizeKb = (stored.size / 1024).toFixed(1);
-        return {
-          content: [
-            { type: "text", text: `${statusLabel} · offloaded ${sizeKb} KB${rungLabel}${creditLabel}` },
-            { type: "resource_link", uri: stored.uri, name: stored.name, mimeType: stored.mimeType },
-          ],
-          structuredContent: {
-            ...upstreamMeta,
-            status: parsedObj.status,
-            headers: parsedObj.headers,
-            meta: parsedObj.meta,
-            session: parsedObj.session,
-            offloaded_resource_uri: stored.uri,
-            size_bytes: stored.size,
-          },
-        };
-      }
-
-      const sizeKb = bodyStr ? (Buffer.byteLength(bodyStr, "utf8") / 1024).toFixed(1) : "0";
-      return {
-        content: [{ type: "text", text: `${statusLabel} OK · ${sizeKb} KB${rungLabel}${creditLabel}` }],
-        structuredContent: { ...upstreamMeta, ...(parsedObj as Record<string, unknown>) },
-      };
-    }),
+    async (input) => guardHandler("auto", z.object(autoOutputShape), () => executeAutoFetch(input)),
   );
 }
 
 // Export helpers for unit and schema checks.
-export const __test = { deriveCode, ResponseHeadersSchema, AutoValidateSchema, autoInputShape, autoOutputShape, guardHandler, AUTO_API_URL };
+export const __test = { deriveCode, ResponseHeadersSchema, AutoValidateSchema, autoInputShape, autoOutputShape, guardHandler };

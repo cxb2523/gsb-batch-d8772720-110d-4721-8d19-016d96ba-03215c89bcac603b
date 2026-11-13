@@ -78,6 +78,6 @@ describe("MCP Prompts - registration + argument plumbing", () => {
   test("9. tools/list works at the same time as prompts/list", async () => {
     const tools = await client.listTools();
     const toolNames = tools.map((t) => t.name).sort();
-    assert.deepEqual(toolNames, ["foura_auto", "foura_browser", "foura_proxy", "foura_single"]);
+    assert.deepEqual(toolNames, ["foura_auto", "foura_batch", "foura_browser", "foura_proxy", "foura_single"]);
   });
 });

@@ -41,10 +41,12 @@ default `false` if your client doesn't support them.
 
 ## What you get
 
-Four tools (`foura_auto`, `foura_single`, `foura_proxy`, `foura_browser`) and six prompts under
+Five tools (`foura_auto`, `foura_batch`, `foura_single`, `foura_proxy`, `foura_browser`) and six prompts under
 `/prompts`. All tools are read-only, so Claude clients that auto-approve trusted read-only tools
 call them without a per-request confirmation prompt. Start with `foura_auto` - give it a URL and
-it returns the page, choosing the fetch method for you.
+it returns the page, choosing the fetch method for you. Use `foura_batch` to submit up to 50
+URLs at once: every entry runs the `foura_auto` path independently, failures stay on their own
+result, and the `retry` list hands back only the failed URLs with stable codes.
 
 ---
 

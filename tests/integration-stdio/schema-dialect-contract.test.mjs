@@ -42,7 +42,7 @@ function schemasOf(tool) {
 
 describe("published tool schemas are dialect neutral", () => {
   test("every tool publishes an input and an output schema", () => {
-    assert.equal(tools.length, 4);
+    assert.equal(tools.length, 5);
     for (const tool of tools) {
       assert.ok(tool.inputSchema, `${tool.name} input schema`);
       assert.ok(tool.outputSchema, `${tool.name} output schema`);

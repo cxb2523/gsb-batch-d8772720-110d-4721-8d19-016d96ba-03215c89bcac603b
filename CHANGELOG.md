@@ -2,6 +2,10 @@
 
 All notable changes to `@fouradata/mcp`. Format: [Keep a Changelog](https://keepachangelog.com); [SemVer](https://semver.org).
 
+## [Unreleased]
+### Added
+- `foura_batch` fetches 1 to 50 public URLs in one call. Every entry reuses the `foura_auto` request path and SSRF check and runs independently, so one blocked or timed-out entry never stops the others. Each result carries `url`, `ok`, `status`, a stable `code`, an `error` summary and `duration_ms`, in input order. The response adds a `{total, succeeded, failed}` summary and a `retry` list of only the failed entries with their original URL and stable code, ready to resubmit verbatim (empty when every entry succeeded). Optional `timeout_ms` (5000-180000, default 30000) sets the per-URL budget and `concurrency` (1-8, default 3) bounds parallel fetches. Per-URL failures stay inside that entry's result; only invalid batch input (empty or over-50 list, a non-http(s) URL, an out-of-range option) returns `isError` with `code: "bad_request"`.
+
 ## [0.8.3] - 2026-10-28
 ### Changed
 - The Docker images built from `Dockerfile` (Streamable HTTP) and `Dockerfile.stdio` now run on Node 26, the new long-term support line. The npm package still runs on Node 22.19 and later.

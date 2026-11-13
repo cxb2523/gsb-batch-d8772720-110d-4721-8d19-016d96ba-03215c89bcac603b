@@ -13,9 +13,9 @@ before(async () => {
 });
 
 describe("mcp.foura.ai tools/list", () => {
-  test("1. exactly 4 tools advertised", () => {
+  test("1. exactly 5 tools advertised", () => {
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["foura_auto", "foura_browser", "foura_proxy", "foura_single"]);
+    assert.deepEqual(names, ["foura_auto", "foura_batch", "foura_browser", "foura_proxy", "foura_single"]);
   });
 
   test("2. each tool has readOnlyHint:true annotation", () => {

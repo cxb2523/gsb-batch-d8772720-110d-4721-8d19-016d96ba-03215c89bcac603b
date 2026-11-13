@@ -5,6 +5,7 @@ import { registerSingleTool } from "./tools/single.js";
 import { registerProxyTool } from "./tools/proxy.js";
 import { registerBrowserTool } from "./tools/browser.js";
 import { registerAutoTool } from "./tools/auto.js";
+import { registerBatchTool } from "./tools/batch.js";
 import { registerResourceHandler } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 
@@ -80,6 +81,8 @@ export function createServer(): McpServer {
   registerBrowserTool(server);
   // Keep the lower-level tools first in tools/list and register the default tool after them.
   registerAutoTool(server);
+  // The batch entry point composes foura_auto and stays last in the list.
+  registerBatchTool(server);
   registerResourceHandler(server);
   registerPrompts(server);
   publishDialectNeutralToolSchemas(server);
