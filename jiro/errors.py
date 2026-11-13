@@ -105,6 +105,18 @@ class SSRFError(JiroError, ValueError):
     status_code = 400
 
 
+class RedirectBlockedError(SSRFError):
+    """A redirect resolved to an SSRF-blocked target.
+
+    Distinct from :class:`SSRFError` so callers can tell an initial target
+    that was refused apart from a redirect chain that landed on a blocked
+    address; the stable ``code`` is ``redirect_blocked``.
+    """
+
+    code = "redirect_blocked"
+    status_code = 400
+
+
 class RateLimitError(JiroError):
     code = "rate_limit_exceeded"
     status_code = 429
@@ -123,6 +135,18 @@ class LLMError(JiroError):
 class ScrapeError(JiroError):
     code = "scrape_error"
     status_code = 502
+
+
+class RobotsDisallowedError(ScrapeError):
+    """robots.txt explicitly disallows the requested path (strict mode).
+
+    Raised only when ``robots_txt.strict_mode`` is enabled; robots fetch
+    failures and non-strict disallowances fail open and never raise this.
+    The stable ``code`` is ``robots_disallowed``.
+    """
+
+    code = "robots_disallowed"
+    status_code = 403
 
 
 class LicenseError(JiroError):

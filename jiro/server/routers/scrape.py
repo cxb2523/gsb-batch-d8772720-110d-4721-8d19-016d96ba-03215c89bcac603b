@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from jiro.ai.llm import LLM
 from jiro.auth import AuthContext
 from jiro.cache import CacheManager
+from jiro.errors import JiroError
 from jiro.extract import scrape_url
 from jiro.models import BatchScrapeItem, ScrapeRequest, ScrapeResponse
 from jiro.server.deps import (
@@ -106,6 +107,18 @@ async def scrape_batch(
                     )
                 payload["time_taken"] = round(time.perf_counter() - started, 3)
                 return payload
+            except JiroError as exc:
+                # Surface the same stable, sanitized failure shape as the
+                # single-URL endpoint (robots_disallowed / redirect_blocked /
+                # ...) so batch callers can tell which item failed and why.
+                failure: Dict[str, Any] = {
+                    "url": item.url,
+                    "error": exc.message,
+                    "error_code": exc.code,
+                }
+                if exc.details:
+                    failure["details"] = exc.details
+                return failure
             except Exception as exc:
                 return {"url": item.url, "error": str(exc)}
 

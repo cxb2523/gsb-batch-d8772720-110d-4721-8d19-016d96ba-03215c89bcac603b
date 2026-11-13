@@ -27,6 +27,7 @@ from jiro.errors import (
     LicenseError,
     NotFoundError,
     RateLimitError,
+    RobotsDisallowedError,
     ScrapeError,
     SSRFError,
     ValidationError,
@@ -123,6 +124,10 @@ _PERMANENT_EXCEPTIONS: Tuple[type, ...] = (
     ForbiddenError,
     LicenseError,
     SSRFError,
+    # A robots.txt denial is an explicit, deterministic policy decision;
+    # retrying would re-request a path the operator forbade. (The generic
+    # ScrapeError stays transient below — only this subclass is permanent.)
+    RobotsDisallowedError,
     InvalidTransition,
     ResultTooLarge,
 )

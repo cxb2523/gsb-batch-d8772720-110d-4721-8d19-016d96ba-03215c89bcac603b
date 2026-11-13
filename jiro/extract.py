@@ -15,7 +15,7 @@ from urllib.parse import urljoin
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser, LexborNode as Node
 
-from jiro.errors import ScrapeError
+from jiro.errors import JiroError, ScrapeError
 
 TAG_BLOCK = {"p", "div", "section", "article", "main", "li", "blockquote", "pre",
              "table", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "figure"}
@@ -300,6 +300,11 @@ async def scrape_url(url: str, client: Any, *, fmt: str = "markdown",
     if html is None or response is None:
         try:
             html, response = await client.get(url, engine="scrape", raw=True)
+        except JiroError:
+            # Structured failures (robots_disallowed, redirect_blocked,
+            # ssrf_blocked, ...) carry stable codes and already-sanitized
+            # details; re-raise untouched so the caller can distinguish them.
+            raise
         except Exception as exc:
             raise ScrapeError(f"failed to fetch {url}: {exc}") from exc
 

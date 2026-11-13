@@ -17,6 +17,9 @@ from jiro.errors import (
     EngineBlockedError,
     ForbiddenError,
     RateLimitError,
+    RedirectBlockedError,
+    RobotsDisallowedError,
+    ScrapeError,
     ValidationError,
 )
 from jiro.runtime.errors import (
@@ -133,11 +136,19 @@ class TestFailureClassification:
             ValidationError("bad"),
             ForbiddenError("nope"),
             ResultTooLarge("too big"),
+            # Deterministic security/policy denials must never be retried.
+            RobotsDisallowedError("robots.txt disallows this path"),
+            RedirectBlockedError("redirect landed on a blocked host"),
         ],
     )
     def test_permanent_failures(self, exc):
         assert classify_failure(exc) is FailureKind.PERMANENT
         assert not is_retryable(FailureKind.PERMANENT)
+
+    def test_generic_scrape_error_stays_transient(self):
+        # Only the robots/redirect subclasses are permanent; an ordinary
+        # scrape failure remains retryable.
+        assert classify_failure(ScrapeError("fetch failed")) is FailureKind.TRANSIENT
 
     def test_bare_value_error_from_handler_is_unexpected_not_permanent(self):
         # A handler raising a plain ValueError is a bug we cannot classify; it

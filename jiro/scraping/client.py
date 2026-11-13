@@ -49,7 +49,8 @@ from jiro.errors import (
     EngineBlockedError,
     EngineError,
     EngineTimeoutError,
-    ScrapeError,
+    RedirectBlockedError,
+    RobotsDisallowedError,
     SSRFError,
 )
 from jiro.security import async_validate_target_url
@@ -70,6 +71,14 @@ def _sanitize_url_for_error(url: str) -> str:
         return url
     except Exception:
         return "[invalid url]"
+
+
+def _host_for_error(url: str) -> str:
+    """Best-effort host extraction for error details (never raises)."""
+    try:
+        return urllib.parse.urlparse(url).hostname or ""
+    except Exception:
+        return ""
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
@@ -506,7 +515,10 @@ class ScrapingClient:
         """Validate the final URL after redirects to prevent SSRF via redirect.
 
         If the response URL differs from the request URL, validate the
-        redirect target against blocked IP ranges.
+        redirect target against blocked IP ranges. A blocked redirect raises
+        :class:`RedirectBlockedError` (stable code ``redirect_blocked``) with
+        the original and final URLs — query strings redacted — so callers can
+        tell this failure apart from an initial-target SSRF rejection.
         """
         if not hasattr(response, 'url') or response.url is None:
             return
@@ -515,12 +527,31 @@ class ScrapingClient:
             return
         try:
             await async_validate_target_url(final_url, own_hosts=self._own_hosts)
-        except (ValueError, Exception):
-            safe_url = _sanitize_url_for_error(final_url)
-            raise SSRFError(
-                f"redirect target blocked: {safe_url}",
-                details={"initial_url": _sanitize_url_for_error(url),
-                         "redirect_url": safe_url},
+        except Exception as exc:
+            # Keep the underlying reason in the server log only; never embed
+            # raw exception text (which may contain internal IPs) in the
+            # caller-facing error.
+            _ssrf_log.warning(
+                "redirect target blocked by SSRF validation",
+                extra={"initial_url": _sanitize_url_for_error(url),
+                       "redirect_url": _sanitize_url_for_error(final_url),
+                       "error": str(exc)},
+            )
+            safe_initial = _sanitize_url_for_error(url)
+            safe_final = _sanitize_url_for_error(final_url)
+            raise RedirectBlockedError(
+                f"redirect target blocked: {safe_final}",
+                details={
+                    "reason": "redirect_blocked",
+                    "url": safe_initial,
+                    "host": _host_for_error(url),
+                    # ``redirect_url`` retained for backward-compatibility with
+                    # the previous details shape; ``final_url`` is the
+                    # canonical name going forward.
+                    "final_url": safe_final,
+                    "redirect_url": safe_final,
+                    "final_host": _host_for_error(final_url),
+                },
             )
 
     async def get(self, url: str, *, engine: str = "social",
@@ -542,8 +573,26 @@ class ScrapingClient:
                 await async_validate_target_url(
                     url, allow_private=self._allow_private_targets,
                     own_hosts=self._own_hosts)
+            except SSRFError:
+                # Already a structured, stable-coded security error; re-raise
+                # with caller-safe details (no raw query parameters).
+                raise SSRFError(
+                    "target URL blocked by SSRF policy",
+                    details={
+                        "reason": "ssrf_blocked",
+                        "url": _sanitize_url_for_error(url),
+                        "host": _host_for_error(url),
+                    },
+                ) from None
             except ValueError as exc:
-                raise SSRFError(str(exc), details={"url": url})
+                raise SSRFError(
+                    "target URL rejected by SSRF policy",
+                    details={
+                        "reason": "ssrf_blocked",
+                        "url": _sanitize_url_for_error(url),
+                        "host": _host_for_error(url),
+                    },
+                ) from exc
             if self._respect_robots:
                 await self._enforce_robots(url)
 
@@ -763,10 +812,7 @@ class ScrapingClient:
             allowed, expires = self._robots_cache[host]
             if expires > now:
                 if not allowed and self._robots_strict:
-                    raise ScrapeError(
-                        f"robots.txt disallows scraping {host}",
-                        status_code=403, details={"host": host},
-                    )
+                    raise self._robots_disallowed(url, host, parsed.path or "/")
                 return
         try:
             robots_url = f"{scheme}://{host}/robots.txt"
@@ -790,10 +836,20 @@ class ScrapingClient:
             _ssrf_log.info("robots.txt disallows path",
                            extra={"host": host, "path": parsed.path or "/"})
             if self._robots_strict:
-                raise ScrapeError(
-                    f"robots.txt disallows scraping {host}",
-                    status_code=403, details={"host": host},
-                )
+                raise self._robots_disallowed(url, host, parsed.path or "/")
+
+    @staticmethod
+    def _robots_disallowed(url: str, host: str, path: str) -> "RobotsDisallowedError":
+        """Build the stable, caller-safe robots rejection (strict mode only)."""
+        return RobotsDisallowedError(
+            f"robots.txt disallows scraping {host}",
+            details={
+                "reason": "robots_disallowed",
+                "url": _sanitize_url_for_error(url),
+                "host": host,
+                "path": path,
+            },
+        )
 
     async def _do_request(self, url: str, *, params: Optional[Dict[str, Any]],
                           engine: str, extra_headers: Optional[Dict[str, str]],
@@ -937,6 +993,15 @@ class _CurlResponseAdapter:
     @property
     def headers(self) -> Any:
         return self._resp.headers
+
+    @property
+    def url(self) -> Any:
+        """Final URL after redirects (curl_cffi tracks it on the response).
+
+        Exposing it lets ``_validate_response_url`` run the post-redirect
+        SSRF check on the curl_cffi transport, not just the httpx fallback.
+        """
+        return self._resp.url
 
     @property
     def content(self) -> bytes:
