@@ -15,7 +15,7 @@ from jevcrawl.config import Config, Thresholds
 from jevcrawl.crawl.errors import AUTH_HELP, CrawlError
 from jevcrawl.crawl.frontier import Frontier, FrontierItem, link_priority
 from jevcrawl.crawl.pack import pack_result, top_k_excerpts
-from jevcrawl.crawl.sitemap import sitemap_links, sitemap_urls
+from jevcrawl.crawl.sitemap import discover_sitemaps, sitemap_links
 from jevcrawl.crawl.stop import Budget
 from jevcrawl.decide.cache import DecisionCache
 from jevcrawl.decide.client import DecisionClient, JevAuthError
@@ -25,7 +25,7 @@ from jevcrawl.fetch.http import Fetcher, FetchResult
 from jevcrawl.fetch.jsdetect import MIN_VISIBLE_CHARS
 from jevcrawl.fetch.robots import Robots
 from jevcrawl.log import get_logger
-from jevcrawl.models import Block, CrawlResult, Link, Page, Stats, estimate_tokens
+from jevcrawl.models import Block, CrawlResult, Link, Page, SitemapReport, Stats, estimate_tokens
 from jevcrawl.segment.blocks import segment_html
 from jevcrawl.segment.boilerplate import BoilerplateStore, free_filter_blocks
 from jevcrawl.segment.links import Scope, canonical_url, free_filter_links
@@ -96,6 +96,8 @@ class LoopResult:
     pages: list[dict[str, Any]] = field(default_factory=list)
     stats: Stats = field(default_factory=Stats)
     candidates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Audit trail of the sitemap discovery phase; an explicit "disabled" marker when unused.
+    sitemap: SitemapReport = field(default_factory=SitemapReport.disabled)
 
 
 def validate_url(url: str) -> str:
@@ -422,26 +424,34 @@ class _Crawl:
     async def seed_from_sitemap(self) -> None:
         """Offer the sitemap URLs that share words with the goal as depth-1 link candidates."""
         root = self.scope.start_url
+        report = SitemapReport(enabled=True)
         try:
-            urls = await sitemap_urls(self.session.fetcher, self.session.robots, root, self.goal)
+            discovery = await discover_sitemaps(
+                self.session.fetcher, self.session.robots, root, self.goal
+            )
+            report = discovery.report
+            exclude = self.seen | self.frontier.queued
+            links = sitemap_links(
+                discovery.urls, self.goal, self.scope, exclude, self.config.sitemap_links
+            )
+            report.candidate_links = len(links)
+            if not links:
+                return
+            listing = Page(
+                url=root, final_url=root, status=200, title="Sitemap", lang="", text="",
+                text_sha256="",
+            )  # fmt: skip
+            with _stop_on_limits():
+                decision = await self.decider.page(
+                    self.goal, listing, [], links, ask_blocks=False, ask_links=True
+                )
+            # Neutral evidence (page_rel 0.5) at depth 0: as if the start page linked to them.
+            self.offer(links, decision, 0.5, 0, root, self.config.thresholds)
+            log.info("sitemap offered %d links", len(links))
         except Exception as exc:  # a broken sitemap must never break the crawl
             log.info("sitemap skipped: %r", exc)
-            return
-        exclude = self.seen | self.frontier.queued
-        links = sitemap_links(urls, self.goal, self.scope, exclude, self.config.sitemap_links)
-        if not links:
-            return
-        listing = Page(
-            url=root, final_url=root, status=200, title="Sitemap", lang="", text="",
-            text_sha256="",
-        )  # fmt: skip
-        with _stop_on_limits():
-            decision = await self.decider.page(
-                self.goal, listing, [], links, ask_blocks=False, ask_links=True
-            )
-        # Neutral evidence (page_rel 0.5) at depth 0: as if the start page linked to them.
-        self.offer(links, decision, 0.5, 0, root, self.config.thresholds)
-        log.info("sitemap offered %d links", len(links))
+        finally:
+            self.out.sitemap = report
 
 
 async def run_loop(
@@ -495,4 +505,6 @@ async def crawl(
     budget = Budget(max_pages, max_seconds, return_tokens, max_decision_usd)
     async with open_session(config) as session:
         out = await run_loop(goal, start_url, budget, session)
-    return pack_result(out.kept, out.uncertain, out.pages, out.stats, return_tokens)
+    return pack_result(
+        out.kept, out.uncertain, out.pages, out.stats, return_tokens, out.sitemap
+    )

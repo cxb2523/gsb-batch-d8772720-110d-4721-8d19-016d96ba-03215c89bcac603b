@@ -23,6 +23,21 @@ _META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([\w.:-]+)""", re.I
 
 
 @dataclass(frozen=True)
+class RawFetch:
+    """Outcome of fetching a non-HTML file (robots.txt, sitemap.xml). ``error`` is None on 200."""
+
+    url: str
+    status: int = 0
+    body: bytes | None = None
+    error: str | None = None  # http_<status>, network, timeout, too_many_redirects, invalid_url
+
+    @property
+    def ok(self) -> bool:
+        """True when a body came back with HTTP 200."""
+        return self.error is None and self.body is not None
+
+
+@dataclass(frozen=True)
 class FetchResult:
     """Outcome of one page fetch. ``error`` is None on success."""
 
@@ -113,8 +128,20 @@ class Fetcher:
 
     async def fetch_raw(self, url: str) -> bytes | None:
         """GET any file (robots.txt, sitemap.xml); its body on HTTP 200, else None."""
+        result = await self.fetch_raw_detailed(url)
+        return result.body if result.ok else None
+
+    async def fetch_raw_detailed(self, url: str) -> RawFetch:
+        """GET any file with the full outcome, so callers can tell failures apart from empties."""
         try:
             async with self._client.stream("GET", url) as response:
-                return await _read_capped(response) if response.status_code == 200 else None
-        except (httpx.HTTPError, httpx.InvalidURL):
-            return None
+                if response.status_code != 200:
+                    return RawFetch(url, response.status_code, error=f"http_{response.status_code}")
+                return RawFetch(url, 200, await _read_capped(response))
+        except httpx.TimeoutException:
+            return RawFetch(url, error="timeout")
+        except httpx.TooManyRedirects:
+            return RawFetch(url, error="too_many_redirects")
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            log.info("request to %s failed: %s", url, type(exc).__name__)
+            return RawFetch(url, error="network")

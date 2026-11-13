@@ -116,6 +116,72 @@ class Stats:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SitemapFileRecord:
+    """What happened when the discovery phase tried to read one sitemap file.
+
+    ``outcome`` is one of ``parsed`` (the file parsed, ``urls_found`` locs came out of it),
+    ``request_failed`` (the HTTP request did not return a body), ``decompress_failed``
+    (the gzip stream could not be unpacked) or ``empty`` (the body held no usable content).
+    Failures carry a short machine-readable ``reason``; ``truncated`` marks a gzip body whose
+    decompression stopped at the size cap rather than at the end of the stream.
+    """
+
+    url: str
+    outcome: str
+    reason: str | None = None
+    urls_found: int = 0
+    truncated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain-dict form for tool output."""
+        return asdict(self)
+
+
+@dataclass
+class SitemapReport:
+    """Per-file audit trail and counters for one crawl's sitemap discovery phase."""
+
+    enabled: bool = False
+    files: list[SitemapFileRecord] = field(default_factory=list)
+    # Files still queued when the MAX_FILES or MAX_URLS cap stopped discovery.
+    files_remaining: int = 0
+    # Sitemap URLs that passed the lexical goal filter and were handed to the decision model.
+    candidate_links: int = 0
+
+    @classmethod
+    def disabled(cls) -> SitemapReport:
+        """The explicit marker used when sitemap discovery is switched off."""
+        return cls(enabled=False)
+
+    @property
+    def files_attempted(self) -> int:
+        """Every file the discovery phase actually requested."""
+        return len(self.files)
+
+    @property
+    def files_succeeded(self) -> int:
+        """Files that parsed into loc entries (including loc-less but well-formed files)."""
+        return sum(1 for f in self.files if f.outcome == "parsed")
+
+    @property
+    def files_failed(self) -> int:
+        """Files whose request, decompression or content made them unusable."""
+        return sum(1 for f in self.files if f.outcome != "parsed")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain-dict form for tool output."""
+        return {
+            "enabled": self.enabled,
+            "files_attempted": self.files_attempted,
+            "files_succeeded": self.files_succeeded,
+            "files_failed": self.files_failed,
+            "files_remaining": self.files_remaining,
+            "candidate_links": self.candidate_links,
+            "files": [f.to_dict() for f in self.files],
+        }
+
+
 @dataclass
 class CrawlResult:
     """The output contract returned to the agent."""
@@ -124,6 +190,8 @@ class CrawlResult:
     uncertain: list[Block] = field(default_factory=list)
     pages: list[dict[str, Any]] = field(default_factory=list)
     stats: Stats = field(default_factory=Stats)
+    # Audit trail of the free sitemap discovery phase; explicitly disabled when not used.
+    sitemap: SitemapReport = field(default_factory=SitemapReport.disabled)
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-dict form for tool output."""
@@ -132,4 +200,5 @@ class CrawlResult:
             "uncertain": [b.to_public() for b in self.uncertain],
             "pages": self.pages,
             "stats": self.stats.to_dict(),
+            "sitemap": self.sitemap.to_dict(),
         }

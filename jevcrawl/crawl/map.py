@@ -30,4 +30,9 @@ async def map_site(
             goal, start_url, budget, session, use_blocks=False, check_answered=False
         )
     ranked = sorted(out.candidates.values(), key=lambda c: -c["priority"])[:limit]
-    return {"urls": ranked, "pages": out.pages, "stats": out.stats.to_dict()}
+    return {
+        "urls": ranked,
+        "pages": out.pages,
+        "stats": out.stats.to_dict(),
+        "sitemap": out.sitemap.to_dict(),
+    }

@@ -96,6 +96,9 @@ async def crawl(
         "budget") and `stats.degraded` (true means the decision model was unreachable and
         results are unscored). `stats.needs_js_urls` lists pages that only render with
         JavaScript and could not be rendered; `stats.js_rendered_urls` those it rendered.
+        `sitemap`: the per-file audit trail of sitemap discovery (`enabled`, per-file outcomes
+        with failure reasons, success/failure counts, files left unread by the caps and the
+        candidate links handed to the decision model); `enabled` is false when it is off.
         On failure: `{"error": code, "message": ...}`.
 
     Quote returned text together with its `url`.

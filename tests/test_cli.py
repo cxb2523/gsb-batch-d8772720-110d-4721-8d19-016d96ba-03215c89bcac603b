@@ -32,7 +32,18 @@ def test_crawl_json(world, capsys):
     data = json.loads(capsys.readouterr().out)
     assert any(REFUND in b["text"] for b in data["blocks"])
     assert data["stats"]["stopped_because"] == "answered"
-    assert set(data) == {"blocks", "uncertain", "pages", "stats"}
+    assert set(data) == {"blocks", "uncertain", "pages", "stats", "sitemap"}
+    # The default CLI config leaves sitemap discovery on; the audit trail is visible in JSON.
+    assert data["sitemap"]["enabled"] is True
+    assert {
+        "enabled",
+        "files_attempted",
+        "files_succeeded",
+        "files_failed",
+        "files_remaining",
+        "candidate_links",
+        "files",
+    } == set(data["sitemap"])
 
 
 def test_crawl_human_output(world, capsys):

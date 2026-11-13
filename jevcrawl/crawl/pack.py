@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jevcrawl.models import Block, CrawlResult, Stats
+from jevcrawl.models import Block, CrawlResult, SitemapReport, Stats
 
 EXCERPT_TOKENS = 2000
 UNCERTAIN_SHARE = 0.25
@@ -39,14 +39,16 @@ def pack_result(
     pages: list[dict[str, Any]],
     stats: Stats,
     return_tokens: int,
+    sitemap: SitemapReport | None = None,
 ) -> CrawlResult:
     """Sort, cut to ``return_tokens`` (uncertain: 25% of it) and fill ``tokens_returned``.
 
     When the decision model was unreachable nothing is scored and ``uncertain`` is all there is,
-    so it may use the whole budget.
+    so it may use the whole budget. ``sitemap`` carries the discovery-phase audit trail; a None
+    means the caller never ran sitemap discovery and gets the explicit "disabled" marker.
     """
     blocks = cut_to_tokens(by_relevance(kept), return_tokens)
     share = 1.0 if stats.degraded and not kept else UNCERTAIN_SHARE
     unsure = cut_to_tokens(by_relevance(uncertain), int(return_tokens * share))
     stats.tokens_returned = sum(b.tokens_est for b in blocks) + sum(b.tokens_est for b in unsure)
-    return CrawlResult(blocks, unsure, pages, stats)
+    return CrawlResult(blocks, unsure, pages, stats, sitemap or SitemapReport.disabled())

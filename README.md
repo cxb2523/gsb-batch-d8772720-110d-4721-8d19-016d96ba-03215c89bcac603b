@@ -149,7 +149,11 @@ The benchmark code and how to reproduce every number: [`bench/`](bench/README.md
  "stats": {"pages_fetched": 6, "tokens_raw": 80034, "tokens_returned": 1873, "jev_calls": 11,
            "cache_hits": 0, "jev_input_tokens": 164139, "jev_cost_usd": 0.0069,
            "model": "jev-1.13.0", "degraded": false, "degraded_reason": null,
-           "needs_js_urls": [], "stopped_because": "answered", "elapsed_seconds": 8.3}}
+           "needs_js_urls": [], "stopped_because": "answered", "elapsed_seconds": 8.3},
+ "sitemap": {"enabled": true, "files_attempted": 3, "files_succeeded": 2, "files_failed": 1,
+             "files_remaining": 0, "candidate_links": 4,
+             "files": [{"url": "https://docs.python.org/sitemap.xml", "outcome": "parsed",
+                        "reason": null, "urls_found": 80, "truncated": false}]}}
 ```
 
 Trimmed to one block and one page. 80,034 tokens of pages became 1,873 tokens of answer, for
@@ -161,6 +165,12 @@ $0.0069, in 8.3 seconds.
   checked later.
 - `stopped_because` is `answered`, `frontier_empty`, `max_pages`, `max_seconds`, `budget` or
   `auth_error`.
+- `sitemap` audits the free sitemap discovery phase: one record per attempted file with its
+  outcome (`parsed`, `request_failed`, `decompress_failed` or `empty`, plus a short reason on
+  failure), the success/failure counts, the files left unread by the `MAX_FILES`/`MAX_URLS`
+  caps, and the candidate links handed to the decision model. `enabled` is `false` (and the
+  lists empty) when sitemap discovery is switched off. A broken sitemap only adds a failure
+  record; it never stops the crawl.
 - Expected failures come back as `{"error": "<code>", "message": "<what to do>"}`; the tools
   never raise into the agent's session.
 
