@@ -1,0 +1,17 @@
+scrape.spec
+dist/
+build/
+
+venv/
+.venv/
+ENV/
+
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+
+.aider*
+nanobanana-output/
+docs/evaluation-v1.2.0.md

@@ -1,0 +1,7 @@
+lxml
+cssselect
+requests
+xmltodict
+build
+twine
+setuptools
