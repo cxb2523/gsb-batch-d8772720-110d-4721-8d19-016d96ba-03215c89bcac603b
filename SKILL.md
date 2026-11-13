@@ -157,9 +157,15 @@ exec node <skill_dir>/scripts/smart-extract.mjs --fallback "https://url1" "https
 
 `--fallback` skips Camofox and uses Cloak directly, since the goal is to recover content where Camofox has already proven insufficient.
 
-**Output:** JSON on stdout with `version`, `mode`, `results[]` (one entry per URL with `ok`, `content`, `chars`, `source`, `steps`; on Camofox results also `httpStatus`, plus a `warning` when it is 400 or higher — the content may be an error page or a challenge, so check it before trusting it).
+**Output:** JSON on stdout with `version`, `mode`, `results[]` (one entry per URL, in input order). Every URL has a verifiable outcome — none is silently dropped:
 
-If `smart-extract.mjs` times out or returns `mode: "partial"` (interrupted, only the URLs already extracted are printed), run `node <skill_dir>/scripts/camofox/camofox.mjs health` before retrying, and re-run only the missing URLs, one or two at a time (with `--fallback` if Camofox keeps failing).
+- **Success entry:** `ok: true` with `content`, `chars`, `source`, and `steps[]`.
+- **Failure entry:** `ok: false` with `reason` (human-readable) and `reasonCode` (stable machine code: `tool-unavailable`, `tool-error`, `tool-timeout`, `http-4xx`, `http-5xx`, `error-page`, `too-short`, `empty-result`), plus a `failure` object pinpointing the decisive step: `{ stepIndex, step, tool, elapsedMs }`. Each entry in `steps[]` carries its own `index`, `tool`, `ok`, `reasonCode` (when failed), and `elapsedMs`, so you can tell *which* step failed, *which tool* ran there, and *how long* it took.
+- **Escalation visibility (mode `camofox`):** when Camofox failed on some URL but another succeeded, no auto-escalation runs. Each failed entry still reports `escalationEligible` (true when a manual `--fallback` retry is applicable) and `escalationNote` (with the exact command). Entries from `--expr`, or already processed by Cloak, are marked not eligible with an explanatory note.
+- **Mode `full-auto`:** each merged entry keeps both step segments in order — every Camofox step first, then the Cloak step (`steps[].index` is sequential across the merge). A Cloak success sets `source: "cloak"`; a Cloak failure recomputes `failure` to point at the Cloak step.
+- On Camofox results you also get `httpStatus`, plus a `warning` when it is 400 or higher — the content may be an error page or a challenge, so check it before trusting it.
+
+On `SIGINT`/`SIGTERM` the script emits `mode: "partial"` and exits 130/143. Only URLs with a real outcome appear in `results[]` (both successes and failures — an interrupted in-flight URL settles into a real failure record, it is not discarded). URLs never started are listed separately in `pending[]` (no fabricated results); any URL whose tool process was spawned but had no final outcome at the boundary is listed in `inProgress[]` with its phase. If `smart-extract.mjs` times out or returns `mode: "partial"`, run `node <skill_dir>/scripts/camofox/camofox.mjs health` before retrying, and re-run only the missing/pending URLs, one or two at a time (with `--fallback` if Camofox keeps failing).
 
 After reviewing the output, decide: **do you have enough information to answer the user's request exhaustively?** If yes, proceed. If not, go back to SearXNG with new search queries to fill the gaps.
 
