@@ -1,0 +1,20 @@
+[
+  {
+    "title_": "Indirect Page Three",
+    "reference": "document:xwiki:Main.D3",
+    "links": [],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "D3"
+  },
+  {
+    "title_": "Direct Page Two",
+    "reference": "document:xwiki:Main.D2",
+    "links": [
+      "entity:document:xwiki:Main.D3"
+    ],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "D2"
+  }
+]

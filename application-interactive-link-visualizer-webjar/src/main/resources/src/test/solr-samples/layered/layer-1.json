@@ -1,0 +1,42 @@
+[
+  {
+    "title_": "Root Page",
+    "reference": "document:xwiki:Main.Root",
+    "links": [
+      "entity:document:xwiki:Main.D1",
+      "entity:document:xwiki:Main.D2",
+      "entity:document:xwiki:Main.D4"
+    ],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "Root"
+  },
+  {
+    "title_": "Direct Page One",
+    "reference": "document:xwiki:Main.D1",
+    "links": [
+      "entity:document:xwiki:Main.D2"
+    ],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "D1"
+  },
+  {
+    "title_": "Direct Page Two",
+    "reference": "document:xwiki:Main.D2",
+    "links": [
+      "entity:document:xwiki:Main.D3"
+    ],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "D2"
+  },
+  {
+    "title_": "Direct Page Four",
+    "reference": "document:xwiki:Main.D4",
+    "links": [],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "D4"
+  }
+]

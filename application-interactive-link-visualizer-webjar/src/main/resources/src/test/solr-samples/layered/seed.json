@@ -1,0 +1,14 @@
+[
+  {
+    "title_": "Root Page",
+    "reference": "document:xwiki:Main.Root",
+    "links": [
+      "entity:document:xwiki:Main.D1",
+      "entity:document:xwiki:Main.D2",
+      "entity:document:xwiki:Main.D4"
+    ],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "Root"
+  }
+]

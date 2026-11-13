@@ -54,7 +54,14 @@ intlv.sigmacontainer.form.title.documentfilter=Number of documents to display in
 intlv.sigmacontainer.form.label.documentfilter=No. of pages to visualize:
 
 ## Local graph panel
-intlv.panel.header=Linked Pages Graph</content>
+intlv.panel.header=Linked Pages Graph
+intlv.panel.depth.label=Expansion depth:
+intlv.panel.depth.title=Number of link layers to collect around the current document (1 to 3)
+intlv.panel.status.loading=Loading linked pages…
+intlv.panel.status.empty=No linked page found.
+intlv.panel.status.error=Failed to load linked pages.
+intlv.panel.status.summary={0} document(s), {1} link(s) — {2}
+intlv.panel.warning.truncated=The result was cut by the limit of {0} documents per query at layer {1}. The expansion was stopped there: increase the depth or the limit to collect further pages.</content>
   <object>
     <name>XWiki.InteractiveLinkVisualizer.Code.Translations</name>
     <number>0</number>

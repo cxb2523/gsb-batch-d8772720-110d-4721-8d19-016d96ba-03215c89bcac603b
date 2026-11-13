@@ -20,7 +20,10 @@
 const path = require('path');
 
 module.exports = {
-  entry: './src/main.ts',
+  entry: {
+    visualisationAPI: './src/main.ts',
+    linkGraphCollector: './src/linkGraphCollector.ts'
+  },
   module: {
     rules: [
       {
@@ -34,7 +37,7 @@ module.exports = {
     extensions: ['.tsx', '.ts', '.js'],
   },
   output: {
-    filename: 'visualisationAPI.js',
+    filename: '[name].js',
     path: path.resolve(__dirname, 'dist'),
     libraryTarget: 'amd'
   },

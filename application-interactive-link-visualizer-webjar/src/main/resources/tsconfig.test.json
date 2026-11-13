@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es2019",
+    "outDir": "../../../target/test-local",
+    "sourceMap": false,
+    "types": []
+  },
+  "include": ["src/linkGraphCollector.ts", "src/test/**/*.ts"]
+}

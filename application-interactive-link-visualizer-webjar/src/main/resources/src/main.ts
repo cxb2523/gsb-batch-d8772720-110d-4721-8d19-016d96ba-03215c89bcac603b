@@ -41,7 +41,40 @@ interface ThemeColors {
   nodeColor: string
 }
 
+// Sigma instances and their ForceAtlas2 layout, keyed by their container id.
+// The panel needs these registries to dispose its previous graph (and stop
+// its layout worker) before drawing a new one when the expansion depth
+// changes.
+const renderers: Map<string, Sigma> = new Map<string, Sigma>();
+const layouts: Map<string, FA2Layout> = new Map<string, FA2Layout>();
+
+export function disposeVisualization(sigmaContainer: string) {
+  const layout = layouts.get(sigmaContainer);
+  if (layout) {
+    try {
+      layout.stop();
+    } catch (error) {
+      // The layout may already be stopped, ignore it.
+    }
+    layouts.delete(sigmaContainer);
+  }
+  const renderer = renderers.get(sigmaContainer);
+  if (renderer) {
+    try {
+      renderer.clear();
+      renderer.kill();
+    } catch (error) {
+      // The renderer may already be killed (e.g. via the kill graph button),
+      // ignore it and just drop the stale reference.
+    }
+    renderers.delete(sigmaContainer);
+  }
+}
+
 export function visualize(data: DirectedGraph, sigmaContainer: string, themeColors: ThemeColors, isPanel : boolean = false, nb : number = null) {
+  // Never keep two renderers on the same container: redrawing the panel must
+  // release the previous Sigma instance and its WebGL context first.
+  disposeVisualization(sigmaContainer);
   const graph = new DirectedGraph();
   graph.import(data);
 
@@ -98,6 +131,7 @@ const EdgeArrowProgram = createEdgeCompoundProgram([
   const fa2Layout = new FA2Layout(graph, {
     settings: sensibleSettings
   });
+  layouts.set(sigmaContainer, fa2Layout);
 
   function stopFA2() {
     fa2Layout.stop();
@@ -175,6 +209,7 @@ const EdgeArrowProgram = createEdgeCompoundProgram([
   };
 
   const renderer = new Sigma(graph, container, rendererSettings);
+  renderers.set(sigmaContainer, renderer);
    
 // Nice visual optimisations
 renderer.on("enterNode", () => {

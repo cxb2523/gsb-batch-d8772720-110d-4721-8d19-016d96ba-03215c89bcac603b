@@ -1,0 +1,30 @@
+[
+  {
+    "title_": "Truncated Root",
+    "reference": "document:xwiki:Main.Truncated",
+    "links": [
+      "entity:document:xwiki:Main.X1",
+      "entity:document:xwiki:Main.X2",
+      "entity:document:xwiki:Main.X3"
+    ],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "Truncated"
+  },
+  {
+    "title_": "Neighbor One",
+    "reference": "document:xwiki:Main.X1",
+    "links": [],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "X1"
+  },
+  {
+    "title_": "Neighbor Two",
+    "reference": "document:xwiki:Main.X2",
+    "links": [],
+    "wiki": "xwiki",
+    "spaces": ["Main"],
+    "name": "X2"
+  }
+]

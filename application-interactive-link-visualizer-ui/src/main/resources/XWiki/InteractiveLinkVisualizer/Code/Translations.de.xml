@@ -55,5 +55,12 @@ intlv.sigmacontainer.form.label.documentfilter=Anzahl der darzustellenden Seiten
 
 ## Local graph panel
 intlv.panel.header=Verknüpfte Seiten Diagramm
+intlv.panel.depth.label=Erweiterungstiefe:
+intlv.panel.depth.title=Anzahl der Link-Ebenen, die um das aktuelle Dokument erfasst werden (1 bis 3)
+intlv.panel.status.loading=Verknüpfte Seiten werden geladen…
+intlv.panel.status.empty=Keine verknüpften Seiten gefunden.
+intlv.panel.status.error=Verknüpfte Seiten konnten nicht geladen werden.
+intlv.panel.status.summary={0} Dokument(e), {1} Link(s) — {2}
+intlv.panel.warning.truncated=Das Ergebnis wurde durch das Limit von {0} Dokumenten pro Abfrage in Ebene {1} abgeschnitten. Die Erweiterung wurde dort gestoppt: Erhöhen Sie die Tiefe oder das Limit, um weitere Seiten zu erfassen.
 </content>
 </xwikidoc>

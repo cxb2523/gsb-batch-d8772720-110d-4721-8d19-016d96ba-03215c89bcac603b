@@ -179,7 +179,17 @@
       <content>{{velocity}}
 #panelheader("$services.localization.render('intlv.panel.header')")
 #set ($discard = $xwiki.jsx.use('XWiki.InteractiveLinkVisualizer.Code.LinkVisualizerPanel'))
+#set ($discard = $xwiki.ssx.use('XWiki.InteractiveLinkVisualizer.Code.LinkVisualizerPanel'))
 {{html wiki="false"}}
+&lt;div id="ilv-panel-controls" class="ilv-panel-controls"&gt;
+  &lt;label for="ilv-depth-select"&gt;$services.localization.render('intlv.panel.depth.label')&lt;/label&gt;
+  &lt;select id="ilv-depth-select"
+    title="$services.localization.render('intlv.panel.depth.title')"
+    aria-label="$services.localization.render('intlv.panel.depth.label')"&gt;
+  &lt;/select&gt;
+&lt;/div&gt;
+&lt;div id="ilv-panel-status" class="ilv-panel-status" role="status"&gt;&lt;/div&gt;
+&lt;div id="ilv-panel-warning" class="box warningmessage ilv-panel-warning" role="alert" hidden&gt;&lt;/div&gt;
 &lt;div id="sigma-container-panel"
 style=
 "width: 100%;
@@ -198,6 +208,150 @@ height: 350px;
     </property>
     <property>
       <type>view</type>
+    </property>
+  </object>
+  <object>
+    <name>XWiki.InteractiveLinkVisualizer.Code.LinkVisualizerPanel</name>
+    <number>3</number>
+    <className>XWiki.UIExtensionClass</className>
+    <guid>b1d8e6f2-9a47-4c3e-8f5a-2d7b9c61e4f8</guid>
+    <class>
+      <name>XWiki.UIExtensionClass</name>
+      <customClass/>
+      <customMapping/>
+      <defaultViewSheet/>
+      <defaultEditSheet/>
+      <nameField/>
+      <validationScript/>
+      <async_cached>
+        <defaultValue>0</defaultValue>
+        <disabled>0</disabled>
+        <displayFormType>select</displayFormType>
+        <displayType/>
+        <name>async_cached</name>
+        <number>3</number>
+        <prettyName>Cached</prettyName>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.BooleanClass</classType>
+      </async_cached>
+      <async_context>
+        <cache>0</cache>
+        <disabled>0</disabled>
+        <displayType>select</displayType>
+        <freeText>forbidden</freeText>
+        <largeStorage>0</largeStorage>
+        <multiSelect>1</multiSelect>
+        <name>async_context</name>
+        <number>4</number>
+        <prettyName>Context elements</prettyName>
+        <relationalStorage>0</relationalStorage>
+        <separator>, </separator>
+        <separators>|, </separators>
+        <size>5</size>
+        <unmodifiable>0</unmodifiable>
+        <values>action=Action|doc.reference=Document|icon.theme=Icon theme|locale=Language|rendering.defaultsyntax=Default syntax|rendering.restricted=Restricted|rendering.targetsyntax=Target syntax|request.base=Request base URL|request.cookies|request.headers|request.parameters=Request parameters|request.remoteAddr|request.url=Request URL|request.wiki=Request wiki|user=User|wiki=Wiki</values>
+        <classType>com.xpn.xwiki.objects.classes.StaticListClass</classType>
+      </async_context>
+      <async_enabled>
+        <defaultValue>0</defaultValue>
+        <disabled>0</disabled>
+        <displayFormType>select</displayFormType>
+        <displayType/>
+        <name>async_enabled</name>
+        <number>2</number>
+        <prettyName>Asynchronous rendering</prettyName>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.BooleanClass</classType>
+      </async_enabled>
+      <content>
+        <disabled>0</disabled>
+        <editor>Text</editor>
+        <name>content</name>
+        <number>1</number>
+        <prettyName>Executed Content</prettyName>
+        <restricted>0</restricted>
+        <rows>25</rows>
+        <size>120</size>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.TextAreaClass</classType>
+      </content>
+      <extensionPointId>
+        <disabled>0</disabled>
+        <name>extensionPointId</name>
+        <number>5</number>
+        <prettyName>Extension Point ID</prettyName>
+        <size>30</size>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.StringClass</classType>
+      </extensionPointId>
+      <name>
+        <disabled>0</disabled>
+        <name>name</name>
+        <number>6</number>
+        <prettyName>Extension ID</prettyName>
+        <size>30</size>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.StringClass</classType>
+      </name>
+      <parameters>
+        <contenttype>PureText</contenttype>
+        <disabled>0</disabled>
+        <editor>PureText</editor>
+        <name>parameters</name>
+        <number>7</number>
+        <prettyName>Extension Parameters</prettyName>
+        <restricted>0</restricted>
+        <rows>10</rows>
+        <size>40</size>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.TextAreaClass</classType>
+      </parameters>
+      <scope>
+        <cache>0</cache>
+        <disabled>0</disabled>
+        <displayType>select</displayType>
+        <freeText>forbidden</freeText>
+        <largeStorage>0</largeStorage>
+        <multiSelect>0</multiSelect>
+        <name>scope</name>
+        <number>8</number>
+        <prettyName>Extension Scope</prettyName>
+        <relationalStorage>0</relationalStorage>
+        <separator> </separator>
+        <separators>|, </separators>
+        <size>1</size>
+        <unmodifiable>0</unmodifiable>
+        <values>wiki=Current Wiki|user=Current User|global=Global</values>
+        <classType>com.xpn.xwiki.objects.classes.StaticListClass</classType>
+      </scope>
+    </class>
+    <property>
+      <async_cached>0</async_cached>
+    </property>
+    <property>
+      <async_context>
+        <value>request.url</value>
+      </async_context>
+    </property>
+    <property>
+      <async_enabled>0</async_enabled>
+    </property>
+    <property>
+      <content/>
+    </property>
+    <property>
+      <extensionPointId>org.xwiki.platform.requirejs.module</extensionPointId>
+    </property>
+    <property>
+      <name>Link Graph Collector RequireJS Module</name>
+    </property>
+    <property>
+      <parameters>id=linkGraphCollector
+path=$services.webjars.url('org.xwiki.contrib:application-interactive-link-visualizer-webjar', 'linkGraphCollector.js')
+    </parameters>
+    </property>
+    <property>
+      <scope>wiki</scope>
     </property>
   </object>
   <object>
@@ -288,10 +442,18 @@ height: 350px;
       <cache>default</cache>
     </property>
     <property>
-      <code>require(['jquery', 'visualisationAPI', 'xwiki-meta'], function($, visualisationAPI, xm) {
+      <code>require(['jquery', 'visualisationAPI', 'linkGraphCollector', 'xwiki-meta'], function($, visualisationAPI, collector, xm) {
+    const panelContainer = document.getElementById('sigma-container-panel');
+    // Skip when the panel DOM is absent, and run only once even if the
+    // JavaScriptExtension is evaluated more than once (DOM updated events).
+    if (!panelContainer || panelContainer.getAttribute('data-init-done') === 'true') {
+        return;
+    }
+    if (panelContainer) {
+        panelContainer.setAttribute('data-init-done', 'true');
+    }
+
     const solrServiceURL = new XWiki.Document('SuggestSolrService', 'XWiki').getURL('get');
-    var tempData = null;
-    var edgeKeyCounter = 1;
     #template('colorThemeInit.vm') // For XWiki color theme variables
     var themeColors = $jsontool.serialize({
         'nodeColor': $theme.linkColor,
@@ -300,93 +462,293 @@ height: 350px;
         'labelContainerColor': $theme.pageContentBackgroundColor
     });
 
-    function escapeQueryChars(s) {
-        const specialCharacters = "\\+-!()^[]\"{}~*?|&amp;;:/";
-        let escapedString = "";
-        for (let i = 0; i &lt; s.length; i++) {
-            const c = s.charAt(i);
-            if (specialCharacters.includes(c) || /\s/.test(c)) {
-                escapedString += '\\';
-            }
-            escapedString += c;
-        }
-        return escapedString;
+    // Row limit applied to every Solr query of a collection, kept identical
+    // to the previous single-search implementation.
+    const NB = 1000;
+    // Reference of the currently opened document, in the Solr reference format.
+    const rootReference = 'document:' + xm.wiki + ':' + xm.document;
+
+    // Localized user-facing strings, rendered by Velocity and JSON-escaped so
+    // quotes or special characters in translations cannot break the JS.
+    const messages = $jsontool.serialize({
+        'loading': "$services.localization.render('intlv.panel.status.loading')",
+        'empty': "$services.localization.render('intlv.panel.status.empty')",
+        'error': "$services.localization.render('intlv.panel.status.error')",
+        'summary': "$services.localization.render('intlv.panel.status.summary')",
+        'truncated': "$services.localization.render('intlv.panel.warning.truncated')"
+    });
+
+    function formatMessage(template, args) {
+        return template.replace(/\{(\d+)\}/g, function(match, index) {
+            const position = Number(index);
+            return args[position] !== undefined &amp;&amp; args[position] !== null
+                ? String(args[position]) : match;
+        });
     }
 
-    const documentQuery = 'document\\:' + escapeQueryChars(xm.wiki) + '\\:' + escapeQueryChars(xm.document);
-    const linkQuery = 'entity\\:' + documentQuery;
+    const depthSelect = document.getElementById('ilv-depth-select');
+    const statusElement = document.getElementById('ilv-panel-status');
+    const warningElement = document.getElementById('ilv-panel-warning');
 
-    $.post(solrServiceURL, {
-        outputSyntax: 'plain',
-        nb: 1000,
-        media: 'json',
-        query: [
-            'q=reference:' + documentQuery,
-            'fq=type:DOCUMENT',
-            'fl=title_, reference, links, wiki, spaces, name'
-        ].join('\n'),
-        input: " "
-    }, function(firstResult) {
-        if (firstResult.length == 1) {
-            let extraDocuments = "";
-            if (firstResult[0].links) {
-                extraDocuments = ' OR ' + firstResult[0].links.map(link =&gt; 'reference:' + escapeQueryChars(link.replace(/^entity:/, ''))).join(' OR ');
-            }
-            $.post(solrServiceURL, {
-                outputSyntax: 'plain',
-                nb: 1000,
-                media: 'json',
-                query: [
-                    'q=reference:' + documentQuery + ' OR links:' + linkQuery + extraDocuments,
-                    'fq=type:DOCUMENT',
-                    'fl=title_, reference, links, wiki, spaces, name'
-                ].join('\n'),
-                input: " "
-            }, function(response) {
-                tempData = response;
-                const nodes = tempData.map(function(obj) {
-                    return {
-                        key: obj.reference,
-                        attributes: {
-                            label: obj.title_,
-                            color: (("document:xwiki:"+xm.document) == obj.reference) ? "orange" : themeColors.nodeColor,
-                            size: (("document:xwiki:"+xm.document) == obj.reference) ? 12: 8,
-                            pageURL: new XWiki.Document(XWiki.Model.resolve(obj.reference)).getURL()
-                        }
-                    };
-                });
+    // Only the latest collection may update the graph: a response coming back
+    // after the user changed the depth (or re-triggered a search) is rejected
+    // by the runner and ignored.
+    const requestRunner = new collector.LatestRequestRunner();
 
-                const edges = [];
-                tempData.forEach(function(obj) {
-                    if (obj.links &amp;&amp; obj.links.length &gt; 0) {
-                        obj.links.forEach(function(link) {
-                            var target = link.replace(/^entity:/, '');
-                            var isValid = tempData.some(function(item) {
-                                return item.reference === target;
-                            });
-                            if (isValid) {
-                                edges.push({
-                                    key: edgeKeyCounter.toString(),
-                                    target: target,
-                                    source: obj.reference
-                                });
-                                edgeKeyCounter++;
-                            }
-                        });
-                    }
-                });
-                const graphData = {
-                    nodes: nodes,
-                    edges: edges
-                };
-                visualisationAPI.visualize(graphData, "sigma-container-panel", themeColors, isPanel = true, nb = 1000);
-            });
+    function setStatus(message) {
+        statusElement.textContent = message;
+    }
+
+    function setWarning(message) {
+        if (message) {
+            warningElement.textContent = message;
+            warningElement.hidden = false;
+        } else {
+            warningElement.textContent = '';
+            warningElement.hidden = true;
         }
-    });
+    }
+
+    function describeLayers(layerStats) {
+        // Skip the synthetic seed layer (layer 0) in the user-facing summary.
+        return layerStats.filter(function(stat) {
+            return stat.layer &gt; 0;
+        }).map(function(stat) {
+            return 'L' + stat.layer + ': +' + stat.newDocuments
+                + ' (' + stat.totalDocuments + ')';
+        }).join(', ');
+    }
+
+    function resolvePageURL(reference) {
+        return new XWiki.Document(XWiki.Model.resolve(reference)).getURL();
+    }
+
+    // Bridges jQuery $.post to the postSolrQuery signature expected by the
+    // collector. The Solr entry point and parameters (outputSyntax, nb,
+    // media, query, input) are unchanged from the previous implementation.
+    function postSolrQuery(url, params) {
+        return Promise.resolve($.post(url, params));
+    }
+
+    function disposePreviousGraph() {
+        // visualize() already disposes a previous renderer on the same
+        // container; this also covers the "no result" redraw.
+        visualisationAPI.disposeVisualization('sigma-container-panel');
+    }
+
+    function collectAndDraw() {
+        const maxDepth = parseInt(depthSelect.value, 10) || collector.MIN_DEPTH;
+        setStatus(messages.loading);
+        setWarning('');
+        requestRunner.run(function() {
+            return collector.collectLinkGraph({
+                rootReference: rootReference,
+                maxDepth: maxDepth,
+                nb: NB,
+                solrServiceURL: solrServiceURL,
+                postSolrQuery: postSolrQuery
+            });
+        }).then(function(result) {
+            if (result.documents.size === 0) {
+                disposePreviousGraph();
+                setStatus(messages.empty);
+                setWarning('');
+                return;
+            }
+
+            const graphData = collector.buildGraph(result, themeColors, resolvePageURL);
+            disposePreviousGraph();
+            visualisationAPI.visualize(graphData, 'sigma-container-panel', themeColors, true, NB);
+
+            setStatus(formatMessage(messages.summary, [
+                result.documents.size,
+                graphData.edges.length,
+                describeLayers(result.layerStats)
+            ]));
+
+            if (result.truncated) {
+                setWarning(formatMessage(messages.truncated, [
+                    result.nb,
+                    result.truncatedAtLayer
+                ]));
+            } else {
+                setWarning('');
+            }
+        }).catch(function(error) {
+            if (error instanceof collector.StaleRequestError) {
+                // A newer request is running, this response must not touch
+                // the graph nor the status line.
+                return;
+            }
+            setStatus(messages.error);
+            setWarning('');
+        });
+    }
+
+    // Populate the depth choices from the supported range (1..3).
+    for (let depth = collector.MIN_DEPTH; depth &lt;= collector.MAX_DEPTH; depth++) {
+        const option = document.createElement('option');
+        option.value = depth.toString();
+        option.textContent = depth.toString();
+        if (depth === collector.MIN_DEPTH) {
+            option.selected = true;
+        }
+        depthSelect.appendChild(option);
+    }
+
+    // Re-collect and redraw whenever the depth changes.
+    depthSelect.addEventListener('change', collectAndDraw);
+
+    collectAndDraw();
 });</code>
     </property>
     <property>
       <name>API</name>
+    </property>
+    <property>
+      <parse>1</parse>
+    </property>
+    <property>
+      <use>currentPage</use>
+    </property>
+  </object>
+  <object>
+    <name>XWiki.InteractiveLinkVisualizer.Code.LinkVisualizerPanel</name>
+    <number>2</number>
+    <className>XWiki.StyleSheetExtension</className>
+    <guid>7a2f9d41-3c6e-4b85-9d1f-6c2e7a9b4d10</guid>
+    <class>
+      <name>XWiki.StyleSheetExtension</name>
+      <customClass/>
+      <customMapping/>
+      <defaultViewSheet/>
+      <defaultEditSheet/>
+      <nameField/>
+      <validationScript/>
+      <cache>
+        <cache>0</cache>
+        <defaultValue>long</defaultValue>
+        <disabled>0</disabled>
+        <displayType>select</displayType>
+        <freeText>forbidden</freeText>
+        <largeStorage>0</largeStorage>
+        <multiSelect>0</multiSelect>
+        <name>cache</name>
+        <number>5</number>
+        <prettyName>Caching policy</prettyName>
+        <relationalStorage>0</relationalStorage>
+        <separator> </separator>
+        <separators>|, </separators>
+        <size>1</size>
+        <unmodifiable>0</unmodifiable>
+        <values>long|short|default|forbid</values>
+        <classType>com.xpn.xwiki.objects.classes.StaticListClass</classType>
+      </cache>
+      <code>
+        <contenttype>PureText</contenttype>
+        <disabled>0</disabled>
+        <editor>PureText</editor>
+        <name>code</name>
+        <number>2</number>
+        <prettyName>Code</prettyName>
+        <restricted>0</restricted>
+        <rows>20</rows>
+        <size>50</size>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.TextAreaClass</classType>
+      </code>
+      <contentType>
+        <cache>0</cache>
+        <disabled>0</disabled>
+        <displayType>select</displayType>
+        <freeText>forbidden</freeText>
+        <largeStorage>0</largeStorage>
+        <multiSelect>0</multiSelect>
+        <name>contentType</name>
+        <number>6</number>
+        <prettyName>Content Type</prettyName>
+        <relationalStorage>0</relationalStorage>
+        <separator> </separator>
+        <separators>|, </separators>
+        <size>1</size>
+        <unmodifiable>0</unmodifiable>
+        <values>CSS|LESS</values>
+        <classType>com.xpn.xwiki.objects.classes.StaticListClass</classType>
+      </contentType>
+      <name>
+        <disabled>0</disabled>
+        <name>name</name>
+        <number>1</number>
+        <prettyName>Name</prettyName>
+        <size>30</size>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.StringClass</classType>
+      </name>
+      <parse>
+        <disabled>0</disabled>
+        <displayType>select</displayType>
+        <name>parse</name>
+        <number>4</number>
+        <prettyName>Parse content</prettyName>
+        <unmodifiable>0</unmodifiable>
+        <classType>com.xpn.xwiki.objects.classes.BooleanClass</classType>
+      </parse>
+      <use>
+        <cache>0</cache>
+        <disabled>0</disabled>
+        <displayType>select</displayType>
+        <freeText>forbidden</freeText>
+        <largeStorage>0</largeStorage>
+        <multiSelect>0</multiSelect>
+        <name>use</name>
+        <number>3</number>
+        <prettyName>Use this extension</prettyName>
+        <relationalStorage>0</relationalStorage>
+        <separator> </separator>
+        <separators>|, </separators>
+        <size>1</size>
+        <unmodifiable>0</unmodifiable>
+        <values>currentPage|onDemand|always</values>
+        <classType>com.xpn.xwiki.objects.classes.StaticListClass</classType>
+      </use>
+    </class>
+    <property>
+      <cache>default</cache>
+    </property>
+    <property>
+      <code>.ilv-panel-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 0.95em;
+}
+.ilv-panel-controls label {
+    margin-bottom: 0;
+}
+#ilv-depth-select {
+    width: auto;
+    min-width: 3.2em;
+}
+.ilv-panel-status {
+    font-size: 0.85em;
+    margin-bottom: 6px;
+    color: @text-color;
+}
+.ilv-panel-warning {
+    font-size: 0.85em;
+    margin-bottom: 6px;
+}
+#sigma-container-panel {
+    border: 1px solid @breadcrumb-bg;
+    border-radius: 5px;
+}</code>
+    </property>
+    <property>
+      <contentType>LESS</contentType>
+    </property>
+    <property>
+      <name>Panel Styles</name>
     </property>
     <property>
       <parse>1</parse>

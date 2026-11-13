@@ -55,5 +55,12 @@ intlv.sigmacontainer.form.label.documentfilter=Antal sider, der skal vises:
 
 ## Local graph panel
 intlv.panel.header=Graf over linkede sider
+intlv.panel.depth.label=Udvidelsesdybde:
+intlv.panel.depth.title=Antal linklag, der indsamles omkring det aktuelle dokument (1 til 3)
+intlv.panel.status.loading=Indlæser linkede sider…
+intlv.panel.status.empty=Ingen linkede sider fundet.
+intlv.panel.status.error=Kunne ikke indlæse linkede sider.
+intlv.panel.status.summary={0} dokument(er), {1} link — {2}
+intlv.panel.warning.truncated=Resultatet blev afskåret af grænsen på {0} dokumenter pr. forespørgsel i lag {1}. Udvidelsen blev stoppet der: øg dybden eller grænsen for at indsamle flere sider.
 </content>
 </xwikidoc>

@@ -53,5 +53,12 @@ intlv.sigmacontainer.form.label.documentfilter=Nº de páginas a visualizar:
 
 ## Local graph panel
 intlv.panel.header=Gráfico de páginas vinculadas
+intlv.panel.depth.label=Profundidade de expansão:
+intlv.panel.depth.title=Número de camadas de links a coletar em torno do documento atual (1 a 3)
+intlv.panel.status.loading=Carregando páginas vinculadas…
+intlv.panel.status.empty=Nenhuma página vinculada encontrada.
+intlv.panel.status.error=Falha ao carregar as páginas vinculadas.
+intlv.panel.status.summary={0} documento(s), {1} link(s) — {2}
+intlv.panel.warning.truncated=O resultado foi cortado pelo limite de {0} documentos por consulta na camada {1}. A expansão foi interrompida nesse ponto: aumente a profundidade ou o limite para coletar mais páginas.
 </content>
   </xwikidoc>

@@ -53,5 +53,12 @@ intlv.sigmacontainer.form.label.documentfilter=시각화할 페이지 수:
 
 ## Local graph panel
 intlv.panel.header=연결된 페이지 그래프
+intlv.panel.depth.label=확장 깊이:
+intlv.panel.depth.title=현재 문서 주변에서 수집할 링크 계층 수 (1~3)
+intlv.panel.status.loading=연결된 페이지를 불러오는 중…
+intlv.panel.status.empty=연결된 페이지가 없습니다.
+intlv.panel.status.error=연결된 페이지를 불러오지 못했습니다.
+intlv.panel.status.summary=문서 {0}개, 링크 {1}개 — {2}
+intlv.panel.warning.truncated={1}계층에서 쿼리당 문서 수 제한({0})에 의해 결과가 잘렸습니다. 확장이 중단되었습니다. 더 많은 페이지를 수집하려면 깊이 또는 제한을 늘리세요.
 </content>
 </xwikidoc>
