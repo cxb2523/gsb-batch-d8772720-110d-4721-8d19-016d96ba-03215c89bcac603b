@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -43,9 +44,33 @@ BROWSER_DISCONNECTED_MARKERS = (
 MAX_CLOSE_RETRIES = 3
 CLOSE_RETRY_MAX_BACKOFF_SECONDS = 60.0
 
+# Keep only the most recent lease outcomes; older answers are evicted so the
+# diagnostic trail stays bounded regardless of request volume.
+DEFAULT_LEASE_OUTCOME_HISTORY = 64
+# Failure reasons are short free-text fragments; cap their length so a verbose
+# driver error cannot inflate the bounded history on its own.
+MAX_LEASE_OUTCOME_REASON_LENGTH = 200
+# The outer maxTimeout deadline and the pool's internal wait are driven by the
+# same clock, but request processing (ASGI framing, validation, proxy setup)
+# happens before the pool is ever entered, so an outer cancellation can land
+# noticeably after the request deadline the pool was handed. A cancellation
+# within this grace window of that deadline is the request budget expiring,
+# not an unrelated caller abort (which arrives well before the deadline).
+REQUEST_DEADLINE_GRACE_SECONDS = 1.0
+
 
 class PoolAcquireTimeout(TimeoutError):
     """Raised when no browser context capacity becomes available in time."""
+
+
+class RequestDeadlineExceeded(TimeoutError):
+    """Raised when the caller's own request deadline expires while waiting.
+
+    Distinct from :class:`PoolAcquireTimeout`: the pool still had capacity
+    headroom, but the request's ``maxTimeout`` budget elapsed first, so the
+    caller should answer ``REQUEST_TIMEOUT`` rather than retry as a pool
+    failure.
+    """
 
 
 class PersistentCapacityError(RuntimeError):
@@ -61,6 +86,7 @@ class PersistentCapacityError(RuntimeError):
 @dataclass(eq=False)
 class BrowserSlot:
     browser: BrowserLike
+    browser_id: int
     created_at: float = field(default_factory=time.monotonic)
     active_contexts: int = 0
     uses: int = 0
@@ -75,6 +101,24 @@ class BrowserSlot:
         """Backward-compatible view used by older pool integrations."""
 
         return self.state == "closing"
+
+
+@dataclass(frozen=True)
+class LeaseOutcome:
+    """Immutable record of how a single browser-lease attempt ended.
+
+    Every call into the pool's acquire path produces exactly one record, so a
+    request that never got a browser still has a queryable answer instead of a
+    silent hang.
+    """
+
+    lease_id: int
+    outcome: Literal["acquired", "pool_unavailable", "request_timeout", "cancelled"]
+    wait_ms: int
+    from_session: bool
+    failure_reason: str | None = None
+    browser_id: int | None = None
+    lease_started_at: float | None = None
 
 
 @dataclass
@@ -149,6 +193,7 @@ class BrowserPool:
         reserved_transient_contexts: int = 0,
         cleanup_timeout_seconds: float = 10,
         cleanup_supervisor: CleanupSupervisor | None = None,
+        lease_outcome_history: int = DEFAULT_LEASE_OUTCOME_HISTORY,
     ) -> None:
         self._browser_factory = browser_factory
         self._min_browsers = min_browsers
@@ -194,6 +239,16 @@ class BrowserPool:
         self._started = False
         self._starting = False
         self._closed = False
+        # Monotonic, process-local counters. Lease ids never restart within a
+        # process so snapshot ordering stays unambiguous even after eviction.
+        self._next_lease_id = 1
+        self._next_browser_id = 1
+        # Bounded ring buffer of recent lease endings. Writes happen under the
+        # pool condition lock; the snapshot copies it without touching browsers.
+        self._lease_outcome_limit = max(1, lease_outcome_history)
+        self._lease_outcomes: deque[LeaseOutcome] = deque(
+            maxlen=self._lease_outcome_limit
+        )
 
     @property
     def max_persistent_contexts(self) -> int:
@@ -205,6 +260,40 @@ class BrowserPool:
         snapshot = self._snapshot_unlocked()
         self._publish_snapshot_metrics(snapshot)
         return snapshot
+
+    async def lease_outcomes(self) -> tuple[LeaseOutcome, ...]:
+        """Return recent lease outcomes ordered oldest-to-newest by lease id.
+
+        Purely observational: it neither touches a browser nor changes any pool
+        accounting. Only the configured most-recent records are retained.
+        """
+
+        async with self._condition:
+            return tuple(self._lease_outcomes)
+
+    def _record_lease_outcome_unlocked(
+        self,
+        *,
+        lease_id: int,
+        outcome: Literal["acquired", "pool_unavailable", "request_timeout", "cancelled"],
+        started: float,
+        from_session: bool,
+        failure_reason: str | None = None,
+        slot: BrowserSlot | None = None,
+    ) -> None:
+        reason = failure_reason
+        if reason is not None:
+            reason = str(reason)[:MAX_LEASE_OUTCOME_REASON_LENGTH]
+        record = LeaseOutcome(
+            lease_id=lease_id,
+            outcome=outcome,
+            wait_ms=max(0, int((time.monotonic() - started) * 1000)),
+            from_session=from_session,
+            failure_reason=reason,
+            browser_id=slot.browser_id if slot is not None else None,
+            lease_started_at=time.time() if slot is not None else None,
+        )
+        self._lease_outcomes.append(record)
 
     async def start(self) -> None:
         async with self._condition:
@@ -510,8 +599,17 @@ class BrowserPool:
                 await asyncio.sleep(0)
 
     @asynccontextmanager
-    async def lease_context(self, **context_options: Any) -> AsyncIterator[ContextLease]:
-        reservation = await self._observed_acquire_slot("transient")
+    async def lease_context(
+        self,
+        *,
+        request_deadline: float | None = None,
+        **context_options: Any,
+    ) -> AsyncIterator[ContextLease]:
+        reservation = await self._observed_acquire_slot(
+            "transient",
+            request_deadline=request_deadline,
+            from_session=False,
+        )
         slot = reservation.slot
         context = None
         body_failed = False
@@ -572,13 +670,40 @@ class BrowserPool:
             if release_error is not None and not body_failed:
                 raise release_error
 
-    async def create_persistent_context(self, **context_options: Any) -> PersistentContextLease:
+    async def create_persistent_context(
+        self,
+        *,
+        request_deadline: float | None = None,
+        **context_options: Any,
+    ) -> PersistentContextLease:
+        started = time.monotonic()
         async with self._condition:
             if self._closed:
                 observe_pool_acquire(kind="persistent", result="rejected", duration_seconds=0)
+                lease_id = self._next_lease_id
+                self._next_lease_id += 1
+                self._record_lease_outcome_unlocked(
+                    lease_id=lease_id,
+                    outcome="pool_unavailable",
+                    started=started,
+                    from_session=True,
+                    failure_reason="pool closed",
+                )
                 raise RuntimeError("Browser pool is closed")
             if self._persistent_contexts >= self._max_persistent_contexts:
                 observe_pool_acquire(kind="persistent", result="rejected", duration_seconds=0)
+                lease_id = self._next_lease_id
+                self._next_lease_id += 1
+                self._record_lease_outcome_unlocked(
+                    lease_id=lease_id,
+                    outcome="pool_unavailable",
+                    started=started,
+                    from_session=True,
+                    failure_reason=(
+                        "persistent-context capacity exhausted "
+                        f"(limit {self._max_persistent_contexts})"
+                    ),
+                )
                 raise PersistentCapacityError(
                     "No persistent-context capacity is available for a new session "
                     f"(limit {self._max_persistent_contexts})."
@@ -588,7 +713,11 @@ class BrowserPool:
             self._publish_metrics_unlocked()
         slot_reservation: _SlotReservation | None = None
         try:
-            slot_reservation = await self._observed_acquire_slot("persistent")
+            slot_reservation = await self._observed_acquire_slot(
+                "persistent",
+                request_deadline=request_deadline,
+                from_session=True,
+            )
             slot = slot_reservation.slot
             context = await slot.browser.new_context(**context_options)
         except BaseException as exc:
@@ -797,20 +926,94 @@ class BrowserPool:
     async def _observed_acquire_slot(
         self,
         kind: Literal["transient", "persistent"],
+        *,
+        request_deadline: float | None = None,
+        from_session: bool,
     ) -> _SlotReservation:
         started = time.monotonic()
+        async with self._condition:
+            lease_id = self._next_lease_id
+            self._next_lease_id += 1
         result = "error"
         try:
-            slot = await self._acquire_slot(kind)
+            slot = await self._acquire_slot(
+                kind,
+                request_deadline=request_deadline,
+            )
         except PoolAcquireTimeout:
             result = "timeout"
             record_timeout("pool_acquire")
+            await self._finish_lease_outcome(
+                lease_id,
+                outcome="pool_unavailable",
+                started=started,
+                from_session=from_session,
+                failure_reason="timed out waiting for browser context capacity",
+            )
+            raise
+        except RequestDeadlineExceeded:
+            result = "timeout"
+            record_timeout("pool_acquire")
+            await self._finish_lease_outcome(
+                lease_id,
+                outcome="request_timeout",
+                started=started,
+                from_session=from_session,
+                failure_reason="request maxTimeout elapsed before capacity became available",
+            )
             raise
         except asyncio.CancelledError:
+            if self._cancellation_matches_request_deadline(request_deadline):
+                # The outer request budget cancels the whole dispatch task; a
+                # cancellation landing around the maxTimeout instant (allowing
+                # for pre-acquire processing and event-loop scheduling jitter)
+                # is a request timeout, not a caller abort. Translate it so the
+                # record and the HTTP answer agree.
+                result = "timeout"
+                record_timeout("pool_acquire")
+                await self._finish_lease_outcome(
+                    lease_id,
+                    outcome="request_timeout",
+                    started=started,
+                    from_session=from_session,
+                    failure_reason=(
+                        "request maxTimeout elapsed before capacity became available"
+                    ),
+                )
+                raise RequestDeadlineExceeded(
+                    "Request maxTimeout elapsed while waiting for browser context capacity."
+                ) from None
             result = "cancelled"
+            await self._finish_lease_outcome(
+                lease_id,
+                outcome="cancelled",
+                started=started,
+                from_session=from_session,
+                failure_reason="acquire wait was cancelled by the caller",
+            )
+            raise
+        except BaseException as exc:
+            # Browser launch/registration failures surface here via the pooled
+            # create-failure handoff. Classify them with the pool's answer code
+            # but never swallow the original exception.
+            result = "error"
+            await self._finish_lease_outcome(
+                lease_id,
+                outcome="pool_unavailable",
+                started=started,
+                from_session=from_session,
+                failure_reason=_failure_reason(exc),
+            )
             raise
         else:
             result = "success"
+            await self._finish_lease_outcome(
+                lease_id,
+                outcome="acquired",
+                started=started,
+                from_session=from_session,
+                slot=slot.slot,
+            )
             return slot
         finally:
             observe_pool_acquire(
@@ -819,9 +1022,31 @@ class BrowserPool:
                 duration_seconds=time.monotonic() - started,
             )
 
+    async def _finish_lease_outcome(
+        self,
+        lease_id: int,
+        *,
+        outcome: Literal["acquired", "pool_unavailable", "request_timeout", "cancelled"],
+        started: float,
+        from_session: bool,
+        failure_reason: str | None = None,
+        slot: BrowserSlot | None = None,
+    ) -> None:
+        async with self._condition:
+            self._record_lease_outcome_unlocked(
+                lease_id=lease_id,
+                outcome=outcome,
+                started=started,
+                from_session=from_session,
+                failure_reason=failure_reason,
+                slot=slot,
+            )
+
     async def _acquire_slot(
         self,
         kind: Literal["transient", "persistent"],
+        *,
+        request_deadline: float | None = None,
     ) -> _SlotReservation:
         deadline = time.monotonic() + self._acquire_timeout_seconds
         observed_failure_generation = self._create_failure_generation
@@ -830,6 +1055,10 @@ class BrowserPool:
             async with self._condition:
                 if self._closed:
                     raise RuntimeError("Browser pool is closed")
+                if self._request_deadline_expired(request_deadline):
+                    raise RequestDeadlineExceeded(
+                        "Request maxTimeout elapsed while waiting for browser context capacity."
+                    )
                 if time.monotonic() >= deadline:
                     self._log_acquire_timeout_unlocked("deadline")
                     raise PoolAcquireTimeout("Timed out waiting for browser context capacity.")
@@ -871,7 +1100,14 @@ class BrowserPool:
                     launched = True
                     self._publish_metrics_unlocked()
                 remaining = deadline - time.monotonic()
+                if request_deadline is not None:
+                    remaining = min(remaining, request_deadline - time.monotonic())
                 if remaining <= 0:
+                    if self._at_or_past_request_deadline(request_deadline):
+                        raise RequestDeadlineExceeded(
+                            "Request maxTimeout elapsed while waiting for browser "
+                            "context capacity."
+                        )
                     self._log_acquire_timeout_unlocked("capacity")
                     raise PoolAcquireTimeout("Timed out waiting for browser context capacity.")
                 self._waiting_requests += 1
@@ -879,15 +1115,75 @@ class BrowserPool:
                 try:
                     await asyncio.wait_for(self._condition.wait(), timeout=remaining)
                 except TimeoutError as exc:
+                    # The bounded wait uses the smaller of the two budgets.
+                    # Coarse platform timers can fire it just before the exact
+                    # request instant, so a timeout landing within the grace
+                    # window of that instant is the request budget expiring; a
+                    # timeout still well before it is genuine pool unavailability.
+                    if self._at_or_past_request_deadline(request_deadline):
+                        raise RequestDeadlineExceeded(
+                            "Request maxTimeout elapsed while waiting for browser "
+                            "context capacity."
+                        ) from exc
                     self._log_acquire_timeout_unlocked("capacity")
                     raise PoolAcquireTimeout(
                         "Timed out waiting for browser context capacity."
                     ) from exc
+                except asyncio.CancelledError:
+                    # The caller's hard maxTimeout deadline cancels the whole
+                    # dispatch task even when this internal wait has not yet
+                    # observed its own timeout. Attribute a cancellation that
+                    # lands around the request deadline to the request budget;
+                    # an earlier cancellation is a genuine caller abort.
+                    if self._cancellation_matches_request_deadline(request_deadline):
+                        raise RequestDeadlineExceeded(
+                            "Request maxTimeout elapsed while waiting for browser "
+                            "context capacity."
+                        ) from None
+                    raise
                 finally:
                     if self._waiting_requests <= 0:
                         raise RuntimeError("Pool waiter accounting underflow")
                     self._waiting_requests -= 1
                     self._publish_metrics_unlocked()
+
+    @staticmethod
+    def _request_deadline_expired(request_deadline: float | None) -> bool:
+        return request_deadline is not None and time.monotonic() >= request_deadline
+
+    @classmethod
+    def _at_or_past_request_deadline(cls, request_deadline: float | None) -> bool:
+        """Whether a wait timeout should be charged to the request budget.
+
+        True once the request deadline is reached, and also within the grace
+        window immediately before it, because coarse platform timers (notably
+        the Windows default ~15.6 ms resolution) can fire a bounded wait a few
+        milliseconds ahead of the requested monotonic instant.
+        """
+
+        if request_deadline is None:
+            return False
+        return time.monotonic() >= request_deadline - REQUEST_DEADLINE_GRACE_SECONDS
+
+    @classmethod
+    def _cancellation_matches_request_deadline(
+        cls,
+        request_deadline: float | None,
+    ) -> bool:
+        """Whether a just-delivered cancellation is the request budget expiring.
+
+        Pre-acquire processing means the outer maxTimeout cancellation can land
+        after the deadline instant handed to the pool. Anything inside the grace
+        window around that instant is treated as a request timeout; a
+        cancellation well before the deadline is a genuine caller abort.
+        """
+
+        if request_deadline is None:
+            return False
+        now = time.monotonic()
+        return request_deadline - REQUEST_DEADLINE_GRACE_SECONDS <= now < (
+            request_deadline + REQUEST_DEADLINE_GRACE_SECONDS
+        )
 
     async def _release_slot(
         self,
@@ -1554,7 +1850,10 @@ class BrowserPool:
             )
             raise
         record_browser_event("created")
-        return BrowserSlot(browser=browser)
+        async with self._condition:
+            browser_id = self._next_browser_id
+            self._next_browser_id += 1
+        return BrowserSlot(browser=browser, browser_id=browser_id)
 
     async def _close_slot(
         self,
@@ -1708,3 +2007,12 @@ class BrowserPool:
 def _is_browser_disconnected_error(exc: BaseException) -> bool:
     message = str(exc).lower()
     return any(marker in message for marker in BROWSER_DISCONNECTED_MARKERS)
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Short, stable fragment describing why an acquire failed."""
+
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__

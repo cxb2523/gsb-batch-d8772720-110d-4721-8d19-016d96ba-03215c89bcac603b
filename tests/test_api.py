@@ -931,6 +931,84 @@ async def test_max_timeout_bounds_pool_wait() -> None:
 
 
 @pytest.mark.anyio
+async def test_max_timeout_pool_wait_leaves_request_timeout_lease_record() -> None:
+    factory = FakeBrowserFactory()
+    settings = Settings(
+        pool_max_browsers=1,
+        pool_max_contexts_per_browser=1,
+        pool_acquire_timeout_ms=5000,
+    )
+    app = create_app(settings=settings, browser_factory=factory, lifespan_enabled=False)
+    await app.state.pool.start()
+
+    held_context = app.state.pool.lease_context()
+    await held_context.__aenter__()
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://127.0.0.1",
+        ) as client:
+            response = await asyncio.wait_for(
+                client.post(
+                    "/v1",
+                    json={
+                        "cmd": "request.get",
+                        "url": "https://example.com",
+                        "maxTimeout": 20,
+                    },
+                ),
+                timeout=0.5,
+            )
+    finally:
+        await held_context.__aexit__(None, None, None)
+        await app.state.pool.close()
+
+    assert response.status_code == 500
+    outcomes = await app.state.pool.lease_outcomes()
+    assert [record.outcome for record in outcomes] == ["acquired", "request_timeout"]
+    timeout_record = outcomes[1]
+    assert timeout_record.from_session is False
+    assert timeout_record.browser_id is None
+    assert timeout_record.failure_reason is not None
+
+
+@pytest.mark.anyio
+async def test_pool_unavailable_response_leaves_pool_unavailable_lease_record() -> None:
+    factory = FakeBrowserFactory()
+    settings = Settings(
+        pool_max_browsers=1,
+        pool_max_contexts_per_browser=1,
+        pool_acquire_timeout_ms=10,
+    )
+    app = create_app(settings=settings, browser_factory=factory, lifespan_enabled=False)
+    await app.state.pool.start()
+
+    held_context = app.state.pool.lease_context()
+    await held_context.__aenter__()
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://127.0.0.1",
+        ) as client:
+            response = await client.post(
+                "/v1",
+                json={
+                    "cmd": "request.get",
+                    "url": "https://example.com",
+                    "maxTimeout": 60000,
+                },
+            )
+    finally:
+        await held_context.__aexit__(None, None, None)
+        await app.state.pool.close()
+
+    assert response.status_code == 503
+    outcomes = await app.state.pool.lease_outcomes()
+    assert [record.outcome for record in outcomes] == ["acquired", "pool_unavailable"]
+    assert outcomes[1].failure_reason is not None
+
+
+@pytest.mark.anyio
 async def test_max_timeout_cancels_dedicated_dispatch_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

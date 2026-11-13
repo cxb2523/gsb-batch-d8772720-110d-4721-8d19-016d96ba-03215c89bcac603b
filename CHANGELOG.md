@@ -5,6 +5,21 @@ All notable changes to Camouflare are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- A bounded, queryable lease-outcome record for the browser pool. Every attempt
+  to take a browser context now records a process-local monotonic lease id, the
+  outcome (`acquired`, `pool_unavailable`, `request_timeout`, or `cancelled`),
+  the wait in milliseconds, whether the request was for a persistent session,
+  and a short failure reason. `acquired` records additionally carry the browser
+  id and the wall-clock lease start time. Only the most recent records are kept
+  (`lease_outcome_history`, default 64, evicting the oldest), exposed read-only
+  via `BrowserPool.lease_outcomes()` ordered oldest-to-newest without touching a
+  browser or changing pool state. A request whose own `maxTimeout` expires while
+  waiting is now distinguished as `request_timeout` (HTTP 500
+  `REQUEST_TIMEOUT`) from pool capacity exhaustion `pool_unavailable` (HTTP
+  503); caller cancellation stays `cancelled` and never leaks a context slot.
+
 ## [2.2.0] - 2026-10-29
 
 ### Added

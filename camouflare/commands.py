@@ -258,7 +258,8 @@ async def _create_session(
     try:
         with building:
             persistent = await pool.create_persistent_context(
-                **context_options(proxy_lease.browser_proxy, request)
+                request_deadline=timer.deadline_monotonic,
+                **context_options(proxy_lease.browser_proxy, request),
             )
     except PersistentCapacityError:
         await _close_proxy_best_effort(proxy_lease, cleanup=cleanup, settings=settings)
@@ -421,7 +422,8 @@ async def execute_request(
         try:
             try:
                 async with pool.lease_context(
-                    **context_options(proxy_lease.browser_proxy, request)
+                    request_deadline=timer.deadline_monotonic,
+                    **context_options(proxy_lease.browser_proxy, request),
                 ) as lease:
                     existing_page_ids = _context_page_ids(lease.context)
                     page = None

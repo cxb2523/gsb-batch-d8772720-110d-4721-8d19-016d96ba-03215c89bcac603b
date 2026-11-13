@@ -9,6 +9,12 @@ class TimeoutTimer:
         self.started = time.monotonic()
 
     @property
+    def deadline_monotonic(self) -> float:
+        """Absolute monotonic-clock instant the request budget expires."""
+
+        return self.started + self.timeout_ms / 1000
+
+    @property
     def elapsed_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
 
