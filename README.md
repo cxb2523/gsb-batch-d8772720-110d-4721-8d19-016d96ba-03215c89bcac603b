@@ -105,7 +105,44 @@ The engine accepts the following adjustable inputs, allowing you to tailor it to
 
 SignalPulse operates on a **log-based synchronization model**. Rather than injecting into the trading platform's process (which could trigger security flags at some brokerages), the engine reads the MetaTrader log files that record all trade events in chronological order.
 
-### Data Flow
+### In-Browser Log Sync Panel (`index.html`)
+
+The repository ships a single, dependency-free `index.html` that implements the full sync pipeline in the browser. There is no build step and no external service: open the page, paste a log (or pick a log file — it is opened **read-only**, the source is never written to), and click **采集本批日志**. All state is persisted in `localStorage` and remains visible on the page.
+
+Each log line uses the pipe-delimited form:
+
+```
+2024-05-06 10:12:03|close|EURUSD|0.10|125.50|-3.20|0.00
+时间            |事件 |品种   |手数 |盈亏   |手续费 |库存费
+```
+
+Validation runs in a fixed order and every failure is reported with one of four reasons — the batch is never aborted:
+
+1. **字段数不足** — fewer than 7 pipe-separated fields
+2. **时间格式错误** — not `YYYY-MM-DD HH:MM:SS`, or not a real calendar date (e.g. `2024-13-40 99:99:99`)
+3. **事件类型未知** — event type is not one of `open` / `close` / `modify`
+4. **数值非法** — volume / profit / commission / swap is not a decimal number (scientific notation, empty fields, `NaN` and `Infinity` are rejected)
+
+Blank and whitespace-only lines are **skipped and counted as skipped**, never as failures.
+
+#### What the panel shows
+
+- **本批结果** — total / success / failure / skipped counts for the most recent run, refreshed after every collection or rerun.
+- **账户状态** — cumulative profit/loss (sum of the profit field only), cumulative commission, cumulative swap, net P/L, number of closed trades (`close` events), and the sorted set of profitable days (dates of successful entries whose profit is positive).
+- **失败条目表** — every failed line's **line number, original raw text, and failure reason** (with a stable machine-readable `data-reason` code).
+- **本轮逐条结局** — the per-line outcome (success / failure / skipped / duplicate) of the latest run, so every ingested line has an auditable ending.
+
+#### Idempotency and rerun
+
+Successfully processed line numbers are remembered. Re-collecting the same log never double-counts cumulative P/L — already-processed lines are recorded as `duplicate` and skipped. The **只重跑失败项** button re-parses only the currently failed lines (using the matching line in the textarea when available, otherwise the stored raw text), refreshes all counts based on that rerun, removes entries that now parse, and still never double-counts a line.
+
+#### Checkpoint / resume
+
+The highest successfully processed line number is stored as the checkpoint. After a page reload, collection continues from the line **after** the checkpoint. If the log has been replaced by content **shorter than the checkpoint**, the panel shows a "无法续跑" warning, clears the old checkpoint and all derived state, and restarts from line 1.
+
+A **清空全部本地状态** button resets the `localStorage` state at any time.
+
+### Data Flow (legacy engine description)
 1. **Log Capture** — The engine monitors the MetaTrader log directory for new entries.
 2. **Trade Parsing** — Each trade event (open, close, modify) is parsed for symbol, volume, profit/loss, commission, swap, and balance impact.
 3. **State Calculation** — Using the parsed data and the selected rule profile, the engine recalculates current phase, profit target remaining, drawdown usage, and day counters.
