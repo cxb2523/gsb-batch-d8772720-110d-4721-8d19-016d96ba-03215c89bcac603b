@@ -48,6 +48,7 @@
 - [Configuration](#configuration)
 - [Client Certificates](#client-certificates)
 - [Cloud Mode](#cloud-mode-paid)
+- [Batch Page Fetching](#batch-page-fetching)
 - [Error Handling](#error-handling)
 - [API Reference](#api-reference)
 - [Best Practices](#best-practices)
@@ -431,6 +432,48 @@ async with Abrasio(
     print(await page.title())
 ```
 
+## Batch Page Fetching
+
+`fetch_pages()` reuses the current session to fetch many URLs with bounded
+concurrency. It returns one outcome per URL (in input order) and never aborts
+the batch because a single URL failed.
+
+```python
+from abrasio import Abrasio
+
+async with Abrasio() as browser:
+    results = await browser.fetch_pages(
+        ["https://example.com/a", "https://example.com/b", "https://example.com/c"],
+        max_concurrency=5,   # at most 5 pages open at once; the rest queue
+        retries=1,           # one extra attempt per failing URL
+        retry_backoff=1.0,   # seconds between attempts (× attempt number)
+        timeout=30,          # per-attempt timeout, seconds
+    )
+
+    for r in results:
+        if r.ok:
+            print(r.url, r.title, len(r.text))
+        else:
+            print(r.url, r.reason, r.attempts, r.error)  # timeout/blocked/empty/error
+```
+
+Behaviour:
+
+- **Concurrency is a hard cap.** At most `max_concurrency` pages exist at any
+  moment; a page close frees its slot for the next queued URL. A retry takes a
+  slot only while its page is open.
+- **Per-URL failure isolation.** Failures are classified as `timeout`,
+  `blocked` (HTTP 401/403/407/429/451/503 or a challenge page), `empty` (no
+  visible body text) or `error` (any other exception). The batch call itself
+  raises only if the session was never started.
+- **No leaks.** Every page is closed before its URL is retried or its slot is
+  reused; a URL that appears twice in the input is never fetched by two tasks
+  at once.
+- **Ordered results.** `results[i]` always corresponds to `urls[i]`.
+
+`PageFetchResult` also supports `to_dict()`, `result["status"]` and the
+`success`/`failed` aliases.
+
 ## Error Handling
 
 ```python
@@ -485,6 +528,10 @@ class Abrasio:
     async def close(self) -> None: ...
     async def new_page(self) -> Page: ...
     async def new_context(self, **kwargs) -> BrowserContext: ...
+    async def fetch_pages(
+        self, urls, *, max_concurrency=5, retries=0,
+        retry_backoff=0.0, timeout=None, wait_until="domcontentloaded",
+    ) -> list[PageFetchResult]: ...
     async def route_with_certificate(self, target, url, certificate, *, proxy=None, timeout=None) -> None: ...
 
     @property

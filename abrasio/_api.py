@@ -1,8 +1,9 @@
 """Main Abrasio class - unified interface for local and cloud browsers."""
 
-from typing import Optional, Union, Dict, TYPE_CHECKING
 import logging
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Union
 
+from ._batch import PageFetchResult, fetch_pages_batch
 from ._config import AbrasioConfig
 from ._exceptions import AbrasioError
 
@@ -168,6 +169,75 @@ class Abrasio:
         if not self._browser:
             raise AbrasioError("Browser not started. Use 'async with Abrasio()' or call start() first.")
         return await self._browser.new_context(**kwargs)
+
+    async def fetch_pages(
+        self,
+        urls: Sequence[str],
+        *,
+        max_concurrency: int = 5,
+        retries: int = 0,
+        retry_backoff: float = 0.0,
+        timeout: Optional[float] = None,
+        wait_until: str = "domcontentloaded",
+    ) -> List[PageFetchResult]:
+        """
+        Fetch many URLs using this session, returning one outcome per URL.
+
+        Pages are opened with `new_page()` and at most `max_concurrency` are
+        open at once; the rest queue and are admitted as running pages close.
+        A failing URL is recorded as a failed `PageFetchResult` — the batch
+        itself does not raise for per-URL failures. The only exception is a
+        session that cannot be started/used at all (see Raises).
+
+        Args:
+            urls: Addresses to fetch. A single string is treated as one URL.
+            max_concurrency: Maximum number of pages open simultaneously.
+            retries: Extra attempts for URLs that fail (0 = one attempt).
+            retry_backoff: Seconds to wait before each retry × attempt number.
+            timeout: Per-attempt timeout in seconds. Defaults to the session's
+                configured `timeout` (`AbrasioConfig.timeout`, in ms).
+            wait_until: Playwright navigation readiness state
+                ("commit", "domcontentloaded", "load", "networkidle").
+
+        Returns:
+            List of `PageFetchResult` in the same order as `urls`. Each record
+            carries `url`, `status` ("success"/"failed"), `attempts`, `reason`
+            (timeout/blocked/empty/error) for failures, and `title` + `text`
+            for successes.
+
+        Raises:
+            AbrasioError: If the browser session is not running at all.
+            ValueError: Invalid options (non-positive concurrency/timeout, etc.).
+
+        Example:
+            async with Abrasio() as browser:
+                results = await browser.fetch_pages(
+                    ["https://a.example", "https://b.example"],
+                    max_concurrency=4,
+                    retries=1,
+                )
+                for r in results:
+                    if r.ok:
+                        print(r.url, r.title)
+                    else:
+                        print(r.url, r.reason, r.attempts)
+        """
+        if not self._browser:
+            raise AbrasioError(
+                "Browser not started. Use 'async with Abrasio()' or call start() first."
+            )
+
+        timeout_sec = timeout if timeout is not None else self.config.timeout / 1000
+
+        return await fetch_pages_batch(
+            self.new_page,
+            urls,
+            max_concurrency=max_concurrency,
+            retries=retries,
+            retry_backoff=retry_backoff,
+            timeout=timeout_sec,
+            wait_until=wait_until,
+        )
 
     @property
     def browser(self):

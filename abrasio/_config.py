@@ -96,6 +96,12 @@ class AbrasioConfig:
     headless: bool = True
     proxy: Optional[Union[str, Dict[str, str]]] = None  # "http://host:port" or {"server":..., "username":..., "password":...}
     timeout: int = 30000
+    # Local mode: which Chrome to launch. Defaults to the installed Chrome
+    # (channel="chrome"). Set executable_path to run a specific binary (e.g. the
+    # Chromium bundled with Patchright, or Chrome for Testing in CI); it takes
+    # precedence over browser_channel.
+    browser_channel: Optional[str] = "chrome"
+    executable_path: Optional[str] = None
 
     # Stealth settings (local mode)
     stealth: bool = True

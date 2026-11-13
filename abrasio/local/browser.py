@@ -178,9 +178,8 @@ class StealthBrowser:
 
         # Launch with persistent context for maximum stealth
         # Key: use channel="chrome" for real Chrome, not Chromium
-        self._context = await self._playwright.chromium.launch_persistent_context(
+        launch_kwargs = dict(
             user_data_dir=self._user_data_dir,
-            channel="chrome",  # Use real Chrome for better fingerprint
             headless=self.config.headless,
             args=args,
             proxy=proxy,
@@ -203,6 +202,16 @@ class StealthBrowser:
             permissions=["geolocation", "notifications"],
             # TLS Client Authentication (e.g. ICP-Brasil certs for gov.br logins)
             client_certificates=self.config.client_certificates,
+        )
+        # An explicit executable_path (e.g. Chrome for Testing in CI, or the
+        # Patchright-bundled Chromium) wins over the channel selector.
+        if getattr(self.config, "executable_path", None):
+            launch_kwargs["executable_path"] = self.config.executable_path
+        elif getattr(self.config, "browser_channel", None):
+            launch_kwargs["channel"] = self.config.browser_channel
+
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            **launch_kwargs
         )
 
         # Inject fingerprint noise scripts if configured

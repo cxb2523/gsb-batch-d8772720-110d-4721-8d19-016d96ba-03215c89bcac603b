@@ -56,6 +56,38 @@ class Abrasio:
         Creating multiple contexts can reduce stealth.
         """
 
+    async def fetch_pages(
+        self,
+        urls: Sequence[str],
+        *,
+        max_concurrency: int = 5,
+        retries: int = 0,
+        retry_backoff: float = 0.0,
+        timeout: Optional[float] = None,
+        wait_until: str = "domcontentloaded",
+    ) -> List[PageFetchResult]:
+        """
+        Fetch many URLs in one batch, reusing the running session.
+
+        Pages are opened with new_page(); at most `max_concurrency` pages are
+        open at once and the rest queue. A failing URL is recorded as a failed
+        PageFetchResult instead of raising. The batch raises only when the
+        session was never started (AbrasioError) or options are invalid
+        (ValueError).
+
+        Args:
+            urls: Addresses to fetch (a bare string is one URL).
+            max_concurrency: Hard cap on simultaneously open pages.
+            retries: Extra attempts for a failing URL (0 = single attempt).
+            retry_backoff: Seconds before each retry × attempt number.
+            timeout: Per-attempt timeout in seconds. Defaults to
+                AbrasioConfig.timeout / 1000.
+            wait_until: Playwright navigation readiness state.
+
+        Returns:
+            List of PageFetchResult in the same order as `urls`.
+        """
+
     @property
     def browser(self):
         """Get the underlying browser or context object.
@@ -79,6 +111,43 @@ class Abrasio:
     # Context manager support
     async def __aenter__(self) -> "Abrasio": ...
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None: ...
+```
+
+### PageFetchResult
+
+Outcome record returned by `Abrasio.fetch_pages()` — one per input URL.
+
+```python
+@dataclass
+class PageFetchResult:
+    url: str
+    status: str                     # "success" | "failed"
+    attempts: int                   # total page attempts (>= 1)
+    reason: Optional[str] = None    # FailureReason on failure, None on success
+    title: Optional[str] = None     # page title (success only)
+    text: Optional[str] = None      # visible body text (success only)
+    status_code: Optional[int] = None
+    error: Optional[str] = None     # exception/timeout summary (failure only)
+    final_url: Optional[str] = None
+
+    @property
+    def ok(self) -> bool: ...       # status == "success"
+    # aliases: .success, .failed; plus to_dict(), result["status"]
+```
+
+### FailureReason
+
+Failure categories in `PageFetchResult.reason`.
+
+| Value | Meaning |
+|-------|---------|
+| `FailureReason.TIMEOUT` (`"timeout"`) | Per-attempt time budget exceeded |
+| `FailureReason.BLOCKED` (`"blocked"`) | HTTP 401/403/407/429/451/503 or a challenge/block page |
+| `FailureReason.EMPTY` (`"empty"`) | Page loaded but has no visible body text |
+| `FailureReason.ERROR` (`"error"`) | Any other exception (aliased as `OTHER`) |
+
+```python
+from abrasio import Abrasio, FailureReason, PageFetchResult
 ```
 
 ### AbrasioConfig

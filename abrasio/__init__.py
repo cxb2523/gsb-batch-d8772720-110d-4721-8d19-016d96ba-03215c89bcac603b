@@ -38,6 +38,7 @@ Usage:
 """
 
 from ._api import Abrasio
+from ._batch import PageFetchResult, FailureReason
 from ._config import AbrasioConfig, FingerprintConfig
 from .utils.certificates import build_client_certificate
 from .utils.cloudflare import solve_cloudflare
@@ -57,6 +58,8 @@ __all__ = [
     "Abrasio",
     "AbrasioConfig",
     "FingerprintConfig",
+    "PageFetchResult",
+    "FailureReason",
     "build_client_certificate",
     "solve_cloudflare",
     "AbrasioError",

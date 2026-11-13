@@ -44,7 +44,9 @@ config = AbrasioConfig(
 |--------|------|---------|-------------|
 | `headless` | `bool` | `True` | Run browser without visible window |
 | `proxy` | `str | None` | `None` | Proxy URL |
-| `timeout` | `int` | `30000` | Default timeout in milliseconds |
+| `timeout` | `int` | `30000` | Default timeout in milliseconds (also the default per-attempt timeout for `fetch_pages`) |
+| `browser_channel` | `str | None` | `"chrome"` | Local mode: Chrome channel to launch |
+| `executable_path` | `str | None` | `None` | Local mode: explicit browser binary; takes precedence over `browser_channel` (useful for CI or Chrome for Testing) |
 
 ```python
 # Visible browser (recommended for stealth)
@@ -62,6 +64,9 @@ config = AbrasioConfig(
 
 # Custom timeout
 config = AbrasioConfig(timeout=60000)  # 60 seconds
+
+# Run a specific browser binary instead of the installed Chrome
+config = AbrasioConfig(executable_path=r"C:\path\to\chrome.exe")
 ```
 
 ### Region Settings

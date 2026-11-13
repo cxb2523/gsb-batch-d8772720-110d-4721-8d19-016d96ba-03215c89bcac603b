@@ -120,6 +120,16 @@ class Abrasio:
         """Create a new browser context."""
         return self._run(self._async_abrasio.new_context(**kwargs))
 
+    def fetch_pages(self, urls, **kwargs):
+        """
+        Fetch many URLs, returning one `PageFetchResult` per URL in input order.
+
+        Same semantics as `Abrasio.fetch_pages()`: bounded concurrency, per-URL
+        failure isolation and optional retries. Individual failures are
+        reported on the results; only a missing session raises.
+        """
+        return self._run(self._async_abrasio.fetch_pages(urls, **kwargs))
+
     @property
     def browser(self) -> "Browser":
         """Get the underlying browser."""
