@@ -1,0 +1,4 @@
+{
+  "mails": [],
+  "note": "This file intentionally does not return an array, to exercise the source-level error path."
+}

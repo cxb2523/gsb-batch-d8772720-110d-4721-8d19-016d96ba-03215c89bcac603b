@@ -1,0 +1,24 @@
+[
+  {
+    "id": 1,
+    "from": { "name": "External Alice", "email": "alice@external.example" },
+    "subject": "Quarterly roadmap sync",
+    "body": "Hi team, sharing the updated roadmap for next quarter. Please review before Friday.",
+    "date": "2026-11-10T09:00:00.000Z"
+  },
+  {
+    "id": 2,
+    "unread": true,
+    "from": { "name": "External Bob", "email": "bob@external.example" },
+    "subject": "Invoice #2041 is ready",
+    "body": "Your invoice for October is attached. Payment is due on the 30th.",
+    "date": "2026-11-11T09:00:00.000Z"
+  },
+  {
+    "id": 3,
+    "from": { "name": "External Carol", "email": "carol@external.example" },
+    "subject": "Weekly digest",
+    "body": "Three product updates, two community posts and one upcoming event in this week's digest.",
+    "date": "2026-11-12T09:00:00.000Z"
+  }
+]

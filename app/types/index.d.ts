@@ -12,13 +12,36 @@ export interface User {
   location: string
 }
 
+export interface MailFrom {
+  name: string
+  email: string
+  avatar?: AvatarProps
+}
+
 export interface Mail {
   id: number
   unread?: boolean
-  from: User
+  from: MailFrom
   subject: string
   body: string
   date: string
+}
+
+export interface MailSource {
+  url: string
+  label?: string
+}
+
+export interface MailCollectResult {
+  url: string
+  label?: string
+  status: 'ok' | 'error'
+  fetched: number
+  error?: string
+}
+
+export interface MailCollectResponse {
+  results: MailCollectResult[]
 }
 
 export interface Member {
