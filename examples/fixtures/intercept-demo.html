@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Owl Light — network interception fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 48rem; }
+    h1 { font-size: 1.25rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #999; padding: 0.4rem 0.6rem; text-align: left;
+             font-family: ui-monospace, monospace; font-size: 0.9rem; }
+    th { background: #f0f0f0; }
+    .done { color: #1a7f37; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>network interception fixture</h1>
+  <p>This page fires exactly four requests so the interception examples
+     have deterministic input:</p>
+  <ol>
+    <li><code>/ads/banner.js</code> — must be <strong>aborted</strong></li>
+    <li><code>/tracking/pixel.gif</code> — must be <strong>aborted</strong></li>
+    <li><code>/api/me</code> — must be <strong>rewritten</strong> to
+        <code>{"id":42,"name":"Owlbert"}</code></li>
+    <li><code>/api/orders</code> — must be <strong>allowed through</strong>
+        (a 404 from the static server still proves it reached the network)</li>
+  </ol>
+  <table>
+    <thead>
+      <tr><th>request</th><th>outcome seen by the page</th></tr>
+    </thead>
+    <tbody id="results"></tbody>
+  </table>
+  <p id="status">running…</p>
+
+  <script>
+    // The scripts read these two globals: the per-request results map and
+    // the completion flag they wait on before printing their summary.
+    window.__interceptResults = {};
+    window.__interceptDemoDone = false;
+
+    const tbody = document.getElementById('results');
+    function record(name, detail) {
+      window.__interceptResults[name] = detail;
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td');
+      const td2 = document.createElement('td');
+      td1.textContent = name;
+      td2.textContent = detail;
+      tr.append(td1, td2);
+      tbody.append(tr);
+    }
+
+    async function expectBlocked(name, url) {
+      try {
+        await fetch(url);
+        record(name, 'UNEXPECTED: request was allowed through');
+      } catch (err) {
+        // An aborted request rejects the fetch — that is the proof the
+        // blocker worked.
+        record(name, `blocked (${err.name})`);
+      }
+    }
+
+    async function run() {
+      // 1 & 2: ad + tracking — both must be aborted.
+      await expectBlocked('ads', '/ads/banner.js');
+      await expectBlocked('tracking', '/tracking/pixel.gif');
+
+      // 3: /api/me — must come back as the fixed mocked JSON.
+      try {
+        const res = await fetch('/api/me');
+        const body = await res.text();
+        record('api-me', `HTTP ${res.status} ${body}`);
+      } catch (err) {
+        record('api-me', `UNEXPECTED error: ${err.message}`);
+      }
+
+      // 4: a normal /api/ call — must NOT be rewritten or blocked.
+      try {
+        const res = await fetch('/api/orders');
+        const body = await res.text();
+        record('api-orders', `HTTP ${res.status} (passed through) ${body.slice(0, 40)}`);
+      } catch (err) {
+        record('api-orders', `UNEXPECTED error: ${err.message}`);
+      }
+
+      window.__interceptDemoDone = true;
+      const status = document.getElementById('status');
+      status.textContent = 'all requests settled';
+      status.classList.add('done');
+    }
+
+    run();
+  </script>
+</body>
+</html>

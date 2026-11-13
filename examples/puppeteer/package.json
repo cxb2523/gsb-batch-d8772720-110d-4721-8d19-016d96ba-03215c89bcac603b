@@ -6,7 +6,8 @@
   "scripts": {
     "basic": "node 01_basic.mjs",
     "screenshot": "node 02_screenshot.mjs",
-    "login": "node 03_form_login.mjs"
+    "login": "node 03_form_login.mjs",
+    "intercept": "node 04_intercept_network.mjs"
   },
   "dependencies": {
     "puppeteer": "^25.0.0"
