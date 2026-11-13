@@ -1,0 +1,12 @@
+jsonschema>=3.0.0a5
+pytz
+requests
+scrapy
+black
+flake8
+pytest
+isort
+Sphinx>=3.0
+sphinx-rtd-theme
+sphinx-autodoc-typehints
+docutils
