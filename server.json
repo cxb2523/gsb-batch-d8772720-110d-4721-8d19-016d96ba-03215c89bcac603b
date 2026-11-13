@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.foura/mcp",
+  "description": "Reliable web access for AI agents: smart HTTP, rotating proxies, and full-browser rendering.",
+  "version": "0.8.3",
+  "repository": {
+    "url": "https://github.com/fouradata/mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://foura.ai/mcp",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@fouradata/mcp",
+      "version": "0.8.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "FOURA_API_KEY",
+          "description": "Your FourA API key (pk_live_...), managed at https://foura.ai/dashboard/#api-keys",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.foura.ai/mcp"
+    }
+  ]
+}
