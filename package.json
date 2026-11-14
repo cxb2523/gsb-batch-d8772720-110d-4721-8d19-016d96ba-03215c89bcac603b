@@ -5,15 +5,20 @@
   "description": "MCP server for Shopify storefronts through HasData's hosted API: pull the public product catalogue and collections from any store by URL, with variants, SKUs and prices. No app, no merchant token. 1,000 free credits every month.",
   "type": "module",
   "bin": {
-    "hasdata-shopify-mcp": "index.mjs"
+    "hasdata-shopify-mcp": "index.mjs",
+    "hasdata-catalog-scan": "bin/catalog-scan.mjs"
   },
   "files": [
     "index.mjs",
+    "bin",
+    "lib",
+    "commands",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:smoke": "node test/smoke/cli-smoke.mjs"
   },
   "dependencies": {
     "mcp-remote": "^0.1.43"

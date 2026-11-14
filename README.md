@@ -25,6 +25,7 @@ https://mcp.hasdata.com/mcp?apis=shopify
 - [What you need](#what-you-need)
 - [Quick start](#quick-start)
 - [Example prompts](#example-prompts)
+- [Reproducible catalogue scans](#reproducible-catalogue-scans)
 - [Tools](#tools)
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
@@ -293,6 +294,26 @@ Your plan also sets concurrency. The free tier allows 5 requests at a time, Star
 
 A request that comes back non-200 is not billed. A successful call that finds nothing is still a call.
 
+## Reproducible catalogue scans
+
+The `catalog-scan` command ships with a local runner that walks a storefront collection by collection and leaves an auditable, resumable record instead of a prose summary that cannot be replayed.
+
+```bash
+npm install
+export HASDATA_API_KEY=your_key_here
+node bin/catalog-scan.mjs https://www.allbirds.com --output allbirds-scan.json
+# if any collection hit a rate limit or a non-Shopify response, continue from the checkpoint:
+node bin/catalog-scan.mjs --resume allbirds-scan.json
+```
+
+The runner calls `hasdata_shopify_products_getProducts` with `limit` fixed at 250 and `page` from 1, passing each collection `handle` as `collection`, and stops a collection on its first short or empty page. The rules:
+
+- A response without a `products` array (an `error` string or any other shape) is a **non-Shopify** outcome. The collection is marked for a retry against `https://<shop>.myshopify.com` and the scan moves on.
+- HTTP 429 and any body mentioning `concurrency_limit` are retried with an increasing backoff (1s, 2s, 4s, 8s), at most five attempts. Exhaustion is recorded as a **rate-limited failure**; the round continues with the next collection.
+- The JSON checkpoint is rewritten after every collection, so a killed process loses at most one collection and `--resume` never re-pulls a completed collection. A rate-limited collection continues at the failed page; a non-Shopify collection restarts at page 1.
+
+The record holds a per-page outcome list (collection handle, page, outcome, products on page, cumulative products, attempts), per-page numeric price ranges (prices are parsed from strings first, and a null `compare_at_price` is never a discount), a sold-out list of products whose variants are all unavailable, a per-collection summary with failure reasons, and an explicit list of collections that need another run. A companion Markdown report is written next to the JSON. Exit code 2 means the run finished but some collections need a resume.
+
 ## Tool selection
 
 Start from what the prompt gives you. A question about the catalogue itself goes to the product tool. A question about how the store is organised, or a prompt that names a category by its shop-facing name, goes to the collection tool first.
@@ -378,7 +399,9 @@ npm install
 HASDATA_API_KEY=your_key_here npm test
 ```
 
-The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=shopify` returns the expected tool count, that no name changed, that every tool still declares its required parameter and carries a description, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason.
+The tests in `test/` assert two things. `tools.test.mjs` covers the tool contract, the part that can break without a commit here: the expected tool count, tool names, required parameters and descriptions, and whether the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, so the live checks skip themselves when `HASDATA_API_KEY` is unset.
+
+`catalog-scan.test.mjs` and `mcp-client.test.mjs` are fully offline: scripted responses drive the scan engine through every stop and failure path (multi-page stop on a short page, empty page, `error` body, rate limits that recover, retries exhausted, resume) and a local HTTP server stands in for the MCP endpoint. They run with plain `npm test` and need no key. An end-to-end CLI harness against a stubbed server is available with `npm run test:smoke`.
 
 The contract suite also runs weekly on a schedule, because the upstream tool list can change without anyone touching this repository.
 

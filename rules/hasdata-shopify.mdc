@@ -34,3 +34,12 @@ A URL that is not a classic Shopify storefront returns a successful call with an
 `page` starts at 1 and `limit` caps the page at 250. `collection` takes the collection handle rather than its title or id.
 
 There is no `pagination` block in the products response, unlike the other tools here, so the only stop signal is a page that comes back short or empty. Set `limit` to 250 and read `products_count` from the collection first, because a page costs the same whatever its size and a catalogue walked twenty at a time is twelve times the calls.
+
+## Unattended scans have to survive failures
+
+A full catalogue scan (`commands/catalog-scan.md`, implemented by `bin/catalog-scan.mjs` over `lib/catalog-scan.mjs`) treats a page as one of four outcomes — `success`, `empty`, `non_shopify`, `rate_limited` — and records every page rather than only the happy path:
+
+- No `products` array (an `error` string, or any other shape) is a non-Shopify outcome. Mark the collection for a retry against `https://<shop>.myshopify.com` and continue with the next collection; never call the whole run dead.
+- HTTP 429 or a body mentioning `concurrency_limit` is retried on the same page with an increasing backoff (1s, 2s, 4s, 8s), at most five attempts. Exhaustion is a rate-limited failure carrying the page to resume from, and the round continues.
+- Each page record keeps the collection handle, page, outcome, products on the page, cumulative product count and attempts. A checkpoint written after every collection makes the run resumable without re-pulling completed collections.
+
