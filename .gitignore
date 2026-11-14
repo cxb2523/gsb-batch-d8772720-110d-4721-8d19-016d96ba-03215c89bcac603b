@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environnement virtuel
+venv/
+ENV/
+.venv/
+
+# Résultats de crawl
+crawl_results/
+
+# Fichiers IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OLD
+.old/desc_stderr.log
+*.log
+
+# Coverage
+.coverage
+htmlcov/
+
+# Agent scratch area (docs-fishing snapshots, local audit artifacts)
+scratch/
+.agent/*.duckdb.wal
+# Agent local state (ledger, installed skills) - kept on disk, never committed
+.agent/
+.agents/
