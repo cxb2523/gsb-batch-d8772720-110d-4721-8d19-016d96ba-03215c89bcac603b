@@ -1,0 +1,65 @@
+python-avito-sdk (0.3.0-1) unstable; urgency=medium
+
+  * Release v0.3.0: Dual live Telegram progress bars (overall + current link).
+  * Full PyPy 3.11, PyPy 3.12, and Python 3.16 No-GIL (Free-Threaded) compatibility.
+  * Automatic persistent rotating file logging to storage/logs/avito_sdk.log.
+  * ASCII English logging for clean terminal output and cross-platform universality.
+  * Anti-reboot card enrichment with allow_rotation flag preventing unnecessary modem reboots.
+  * Adaptive micro-pacing for safe 8-worker concurrency on mobile proxies.
+
+ -- eminsk <M_N_N@tut.by>  Fri, 16 Oct 2026 23:59:00 +0000
+
+python-avito-sdk (0.2.0-1) unstable; urgency=medium
+
+  * Release v0.2.0: Auto-failover on 429/SmartCaptcha with MobileProxy.space IP rotation.
+  * Synchronized realistic Android User-Agent pool (Chrome 131 TLS impersonation).
+  * Direct search by pasted Avito catalog/search URLs and clickable Excel hyperlinks.
+  * Interactive Telegram bot controller with /code command and inline button.
+  * Modem concurrency safety limiter enforcing max 2 workers per mobile modem.
+
+ -- eminsk <M_N_N@tut.by>  Wed, 15 Oct 2026 19:00:00 +0000
+
+python-avito-sdk (0.1.5-1) unstable; urgency=medium
+
+  * Add native Model Context Protocol (MCP) Server (avito-mcp / avito-sdk mcp) for Claude Desktop, Cursor, Windsurf, and AI agents.
+
+ -- eminsk <M_N_N@tut.by>  Mon, 05 Oct 2026 10:00:00 +0000
+
+python-avito-sdk (0.1.4-1) unstable; urgency=medium
+
+  * Full Free-Threaded (No-GIL) thread-safe HTTP session pool & IP rotation lock for Python 3.13t, 3.14t, 3.15t, and 3.16t.
+  * Per-config tracker_db isolation in AvitoClient.from_config() and expanded 45-test suite.
+
+ -- eminsk <M_N_N@tut.by>  Sun, 04 Oct 2026 22:00:00 +0000
+
+python-avito-sdk (0.1.3-1) unstable; urgency=medium
+
+  * Add AdsFilter with all 9 filtering rules (white/black keywords, seller blacklist, geo, max_age, reserve, promotion, price change).
+  * Add VKNotifier for VKontakte alerts and photo uploads.
+  * Add AvitoConfig / load_avito_config and avito-sdk config CLI for 100% compatibility with parser_avito config.toml.
+  * Add ExternalApiCookiesProvider, AvitoUrlConverter, ParsePhone, and uniform Telegram progress bar.
+
+ -- eminsk <M_N_N@tut.by>  Sun, 04 Oct 2026 21:00:00 +0000
+
+python-avito-sdk (0.1.2-1) unstable; urgency=medium
+
+  * Add PlaywrightCookieProvider for headless Chromium ft cookie harvesting and stealth bypass.
+  * Add TelegramNotifier and AvitoTelegramBot for interactive Telegram bot control, visual progress bars, and Excel (.xlsx) uploads.
+  * Add avito-sdk bot CLI subcommand and --playwright / --tg-token / --tg-chat-id CLI options.
+
+ -- eminsk <M_N_N@tut.by>  Sun, 04 Oct 2026 20:00:00 +0000
+
+python-avito-sdk (0.1.1-1) unstable; urgency=medium
+
+  * Add mobile proxy IP rotation support (proxy_change_url) for 403/429 rate limits.
+  * Add multithreaded card enrichment (max_workers) and async concurrency.
+  * Add CLI flags --proxy, --proxy-change-url, and --workers.
+
+ -- eminsk <M_N_N@tut.by>  Sun, 04 Oct 2026 18:00:00 +0000
+
+python-avito-sdk (0.1.0-1) unstable; urgency=medium
+
+  * Initial release of avito-sdk (version 0.1.0).
+  * High-performance headless Avito scraping and data extraction SDK.
+
+ -- eminsk <M_N_N@tut.by>  Sun, 04 Oct 2026 12:00:00 +0000

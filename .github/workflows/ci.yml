@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version:
+          - "3.8"
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+          - "3.15"
+        include:
+          - os: ubuntu-latest
+            python-version: "3.13t"
+          - os: ubuntu-latest
+            python-version: "3.14t"
+          - os: ubuntu-latest
+            python-version: "3.15t"
+          - os: windows-latest
+            python-version: "3.13t"
+          - os: windows-latest
+            python-version: "3.14t"
+          - os: windows-latest
+            python-version: "3.15t"
+          - os: ubuntu-latest
+            python-version: "pypy3.9"
+          - os: ubuntu-latest
+            python-version: "pypy3.10"
+          - os: windows-latest
+            python-version: "pypy3.9"
+          - os: windows-latest
+            python-version: "pypy3.10"
+          - os: ubuntu-latest
+            python-version: "3.16"
+            experimental: true
+          - os: ubuntu-latest
+            python-version: "3.16t"
+            experimental: true
+          - os: windows-latest
+            python-version: "3.16"
+            experimental: true
+          - os: windows-latest
+            python-version: "3.16t"
+            experimental: true
+          - os: macos-latest
+            python-version: "3.16"
+            experimental: true
+          - os: macos-latest
+            python-version: "3.16t"
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Run pytest
+        run: uv run --python ${{ matrix.python-version }} --extra dev pytest -v
+

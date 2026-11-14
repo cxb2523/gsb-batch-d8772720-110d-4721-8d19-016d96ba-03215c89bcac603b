@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avito-sdk"
+version = "0.4.1"
+description = "High-performance Avito scraping & data extraction SDK with mobile proxy rotation, price tracking, parameters parsing, and async support"
+readme = "README.md"
+authors = [
+    { name = "eminsk", email = "M_N_Nik@yahoo.com" },
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = [
+    "avito",
+    "scraper",
+    "parser",
+    "crawler",
+    "sdk",
+    "api",
+    "mobile-proxy",
+    "price-tracker",
+    "e-commerce",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: 3.16",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "beautifulsoup4>=4.10.0",
+    "openpyxl>=3.0.0",
+    "requests>=2.28.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+tls = [
+    "curl-cffi>=0.7.0",
+]
+excel = [
+    "openpyxl>=3.0.0",
+]
+async = [
+    "httpx>=0.24.0",
+]
+dataframe = [
+    "pandas>=1.5.0",
+]
+all = [
+    "curl-cffi>=0.7.0",
+    "openpyxl>=3.0.0",
+    "httpx>=0.24.0",
+    "pandas>=1.5.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "openpyxl>=3.0.0",
+]
+
+[project.scripts]
+avito = "avito_sdk.cli:main"
+avito-sdk = "avito_sdk.cli:main"
+avito-parser = "avito_sdk.cli:main"
+avito-mcp = "avito_sdk.mcp_server:main_mcp"
+
+[project.urls]
+Homepage = "https://eminsk.github.io/#avito-sdk"
+Documentation = "https://github.com/eminsk/avito-sdk#readme"
+Repository = "https://github.com/eminsk/avito-sdk"
+Issues = "https://github.com/eminsk/avito-sdk/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avito_sdk"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
