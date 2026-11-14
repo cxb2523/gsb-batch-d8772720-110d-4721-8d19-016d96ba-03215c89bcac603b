@@ -11,6 +11,7 @@ filters
 clean
 urlutils
 urlstore
+batch
 sampling
 settings
 ```

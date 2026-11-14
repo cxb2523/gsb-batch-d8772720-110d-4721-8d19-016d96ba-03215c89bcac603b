@@ -101,6 +101,42 @@ Both methods mark the returned URLs as visited, so use one or the other.
 Each call starts after the last domain served, so every domain gets its turn.
 
 
+## Batch homepage collection
+
+`collect_homepages()` fetches one homepage per site, in input order, and hands
+each page to `UrlStore.add_from_html()`, so the store's own robots rules,
+`language` and `strict` settings decide which links are kept. Each site yields
+one outcome: success with the number of new links, request failure (network
+error or non-2xx response), or rejection because no link survived the filters.
+Invalid URLs fail without a request, and one failing site never stops the batch.
+
+```python
+from courlan import UrlStore, collect_homepages
+
+store = UrlStore(language='en')
+
+def fetch(url):
+    # replace with your HTTP client
+    return '<html><body><a href="/article/one">one</a></body></html>'
+
+result = collect_homepages(
+    ['https://example.com', 'https://example.org', 'not-a-url'],
+    store,
+    fetch=fetch,
+)
+
+summary = (result.success_count, result.failure_count, result.rejected_count)
+assert summary == (2, 1, 0)
+# one outcome per input site, in input order
+assert [o.status.value for o in result.outcomes] == ['success', 'success', 'failure']
+```
+
+`fetch_page()` is the default fetcher (urllib3, with a timeout). Pass your
+own callable to `fetch=` to use another HTTP client, set headers, or keep tests
+offline. A rejected outcome's reason names the setting responsible, e.g.
+`rejected: robots rules exclude all links`.
+
+
 ## Frontier management
 
 ### Scope detection

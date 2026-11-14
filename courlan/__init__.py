@@ -11,6 +11,14 @@ __version__ = "1.4.0"
 
 
 # imports
+from .batch import (
+    BatchResult,
+    FetchError,
+    SiteOutcome,
+    SiteStatus,
+    collect_homepages,
+    fetch_page,
+)
 from .clean import clean_url, normalize_url, scrub_url
 from .core import check_url, extract_links, filter_links
 from .filters import (
@@ -34,6 +42,12 @@ from .urlutils import (
 )
 
 __all__ = [
+    "collect_homepages",
+    "fetch_page",
+    "BatchResult",
+    "SiteOutcome",
+    "SiteStatus",
+    "FetchError",
     "clean_url",
     "normalize_url",
     "scrub_url",

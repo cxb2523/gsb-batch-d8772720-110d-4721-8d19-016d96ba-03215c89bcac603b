@@ -1,6 +1,12 @@
 # History / Changelog
 
 
+## Unreleased
+
+- new `batch` module: `collect_homepages()` fetches site homepages in order and adds their links to a configured `UrlStore`, with pluggable fetching and per-site `SiteOutcome` results (`BatchResult` summary)
+- `FetchError` and `fetch_page()` exported at the top level
+
+
 ## 1.4.0
 
 - More robust `FIND_LINKS_REGEX` expression by @danishashko (#130)
