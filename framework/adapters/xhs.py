@@ -27,6 +27,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yaml
@@ -165,6 +166,165 @@ def note_to_records(note: dict, segment: str = "", category: str = "", cfg: dict
 # Fetch layer — requires cookies (interface form confirmed in Phase 0.3)
 # ============================================================
 
+@dataclass
+class KeywordOutcome:
+    """Per-keyword collection outcome for :meth:`XHSAdapter.fetch_search`.
+
+    One entry per requested keyword, in the same order the keywords were passed in —
+    including keywords that were skipped, so the caller can tell a complete batch from
+    one with holes and retry only the keywords that failed.
+
+    Fields:
+        keyword     : the keyword exactly as requested.
+        search_ok   : whether the search page itself was fetched and parsed.
+        fetched     : notes successfully produced for this keyword.
+        skipped     : notes dropped for this keyword (detail fetch failed or missing note id).
+        error       : keyword-level failure reason — search page fetch/parse failure,
+                      "not executed: overall limit reached", or a summary of the skipped
+                      notes / overall-limit truncation. Empty only when the keyword was
+                      collected completely.
+        note_errors : reasons the individual notes in ``skipped`` were dropped.
+        candidates  : real notes on the search page that were attempted.
+        truncated   : True when the overall ``limit`` was reached before this keyword's
+                      search results were exhausted (the rest were not attempted).
+        executed    : False when the overall ``limit`` was already reached before this
+                      keyword was started — it was not searched at all.
+    """
+    keyword: str
+    search_ok: bool = False
+    fetched: int = 0
+    skipped: int = 0
+    error: str = ""
+    note_errors: list[str] = field(default_factory=list)
+    candidates: int = 0
+    truncated: bool = False
+    executed: bool = True
+
+    @property
+    def ok(self) -> bool:
+        """True when the keyword was fully collected: search page OK, nothing skipped,
+        and its search results were not cut short by the overall ``limit``."""
+        return (self.executed and self.search_ok and self.skipped == 0
+                and not self.truncated)
+
+    # --- convenience aliases (callers may reach for these names) ---
+    @property
+    def success(self) -> bool:
+        return self.ok
+
+    @property
+    def search_success(self) -> bool:
+        return self.search_ok
+
+    @property
+    def search_page_ok(self) -> bool:
+        return self.search_ok
+
+    @property
+    def success_count(self) -> int:
+        return self.fetched
+
+    @property
+    def fetched_count(self) -> int:
+        return self.fetched
+
+    @property
+    def skipped_count(self) -> int:
+        return self.skipped
+
+    @property
+    def reason(self) -> str:
+        return self.error
+
+    @property
+    def status(self) -> str:
+        if not self.executed:
+            return "not_executed"
+        if not self.search_ok:
+            return "search_failed"
+        if self.skipped:
+            return "partial"
+        if self.truncated:
+            return "truncated"
+        return "ok"
+
+    def as_dict(self) -> dict:
+        """Plain-dict view, for logging / JSON / callers that avoid dataclasses."""
+        return asdict(self)
+
+    # read-only dict-style access: outcome["fetched"] as well as outcome.fetched
+    def __getitem__(self, key):
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key) from None
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def keys(self):
+        return self.as_dict().keys()
+
+    def items(self):
+        return self.as_dict().items()
+
+    def __contains__(self, key) -> bool:
+        return isinstance(key, str) and hasattr(self, key)
+
+
+class SearchResult(list):
+    """Records returned by :meth:`XHSAdapter.fetch_search`, plus per-keyword outcomes.
+
+    Subclasses ``list`` so every existing caller (iteration, indexing, ``len()``,
+    ``result == []``, slicing, unpacking in a for-loop) keeps working unchanged;
+    ``.outcomes`` carries one :class:`KeywordOutcome` per requested keyword, in order.
+    """
+    def __init__(self, records=(), outcomes=()):
+        super().__init__(records)
+        self.outcomes: list[KeywordOutcome] = list(outcomes)
+
+    @property
+    def records(self) -> list:
+        return list(self)
+
+    @property
+    def keyword_outcomes(self) -> list[KeywordOutcome]:
+        """Alias for ``.outcomes``."""
+        return self.outcomes
+
+    @property
+    def outcomes_by_keyword(self) -> dict[str, KeywordOutcome]:
+        """``{keyword: outcome}`` for callers that look up by keyword rather than index."""
+        return {o.keyword: o for o in self.outcomes}
+
+    @property
+    def failed_keywords(self) -> list[str]:
+        """Keywords worth retrying: search page failed or some of their notes were skipped."""
+        return [o.keyword for o in self.outcomes
+                if o.executed and (not o.search_ok or o.skipped > 0)]
+
+    @property
+    def unprocessed_keywords(self) -> list[str]:
+        """Keywords never searched because the overall ``limit`` was reached."""
+        return [o.keyword for o in self.outcomes if not o.executed]
+
+    @property
+    def complete(self) -> bool:
+        """True when every keyword was collected cleanly (nothing skipped, nothing truncated,
+        nothing left unprocessed)."""
+        return all(o.ok for o in self.outcomes)
+
+    def outcome_for(self, keyword: str) -> KeywordOutcome | None:
+        for o in self.outcomes:
+            if o.keyword == keyword:
+                return o
+        return None
+
+    def as_pair(self) -> tuple[list, list[KeywordOutcome]]:
+        """Unpack style: ``records, outcomes = result.as_pair()``."""
+        return list(self), self.outcomes
+
+
 class XHSAdapter(SourceAdapter):
     platform = PLATFORM
     capabilities = {"entities", "items"}   # comments: planned for a later phase
@@ -244,50 +404,109 @@ class XHSAdapter(SourceAdapter):
                 continue
         return out
 
+    @staticmethod
+    def _search_feeds(state: dict | None) -> list:
+        """Pull the feed list out of a search-page __INITIAL_STATE__ (tolerating the three
+        shapes Xiaohongshu has used). Empty list when the state carries no feeds."""
+        return ((state or {}).get("feeds") or (state or {}).get("note", {}).get("feeds")
+                or (state or {}).get("search", {}).get("feeds") or [])
+
     def fetch_search(self, keywords: list[str], segment: str = "", category: str = "",
-                     limit: int = 20) -> list[tuple[Entity, Item, list[Metric], list[Text]]]:
+                     limit: int = 20) -> SearchResult:
         """Keyword search on Xiaohongshu (not limited to the homepage feed) → visit each note's detail page
         for full metrics (including saves).
 
         Endpoint: GET https://www.xiaohongshu.com/search_result?keyword={kw}&source=web_search
         Parses the search-page __INITIAL_STATE__ feeds (same structure as homepage feed:
         noteCard + id + xsecToken). Keywords are searched one at a time, throttled by RateLimiter.
-        Returns a list of records.
+
+        Returns a :class:`SearchResult`: still a plain list of records (existing callers
+        unchanged), whose ``.outcomes`` holds one :class:`KeywordOutcome` per requested
+        keyword — in the same keyword order, including keywords that were skipped or never
+        executed. A caller can therefore tell a complete batch from one with holes and
+        retry only the keywords that failed.
+
+        Failure grading (same convention as ``fetch_feed``):
+        - ``RuntimeError`` (RateLimiter cap / expired cookie) is fatal → propagated at once,
+          never swallowed and never downgraded to an ordinary per-keyword failure.
+        - Ordinary fetch errors affect only the current keyword or note; the remaining
+          keywords continue.
         """
         out: list[tuple[Entity, Item, list[Metric], list[Text]]] = []
+        outcomes: list[KeywordOutcome] = []
         for kw in keywords:
-            if len(out) >= limit:
-                break
+            outcome = KeywordOutcome(keyword=kw)
+            outcomes.append(outcome)
+            if len(out) >= limit:                            # overall limit reached: don't issue another search request
+                outcome.executed = False
+                outcome.error = "not executed: overall limit reached"
+                continue
             try:
                 url = (f"https://www.xiaohongshu.com/search_result"
                        f"?keyword={urllib.parse.quote(kw)}&source=web_search")
                 state = parse_initial_state(self._fetch_html(url))
             except RuntimeError:
-                raise                                            # cookie expiry is fatal
+                raise                                            # cookie expiry / rate cap is fatal
             except Exception as e:                               # noqa: BLE001 search page fetch failed — skip this keyword
+                outcome.error = f"search page fetch failed: {e}"
                 print(f"[xhs] Search '{kw}' page fetch failed: {e}")
                 continue
-            feeds = ((state or {}).get("feeds") or (state or {}).get("note", {}).get("feeds")
-                     or (state or {}).get("search", {}).get("feeds") or [])[:limit]
-            for f in feeds:
+            if state is None:
+                outcome.error = "search page returned no parseable __INITIAL_STATE__"
+                print(f"[xhs] Search '{kw}' page returned no parseable __INITIAL_STATE__")
+                continue
+            outcome.search_ok = True
+            # real notes only — placeholders / ads carry no noteCard type
+            notes = [f for f in self._search_feeds(state)
+                     if (f.get("noteCard") or f.get("note") or {}).get("type")]
+            for f in notes:
                 if len(out) >= limit:
+                    outcome.truncated = True                     # limit hit mid-keyword: the rest of this page not attempted
                     break
                 nc = f.get("noteCard") or f.get("note") or {}
-                if not nc.get("type"):                           # skip placeholders / ads
-                    continue
+                outcome.candidates += 1
                 nid = f.get("id") or (nc.get("id"))
                 token = f.get("xsecToken") or (nc.get("xsecToken") or "")
                 if not nid:
+                    outcome.skipped += 1
+                    outcome.note_errors.append("missing note id")
                     continue
                 try:
                     note = extract_note(parse_initial_state(self._fetch_html(self._detail_url(nid, token))), nid)
-                    if note:
-                        out.append(note_to_records(note, segment, category))
                 except RuntimeError:
-                    raise
-                except Exception:                                # noqa: BLE001 transient per-note error — skip
+                    raise                                        # fatal — never swallow
+                except Exception as e:                           # noqa: BLE001 transient per-note error — skip that note only
+                    outcome.skipped += 1
+                    outcome.note_errors.append(f"{nid}: detail fetch failed: {e}")
                     continue
-        return out[:limit]
+                if not note:
+                    outcome.skipped += 1
+                    outcome.note_errors.append(f"{nid}: no note data in detail page")
+                    continue
+                out.append(note_to_records(note, segment, category))
+                outcome.fetched += 1
+            # Failure reason is empty only when the keyword was fully collected; skipped
+            # notes are summarised here (per-note detail stays in note_errors).
+            reasons = []
+            if outcome.skipped:
+                reasons.append(f"{outcome.skipped} note(s) skipped: "
+                               + "; ".join(outcome.note_errors))
+            if outcome.truncated:
+                reasons.append("overall limit reached before search results were exhausted")
+            outcome.error = "; ".join(reasons)
+        return SearchResult(out, outcomes)
+
+    def fetch_search_with_outcomes(self, keywords: list[str], segment: str = "",
+                                   category: str = "", limit: int = 20
+                                   ) -> tuple[list[tuple[Entity, Item, list[Metric], list[Text]]],
+                                              list[KeywordOutcome]]:
+        """Same as :meth:`fetch_search`, but returns the records and the per-keyword outcomes
+        side by side as a plain tuple — for callers that prefer explicit unpacking:
+
+            records, outcomes = ad.fetch_search_with_outcomes(["k1", "k2"])
+        """
+        result = self.fetch_search(keywords, segment=segment, category=category, limit=limit)
+        return result.records, result.outcomes
 
     # Author profile batch fetch — implement after Phase 0.3 confirms whether it's __INITIAL_STATE__ or a signed API
     def fetch_entity(self, seed: dict) -> tuple[Entity, list[Metric]]:

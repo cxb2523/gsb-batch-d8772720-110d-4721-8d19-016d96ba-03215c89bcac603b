@@ -2,6 +2,16 @@
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Per-keyword outcomes for `XHSAdapter.fetch_search`** — the return value is still a list of records (so existing callers are untouched), and now also carries `.outcomes`: one `KeywordOutcome` per requested keyword, in the same order the keywords were passed in. Each entry reports the keyword, whether the search page succeeded (`search_ok`), how many notes were produced (`fetched`), how many were skipped for a failed detail page or a missing id (`skipped`, with per-note reasons in `note_errors`), and the failure reason (`error`, empty on success). Keywords never reached because the overall `limit` was hit are included as `executed=False` with `error="not executed: overall limit reached"` instead of being silently dropped, so callers can tell a complete batch from one with holes and retry only the keywords that failed (`SearchResult.failed_keywords` / `.unprocessed_keywords` / `.complete`).
+- `fetch_search_with_outcomes(...)` convenience wrapper returning `(records, outcomes)` as a plain tuple.
+- 12 offline tests for the search path (all-success, search-page network error, detail-page network error, missing id, unparseable search page, fatal `RuntimeError` propagation from both search and detail fetches, overall-limit bookkeeping, outcome field shape, list-contract compatibility, empty keyword list).
+
+### Changed
+- `fetch_search` no longer silently skips a keyword whose search page failed — the failure is recorded on that keyword's outcome while the remaining keywords continue, as before.
+
 ## [0.4.0] - 2026-08-29
 
 **Bring your own data.** The README already said a MediaCrawler export could be fed to Prism; now there is code behind that claim.
