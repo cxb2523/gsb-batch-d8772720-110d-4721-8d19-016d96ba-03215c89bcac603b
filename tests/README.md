@@ -35,6 +35,33 @@ Each test pins a bug that reached production once:
 | `test_canonicals_and_titles` | Repeated or conflicting canonicals (tags or `Link` headers) go unreported, conflicting ones still mark the page canonicalised, a header-only canonical is missed, or titles inside SVG/`<object>`/`<iframe>` count as page titles |
 | `test_analysis_persists_and_crawls_compare` | Analysis fields or the final `linked_from` are lost on reload, crawl comparison misreports changes or leaks another user's crawls, or a resumed crawl saves its end-of-crawl issues twice |
 
+## head_probe_acceptance.py
+
+Acceptance test for the image/external-link HEAD probe chain. Starts two local
+HTTP sites plus a black-hole socket, then crawls a page whose probes cover a
+normal target, a duplicated target, a non-existent domain (`.invalid`,
+classified `dns_not_found`) and an address that accepts the connection but
+never answers (classified `timeout`).
+
+```bash
+python tests/head_probe_acceptance.py
+```
+
+It verifies, on every run:
+
+- normal probes keep their status code, content type and size; failures are
+  status 0 with a distinguishable `target_error_type`, and never abort the crawl
+- the classified results are written back onto the links and pushed through the
+  `link_update` event stream the browser polls
+- every probe passes through the same rate limiter as page fetches: with a
+  large `delay`, adjacent probe requests are spaced by at least that delay
+- the per-crawl cache deduplicates repeated URLs, so a duplicated target costs
+  one HTTP request while every link still receives the cached status
+
+Set `HEAD_PROBE_PORT` / `HEAD_PROBE_EXT_PORT` if the defaults (8951/8952) are
+taken. The crawler session runs with `trust_env=False` so an OS-level HTTP
+proxy cannot mask DNS/timeout failures as ordinary 502/504 responses.
+
 ## crawl_harness.py
 
 End-to-end test against a real site. Start LibreCrawl first, then point the

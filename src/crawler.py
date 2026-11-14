@@ -243,7 +243,8 @@ class WebCrawler:
         # sitemap was found or discovery is off.
         self.sitemap_urls = set()
 
-        # HEAD status cache (avoids re-checking the same URL across pages)
+        # HEAD probe cache (avoids re-checking the same URL across pages):
+        # url -> {'status': int, 'error_type': str|None}
         self._head_status_cache = {}
         # URLs already given a synthesized result row from a HEAD check
         self._synthesized_urls = set()
@@ -1781,7 +1782,8 @@ class WebCrawler:
                       and (l['target_status'] >= 400 or l['target_status'] == 0)]
             if broken:
                 result['broken_images'] = [
-                    {'url': l['target_url'], 'status': l['target_status']}
+                    {'url': l['target_url'], 'status': l['target_status'],
+                     'error_type': l.get('target_error_type')}
                     for l in broken
                 ]
 
@@ -1804,6 +1806,13 @@ class WebCrawler:
         it appears on many pages.  Runs up to 5 checks in parallel, capped at
         50 URLs per call to avoid blocking the crawl.
 
+        Every probe passes through the same rate limiter as page fetches, so
+        the configured delay spaces HEAD checks out too instead of hitting a
+        host in a tight burst.  Failures are classified with the same
+        classify_fetch_error() taxonomy as page fetch errors (timeout, DNS,
+        connection refused, ...) and carried on the link as target_error_type;
+        a failed probe never raises into the crawl.
+
         URLs that won't be fetched as full crawl targets get a result row
         synthesized from the HEAD response so they appear in the Images /
         External tabs without downloading the body. link_check_only marks
@@ -1820,10 +1829,15 @@ class WebCrawler:
             url = link['target_url']
             cached = self._head_status_cache.get(url)
             if cached is not None:
-                if link.get('target_status') != cached:
-                    link['target_status'] = cached
+                # The cache holds both the status and the classified reason,
+                # so repeated links inherit the failure cause without a
+                # second request being made for the same URL.
+                if link.get('target_status') != cached['status']:
+                    link['target_status'] = cached['status']
                     mutated.append(link)
+                link['target_error_type'] = cached['error_type']
             elif link.get('target_status') is None:
+                link.setdefault('target_error_type', None)
                 to_check.append(link)
 
         if not to_check:
@@ -1834,31 +1848,51 @@ class WebCrawler:
             url = link['target_url']
             content_type = ''
             size = 0
+            status_code = 0
+            error_type = None
             try:
-                resp = self.session.head(url, timeout=5, allow_redirects=True)
+                # Probes share the page-fetch limiter: each request waits for
+                # its slot so the configured delay is honoured across page
+                # fetches and HEAD checks as one stream of traffic.
+                self._acquire_request_slot()
+                resp = self.session.head(url, timeout=self.config['timeout'],
+                                         allow_redirects=True)
                 # Plenty of servers refuse HEAD but serve GET; confirm with a
                 # streamed GET whose body is never read
                 if resp.status_code in (403, 405, 501):
                     resp.close()
-                    resp = self.session.get(url, timeout=5, allow_redirects=True, stream=True)
+                    self._acquire_request_slot()
+                    resp = self.session.get(url, timeout=self.config['timeout'],
+                                            allow_redirects=True, stream=True)
                     resp.close()
-                link['target_status'] = resp.status_code
+                status_code = resp.status_code
                 content_type = resp.headers.get('content-type', '').split(';')[0]
                 try:
                     size = int(resp.headers.get('content-length') or 0)
                 except ValueError:
                     size = 0
-            except Exception:
-                link['target_status'] = 0
-            self._head_status_cache[url] = link['target_status']
+            except Exception as e:
+                # Same classification as page fetch failures so a timeout is
+                # distinguishable from a DNS failure or a refused connection.
+                # Swallowing here keeps one dead target from aborting the batch
+                # (and therefore the whole crawl).
+                status_code = 0
+                error_type = classify_fetch_error(e)
+
+            link['target_status'] = status_code
+            link['target_error_type'] = error_type
+            self._head_status_cache[url] = {
+                'status': status_code,
+                'error_type': error_type,
+            }
 
             # Skip synthesis for URLs crawled for real. List mode
             # keeps its rows to exactly the listed URLs.
             if self.config.get('list_mode'):
                 return
             if not self._should_crawl_url(url):
-                self._record_head_result(url, link['target_status'], content_type, size, depth,
-                                         link_check_only)
+                self._record_head_result(url, status_code, content_type, size, depth,
+                                         link_check_only, error_type=error_type)
 
         batch = to_check[:50]
         with ThreadPoolExecutor(max_workers=min(HEAD_CHECK_WORKERS, len(batch))) as pool:
@@ -1867,13 +1901,36 @@ class WebCrawler:
         mutated.extend(batch)
         self._emit_link_updates(mutated)
 
+    def _acquire_request_slot(self):
+        """Wait for the shared rate-limiter slot used by page fetches.
+
+        HEAD probes call this before each request so they obey the same
+        delay setting as the crawl itself; with delay 0 the limiter is a
+        no-op and requests go out immediately as before.
+        """
+        if self.config.get('delay', 0) > 0 and self.rate_limiter:
+            self.rate_limiter.acquire()
+
     def _emit_link_updates(self, links):
         """Journal status changes made to links outside the link manager"""
         if links:
             self.event_log.emit_many('link_update', links)
 
+    @staticmethod
+    def _head_error_message(error_type):
+        """A short human-readable reason for a failed HEAD probe, matching
+        the labels the UI already uses for page-fetch error_type values."""
+        return {
+            'dns_not_found': 'DNS lookup failed',
+            'timeout': 'Request timed out',
+            'connection_refused': 'Connection refused',
+            'ssl_error': 'SSL/TLS error',
+            'redirect_loop': 'Too many redirects',
+            'connection_error': 'Connection error',
+        }.get(error_type, 'No response')
+
     def _record_head_result(self, url, status_code, content_type, size, depth,
-                            link_check_only=False):
+                            link_check_only=False, error_type=None):
         """Add a result row for a URL from its HEAD response (no body download)"""
         sources = self.link_manager.get_source_pages(url)
 
@@ -1882,7 +1939,10 @@ class WebCrawler:
                 return
             self._synthesized_urls.add(url)
 
-            result = self.seo_extractor.create_empty_result(url, depth, status_code)
+            result = self.seo_extractor.create_empty_result(
+                url, depth, status_code,
+                error=self._head_error_message(error_type) if status_code == 0 else None,
+                error_type=error_type if status_code == 0 else None)
             result['content_type'] = content_type
             result['size'] = size
             result['is_internal'] = self.link_manager.is_internal(url)

@@ -210,6 +210,7 @@ def init_crawl_tables():
                 is_internal BOOLEAN,
                 target_domain TEXT,
                 target_status INTEGER,
+                target_error_type TEXT,
                 placement TEXT,
 
                 discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -217,6 +218,13 @@ def init_crawl_tables():
                 FOREIGN KEY (crawl_id) REFERENCES crawls(id) ON DELETE CASCADE
             )
         ''')
+
+        # Migration: target_error_type records why a HEAD probe failed
+        # (timeout / dns_not_found / ...) when target_status is 0
+        try:
+            cursor.execute('ALTER TABLE crawl_links ADD COLUMN target_error_type TEXT')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Issues table
         cursor.execute('''
@@ -426,6 +434,7 @@ def save_links_batch(crawl_id, links):
                     link.get('is_internal'),
                     link.get('target_domain'),
                     link.get('target_status'),
+                    link.get('target_error_type'),
                     link.get('placement', 'body')
                 )
                 rows.append(row)
@@ -433,8 +442,8 @@ def save_links_batch(crawl_id, links):
             cursor.executemany('''
                 INSERT INTO crawl_links (
                     crawl_id, source_url, target_url, anchor_text, anchor_alt,
-                    is_internal, target_domain, target_status, placement
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_internal, target_domain, target_status, target_error_type, placement
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', rows)
 
             print(f"Saved {len(links)} links to database for crawl {crawl_id}")

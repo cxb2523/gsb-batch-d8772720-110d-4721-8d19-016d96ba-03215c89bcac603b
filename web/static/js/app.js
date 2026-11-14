@@ -3645,12 +3645,19 @@ function makeTextCell(text, wordBreak) {
     return cell;
 }
 
-function makeStatusBadgeCell(targetStatus) {
+function makeStatusBadgeCell(targetStatus, errorType) {
     const cell = document.createElement('td');
     if (targetStatus) {
         const badge = document.createElement('span');
         badge.className = `status-badge status-${Math.floor(targetStatus / 100)}xx`;
         badge.textContent = targetStatus;
+        cell.appendChild(badge);
+    } else if (targetStatus === 0) {
+        // A HEAD probe that never got an HTTP response: show why it failed
+        // (timeout, DNS, refused, ...) instead of an empty status cell.
+        const badge = document.createElement('span');
+        badge.className = 'status-badge status-0xx';
+        badge.textContent = getStatusCodeText(0, errorType);
         cell.appendChild(badge);
     }
     return cell;
@@ -3661,7 +3668,7 @@ function renderInternalLinkRow(row, link, index) {
 
     row.appendChild(makeTextCell(link.source_url, 'break-all'));
     row.appendChild(makeTextCell(link.target_url, 'break-all'));
-    row.appendChild(makeStatusBadgeCell(link.target_status));
+    row.appendChild(makeStatusBadgeCell(link.target_status, link.target_error_type));
     row.appendChild(makeTextCell(link.anchor_text || ''));
     row.appendChild(makeTextCell(placement));
 }
@@ -3671,7 +3678,7 @@ function renderExternalLinkRow(row, link, index) {
 
     row.appendChild(makeTextCell(link.source_url, 'break-all'));
     row.appendChild(makeTextCell(link.target_url, 'break-all'));
-    row.appendChild(makeStatusBadgeCell(link.target_status));
+    row.appendChild(makeStatusBadgeCell(link.target_status, link.target_error_type));
     row.appendChild(makeTextCell(link.target_domain || ''));
     row.appendChild(makeTextCell(placement));
 }

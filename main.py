@@ -476,7 +476,7 @@ def generate_xml_export(urls, fields):
 def generate_links_csv_export(links):
     """Generate CSV export for links data"""
     output = StringIO()
-    fieldnames = ['source_url', 'target_url', 'anchor_text', 'is_internal', 'target_domain', 'target_status', 'placement']
+    fieldnames = ['source_url', 'target_url', 'anchor_text', 'is_internal', 'target_domain', 'target_status', 'target_error_type', 'placement']
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
 
@@ -488,6 +488,7 @@ def generate_links_csv_export(links):
             'is_internal': 'Yes' if link.get('is_internal') else 'No',
             'target_domain': link.get('target_domain', ''),
             'target_status': link['target_status'] if link.get('target_status') is not None else 'Not crawled',
+            'target_error_type': link.get('target_error_type') or '',
             'placement': link.get('placement', 'body')
         }
         writer.writerow(row)
@@ -1885,7 +1886,7 @@ def _build_xlsx(sheet_title, headers, rows):
     return buffer.getvalue()
 
 
-LINK_EXPORT_FIELDS = ['source_url', 'target_url', 'anchor_text', 'is_internal', 'target_domain', 'target_status', 'placement']
+LINK_EXPORT_FIELDS = ['source_url', 'target_url', 'anchor_text', 'is_internal', 'target_domain', 'target_status', 'target_error_type', 'placement']
 ISSUE_EXPORT_FIELDS = ['url', 'type', 'category', 'issue', 'details']
 
 
@@ -1897,6 +1898,7 @@ def _link_export_row(link):
         'is_internal': 'Yes' if link.get('is_internal') else 'No',
         'target_domain': link.get('target_domain', ''),
         'target_status': link['target_status'] if link.get('target_status') is not None else 'Not crawled',
+        'target_error_type': link.get('target_error_type') or '',
         'placement': link.get('placement', 'body')
     }
 
@@ -2029,6 +2031,7 @@ def _stream_links_json(links):
             'is_internal': link.get('is_internal', False),
             'target_domain': link.get('target_domain', ''),
             'target_status': link['target_status'] if link.get('target_status') is not None else 'Not crawled',
+            'target_error_type': link.get('target_error_type'),
             'placement': link.get('placement', 'body')
         }
         prefix = ',\n' if i > 0 else ''

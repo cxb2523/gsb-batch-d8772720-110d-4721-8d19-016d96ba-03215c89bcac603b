@@ -200,6 +200,26 @@ def _is_broken(status):
     return status is not None and (status == 0 or status >= 400)
 
 
+# Human-readable label for a status-0 probe/fetch, keyed by the shared
+# classify_fetch_error() taxonomy so a timeout reads differently from a
+# DNS failure in the broken-link issue details.
+_NO_RESPONSE_LABELS = {
+    'dns_not_found': 'no response: DNS lookup failed',
+    'timeout': 'no response: request timed out',
+    'connection_refused': 'no response: connection refused',
+    'ssl_error': 'no response: SSL/TLS error',
+    'redirect_loop': 'no response: too many redirects',
+    'connection_error': 'no response: connection error',
+}
+
+
+def _status_label(status, error_type):
+    """The text shown after a target URL in broken-link issue details."""
+    if status:
+        return str(status)
+    return _NO_RESPONSE_LABELS.get(error_type, 'no response')
+
+
 def _examples(urls, exclude=None):
     """The first few of `urls` (skipping `exclude`, which callers pass only
     when it is in the list) and how many more there are.
@@ -316,15 +336,18 @@ class CrawlAnalyzer:
                     if target_row.get('error_type') == 'blocked_by_robots':
                         continue
                     if _is_broken(status):
-                        broken_internal[source].append(f'{target} ({status or "no response"})')
+                        broken_internal[source].append(
+                            f'{target} ({_status_label(status, target_row.get("error_type"))})')
                     elif target_row.get('redirects') or (status and 300 <= status < 400):
                         to_redirects[source].append(target)
                 elif _is_broken(link.get('target_status')):
                     broken_internal[source].append(
-                        f'{target} ({link.get("target_status") or "no response"})')
+                        f'{target} ({_status_label(link.get("target_status"),
+                                                   link.get("target_error_type"))})')
             elif _is_broken(link.get('target_status')):
-                status = link.get('target_status')
-                broken_external[source].append(f'{target} ({status or "no response"})')
+                broken_external[source].append(
+                    f'{target} ({_status_label(link.get("target_status"),
+                                               link.get("target_error_type"))})')
 
         for source, targets in broken_internal.items():
             issues.append({

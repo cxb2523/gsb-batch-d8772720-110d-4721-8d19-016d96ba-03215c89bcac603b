@@ -1790,6 +1790,15 @@ body {
 .cy-tooltip .status-4xx { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
 .cy-tooltip .status-5xx { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
 
+/* Status badges in the Images / Internal / External link tables. A 0xx badge
+   is a probe that never received an HTTP response (timeout, DNS failure, ...);
+   its text carries the classified reason, not a numeric code. */
+.status-badge.status-2xx { background: rgba(16, 185, 129, 0.15); color: #047857; }
+.status-badge.status-3xx { background: rgba(59, 130, 246, 0.15); color: #1d4ed8; }
+.status-badge.status-4xx { background: rgba(245, 158, 11, 0.15); color: #b45309; }
+.status-badge.status-5xx { background: rgba(239, 68, 68, 0.15); color: #b91c1c; }
+.status-badge.status-0xx { background: rgba(239, 68, 68, 0.15); color: #b91c1c; text-transform: none; letter-spacing: normal; }
+
 /* Cytoscape node interaction states */
 .highlighted {
     opacity: 1 !important;

@@ -441,6 +441,18 @@ class IssueDetector:
                            f'nofollow in the {where[source]}'
             })
 
+    @staticmethod
+    def _no_response_reason(error_type):
+        """Human-readable phrase for a classified fetch/probe failure."""
+        return {
+            'dns_not_found': 'DNS lookup failed',
+            'timeout': 'request timed out',
+            'connection_refused': 'connection refused',
+            'ssl_error': 'SSL/TLS error',
+            'redirect_loop': 'too many redirects',
+            'connection_error': 'connection error',
+        }.get(error_type, 'no response')
+
     def _check_broken_image_issues(self, result, issues):
         """Check for broken image URLs on the page"""
         url = result.get('url', '')
@@ -449,12 +461,13 @@ class IssueDetector:
             status = img.get('status', 0)
             img_url = img.get('url', '')
             if status == 0:
+                reason = self._no_response_reason(img.get('error_type'))
                 issues.append({
                     'url': url,
                     'type': 'error',
                     'category': 'Content',
                     'issue': 'Broken Image (No Response)',
-                    'details': f'Image does not respond: {img_url}'
+                    'details': f'Image does not respond ({reason}): {img_url}'
                 })
             elif status >= 400:
                 issues.append({
