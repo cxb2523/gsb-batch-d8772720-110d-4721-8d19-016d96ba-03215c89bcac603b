@@ -229,6 +229,7 @@ function summarizeRecord(record, tableId = "") {
   return {
     record_id: record.record_id,
     request_id: unwrapText(fields.request_id),
+    batch_id: unwrapText(fields["批次ID"] || fields.batch_id),
     anchor: anchorFromFields(tableId, fields),
     title: unwrapText(fields["标题"] || fields["主题"]),
     review_status: unwrapText(fields["审核状态"]),

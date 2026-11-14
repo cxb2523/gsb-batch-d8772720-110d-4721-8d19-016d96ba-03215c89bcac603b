@@ -167,6 +167,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 调度器只处理已审核且处于有效排期窗口的记录。正式调度发布还要求记录批次 ID 与 `DOUYIN_AUTHORIZED_BATCH_ID` 完全一致。
 
+不满足发布前置条件的记录会在进入浏览器自动化之前逐条判定并跳过：整轮不会中止，该条会写回 `发布状态=跳过` 与 `发布失败原因`，原因能区分“持久干跑未关闭”（`DOUYIN_DRY_RUN=true`，此时不写回任何飞书状态）和“批次号不匹配”（同时带上记录批次号与授权批次号）。同轮其余记录继续处理；每轮结束输出每条记录的表、记录号、结局（`已发布`/`干跑完成`/`跳过`/`失败`）与原因。
+
 ```powershell
 npm.cmd run scheduler:once
 npm.cmd run scheduler

@@ -181,6 +181,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 The scheduler processes only reviewed rows inside the valid scheduling window. Real scheduler publishing additionally requires the row batch ID to match `DOUYIN_AUTHORIZED_BATCH_ID`.
 
+Rows that cannot be published are evaluated before browser automation and skipped one by one: the round never aborts, and each row is written back with `发布状态=跳过` and a `发布失败原因` that distinguishes a persistent dry run (`DOUYIN_DRY_RUN=true`, no Feishu write-back at all) from a batch-ID mismatch (both the record batch ID and the authorized batch ID are included). Other rows in the same round still run. At the end of every round the scheduler prints, per row, the table, record ID, outcome (`已发布`/`干跑完成`/`跳过`/`失败`) and reason.
+
 ```powershell
 npm.cmd run scheduler:once
 npm.cmd run scheduler
