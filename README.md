@@ -31,6 +31,7 @@ https://mcp.hasdata.com/mcp?apis=duckduckgo
 - [How it compares](#how-it-compares)
 - [FAQ](#faq)
 - [HasData links](#hasdata-links)
+- [Batch rank collection](#batch-rank-collection)
 - [Development](#development)
 - [Contributing](#contributing)
 - [License](#license)
@@ -422,6 +423,54 @@ HasData accesses publicly available data only. A platform's terms may restrict a
 | Keys and usage | [HasData dashboard](https://app.hasdata.com?utm_source=github&utm_medium=syndication&utm_campaign=duckduckgo-mcp) |
 | Node launcher on npm | [@hasdata/duckduckgo-mcp](https://www.npmjs.com/package/@hasdata/duckduckgo-mcp) |
 | Python launcher on PyPI | [hasdata-duckduckgo-mcp](https://pypi.org/project/hasdata-duckduckgo-mcp/) |
+
+## Batch rank collection
+
+`scripts/collect_rankings.py` walks a keyword across regions and pages and writes one
+absolute-rank table per task. It exists because the tool itself returns a single page:
+`position` restarts at 1 on every page, so rank across a result set is the number of
+organic entries already collected plus the `position` inside the current page.
+
+```bash
+HASDATA_API_KEY=your_key_here python scripts/collect_rankings.py scripts/tasks.example.json
+```
+
+The task list is JSON: a bare array, or `{"tasks": [...]}`, where each entry has `query`,
+`kl` and `maxPages`. The report goes to `<tasks>.results.json` (override with `--out`).
+
+```json
+[
+  { "id": "mcp-us", "query": "model context protocol", "kl": "us-en", "maxPages": 3 }
+]
+```
+
+Each task's record carries `status` (`success`, `partial` or `failed`),
+`pagesCollected`, `truncatedByMaxPages`, `hasNextPage`, `pagesSucceeded`, `failedPage`,
+`errorCategory` and the `results` rows with `absoluteRank`. A failed page keeps every
+page collected before it, and `errorCategory` is one of `auth_failed`,
+`invalid_argument`, `rate_limited`, `network_timeout` or `other`. Rate limiting
+(`concurrency_limit`) is retried with an exponential wait; authentication failures are
+not retried.
+
+The first page sends `q` and `kl`. Later pages send `nextPageToken` alone, because a
+`q` beside the token is ignored by the server without a warning and would mislabel the
+run. Missing `ads`, `searchAssist`, `organicResults` or `pagination` keys are read as
+empty.
+
+The report is written after every task, so an interrupted run resumes where it stopped:
+
+```bash
+python scripts/collect_rankings.py tasks.json              # skips finished tasks
+python scripts/collect_rankings.py tasks.json --retry-failed  # re-runs partial and failed ones
+python scripts/collect_rankings.py tasks.json --fresh         # collect everything again
+```
+
+The offline test suite fabricates every response, so it needs no key and no network:
+
+```bash
+python -m unittest discover -s test -p "test_collect_rankings.py"
+# or: npm run test:rank-collector
+```
 
 ## Development
 

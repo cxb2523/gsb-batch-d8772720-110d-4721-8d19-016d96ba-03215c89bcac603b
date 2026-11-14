@@ -1,0 +1,5 @@
+[
+  { "id": "mcp-transistor-us", "query": "model context protocol", "kl": "us-en", "maxPages": 3 },
+  { "id": "mcp-transistor-de", "query": "model context protocol", "kl": "de-de", "maxPages": 3 },
+  { "id": "mcp-transistor-jp", "query": "model context protocol", "kl": "jp-jp", "maxPages": 2 }
+]
