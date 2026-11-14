@@ -26,6 +26,7 @@ https://mcp.hasdata.com/mcp?apis=airbnb
 - [Quick start](#quick-start)
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
+- [Resumable multi-page search](#resumable-multi-page-search)
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
@@ -255,6 +256,44 @@ Returns `title`, an `overview` array like `["4 guests", "2 bedrooms", "2 beds", 
 }
 ```
 
+## Resumable multi-page search
+
+A search call returns one page. Walking more pages means threading `pagination.nextPageToken` into the next call yourself, and a 429 halfway through leaves you guessing whether the run finished or broke. `lib/multi-page-search.mjs` is a dependency-free helper (Node 18+, platform `fetch`) that drives the same remote endpoint for a whole run and makes a stopped run restartable.
+
+```js
+import { searchAllListings } from '@hasdata/airbnb-mcp/multi-page-search';
+
+const first = await searchAllListings({
+  apiKey: process.env.HASDATA_API_KEY,
+  searchArgs: { location: 'Austin, Texas', checkIn: '2026-12-10', checkOut: '2026-12-13' },
+  maxPages: 5,      // pages fetched in this invocation
+  maxRetries: 3,    // retries per page after the first attempt
+});
+// first.properties  — every listing from every page, de-duplicated by id (url as fallback)
+// first.pages       — one outcome record per page
+// first.state       — JSON-serializable; persist it to continue later
+```
+
+`pages` records what happened on every page, each with `page`, `status`, `newProperties` and `totalProperties`. `status` is `success`, `no_more_results` (an empty `properties` array) or `failed`. A non-empty last page without a `nextPageToken` also ends the run, as a successful page. Failed pages additionally carry `reason`, `resumable` and the number of `attempts`. The last seen `requestMetadata.id` is returned as `requestMetadataId` for support tickets.
+
+**Resume.** The state holds the parked `nextPageToken`, every merged property id and the page count. Pass it back instead of `searchArgs`:
+
+```js
+const next = await searchAllListings({ apiKey, state: first.state, maxPages: 5 });
+```
+
+The next call starts at the parked token, so pages that already succeeded are never pulled again; the stored ids still drop any listing a repeated page returns. A failure on page one reports `resumable: false` because there is no token yet — rerunning simply restarts at page one. An already-complete state spends no remote call.
+
+**Rate limiting.** A response containing `concurrency_limit` or an HTTP 429 is retried with exponential backoff (`baseDelayMs`, doubled up to `maxDelayMs`, at most `maxRetries` times). Hard errors such as a 401 or a schema rejection fail immediately rather than burn retries. When the retry budget is exhausted the page is marked `failed`, the token stays in the state, and the search is **not** treated as finished — resume when the limit clears. An empty `properties` array and a missing `nextPageToken` are the only clean end conditions.
+
+A CLI driver wraps the same helper and keeps the state in a file, so a run can be continued from a shell:
+
+```bash
+node scripts/search.mjs --location "Austin, Texas" --check-in 2026-12-10 \
+  --check-out 2026-12-13 --max-pages 5 --state ./austin-state.json
+node scripts/search.mjs --resume ./austin-state.json --max-pages 5
+```
+
 ## Errors and failure paths
 
 Your client almost never sees an HTTP error code from a tool call. The MCP layer answers 200 and puts the failure inside the result, with `isError` set to `true` and the reason as text. The agent reads a message where you might expect a status line.
@@ -359,7 +398,13 @@ This repository is configuration and documentation for a remote server. There is
 
 The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=airbnb` returns exactly two tools, that every tool still declares its required parameters, that no name changed, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason.
 
+`test/multi-page-search.test.mjs` needs no key and no network: it injects a fake `fetch` returning hand-written JSON-RPC and SSE bodies, and covers a healthy two-page merge with de-duplication, an empty-page stop, a `concurrency_limit`/429 retry that succeeds, retries exhausting into a resumable failure, and the resume that continues from the parked token. It runs everywhere, including forks and a machine with no credentials.
+
 ```bash
+# Local suite only — no key, no network
+node --test test/multi-page-search.test.mjs
+
+# Full suite: the live contract checks skip when the key is absent
 # macOS and Linux
 HASDATA_API_KEY=your_key_here npm test
 

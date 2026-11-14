@@ -9,11 +9,17 @@
   },
   "files": [
     "index.mjs",
+    "lib",
+    "scripts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test"
+  },
+  "exports": {
+    ".": "./index.mjs",
+    "./multi-page-search": "./lib/multi-page-search.mjs"
   },
   "dependencies": {
     "mcp-remote": "^0.1.43"
