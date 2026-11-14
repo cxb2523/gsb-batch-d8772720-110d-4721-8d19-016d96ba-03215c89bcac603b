@@ -7,11 +7,13 @@
   title)（含源语义），同输入重跑同 `_id`；批内重复行只入一条；归档收含 raw_*
   的完整信封、入库 doc 剥净 raw_*/time_estimated；
 - 源级隔离：单源异常仍成功（em 照常入库、摘要计失败源、不 raise）；
-  双源全挂 → RuntimeError（框架 retry）；
+  双源全挂 → RuntimeError（框架 retry）；摘要/RuntimeError 均带各源异常类型与
+  消息（截断到 _ERROR_DETAIL_MAX_CHARS），健康源条数/新增数不丢；
 - 溢出检测：某源整窗全新 + 已归档集合非空 → 告警一次 + 摘要标记；
   冷启动（涉及各日归档全空）豁免不告警；
 - 断流状态机：某源连续 _SILENCE_ROUNDS 轮 0 条新数据 → 恰在第 N 轮发一条告警、
   再多轮不重发；恢复轮发恢复通知并复位（状态文件真实落 tmp_path，跨调用持久）；
+  告警文案区分"本轮窗口 0 条"与"本轮采集异常（类型+消息）"；
 - 跨午夜：滚动窗 pub_time 分属两日 → 逐 (source, day) load_ids/append；
 - pub_time 解析失败：信封回退 fetch_time + time_estimated 只进归档（入库剥除），
   `_id` 不受影响仍决定论；
@@ -259,6 +261,30 @@ def test_missing_column_counts_source_failed(env):
     assert [d["source"] for d in env.calls.bulk[0]] == ["em"]
 
 
+def test_archive_failure_isolated_does_not_block_bulk(env, monkeypatch):
+    """单源归档失败仅隔离该源归档，不影响其余源归档、也不阻塞任何源入库。"""
+    env.cls_data = _cls_df([_cls_row("电报")])
+    env.em_data = _em_df([_em_row("东财快讯", "https://finance.eastmoney.com/a/1.html")])
+
+    real_append = flash.news_archive.append
+
+    def flaky_append(source, date, envelopes):
+        if source == "cls":
+            raise OSError("NAS 挂载抖动")
+        return real_append(source, date, envelopes)
+
+    monkeypatch.setattr(flash.news_archive, "append", flaky_append)
+
+    summary = flash.run()
+
+    # em 归档照常；两源入库照常（归档缺口由 spool/下轮补）
+    assert [a[0] for a in env.calls.archived] == ["em"]
+    assert {d["source"] for d in env.calls.bulk[0]} == {"cls", "em"}
+    assert "cls 1条(新0)" in summary                    # 归档失败 → 新增计 0 但窗口条数保留
+    assert "em 1条(新1)" in summary
+    assert "失败源[" not in summary                      # 归档失败不计"采集失败源"
+
+
 # ---------- 溢出检测 ----------
 
 def test_overflow_alert_when_window_all_new(env):
@@ -367,6 +393,112 @@ def test_silence_failed_source_increments_counter(env):
         (env.tmp_path / ".flash_source_state.json").read_text(encoding="utf-8"))
     assert state["em"]["consecutive_zero"] == rounds    # 失败源逐轮累计
     assert state["cls"]["consecutive_zero"] == 0
+
+
+# ---------- 失败原因可见性 + 断流告警结局文案 ----------
+
+def test_single_source_failure_summary_carries_exception_type_and_message(env):
+    """单源异常：摘要保留"失败源[...]"标记，另带异常类型与消息；
+    健康源窗口条数与归档新增数不得丢失，且照常归档+入库。"""
+    env.cls_data = TimeoutError("cls 拉取超过 60s（源挂起，按源失败隔离）")
+    env.em_data = _em_df([
+        _em_row("东财快讯一", "https://finance.eastmoney.com/a/1.html"),
+        _em_row("东财快讯二", "https://finance.eastmoney.com/a/2.html"),
+    ])
+
+    summary = flash.run()
+
+    # 摘要：失败源标记保留 + 异常类型/消息可见
+    assert "失败源[cls]" in summary
+    assert "cls 失败(TimeoutError: cls 拉取超过 60s" in summary
+    # 健康源窗口条数/归档新增数照常出现在摘要
+    assert "em 2条(新2)" in summary
+    assert "入库新增 2" in summary and "重复 0" in summary
+    # 健康源照常归档 + 入库
+    assert [a[0] for a in env.calls.archived] == ["em"]
+    assert len(env.calls.bulk) == 1
+    assert [d["source"] for d in env.calls.bulk[0]] == ["em", "em"]
+
+
+def test_error_detail_contract_truncates_and_keeps_type():
+    """失败原因单行化 + 截断到合理长度，类型名永远保留在最前。"""
+    exc = ValueError("坏数据\n" + "x" * 1000)
+    detail = flash._error_detail(exc)
+    assert detail.startswith("ValueError: 坏数据 ")
+    assert "\n" not in detail
+    assert len(detail) <= flash._ERROR_DETAIL_MAX_CHARS
+    assert detail.endswith("…")
+    assert flash._error_detail(ValueError("")) == "ValueError"   # 空消息仅类型名
+
+
+def test_both_sources_failed_message_carries_each_reason(env):
+    """双源全挂仍 raise RuntimeError，异常消息包含各源原因（类型+消息）。"""
+    env.cls_data = ValueError("cls 返回缺列（疑源改版）")
+    env.em_data = ConnectionError("em 连接被重置 限流")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        flash.run()
+
+    msg = str(excinfo.value)
+    assert "全部源" in msg
+    assert "cls: ValueError: cls 返回缺列" in msg
+    assert "em: ConnectionError: em 连接被重置 限流" in msg
+    assert env.calls.bulk == []
+
+
+def test_silence_alert_once_and_wording_distinguishes_empty_window(env):
+    """连续空窗达阈值只告警一次，文案写清"本轮窗口 0 条"（非笼统疑似断流）。"""
+    env.cls_data = _cls_df([_cls_row("电报")])          # cls 正常，保双源不全挂
+    env.em_data = None                                  # em 真空窗口
+
+    for _ in range(flash._SILENCE_ROUNDS):
+        flash.run()
+    silence = [a for a in env.calls.alerts if "疑似断流" in a]
+    assert len(silence) == 1 and "em" in silence[0]
+    assert "本轮窗口 0 条" in silence[0]
+    assert "采集异常" not in silence[0]                  # 空窗 ≠ 异常，文案须可区分
+
+    flash.run()                                        # 再来一轮不重发
+    assert len([a for a in env.calls.alerts if "疑似断流" in a]) == 1
+
+
+def test_silence_alert_once_and_wording_distinguishes_collection_error(env):
+    """连续采集异常达阈值只告警一次，文案写清"采集异常"并附异常类型与消息。"""
+    env.cls_data = _cls_df([_cls_row("电报")])          # cls 正常，保双源不全挂
+    env.em_data = ConnectionError("em 被限流 HTTP 429")
+
+    for _ in range(flash._SILENCE_ROUNDS):
+        flash.run()
+    silence = [a for a in env.calls.alerts if "疑似断流" in a]
+    assert len(silence) == 1 and "em" in silence[0]
+    assert "本轮采集异常 ConnectionError: em 被限流 HTTP 429" in silence[0]
+    assert "本轮窗口 0 条" not in silence[0]             # 异常 ≠ 空窗，文案须可区分
+
+    flash.run()                                        # 不得重发
+    assert len([a for a in env.calls.alerts if "疑似断流" in a]) == 1
+
+
+def test_silence_recovery_after_errors_notifies_and_resets(env):
+    """采集异常累计至阈值告警后恢复正常：发恢复通知（写明已恢复）并复位状态。"""
+    env.cls_data = _cls_df([_cls_row("电报")])
+    env.em_data = RuntimeError("em 接口抽风")
+
+    for _ in range(flash._SILENCE_ROUNDS):
+        flash.run()
+    assert len([a for a in env.calls.alerts if "疑似断流" in a]) == 1
+
+    env.em_data = _em_df([_em_row("恢复了", "https://finance.eastmoney.com/a/r.html")])
+    summary = flash.run()
+
+    recovered = [a for a in env.calls.alerts if "断流恢复" in a]
+    assert len(recovered) == 1 and "em" in recovered[0]
+    assert "采集已恢复" in recovered[0]
+    assert "em 1条(新1)" in summary                     # 恢复轮摘要计入健康数据
+
+    state = json.loads(
+        (env.tmp_path / ".flash_source_state.json").read_text(encoding="utf-8"))
+    assert state["em"]["consecutive_zero"] == 0
+    assert state["em"]["alerted"] is False
 
 
 # ---------- 跨午夜分组 ----------

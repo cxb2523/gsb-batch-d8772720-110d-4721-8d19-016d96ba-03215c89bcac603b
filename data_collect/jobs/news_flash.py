@@ -7,7 +7,8 @@ _fetch_cls；akshare 旧路径挂死已弃）+ ``em``（东财全球快讯，aks
 因此本 job 的健壮性机制多于同族 news_cctv：
 
 1. **源级隔离**：单源采集异常只计失败源继续（双活的意义），双源全挂才 raise
-   触发框架 retry；
+   触发框架 retry；失败源摘要/异常消息带异常类型与消息（见 `_error_detail`），
+   健康源的窗口条数与归档新增数照常保留；
 2. **溢出检测**（每源独立）：本轮窗口整体全部为新 `_id` 且已归档集合非空 →
    上轮与本轮窗口零重叠，跳轮/爆量期间中间的快讯已**永久丢失** → 钉钉告警
    （对策：加密调度频率）。冷启动（涉及各日归档全空）必然整窗全新，豁免不告警；
@@ -15,6 +16,8 @@ _fetch_cls；akshare 旧路径挂死已弃）+ ``em``（东财全球快讯，aks
    各源连续 0 条**窗口数据**轮数（判定用窗口条数而非归档新增——健康源持续返回同一
    滚动窗会归档 0 新，据此判定会误报断流；任务每轮跑在新子进程，模块级状态每轮
    复位，须落盘），达 `_SILENCE_ROUNDS` 告警一次、恢复后发恢复通知并复位；
+   判定仍只看窗口条数，但告警/恢复文案写明该源本轮结局（采集异常+类型消息 /
+   窗口 0 条 / 已恢复），而非笼统一句"疑似断流"；
 4. **verify = 归档重放对账**：快讯源头无法回补，`run_verify` 不触源，只把
    `[today-N, today]` 自然日窗口的归档重放入库（create-only 幂等），兜集群宕机
    期间"已归档未入库"的缺口。
@@ -171,6 +174,40 @@ def _fetch_sina() -> pd.DataFrame:
     import akshare as ak
 
     return ak.stock_info_global_sina()
+
+
+# 失败原因摘要截断：异常消息可能极长（HTTP 错误页/嵌套 repr），摘要须单行可读。
+# 类型名在消息之前，截断不会丢类型；超长部分以 … 标记。
+_ERROR_DETAIL_MAX_CHARS = 200
+
+
+def _error_detail(exc: BaseException, limit: int = _ERROR_DETAIL_MAX_CHARS) -> str:
+    """异常 → ``Type: message`` 单行摘要（空白折叠 + 截断），供摘要/告警/raise 复用。
+
+    必须带异常类型：运维需区分接口报错、限流（HTTPError/ValueError）与返回空窗，
+    只写"失败"无从定位。空消息仅返回类型名。
+    """
+    name = type(exc).__name__
+    message = " ".join(str(exc).split())
+    if not message:
+        return name
+    detail = f"{name}: {message}"
+    if len(detail) > limit:
+        detail = detail[: max(0, limit - 1)] + "…"
+    return detail
+
+
+def _round_outcome(source: str, window_counts: Dict[str, int],
+                   failed_sources: List[str],
+                   error_details: Dict[str, str]) -> str:
+    """该源**本轮**结局文案：采集异常（附类型+消息）/ 窗口 0 条 / 窗口 N 条。
+
+    断流告警与恢复通知共用——运维据此一眼区分"接口炸了/被限流"与"源活着但返回
+    空窗"，而非只看到一句笼统的"疑似断流"。
+    """
+    if source in failed_sources:
+        return f"本轮采集异常 {error_details.get(source, '原因未知')}"
+    return f"本轮窗口 {window_counts.get(source, 0)} 条"
 
 
 def _alert(message: str) -> bool:
@@ -410,7 +447,8 @@ def _write_state(state: Dict[str, dict]) -> None:
 
 
 def _update_silence_state(window_counts: Dict[str, int],
-                          failed_sources: List[str]) -> None:
+                          failed_sources: List[str],
+                          error_details: Dict[str, str] | None = None) -> None:
     """单源断流持续监测（spec §6 监控清单"双活之一连续 N 轮 0 条"）。
 
     **断流判定用窗口条数（本轮该源返回＆信封化的条数，归档去重之前），而非归档新增
@@ -423,7 +461,12 @@ def _update_silence_state(window_counts: Dict[str, int],
     且未告警 → 告警一次并置 alerted（**发送成功才置位**，失败下轮重试——断流告警
     不容丢）；恢复（窗口有条目）→ 已告警则发恢复通知（丢失仅属美观问题），
     无条件复位。状态须落盘：任务每轮跑在新子进程，模块级标志每轮复位。
+
+    告警/恢复文案均带**该源本轮结局**（见 _round_outcome）：采集异常（含异常类型
+    与消息）/ 窗口 0 条 / 已恢复窗口 N 条——只写"疑似断流"无法区分接口报错、
+    限流与空窗。
     """
+    error_details = error_details or {}
     state = _read_state()
     for source in _active_sources():
         entry = state.get(source)
@@ -435,15 +478,19 @@ def _update_silence_state(window_counts: Dict[str, int],
             entry["consecutive_zero"] = int(entry.get("consecutive_zero", 0)) + 1
             rounds = entry["consecutive_zero"]
             if rounds >= _SILENCE_ROUNDS and not entry.get("alerted"):
+                outcome = _round_outcome(source, window_counts,
+                                         failed_sources, error_details)
                 if _alert(
                     f"快讯源 {source} 已连续 {rounds} 轮无新数据，疑似断流"
-                    f"（*/15 调度下约 {rounds * 15 / 60:.1f} 小时）；"
+                    f"（{outcome}；*/15 调度下约 {rounds * 15 / 60:.1f} 小时）；"
                     f"另一源双活仍在采集，请排查该源接口"
                 ):
                     entry["alerted"] = True
         else:
             if entry.get("alerted"):
-                _alert(f"快讯源 {source} 断流恢复（本轮窗口 {window_counts.get(source, 0)} 条）")
+                _alert(f"快讯源 {source} 断流恢复"
+                       f"（{_round_outcome(source, window_counts, failed_sources, error_details)}"
+                       f"，采集已恢复）")
             entry["consecutive_zero"] = 0
             entry["alerted"] = False
         state[source] = entry
@@ -457,7 +504,9 @@ def run(run_date: str | None = None, **kwargs) -> str:
 
     `run_date` 仅为框架签名兼容——滚动窗接口无日期参数，永远采"当前窗口"；
     归档/入库的日期归属由每条的 pub_time 决定（窗口可跨午夜）。
-    单源异常隔离（计失败源继续），双源全挂才 raise 触发框架 retry。
+    单源异常隔离（计失败源继续），失败源在摘要中以
+    ``{source} 失败(异常类型: 消息)`` 呈现且保留 ``失败源[...]`` 标记；
+    双源全挂才 raise，异常消息含各源原因（均经 _error_detail 截断）。
     """
     _flush_spool_safe()
     name_dict = _load_name_dict()
@@ -467,16 +516,18 @@ def run(run_date: str | None = None, **kwargs) -> str:
     sources = _active_sources()
     envelopes_by_source: Dict[str, List[dict]] = {}
     failed_sources: List[str] = []
-    errors: List[str] = []
+    error_details: Dict[str, str] = {}
     for source in sources:
         try:
             envelopes_by_source[source] = _collect_source(source, fetch_time, name_dict)
         except Exception as exc:
             failed_sources.append(source)
-            errors.append(f"{source}: {exc!r}")
+            error_details[source] = _error_detail(exc)
             logger.warning(f"快讯源 {source} 采集失败（源级隔离，继续其余源）: {exc!r}")
     if len(failed_sources) == len(sources):
-        raise RuntimeError(f"快讯全部源采集失败: {'; '.join(errors)}")
+        raise RuntimeError(
+            "快讯全部源采集失败: "
+            + "; ".join(f"{s}: {error_details[s]}" for s in failed_sources))
 
     # 跨日分组归档 + 溢出检测（每源独立）
     # 逐源归档隔离（审查 S2）：单源归档失败不阻塞其余源入库（入库与归档解耦，
@@ -505,12 +556,13 @@ def run(run_date: str | None = None, **kwargs) -> str:
     # 滚动窗会归档 0 新，若据归档新增判定会误报断流（详见 _update_silence_state）。
     # 失败源不在 envelopes_by_source 中，.get 得 0（且状态机另按 failed_sources 兜底）。
     window_counts = {source: len(envs) for source, envs in envelopes_by_source.items()}
-    _update_silence_state(window_counts, failed_sources)
+    _update_silence_state(window_counts, failed_sources, error_details)
 
     parts = []
     for source in sources:
         if source in failed_sources:
-            parts.append(f"{source} 失败")
+            # 保留"失败源[...]"标记（告警规则/人工习惯依赖），另附底层原因
+            parts.append(f"{source} 失败({error_details.get(source, '原因未知')})")
         else:
             parts.append(
                 f"{source} {len(envelopes_by_source[source])}条(新{new_counts[source]})")
