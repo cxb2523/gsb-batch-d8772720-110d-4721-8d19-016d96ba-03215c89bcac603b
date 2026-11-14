@@ -1553,6 +1553,12 @@ $('enter-world').onclick = () => {
 // ---- 添加账号：从电脑微信采集登录 -----------------------------------------
 let capturePoll = null;
 
+const CAPTURE_PHASE_LABELS = {
+  idle: '空闲', starting: '启动中', ca: '准备测试证书', listening: '启动本地代理',
+  proxy: '设置系统代理', waiting: '等待电脑游戏登录', captured: '已采集登录报文',
+  stopping: '停止清理中', error: '未清理干净',
+};
+
 function renderCapture(state) {
   const hint = $('cap-hint');
   const previousQr=$('cap-box').querySelector('img'),previousLog=$('cap-box').querySelector('pre');
@@ -1562,42 +1568,61 @@ function renderCapture(state) {
   $('cap-start').disabled = state.running || cleanupPending;
   $('cap-douyin').disabled = state.running || cleanupPending;
   $('cap-stop').disabled = !state.running && !cleanupPending;
-  hint.textContent = state.error ? '采集已停止，请查看运行日志' : (state.running ? '抓包中：' + (state.phase === 'waiting' ? '等待电脑游戏登录' : state.phase) : (state.accountId ? '凭证已保存，登录验证结果请查看日志' : ''));
+  const phaseLabel = CAPTURE_PHASE_LABELS[state.phase] ?? state.phase;
+  hint.textContent = state.error
+    ? (cleanupPending ? '清理未完成：' + state.error : state.error)
+    : (state.running ? '抓包中：' + phaseLabel : (state.accountId ? '凭证已保存，登录验证结果请查看日志' : ''));
   hint.className = state.error ? 'bad' : 'warn';
 
-  if (state.running) {
-    const steps = el('ol', 'steps');
-    const lines = [
-      '先登录电脑版' + (state.platform === 'douyin' ? '抖音' : '微信') + '，再从该客户端打开《疯狂水世界》',
-      '如果游戏已经打开，请完全退出后重新进入，让它重新发送登录请求',
-      '捕获后保存凭证，并尝试读取角色验证登录；验证失败会显示在日志中',
-      '完成、失败或等待超时后会自动恢复代理，只移除本次新安装的证书',
-    ];
-    for (const text of lines) steps.appendChild(el('li', null, text));
-    const qr = el('div', 'qr');
-    const side = el('div', null, '');
-    if (state.platform !== 'douyin' && state.qr && state.qr.kind === 'image') {
-      const img=previousQr?.dataset.url===state.qr.url?previousQr:el('img');
-      if(!img.dataset.url){img.dataset.url=state.qr.url;img.src=state.qr.url+'?t='+Date.now();}
-      img.alt = '游戏入口码（非扫码登录授权）';
-      qr.appendChild(img);
+  if (state.running || cleanupPending) {
+    if (state.running) {
+      const steps = el('ol', 'steps');
+      const lines = [
+        '先登录电脑版' + (state.platform === 'douyin' ? '抖音' : '微信') + '，再从该客户端打开《疯狂水世界》',
+        '如果游戏已经打开，请完全退出后重新进入，让它重新发送登录请求',
+        '捕获后保存凭证，并尝试读取角色验证登录；验证失败会显示在日志中',
+        '完成、失败或等待超时后会自动恢复代理，只移除本次新安装的证书',
+      ];
+      for (const text of lines) steps.appendChild(el('li', null, text));
+      const qr = el('div', 'qr');
+      const side = el('div', null, '');
+      if (state.platform !== 'douyin' && state.qr && state.qr.kind === 'image') {
+        const img=previousQr?.dataset.url===state.qr.url?previousQr:el('img');
+        if(!img.dataset.url){img.dataset.url=state.qr.url;img.src=state.qr.url+'?t='+Date.now();}
+        img.alt = '游戏入口码（非扫码登录授权）';
+        qr.appendChild(img);
+      }
+      if (state.platform !== 'douyin') side.appendChild(el('div', 'dim', state.qr?.note || '请在电脑微信中打开游戏。'));
+      side.appendChild(steps);
+      qr.appendChild(side);
+      box.appendChild(qr);
     }
-    if (state.platform !== 'douyin') side.appendChild(el('div', 'dim', state.qr?.note || '请在电脑微信中打开游戏。'));
-    side.appendChild(steps);
-    qr.appendChild(side);
-    box.appendChild(qr);
 
     const status = el('div', 'kv');
     const rows = [
+      ['阶段', phaseLabel],
       ['系统代理', (state.proxyOn ? '已打开 -> ' + (state.proxy?.ProxyServer ?? '') : '未打开') + '　原值 ' + (state.originalProxy?.ProxyEnable ?? '无') + ' / ' + (state.originalProxy?.ProxyServer ?? '无')],
       ['本地证书', state.caInstalled ? (state.caAddedByCapture ? '本次安装，结束后移除' : '原有证书，结束后保留') : '未安装'],
       ['抓包代理', state.port ? '127.0.0.1:' + state.port : '-'],
     ];
+    if (cleanupPending) rows.push(['清理结论', '未清理干净：' + (state.error || '请重试停止') + '（可再次点「停止抓包」重试）']);
     for (const [k, v] of rows) {
       status.appendChild(el('div', 'k', k));
       status.appendChild(el('div', 'v', v));
     }
     box.appendChild(status);
+  }
+
+  if (!state.running && !cleanupPending && (state.error || state.capturedAt)) {
+    const outcome = el('div', 'kv');
+    const rows = [['阶段', '空闲（清理已完成）']];
+    if (state.error) rows.push(['结局', state.error]);
+    if (state.accountId) rows.push(['账号', state.accountId + '，凭证已保存']);
+    for (const [k, v] of rows) {
+      outcome.appendChild(el('div', 'k', k));
+      outcome.appendChild(el('div', 'v', v));
+    }
+    box.appendChild(outcome);
   }
 
   if (state.log && state.log.length) {

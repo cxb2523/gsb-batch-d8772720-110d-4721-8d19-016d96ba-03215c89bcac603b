@@ -28,7 +28,11 @@ function harness({ mode = '', trusted = false, certExists = trusted, original = 
     acquireLock: async () => {
       if (h.mode === 'busy') throw new Error('fixture lock busy');
       h.locked = true;
-      return () => { h.locked = false; };
+      return () => {
+        if (h.mode === 'lock-release-failure') return Promise.reject(new Error('fixture lock release failure'));
+        h.locked = false;
+        return Promise.resolve();
+      };
     },
     process: runtime, port: PORT, now: () => new Date('2026-10-19T00:00:00.000Z'),
     setTimeout(callback, milliseconds) {
@@ -53,6 +57,7 @@ function harness({ mode = '', trusted = false, certExists = trusted, original = 
       installCa() {
         events.push('ca:install');
         if (h.mode === 'install-before-write-failure') throw new Error('fixture install rejected before trust changed');
+        if (h.mode === 'install-unverified') return; // installer "succeeds" but the trust store never shows the CA
         h.trusted = true;
         if (h.mode === 'install-failure') throw new Error('fixture partial certificate installation');
       },
@@ -176,11 +181,32 @@ assert.equal(reentrant.controller.captureState().accountId, 'reentrant-account')
 assert.equal(reentrant.events.filter((event) => event === 'proxy:stop').length, 1);
 reentrant.assertClean();
 
+// Every startup failure names its own stage, so the console can say what failed.
+for (const port of [0, 65536, 1.5, '17322', NaN]) {
+  const h = harness();
+  const result = await h.controller.startCapture({ port });
+  assert.match(result.error, /检查代理端口失败：代理端口必须是 1–65535 的整数/);
+  assert.deepEqual(h.events, [], 'invalid port must fail before lock, trust, or proxy changes');
+  h.assertClean();
+}
+
+const STAGE_BY_MODE = {
+  busy: /获取采集锁失败：fixture lock busy/,
+  'missing-leaf': /准备当前用户测试证书失败/,
+  'create-failure': /加载游戏协议失败/,
+  'init-failure': /准备当前用户测试证书失败/,
+  'install-before-write-failure': /准备当前用户测试证书失败/,
+  'install-failure': /准备当前用户测试证书失败/,
+  'listen-failure': /启动本地采集代理失败/,
+  'set-failure': /设置当前用户系统代理失败/,
+  'set-verification-failure': /设置当前用户系统代理失败/,
+};
 for (const mode of ['busy', 'missing-leaf', 'create-failure', 'init-failure', 'install-before-write-failure', 'install-failure', 'listen-failure', 'set-failure', 'set-verification-failure']) {
   const h = harness({ mode });
   const result = await h.controller.startCapture();
   assert.equal(result.running, false, mode);
   assert(result.error, mode);
+  assert.match(result.error, STAGE_BY_MODE[mode], `${mode} must report its own stage`);
   if (mode === 'busy') assert.deepEqual(h.events, []);
   if (mode === 'missing-leaf') {
     assert.match(result.error, /leaf\.key/);
@@ -194,11 +220,25 @@ for (const mode of ['busy', 'missing-leaf', 'create-failure', 'init-failure', 'i
   h.assertClean();
 }
 
+// The installer may report success while the trust store never shows the CA:
+// fail at the verification step, and do not delete trust this run never saw.
+{
+  const h = harness({ mode: 'install-unverified' });
+  const result = await h.controller.startCapture();
+  assert.match(result.error, /准备当前用户测试证书失败：测试 CA 安装后未在受信任根证书库中查到/);
+  assert(h.events.includes('ca:install'));
+  assert(!h.events.includes('ca:remove'), 'do not delete trust that verification never found');
+  assert(h.events.includes('ca:files-removed'), 'still remove this run’s generated CA files');
+  h.assertClean();
+}
+
 for (const server of ['127.0.0.1:17322', 'localhost:17322', 'http=localhost:17322;https=127.0.0.1:17322', '[::1]:17322']) {
   const h = harness({ original: { ProxyEnable: '0x1', ProxyServer: server } });
   const result = await h.controller.startCapture();
+  assert.match(result.error, /检查系统代理失败：系统代理已指向本机采集端口/);
   assert.match(result.error, /原始备份/);
   assert.deepEqual(h.events, [], 'stale capture proxy must fail before trust, listening, or backup changes');
+  assert.equal(h.sharedBackup, null, 'refusal must keep the previous backup untouched');
   h.assertClean();
 }
 
@@ -268,6 +308,21 @@ for (const mode of ['restore-failure', 'ca-cleanup-failure']) {
   h.assertClean();
 }
 
+// A failed lock release is an unclean outcome, not a finished stop; a retry resolves it.
+{
+  const h = harness();
+  await h.controller.startCapture();
+  h.mode = 'lock-release-failure';
+  const result = await h.controller.stopCapture();
+  assert.equal(result.phase, 'error', 'failed lock release must not pose as a clean stop');
+  assert.match(result.error, /采集锁释放失败/);
+  assert(h.locked, 'lock is still held after a failed release');
+  assert(h.runtime.listenerCount('exit') > 0, 'retain exit retry while the lock is held');
+  h.mode = '';
+  await h.controller.stopCapture('retry lock release');
+  h.assertClean();
+}
+
 const staleCallback = harness();
 const pendingCallback = deferred();
 await staleCallback.controller.startCapture({ onLogin: () => pendingCallback.promise });
@@ -281,4 +336,4 @@ assert.equal(staleCallback.controller.captureState().accountId, null);
 await staleCallback.controller.stopCapture();
 staleCallback.assertClean();
 
-console.log('WeChat capture selftest passed: first status, success/failure rollback, original snapshot, CA preservation, timeout, signals, and concurrent/reentrant stop; no real system operations.');
+console.log('WeChat capture selftest passed: first status, per-stage startup failures, success/failure rollback, original snapshot, CA preservation, unverified install, timeout, signals, lock-release retry, and concurrent/reentrant stop; no real system operations.');

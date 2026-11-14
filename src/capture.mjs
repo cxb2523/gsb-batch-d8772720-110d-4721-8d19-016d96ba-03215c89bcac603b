@@ -122,8 +122,17 @@ export function createCaptureController(dependencies = {}) {
         cleanupError(run, '本地采集代理关闭失败，请重试停止。');
       }
       restoreCa(run);
-      const clean = !run.proxySettings && !run.caAdded && !run.proxy;
-      if (clean && run.releaseLock) await run.releaseLock();
+      let clean = !run.proxySettings && !run.caAdded && !run.proxy;
+      if (clean && run.releaseLock) {
+        try {
+          await run.releaseLock();
+          run.releaseLock = null;
+        } catch {
+          // A stuck lock must surface as "not cleaned up", never as a finished stop.
+          cleanupError(run, '采集锁释放失败，请重试停止。');
+          clean = false;
+        }
+      }
       if (latest === run) {
         state.running = false;
         state.phase = clean ? 'idle' : 'error';
@@ -182,13 +191,15 @@ export function createCaptureController(dependencies = {}) {
       caAddedByCapture: false, caInstalledBefore: false,
       accountId: null, capturedAt: null, startedAt: now().toISOString(), log: [],
     });
-    let stage = '检查采集设置';
+    let stage = '检查代理端口';
     let failed = false;
     try {
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('代理端口必须是 1–65535 的整数');
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) throw new Error('采集超时必须在 1–86400000 毫秒之间');
+      stage = '获取采集锁';
       run.releaseLock = await acquireLock();
       if (run.cancelled) throw new Error('启动已取消');
+      stage = '检查系统代理';
       state.originalProxy = { ...settings.readCurrent() };
       if (pointsToCapture(state.originalProxy, port)) {
         throw new Error('系统代理已指向本机采集端口；请先恢复上次的代理设置，避免覆盖原始备份');
@@ -231,7 +242,7 @@ export function createCaptureController(dependencies = {}) {
         },
       });
       state.phase = 'ca';
-      stage = '准备当前用户测试 CA';
+      stage = '准备当前用户测试证书';
       ca.initCa();
       ca.prepareLeaf(GATEWAY.hostname);
       if (!state.caInstalledBefore) {
@@ -246,7 +257,7 @@ export function createCaptureController(dependencies = {}) {
         } finally {
           run.installPending = false;
         }
-        if (!ca.isInstalled()) throw new Error('安装后未能确认当前测试 CA');
+        if (!ca.isInstalled()) throw new Error('测试 CA 安装后未在受信任根证书库中查到');
       }
       if (run.cancelled) throw new Error('采集启动已取消');
       stage = '启动本地采集代理';
