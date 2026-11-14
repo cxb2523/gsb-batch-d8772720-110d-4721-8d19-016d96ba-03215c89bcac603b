@@ -1,0 +1,1 @@
+2026-04-21 19:32:32.911115 - ERROR: ERROR: [generic] Unable to download webpage: HTTPSConnection(host='invalid-url', port=443): Failed to resolve 'invalid-url' ([Errno 11001] getaddrinfo failed) (caused by TransportError("HTTPSConnection(host='invalid-url', port=443): Failed to resolve 'invalid-url' ([Errno 11001] getaddrinfo failed)")): https://invalid-url
