@@ -1,0 +1,46 @@
+{
+  "name": "source-first-clone",
+  "version": "0.3.9",
+  "description": "Source-first Skill and MCP workflow for URL-based website cloning, capture, rebuild, and fidelity verification.",
+  "author": {
+    "name": "Jongho",
+    "email": "hello@example.com",
+    "url": "https://github.com/jongko54"
+  },
+  "homepage": "https://github.com/jongko54/webEmbedding#readme",
+  "repository": "https://github.com/jongko54/webEmbedding",
+  "license": "MIT",
+  "keywords": [
+    "codex-plugin",
+    "source-first",
+    "embed",
+    "clone",
+    "reference-intake",
+    "mcp-registry",
+    "claude-code"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Source-First Clone",
+    "shortDescription": "Capture URL evidence, rebuild blocked pages, and verify clone fidelity",
+    "longDescription": "A Skill and MCP workflow for source-first website cloning. It inspects URLs, discovers embed and preview candidates, classifies when exact reuse is possible, captures runtime evidence with Playwright-style options, and only falls back to bounded reconstruction after source-first paths are exhausted.",
+    "developerName": "Jongho",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Inspect",
+      "Research",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/jongko54/webEmbedding#readme",
+    "privacyPolicyURL": "https://webembedding-mcp.vercel.app/privacy.html",
+    "termsOfServiceURL": "https://webembedding-mcp.vercel.app/terms.html",
+    "defaultPrompt": [
+      "Use the original embed or preview URL before recreating this reference.",
+      "If the original page itself is frameable, use direct iframe reuse instead of rebuilding it.",
+      "Inspect this link and tell me whether it should be embedded, sourced, or rebuilt.",
+      "Run the full clone_reference_url workflow for this link, attach session-aware capture if needed, and plan the exact clone path for this page."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

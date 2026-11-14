@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-embedding"
+version = "0.3.9"
+description = "Source-first Codex plugin installer for webpage intake and session-aware exact-clone workflows."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Jongho" }
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/jongko54/webEmbedding#readme"
+Repository = "https://github.com/jongko54/webEmbedding"
+Issues = "https://github.com/jongko54/webEmbedding/issues"
+
+[project.scripts]
+web-embedding = "web_embedding.installer:main"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+
+[tool.setuptools.packages.find]
+where = ["python"]

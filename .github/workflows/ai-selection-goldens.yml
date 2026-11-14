@@ -1,0 +1,52 @@
+name: AI Selection Goldens
+
+on:
+  pull_request:
+    paths:
+      - "server.json"
+      - "package.json"
+      - "bundle/source-first-clone/.codex-plugin/plugin.json"
+      - "bundle/source-first-clone/.claude-plugin/plugin.json"
+      - "bundle/source-first-clone/skills/**"
+      - "bundle/source-first-clone/mcp/source_first_clone/tools.py"
+      - "docs/ai-distribution.md"
+      - "evals/ai-selection/**"
+      - "scripts/check_ai_selection_goldens.py"
+      - ".github/workflows/ai-selection-goldens.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "server.json"
+      - "package.json"
+      - "bundle/source-first-clone/.codex-plugin/plugin.json"
+      - "bundle/source-first-clone/.claude-plugin/plugin.json"
+      - "bundle/source-first-clone/skills/**"
+      - "bundle/source-first-clone/mcp/source_first_clone/tools.py"
+      - "docs/ai-distribution.md"
+      - "evals/ai-selection/**"
+      - "scripts/check_ai_selection_goldens.py"
+      - ".github/workflows/ai-selection-goldens.yml"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Validate AI selection goldens
+        run: npm run check:ai-selection:local

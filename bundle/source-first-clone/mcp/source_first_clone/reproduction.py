@@ -1,0 +1,1346 @@
+"""Reproduction bundle generation for source-first clone workflows."""
+
+from __future__ import annotations
+
+import json
+from html import escape
+from pathlib import Path
+from typing import Any
+
+from .capture_bundle import capture_reference_bundle
+from .planning import plan_reproduction_path
+from .repair_scaffold import build_repair_scaffold
+from .rebuild_scaffold import build_rebuild_scaffold, persist_rebuild_scaffold
+from .self_verify import (
+    _breakpoint_ready_count,
+    _self_verify_rank,
+    _self_verify_summary,
+    run_rebuild_self_verify,
+)
+from .url_hosts import https_url_at, split_url, url_host, url_on_domain
+from .verification import build_exact_reuse_verification, verify_fidelity_report
+
+
+ANALYTICS_HOST_HINTS = (
+    "googletagmanager.com",
+    "google-analytics.com",
+    "doubleclick.net",
+    "facebook.net",
+    "connect.facebook.net",
+    "px.ads.linkedin.com",
+    "googleadservices.com",
+    "analytics.google.com",
+    "google.com/ccm/collect",
+    "google.com/rmkt/collect",
+    "google.co.kr/pagead",
+    "google.com/pagead",
+    "_vercel/speed-insights",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+)
+
+MAX_AUTO_REPAIR_PASSES = 3
+MIN_AUTO_REPAIR_SCORE_DELTA = 3
+
+
+def is_noise_url(url: str) -> bool:
+    lowered = url.lower()
+    if any(hint in lowered for hint in ANALYTICS_HOST_HINTS):
+        return True
+    if any(
+        marker in lowered
+        for marker in (
+            "/_next/image?url=",
+            "/signals/config/",
+            "/collect?",
+            "/attribution_trigger",
+            "/oauth/verify",
+        )
+    ):
+        return True
+    if lowered.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".woff", ".woff2", ".css", ".js", ".map", ".wasm")):
+        return True
+    return False
+
+
+def infer_platform(url: str) -> str:
+    lowered = url.lower()
+    if url_on_domain(url, "spline.design"):
+        return "spline"
+    if url_on_domain(url, "figma.com"):
+        return "figma"
+    if "readymag" in lowered or "rmcdn" in lowered:
+        return "readymag"
+    if url_on_domain(url, "youtube.com", "youtu.be"):
+        return "youtube"
+    if url_on_domain(url, "vimeo.com"):
+        return "vimeo"
+    if url_on_domain(url, "codepen.io"):
+        return "codepen"
+    if "webflow" in lowered:
+        return "webflow"
+    if "framer" in lowered:
+        return "framer"
+    return "generic"
+
+
+def classify_candidate(url: str) -> str:
+    lowered = url.lower()
+    parts = split_url(url)
+    path = parts.path.lower() if parts else ""
+    query = parts.query.lower() if parts else ""
+    host = url_host(url)
+    if https_url_at(url, "www.figma.com", "/embed"):
+        return "figma-embed"
+    if https_url_at(url, "embed.readymag.com"):
+        return "readymag-embed"
+    if "htmlsnippet-" in lowered and lowered.endswith(".html"):
+        return "readymag-html-snippet"
+    if https_url_at(url, "www.youtube.com", "/embed/"):
+        return "youtube-embed"
+    if https_url_at(url, "player.vimeo.com", "/video/"):
+        return "vimeo-embed"
+    if https_url_at(url, "codepen.io") and "/embed/" in path:
+        return "codepen-embed"
+    if host == "app.spline.design" and path.startswith("/file/") and "view=preview" in query:
+        return "spline-preview"
+    if host == "viewer.spline.design":
+        return "spline-viewer"
+    if ".splinecode" in lowered:
+        return "spline-code"
+    if any(token in lowered for token in ("/embed", "?embed", "&embed", "view=preview", "viewer")):
+        return "generic-embed"
+    return "runtime-hint"
+
+
+def should_reuse_direct_iframe(final_url: str, platform: str | None) -> bool:
+    lowered = (final_url or "").lower()
+    platform = str(platform or "").lower()
+    if platform == "spline" and ("app.spline.design/file/" in lowered or "/community/file/" in lowered):
+        return False
+    if platform == "figma" and "figma.com/embed" not in lowered:
+        return False
+    return True
+
+
+def _prompt_clean_text(value: Any, limit: int = 120) -> str:
+    text = " ".join(str(value or "").replace("\n", " ").split())
+    return text[:limit]
+
+
+def _prompt_root_surface(root_context: Any) -> str:
+    if not isinstance(root_context, dict):
+        return ""
+    kind = _prompt_clean_text(root_context.get("kind"), 40) or "document"
+    frame_src = _prompt_clean_text(root_context.get("frameSrc"), 120)
+    frame_url = _prompt_clean_text(root_context.get("frameUrl"), 120)
+    shadow_host = _prompt_clean_text(root_context.get("shadowHostTag"), 48)
+    surface_index = root_context.get("surfaceIndex")
+    root_path = root_context.get("rootPath") if isinstance(root_context.get("rootPath"), list) else []
+    parts = [kind]
+    if shadow_host:
+        parts.append(f"shadow host {shadow_host}")
+    elif frame_src:
+        parts.append(f"frame {frame_src}")
+    elif frame_url and kind != "document":
+        parts.append(f"frame {frame_url}")
+    if isinstance(surface_index, int):
+        parts.append(f"surface {surface_index}")
+    path_label = " > ".join(
+        part
+        for part in (_prompt_clean_text(item, 56) for item in root_path[:4])
+        if part
+    )
+    if path_label and path_label != "document":
+        parts.append(f"path {path_label}")
+    return " / ".join(parts)
+
+
+APP_LIMITED_SURFACES = {
+    "authenticated-app-surface",
+    "frame-blocked-app-surface",
+    "js-app-shell-surface",
+}
+
+ARTIFACT_LABELS = {
+    "html": "runtime HTML",
+    "screenshot": "viewport screenshot",
+    "dom_snapshot": "DOM snapshot",
+    "computed_styles": "computed styles",
+    "css_analysis": "CSS analysis",
+    "network_manifest": "network manifest",
+    "assets": "asset inventory",
+    "interaction_states": "interaction states",
+    "interaction_trace": "interaction replay trace",
+    "storage_state_exported": "exported session storage state",
+}
+
+CRITICAL_DEPTH_ARTIFACTS = {
+    "dom": "dom_snapshot",
+    "computed-styles": "computed_styles",
+    "runtime-html": "html",
+    "network": "network_manifest",
+    "interactions": "interaction_states",
+    "session-state": "storage_state_exported",
+    "canvas-surface": "screenshot",
+}
+
+NATIVE_APP_GATE_SIGNALS = {
+    "app_store_badge",
+    "play_store_badge",
+    "open_in_app",
+    "app_download",
+    "qr_app_link",
+    "deep_link",
+    "app_link_meta",
+}
+
+
+def _unique_limited(items: list[str], limit: int) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = _prompt_clean_text(item, 180)
+        if cleaned and cleaned not in seen:
+            unique.append(cleaned)
+            seen.add(cleaned)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _capture_artifact_flags(capture_bundle: dict[str, Any]) -> dict[str, bool]:
+    bundle = capture_bundle.get("bundle", {}) if isinstance(capture_bundle, dict) else {}
+    artifacts = bundle.get("artifacts", {}) if isinstance(bundle.get("artifacts"), dict) else {}
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    captures = runtime.get("captures", {}) if isinstance(runtime.get("captures"), dict) else {}
+
+    flags = {key: bool(artifacts.get(key)) for key in ARTIFACT_LABELS}
+    capture_key_map = {
+        "html": "html",
+        "screenshot": "screenshot",
+        "dom_snapshot": "dom",
+        "computed_styles": "styles",
+        "css_analysis": "cssAnalysis",
+        "network_manifest": "network",
+        "assets": "assets",
+        "interaction_states": "interactions",
+        "interaction_trace": "interactionTrace",
+    }
+    for artifact_key, capture_key in capture_key_map.items():
+        capture = captures.get(capture_key, {}) if isinstance(captures.get(capture_key), dict) else {}
+        flags[artifact_key] = flags[artifact_key] or bool(capture.get("available"))
+
+    session = runtime.get("session", {}) if isinstance(runtime.get("session"), dict) else {}
+    flags["storage_state_exported"] = flags["storage_state_exported"] or bool(session.get("storageStateExported"))
+    return flags
+
+
+def _has_session_input(capture_bundle: dict[str, Any]) -> bool:
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    session = runtime.get("session", {}) if isinstance(runtime.get("session"), dict) else {}
+    session_request = capture_bundle.get("session_request", {}) if isinstance(capture_bundle.get("session_request"), dict) else {}
+    return bool(
+        session.get("storageStateApplied")
+        or session.get("storageStatePath")
+        or session.get("userDataDir")
+        or session_request.get("storage_state_path")
+        or session_request.get("user_data_dir")
+    )
+
+
+def _build_evidence_limitations(capture_bundle: dict[str, Any]) -> dict[str, Any]:
+    static = capture_bundle.get("static", {}) if isinstance(capture_bundle.get("static"), dict) else {}
+    runtime = capture_bundle.get("runtime", {}) if isinstance(capture_bundle.get("runtime"), dict) else {}
+    bundle = capture_bundle.get("bundle", {}) if isinstance(capture_bundle.get("bundle"), dict) else {}
+    site_profile = static.get("site_profile", {}) if isinstance(static.get("site_profile"), dict) else {}
+    route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
+    signals = site_profile.get("signals", {}) if isinstance(site_profile.get("signals"), dict) else {}
+    raw_critical_depths = route_hints.get("critical_depths", [])
+    if not isinstance(raw_critical_depths, list):
+        raw_critical_depths = []
+    critical_depths = [str(depth) for depth in raw_critical_depths if isinstance(depth, str)]
+    raw_app_gate_signals = signals.get("app_gate_signals", [])
+    if not isinstance(raw_app_gate_signals, list):
+        raw_app_gate_signals = []
+    app_gate_signals = [str(signal) for signal in raw_app_gate_signals if isinstance(signal, str)]
+    artifact_flags = _capture_artifact_flags(capture_bundle)
+    session_input = _has_session_input(capture_bundle)
+    primary_surface = str(site_profile.get("primary_surface") or "unknown").lower()
+    profile_confidence = str(site_profile.get("confidence") or "unknown")
+
+    app_gated = bool(
+        signals.get("app_gate_detected")
+        or route_hints.get("evidence_limit")
+        or "app-gate-evidence" in critical_depths
+    )
+    auth_gated = bool(
+        signals.get("auth_detected")
+        or signals.get("app_login_gate_detected")
+        or primary_surface == "authenticated-app-surface"
+        or "session-state" in critical_depths
+    )
+    native_app_required = bool(
+        signals.get("app_deep_link_detected")
+        or "native-app-deep-links" in critical_depths
+        or (signals.get("app_gate_detected") and any(signal in NATIVE_APP_GATE_SIGNALS for signal in app_gate_signals))
+    )
+    app_like = bool(signals.get("app_shell") or primary_surface in APP_LIMITED_SURFACES)
+
+    directly_captured: list[str] = []
+    if static:
+        directly_captured.append("static inspect metadata")
+    if runtime.get("available"):
+        directly_captured.append("runtime browser trace")
+    directly_captured.extend(
+        label
+        for key, label in ARTIFACT_LABELS.items()
+        if artifact_flags.get(key)
+    )
+
+    inferred_or_missing: list[str] = []
+    if site_profile:
+        inferred_or_missing.append(f"site_profile inferred {primary_surface} ({profile_confidence} confidence)")
+    if app_gate_signals:
+        inferred_or_missing.append(f"app-gate signals inferred from public HTML: {', '.join(app_gate_signals[:6])}")
+    if route_hints.get("evidence_limit"):
+        inferred_or_missing.append(f"evidence limit: {route_hints.get('evidence_limit')}")
+    if route_hints.get("evidence_note"):
+        inferred_or_missing.append(str(route_hints.get("evidence_note")))
+    site_profile_notes = site_profile.get("notes", [])
+    if not isinstance(site_profile_notes, list):
+        site_profile_notes = []
+    for note in site_profile_notes[:2]:
+        inferred_or_missing.append(str(note))
+
+    missing_depths = [
+        depth
+        for depth in critical_depths
+        if CRITICAL_DEPTH_ARTIFACTS.get(depth) and not artifact_flags.get(CRITICAL_DEPTH_ARTIFACTS[depth])
+    ]
+    missing_artifacts = [
+        str(item)
+        for item in bundle.get("missing_artifacts", [])
+        if isinstance(item, str)
+    ]
+    if missing_depths:
+        inferred_or_missing.append(f"critical evidence not captured: {', '.join(missing_depths[:6])}")
+    if native_app_required:
+        inferred_or_missing.append("native app or deep-linked app state is not captured by browser-only evidence")
+    if auth_gated and artifact_flags.get("storage_state_exported") and not session_input:
+        inferred_or_missing.append("exported storage state came from the capture browser and does not prove a supplied authenticated session")
+    if missing_artifacts:
+        inferred_or_missing.append(f"missing capture artifacts: {', '.join(missing_artifacts[:5])}")
+
+    recommendations: list[str] = []
+    if app_gated or native_app_required:
+        recommendations.append(
+            "Provide user screenshots from the target app/authenticated state before claiming product, account, checkout, or trading UI fidelity."
+        )
+    if auth_gated and not session_input:
+        recommendations.append("Run authenticated session capture with storage_state or user_data_dir for session-only DOM and network evidence.")
+    if not artifact_flags.get("screenshot"):
+        recommendations.append("Capture viewport screenshots for the exact state being reproduced.")
+    if app_like and not artifact_flags.get("network_manifest"):
+        recommendations.append("Capture runtime network evidence for API-driven app state.")
+    if not recommendations:
+        recommendations.append("Treat this as bounded public-web evidence, not private backend, payment, booking, or native-app logic.")
+
+    core_ready = all(
+        artifact_flags.get(key)
+        for key in ("dom_snapshot", "computed_styles", "network_manifest", "screenshot")
+    )
+    if app_gated or native_app_required:
+        confidence = "limited"
+        scope = "captured-public-app-gate"
+        summary = (
+            "Public web evidence appears app-gated or native-app-led; rebuild output should be scoped to the captured shell "
+            "unless user-provided screenshots or authenticated session capture are supplied."
+        )
+    elif auth_gated and not session_input:
+        confidence = "limited"
+        scope = "unauthenticated-public-shell"
+        summary = "Authentication signals were detected without captured session state, so private app screens are missing evidence."
+    elif auth_gated:
+        confidence = "medium"
+        scope = "bounded-authenticated-web-capture"
+        summary = "Session-aware evidence is present, but private app state and server behavior remain bounded reconstruction inputs."
+    elif app_like and not core_ready:
+        confidence = "medium"
+        scope = "partial-app-shell-capture"
+        summary = "App-shell evidence is partial; avoid claims beyond the captured shell, layout, and sampled interactions."
+    elif core_ready:
+        confidence = "high"
+        scope = "bounded-public-web-capture"
+        summary = "Core public-web visual, DOM, style, and network evidence was captured for bounded reproduction."
+    else:
+        confidence = "medium"
+        scope = "bounded-public-web-capture"
+        summary = "Public-web evidence is available but incomplete; exact private app or backend behavior is out of scope."
+
+    return {
+        "confidence": confidence,
+        "scope": scope,
+        "summary": summary,
+        "flags": {
+            "app_gated": app_gated,
+            "auth_gated": auth_gated,
+            "native_app_required": native_app_required,
+            "session_input": session_input,
+            "storage_state_exported": bool(artifact_flags.get("storage_state_exported")),
+        },
+        "directly_captured": _unique_limited(directly_captured, 8),
+        "inferred_or_missing": _unique_limited(inferred_or_missing, 8),
+        "recommendations": _unique_limited(recommendations, 4),
+    }
+
+
+def _prompt_evidence_limitations(evidence_limitations: dict[str, Any] | None) -> list[str]:
+    if not isinstance(evidence_limitations, dict) or not evidence_limitations:
+        return []
+    lines = [
+        f"Evidence confidence: {evidence_limitations.get('confidence')} ({evidence_limitations.get('scope')})",
+        f"Evidence summary: {evidence_limitations.get('summary')}",
+    ]
+    directly_captured = evidence_limitations.get("directly_captured", [])
+    if isinstance(directly_captured, list) and directly_captured:
+        lines.append("Directly captured evidence:")
+        lines.extend(f"- {item}" for item in directly_captured[:6])
+    inferred_or_missing = evidence_limitations.get("inferred_or_missing", [])
+    if isinstance(inferred_or_missing, list) and inferred_or_missing:
+        lines.append("Inferred or missing evidence:")
+        lines.extend(f"- {item}" for item in inferred_or_missing[:6])
+    recommendations = evidence_limitations.get("recommendations", [])
+    if isinstance(recommendations, list) and recommendations:
+        lines.append("Recommended evidence before stronger claims:")
+        lines.extend(f"- {item}" for item in recommendations[:4])
+    return lines
+
+
+def collect_reuse_candidates(capture_bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(url: str, source: str, kind: str | None = None) -> None:
+        if not url or url in seen or is_noise_url(url):
+            return
+        seen.add(url)
+        candidate_kind = kind or classify_candidate(url)
+        candidates.append(
+            {
+                "url": url,
+                "source": source,
+                "kind": candidate_kind,
+                "platform": infer_platform(url),
+            }
+        )
+
+    static = capture_bundle.get("static", {})
+    frame_policy = static.get("frame_policy", {}) if isinstance(static, dict) else {}
+    if frame_policy.get("embeddable") is True and static.get("final_url") and should_reuse_direct_iframe(static.get("final_url"), static.get("platform")):
+        add(static["final_url"], "static.frame_policy", "direct-iframe")
+    for item in static.get("candidate_urls", []) or []:
+        if isinstance(item, dict):
+            add(item.get("url"), "static", item.get("kind"))
+
+    runtime = capture_bundle.get("runtime", {})
+    for item in runtime.get("networkHits", []) or []:
+        if isinstance(item, dict):
+            add(item.get("url"), "runtime.networkHits")
+    for url in runtime.get("htmlMatches", []) or []:
+        if isinstance(url, str):
+            add(url, "runtime.htmlMatches")
+
+    captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+    network_capture = captures.get("network", {}) if isinstance(captures, dict) else {}
+    network_content = network_capture.get("content", {}) if isinstance(network_capture, dict) else {}
+    for item in network_content.get("requests", []) or []:
+        if isinstance(item, dict):
+            add(item.get("url"), "runtime.network.requests")
+    for item in network_content.get("responses", []) or []:
+        if isinstance(item, dict):
+            add(item.get("url"), "runtime.network.responses")
+
+    assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
+    assets_content = assets_capture.get("content", {}) if isinstance(assets_capture, dict) else {}
+    for url in assets_content.get("iframes", []) or []:
+        if isinstance(url, str):
+            add(url, "runtime.assets.iframes", "iframe-src")
+
+    return candidates
+
+
+def choose_exact_reuse_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    priority = {
+        "direct-iframe": 0,
+        "spline-preview": 1,
+        "spline-viewer": 2,
+        "figma-embed": 3,
+        "youtube-embed": 4,
+        "vimeo-embed": 5,
+        "codepen-embed": 6,
+        "readymag-embed": 7,
+        "generic-embed": 8,
+        "iframe-src": 9,
+        "spline-code": 10,
+        "readymag-html-snippet": 11,
+        "runtime-hint": 12,
+    }
+    exact_candidates = sorted(
+        candidates,
+        key=lambda item: (priority.get(item.get("kind", "runtime-hint"), 99), item.get("url", "")),
+    )
+    for candidate in exact_candidates:
+        if candidate["kind"] in {
+            "direct-iframe",
+            "spline-preview",
+            "spline-viewer",
+            "figma-embed",
+            "youtube-embed",
+            "vimeo-embed",
+            "codepen-embed",
+            "readymag-embed",
+            "generic-embed",
+            "iframe-src",
+        }:
+            return candidate
+    return None
+
+
+def build_embed_snippets(url: str, title: str) -> dict[str, str]:
+    html_url = escape(url, quote=True)
+    html_title = escape(title, quote=True)
+    html = (
+        f'<iframe src="{html_url}" title="{html_title}" '
+        'style="display:block;width:100%;height:100vh;border:0" allow="fullscreen"></iframe>'
+    )
+    nextjs = "\n".join(
+        [
+            "<iframe",
+            f'  src="{html_url}"',
+            f'  title="{html_title}"',
+            '  allow="fullscreen"',
+            '  style={{ display: "block", width: "100%", height: "100vh", border: 0 }}',
+            "/>",
+        ]
+    )
+    return {"html": html, "nextjs": nextjs}
+
+
+def build_embed_html_document(url: str, title: str) -> str:
+    iframe = build_embed_snippets(url, title)["html"]
+    html_title = escape(title or "Embedded reference", quote=False)
+    return "\n".join(
+        [
+            "<!doctype html>",
+            '<html lang="en">',
+            "<head>",
+            '  <meta charset="utf-8" />',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
+            f"  <title>{html_title}</title>",
+            "  <style>html,body{margin:0;width:100%;height:100%;overflow:hidden;}</style>",
+            "</head>",
+            "<body>",
+            f"  {iframe}",
+            "</body>",
+            "</html>",
+        ]
+    )
+
+
+def _compare_exact_reuse_candidate(
+    capture_bundle: dict[str, Any],
+    exact_candidate: dict[str, Any],
+    verification: dict[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    if verification.get("status") == "source-equivalent":
+        return verification
+
+    candidate_url = str(exact_candidate.get("url") or "")
+    if not candidate_url:
+        return verification
+
+    updated = json.loads(json.dumps(verification))
+    reproduction_dir = output_root / "reproduction"
+    candidate_dir = reproduction_dir / "exact-reuse-candidate-capture"
+    session_request = capture_bundle.get("session_request", {}) if isinstance(capture_bundle.get("session_request"), dict) else {}
+    try:
+        candidate_bundle = capture_reference_bundle(
+            url=candidate_url,
+            timeout_seconds=20,
+            wait_seconds=2,
+            include_runtime_trace=True,
+            capture_html=True,
+            capture_screenshot=True,
+            viewport_width=int(session_request.get("viewport_width") or 1440),
+            viewport_height=int(session_request.get("viewport_height") or 1200),
+            output_dir=str(candidate_dir),
+            exact_requested=False,
+        )
+        report = verify_fidelity_report(
+            reference_bundle=capture_bundle,
+            candidate_bundle=candidate_bundle,
+            reference_url=capture_bundle.get("url"),
+            candidate_url=candidate_url,
+        )
+        reproduction_dir.mkdir(parents=True, exist_ok=True)
+        report_path = reproduction_dir / "exact-reuse-verification-report.json"
+        report_path.write_text(json.dumps(report, indent=2) + "\n")
+        guidance = report.get("downstream_guidance", {}) if isinstance(report.get("downstream_guidance"), dict) else {}
+        comparison_summary = report.get("comparison_summary", {}) if isinstance(report.get("comparison_summary"), dict) else {}
+        ready = bool(guidance.get("ready_for_exact_clone"))
+        candidate_persisted = (candidate_bundle.get("bundle") or {}).get("persisted") or {}
+        candidate_files = candidate_persisted.get("files", {}) if isinstance(candidate_persisted.get("files"), dict) else {}
+        updated["comparison"] = {
+            "available": True,
+            "verdict": report.get("verdict"),
+            "score": comparison_summary.get("score"),
+            "ready_for_exact_clone": ready,
+            "report_path": str(report_path),
+        }
+        updated["candidate_capture"] = {
+            "available": True,
+            "root": str(candidate_dir),
+            "capture_manifest": candidate_files.get("capture_manifest"),
+        }
+        if ready:
+            updated["status"] = "verified-candidate"
+            updated["confidence"] = "high"
+            updated["ready_for_exact_clone"] = True
+            updated["ready_for_exact_reuse"] = True
+            updated.setdefault("notes", []).append("Exact reuse candidate was captured and passed bounded fidelity verification.")
+        else:
+            updated["status"] = "candidate-mismatch"
+            updated["confidence"] = "medium"
+            updated["ready_for_exact_clone"] = False
+            updated["ready_for_exact_reuse"] = False
+            updated.setdefault("notes", []).append("Exact reuse candidate was captured, but bounded fidelity verification did not pass.")
+    except Exception as exc:  # noqa: BLE001
+        updated["comparison"] = {
+            "available": False,
+            "reason": str(exc),
+        }
+        updated.setdefault("notes", []).append("Exact reuse candidate comparison could not be completed.")
+
+    return updated
+
+
+def _collect_dom_texts(node: dict[str, Any] | None, bucket: list[str], limit: int = 12) -> None:
+    if not isinstance(node, dict) or len(bucket) >= limit:
+        return
+    text = str(node.get("text") or "").strip()
+    if text and text not in bucket:
+        bucket.append(text)
+    for child in node.get("children", []) or []:
+        _collect_dom_texts(child, bucket, limit=limit)
+        if len(bucket) >= limit:
+            break
+
+
+def build_rebuild_prompt(capture_bundle: dict[str, Any], evidence_limitations: dict[str, Any] | None = None) -> str:
+    static = capture_bundle.get("static", {})
+    meta = static.get("meta", {}) if isinstance(static, dict) else {}
+    runtime = capture_bundle.get("runtime", {})
+    captures = runtime.get("captures", {}) if isinstance(runtime, dict) else {}
+    dom_capture = captures.get("dom", {}) if isinstance(captures, dict) else {}
+    styles_capture = captures.get("styles", {}) if isinstance(captures, dict) else {}
+    css_analysis_capture = captures.get("cssAnalysis", {}) if isinstance(captures, dict) else {}
+    screenshot_capture = captures.get("screenshot", {}) if isinstance(captures, dict) else {}
+    assets_capture = captures.get("assets", {}) if isinstance(captures, dict) else {}
+    interactions_capture = captures.get("interactions", {}) if isinstance(captures, dict) else {}
+    interaction_trace_capture = captures.get("interactionTrace", {}) if isinstance(captures, dict) else {}
+    breakpoint_summary = capture_bundle.get("breakpoints", {}) if isinstance(capture_bundle, dict) else {}
+    if not isinstance(evidence_limitations, dict):
+        evidence_limitations = _build_evidence_limitations(capture_bundle)
+
+    prompt_lines = [
+        "Rebuild this reference as faithfully as possible using the captured structure and styling summary.",
+        f"Reference URL: {capture_bundle.get('url')}",
+        f"Final URL: {static.get('final_url')}",
+    ]
+    platform = static.get("platform") or "generic"
+    platform_adapter = static.get("platform_adapter", {}) if isinstance(static, dict) else {}
+    source_signals = static.get("source_signals", []) if isinstance(static, dict) else []
+    candidate_urls = static.get("candidate_urls", []) if isinstance(static, dict) else []
+    site_profile = static.get("site_profile", {}) if isinstance(static, dict) else {}
+    if platform != "generic":
+        prompt_lines.append(f"Platform: {platform}")
+    if isinstance(platform_adapter, dict):
+        adapter_notes = platform_adapter.get("notes", []) if isinstance(platform_adapter.get("notes", []), list) else []
+        if adapter_notes:
+            prompt_lines.append("Platform adapter notes:")
+            prompt_lines.extend(f"- {str(note)}" for note in adapter_notes[:4])
+    if source_signals:
+        prompt_lines.append("Source signals:")
+        prompt_lines.extend(f"- {signal}" for signal in source_signals[:6])
+    if candidate_urls:
+        prompt_lines.append("Reuse candidates:")
+        for item in candidate_urls[:6]:
+            if not isinstance(item, dict):
+                continue
+            prompt_lines.append(f"- {item.get('kind')}: {item.get('url')}")
+    if isinstance(site_profile, dict) and site_profile:
+        route_hints = site_profile.get("route_hints", {}) if isinstance(site_profile.get("route_hints"), dict) else {}
+        prompt_lines.append(f"Site profile: {site_profile.get('primary_surface')} ({site_profile.get('confidence')})")
+        if route_hints:
+            prompt_lines.append(
+                f"Route hints: acquisition={route_hints.get('acquisition_profile')} renderer={route_hints.get('renderer_route')} family={route_hints.get('renderer_family')}"
+            )
+            critical_depths = route_hints.get("critical_depths", [])
+            if critical_depths:
+                prompt_lines.append("Critical capture depths:")
+                prompt_lines.extend(f"- {depth}" for depth in critical_depths[:8])
+            if str(site_profile.get("primary_surface") or "").lower() in {"js-app-shell-surface", "authenticated-app-surface", "frame-blocked-app-surface"}:
+                prompt_lines.append("App-shell guidance:")
+                prompt_lines.extend(
+                    [
+                        "- Preserve shell chrome, toolbar rows, navigation rails, workspace panels, and inspector-like regions.",
+                        "- Keep panel and state boundaries explicit; do not collapse the surface into a centered landing-page layout.",
+                        "- Prefer dashboard-style composition with stable sidebars and content panes before hero-style compression.",
+                        "- Keep shell topology legible in the rebuild prompt: navigation, workspace, inspector, and auxiliary regions should remain separable.",
+                        "- Preserve region order and primary panel emphasis when available; do not flatten the shell into one generic content column.",
+                        "- Preserve shellRegions geometry in downstream scaffolds so repair passes stay anchored to the captured source layout.",
+                    ]
+                )
+            if str(site_profile.get("primary_surface") or "").lower() == "canvas-or-webgl-surface" or str(route_hints.get("renderer_route") or "").lower() == "visual-fallback-rebuild":
+                prompt_lines.append("Visual fallback scaffold:")
+                prompt_lines.extend(
+                    [
+                        "- Treat this as a visual-first rebuild, not a DOM-perfect source clone.",
+                        "- Preserve stage geometry, dominant palette, hierarchy, and stable controls before trying to mirror implementation details.",
+                        "- Prefer screenshot-led composition checks, then layer DOM and CSS fidelity on top.",
+                        "- Keep visualStage and visualLayers as first-class scaffold data; do not replace the source composition with a generic centered card, synthetic hero, or marketing layout.",
+                    ]
+                )
+                prompt_lines.append("Visual fallback rendering constraints:")
+                prompt_lines.extend(
+                    [
+                        "- Treat the canvas/WebGL region as the primary stage, not as an inspectable DOM subtree.",
+                        "- Recreate overlay chrome, captions, and controls as bounded HTML/CSS around the stage.",
+                        "- Use viewport screenshots and runtime HTML as the anchor for composition fidelity.",
+                        "- Keep responsive behavior aligned to the captured viewport geometry.",
+                    ]
+                )
+                if isinstance(screenshot_capture, dict) and screenshot_capture.get("available"):
+                    prompt_lines.append("Visual fallback screenshot anchor:")
+                    prompt_lines.extend(
+                        [
+                            "- Carry the captured screenshot into the bounded-stage-reference layer before adding overlays.",
+                            "- Use overlay geometry to explain the screenshot; do not hide or crop away the primary stage.",
+                        ]
+                    )
+                prompt_lines.append("Visual fallback scaffold hints:")
+                prompt_lines.extend(
+                    [
+                        "- single-stage layout with overlay chrome",
+                        "- bounded caption and control rails",
+                        "- viewport-anchored stage geometry",
+                        "- screenshot-led composition checks",
+                        "- DOM and CSS fidelity layered after the visual pass",
+                    ]
+                )
+                prompt_lines.append("Visual fallback verification hints:")
+                prompt_lines.extend(
+                    [
+                        "- confirm stage bounds align to the captured viewport",
+                        "- keep overlay controls visible and reachable",
+                        "- preserve palette and contrast from the reference",
+                        "- check responsive variants against the same composition hierarchy",
+                        "- use screenshot similarity before judging DOM-level detail",
+                        "- keep stage, chrome, and caption layers separable in the rebuild",
+                    ]
+                )
+                prompt_lines.append("Visual fallback capture hints:")
+                prompt_lines.extend(
+                    [
+                        "- capture canvas or WebGL element bounds and viewport screenshots",
+                        "- record overlay controls, caption text, and fixed-position affordances",
+                        "- keep breakpoint-specific composition notes for desktop, tablet, and mobile",
+                        "- include asset inventory and interaction trace samples for hover, click, and scroll states",
+                    ]
+                )
+
+    if static.get("title"):
+        prompt_lines.append(f"Page title: {static['title']}")
+    if meta.get("description"):
+        prompt_lines.append(f"Description: {meta['description']}")
+    if isinstance(breakpoint_summary, dict) and breakpoint_summary.get("variants"):
+        prompt_lines.append("Breakpoint coverage:")
+        primary = breakpoint_summary.get("primary", {})
+        if isinstance(primary, dict):
+            prompt_lines.append(f"- primary {primary.get('width')}x{primary.get('height')}")
+        for variant in breakpoint_summary.get("variants", [])[:6]:
+            if not isinstance(variant, dict):
+                continue
+            viewport = variant.get("viewport", {}) if isinstance(variant.get("viewport"), dict) else {}
+            prompt_lines.append(
+                f"- {variant.get('name')} {viewport.get('width')}x{viewport.get('height')} available={variant.get('available')}"
+            )
+
+    dom_texts: list[str] = []
+    if dom_capture.get("available"):
+        _collect_dom_texts(dom_capture.get("content"), dom_texts)
+    if dom_texts:
+        prompt_lines.append("Visible text sample:")
+        prompt_lines.extend(f"- {text}" for text in dom_texts[:10])
+
+    style_entries = styles_capture.get("content", []) if isinstance(styles_capture, dict) else []
+    if style_entries:
+        prompt_lines.append("Representative visual blocks:")
+        for entry in style_entries[:8]:
+            rect = entry.get("rect", {})
+            styles = entry.get("styles", {})
+            descriptor = " ".join(
+                value
+                for value in [
+                    entry.get("tag"),
+                    f"\"{entry.get('text')}\"" if entry.get("text") else "",
+                    f"{rect.get('width')}x{rect.get('height')}" if rect.get("width") else "",
+                    styles.get("fontFamily"),
+                    styles.get("fontSize"),
+                    styles.get("fontWeight"),
+                    styles.get("color"),
+                    styles.get("backgroundColor"),
+                ]
+                if value
+            ).strip()
+            if descriptor:
+                prompt_lines.append(f"- {descriptor}")
+
+    css_analysis = css_analysis_capture.get("content", {}) if isinstance(css_analysis_capture, dict) else {}
+    linked_stylesheets = css_analysis.get("linkedStylesheets", []) if isinstance(css_analysis.get("linkedStylesheets", []), list) else []
+    inline_style_blocks = css_analysis.get("inlineStyleBlocks", []) if isinstance(css_analysis.get("inlineStyleBlocks", []), list) else []
+    if linked_stylesheets or inline_style_blocks:
+        prompt_lines.append("CSS analysis sample:")
+        if isinstance(css_analysis, dict):
+            prompt_lines.append(
+                f"- stylesheets: {css_analysis.get('stylesheetCount', 0)} total / {css_analysis.get('accessibleStylesheetCount', 0)} accessible"
+            )
+            prompt_lines.append(
+                f"- inline style blocks: {css_analysis.get('inlineStyleTagCount', 0)} / style attributes: {css_analysis.get('styleAttributeCount', 0)}"
+            )
+        for sheet in linked_stylesheets[:4]:
+            if not isinstance(sheet, dict):
+                continue
+            descriptor = " ".join(
+                value
+                for value in [
+                    sheet.get("ownerTag"),
+                    sheet.get("href") or "inline-sheet",
+                    f"rules={sheet.get('ruleCount')}" if sheet.get("ruleCount") is not None else "",
+                    "restricted" if sheet.get("crossOriginRestricted") else "",
+                ]
+                if value
+            ).strip()
+            if descriptor:
+                prompt_lines.append(f"- {descriptor}")
+        for block in inline_style_blocks[:2]:
+            if not isinstance(block, dict):
+                continue
+            sample = str(block.get("textSample") or "").strip()
+            if sample:
+                prompt_lines.append(f"- inline style sample: {sample}")
+
+    asset_content = assets_capture.get("content", {}) if isinstance(assets_capture, dict) else {}
+    iframe_count = len(asset_content.get("iframes", []) or []) if isinstance(asset_content, dict) else 0
+    image_count = len(asset_content.get("images", []) or []) if isinstance(asset_content, dict) else 0
+    script_count = len(asset_content.get("scripts", []) or []) if isinstance(asset_content, dict) else 0
+    if image_count or script_count or iframe_count:
+        prompt_lines.append(
+            f"Asset signals: {image_count} images, {script_count} scripts, {iframe_count} iframes detected."
+        )
+
+    interaction_entries = interactions_capture.get("content", []) if isinstance(interactions_capture, dict) else []
+    if interaction_entries:
+        prompt_lines.append("Interaction state sample:")
+        for entry in interaction_entries[:8]:
+            changed_states = []
+            if entry.get("hoverDelta"):
+                changed_states.append(f"hover {', '.join(entry['hoverDelta'].keys())}")
+            if entry.get("focusDelta"):
+                changed_states.append(f"focus {', '.join(entry['focusDelta'].keys())}")
+            click_state = entry.get("clickState") or {}
+            click_delta = click_state.get("stateDelta") if isinstance(click_state, dict) else {}
+            if isinstance(click_delta, dict) and click_delta:
+                changed_states.append(f"click {', '.join(click_delta.keys())}")
+            descriptor = " ".join(
+                value
+                for value in [
+                    entry.get("tag"),
+                    entry.get("role") or "",
+                    f"\"{entry.get('text')}\"" if entry.get("text") else "",
+                    entry.get("href") or "",
+                ]
+                if value
+            ).strip()
+            surface = _prompt_root_surface(entry.get("rootContext"))
+            if surface:
+                descriptor = f"{descriptor} [{surface}]" if descriptor else f"[{surface}]"
+            if changed_states:
+                prompt_lines.append(f"- {descriptor}: {'; '.join(changed_states)}")
+            elif descriptor:
+                prompt_lines.append(f"- {descriptor}: interactive element detected")
+
+    interaction_trace = interaction_trace_capture.get("content", {}) if isinstance(interaction_trace_capture, dict) else {}
+    trace_steps = interaction_trace.get("steps", []) if isinstance(interaction_trace, dict) else []
+    if trace_steps:
+        prompt_lines.append("Replay trace sample:")
+        for step in trace_steps[:10]:
+            if not isinstance(step, dict):
+                continue
+            parts = [
+                str(step.get("kind") or "").strip(),
+                str(step.get("label") or "").strip(),
+                f"scrollY={step.get('scrollY')}" if step.get("kind") == "scroll" and step.get("scrollY") is not None else "",
+                f"value=\"{step.get('value')}\"" if step.get("kind") == "type" and step.get("value") else "",
+            ]
+            surface = _prompt_root_surface(step.get("rootContext"))
+            if surface:
+                parts.append(f"surface={surface}")
+            descriptor = " ".join(part for part in parts if part)
+            if descriptor:
+                prompt_lines.append(f"- {descriptor}")
+
+    prompt_lines.extend(_prompt_evidence_limitations(evidence_limitations))
+
+    prompt_lines.extend(
+        [
+            "If an exact iframe, preview, or source reuse path is unavailable, rebuild the page but do not claim it is exact.",
+            "Preserve the same hierarchy, copy rhythm, dominant blocks, viewport composition, interaction state changes, and replay trace intent from the capture bundle.",
+        ]
+    )
+    return "\n".join(prompt_lines)
+
+
+def _self_verify_score(self_verify: dict[str, Any] | None) -> int:
+    if not isinstance(self_verify, dict):
+        return 0
+    return int(_self_verify_summary(self_verify).get("score") or 0)
+
+
+def _self_verify_visual_qa(self_verify: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(self_verify, dict):
+        return {}
+    visual_qa = self_verify.get("visual_qa")
+    if not isinstance(visual_qa, dict):
+        preferred = self_verify.get("preferred_renderer") if isinstance(self_verify.get("preferred_renderer"), dict) else {}
+        visual_qa = preferred.get("visual_qa") if isinstance(preferred.get("visual_qa"), dict) else {}
+    return visual_qa if isinstance(visual_qa, dict) else {}
+
+
+def _self_verify_screen_clone_ready(self_verify: dict[str, Any] | None) -> bool:
+    visual_qa = _self_verify_visual_qa(self_verify)
+    try:
+        score = int(visual_qa.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+    return bool(visual_qa.get("available") and visual_qa.get("ready") and score >= 88)
+
+
+def _repair_pass_summary(
+    pass_index: int,
+    current_score: int,
+    current_rank: tuple[int, int, int, int, int, int],
+    repair_verify: dict[str, Any],
+    next_score: int,
+    next_rank: tuple[int, int, int, int, int, int],
+) -> dict[str, Any]:
+    preferred = repair_verify.get("preferred_renderer") or {}
+    summary = _self_verify_summary(repair_verify)
+    return {
+        "index": pass_index,
+        "source_score": current_score,
+        "score": next_score,
+        "score_delta": next_score - current_score,
+        "improved": next_score > current_score or next_rank > current_rank,
+        "meets_minimum_delta": (next_score - current_score) >= MIN_AUTO_REPAIR_SCORE_DELTA,
+        "overall_ready_for_exact_clone": bool(repair_verify.get("overall_ready_for_exact_clone")),
+        "stage_path": None,
+        "preferred_renderer": {
+            "name": preferred.get("name"),
+            "kind": preferred.get("kind"),
+            "score": preferred.get("score"),
+            "ready_for_exact_clone": preferred.get("ready_for_exact_clone"),
+            "report_path": preferred.get("report_path"),
+            "visual_qa": preferred.get("visual_qa"),
+        },
+        "visual_qa": repair_verify.get("visual_qa")
+        or (summary.get("preferred_renderer") or {}).get("visual_qa"),
+        "renderer_count": repair_verify.get("renderer_count"),
+        "breakpoint_count": summary.get("breakpoint_count"),
+        "breakpoint_ready_count": summary.get("breakpoint_ready_count"),
+        "rank": list(next_rank),
+    }
+
+
+def _build_repair_loop(
+    capture_bundle: dict[str, Any],
+    rebuild_artifacts: dict[str, str],
+    initial_self_verify: dict[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    if not isinstance(rebuild_artifacts, dict) or not isinstance(initial_self_verify, dict):
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Repair loop requires a persisted rebuild scaffold and initial self-verify result.",
+        }
+
+    if initial_self_verify.get("overall_ready_for_exact_clone"):
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Initial bounded renderer already met the exact-clone readiness threshold.",
+        }
+    if _self_verify_screen_clone_ready(initial_self_verify):
+        visual_qa = _self_verify_visual_qa(initial_self_verify)
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Initial bounded renderer already met the screen-clone visual QA threshold.",
+            "visual_qa": visual_qa,
+            "initial_score": _self_verify_score(initial_self_verify),
+            "screen_clone_score": visual_qa.get("score"),
+        }
+
+    current_rebuild_artifacts = rebuild_artifacts
+    current_self_verify = initial_self_verify
+    current_score = _self_verify_score(initial_self_verify)
+    current_rank = _self_verify_rank(initial_self_verify)
+    best_score = current_score
+    best_rank = current_rank
+    best_pass: dict[str, Any] | None = None
+    attempted_passes: list[dict[str, Any]] = []
+    persisted_passes: list[dict[str, Any]] = []
+    stop_reason = "max-passes-reached"
+
+    for pass_index in range(1, MAX_AUTO_REPAIR_PASSES + 1):
+        repair_pass = build_repair_scaffold(
+            capture_bundle=capture_bundle,
+            rebuild_artifacts=current_rebuild_artifacts,
+            self_verify=current_self_verify,
+        )
+        if not repair_pass.get("available"):
+            stop_reason = str(repair_pass.get("reason") or "repair-scaffold-unavailable")
+            break
+
+        stage_path = Path("repair-loop") / f"pass-{pass_index}"
+        persisted_repair = persist_rebuild_scaffold(output_root / "reproduction" / stage_path, repair_pass)
+        preferred_renderer = _preferred_renderer_hint(persisted_repair)
+        if preferred_renderer:
+            persisted_repair["preferred_renderer"] = preferred_renderer
+        repair_verify = run_rebuild_self_verify(
+            reference_bundle=capture_bundle,
+            rebuild_artifacts=persisted_repair,
+            output_dir=output_root,
+            stage_path=str(stage_path / "self-verify"),
+        )
+        next_score = _self_verify_score(repair_verify)
+        next_rank = _self_verify_rank(repair_verify)
+        score_delta = next_score - current_score
+        pass_summary = _repair_pass_summary(
+            pass_index=pass_index,
+            current_score=current_score,
+            current_rank=current_rank,
+            repair_verify=repair_verify,
+            next_score=next_score,
+            next_rank=next_rank,
+        )
+        pass_summary["stage_path"] = str(stage_path)
+        repair_pass["persisted"] = persisted_repair
+        repair_pass["self_verify"] = repair_verify
+        repair_pass["iteration"] = pass_summary
+        repair_summary = _self_verify_summary(repair_verify)
+        repair_pass["renderer_summary"] = repair_summary.get("preferred_renderer")
+        repair_pass["self_verify_summary"] = repair_summary
+        attempted_passes.append(repair_pass)
+        persisted_passes.append(
+            {
+                "index": pass_index,
+                "artifacts": persisted_repair,
+                "self_verify": repair_verify.get("persisted"),
+                "self_verify_summary": repair_pass["self_verify_summary"],
+                "renderer_summary": repair_pass["renderer_summary"],
+                "visual_qa": repair_verify.get("visual_qa"),
+            }
+        )
+
+        if next_rank > best_rank or next_score > best_score:
+            best_score = next_score
+            best_rank = next_rank
+            best_pass = repair_pass
+
+        if repair_verify.get("overall_ready_for_exact_clone"):
+            best_pass = repair_pass
+            stop_reason = "ready-for-exact-clone"
+            break
+        next_ready_breakpoints = _breakpoint_ready_count(repair_verify)
+        current_ready_breakpoints = _breakpoint_ready_count(current_self_verify)
+        made_progress = (
+            score_delta >= MIN_AUTO_REPAIR_SCORE_DELTA
+            or next_rank > current_rank
+            or next_ready_breakpoints > current_ready_breakpoints
+        )
+        if not made_progress:
+            stop_reason = "no-improvement" if score_delta <= 0 else "insufficient-score-delta"
+            break
+        if score_delta < MIN_AUTO_REPAIR_SCORE_DELTA and next_ready_breakpoints <= current_ready_breakpoints and next_rank <= current_rank:
+            stop_reason = "insufficient-score-delta"
+            break
+
+        current_rebuild_artifacts = persisted_repair
+        current_self_verify = repair_verify
+        current_score = next_score
+        current_rank = next_rank
+    else:
+        stop_reason = "max-passes-reached"
+
+    if best_pass is None and attempted_passes:
+        best_pass = attempted_passes[0]
+        best_score = _self_verify_score(best_pass.get("self_verify"))
+        best_rank = _self_verify_rank(best_pass.get("self_verify"))
+
+    if best_pass is None:
+        return {
+            "available": False,
+            "status": "skipped",
+            "reason": "Repair loop did not produce a usable pass.",
+        }
+
+    best_iteration = best_pass.get("iteration", {}) if isinstance(best_pass.get("iteration", {}), dict) else {}
+    return {
+        "available": True,
+        "status": "completed",
+        "pass_count": len(attempted_passes),
+        "max_passes": MAX_AUTO_REPAIR_PASSES,
+        "minimum_score_delta": MIN_AUTO_REPAIR_SCORE_DELTA,
+        "initial_score": _self_verify_score(initial_self_verify),
+        "best_score": best_score,
+        "best_rank": list(best_rank),
+        "best_pass_index": best_iteration.get("index"),
+        "overall_ready_for_exact_clone": bool((best_pass.get("self_verify") or {}).get("overall_ready_for_exact_clone")),
+        "stop_reason": stop_reason,
+        "passes": attempted_passes,
+        "best_pass": best_pass,
+        "persisted": {"passes": persisted_passes},
+        "note": "This bounded repair loop repeats scaffold repair only while verification score keeps improving by a meaningful margin.",
+    }
+
+
+def build_reproduction_bundle(
+    capture_bundle: dict[str, Any],
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    static = capture_bundle.get("static", {})
+    policy = capture_bundle.get("policy", {})
+    candidates = collect_reuse_candidates(capture_bundle)
+    exact_candidate = choose_exact_reuse_candidate(candidates)
+    title = static.get("title") or "Embedded reference"
+    plan = plan_reproduction_path(
+        candidates=candidates,
+        site_profile=static.get("site_profile"),
+        capture_bundle=capture_bundle,
+    )
+    evidence_limitations = _build_evidence_limitations(capture_bundle)
+
+    result: dict[str, Any] = {
+        "policy_mode": policy.get("mode"),
+        "plan": plan,
+        "candidate_count": len(candidates),
+        "candidates": candidates[:40],
+        "site_profile": static.get("site_profile"),
+        "visual_fallback": plan.get("visual_fallback"),
+        "exact_reuse": None,
+        "coverage": "approximate",
+        "next_action": "rebuild",
+        "note": "This reproduction bundle prefers exact reuse when a trusted preview, viewer, or embed URL is found. When that path is unavailable it falls back to a bounded rebuild scaffold plus a practical Next app starter.",
+        "evidence_limitations": evidence_limitations,
+        "rebuild_prompt": build_rebuild_prompt(capture_bundle, evidence_limitations=evidence_limitations),
+    }
+
+    if policy.get("mode") == "blocked":
+        result["coverage"] = "blocked"
+        result["next_action"] = "stop"
+        result["policy_blocked"] = {
+            "reason": policy.get("reason") or "Policy blocked reproduction.",
+            "candidate_count": len(candidates),
+        }
+        result["note"] = "Policy blocked reproduction. Do not emit exact reuse or bounded rebuild artifacts without updated permission evidence."
+    elif exact_candidate:
+        snippets = build_embed_snippets(exact_candidate["url"], title)
+        result["exact_reuse"] = {
+            "platform": exact_candidate["platform"],
+            "kind": exact_candidate["kind"],
+            "source": exact_candidate["source"],
+            "url": exact_candidate["url"],
+            "title": title,
+            "snippets": snippets,
+            "verification": build_exact_reuse_verification(capture_bundle, exact_candidate),
+        }
+        result["coverage"] = "exact-reuse"
+        result["next_action"] = "embed"
+    else:
+        result["rebuild_scaffold"] = build_rebuild_scaffold(capture_bundle)
+        if any(candidate["kind"] == "spline-code" for candidate in candidates):
+            result["coverage"] = "source-reuse"
+            result["next_action"] = "source"
+        else:
+            result["next_action"] = "rebuild"
+
+    if output_dir:
+        output_root = Path(output_dir).expanduser().resolve()
+        exact_reuse = result.get("exact_reuse")
+        if isinstance(exact_reuse, dict) and exact_candidate:
+            verification = exact_reuse.get("verification")
+            if isinstance(verification, dict):
+                exact_reuse["verification"] = _compare_exact_reuse_candidate(
+                    capture_bundle=capture_bundle,
+                    exact_candidate=exact_candidate,
+                    verification=verification,
+                    output_root=output_root,
+                )
+        persisted = persist_reproduction_bundle(output_root, result)
+        result["persisted"] = persisted
+        rebuild_artifacts = persisted.get("rebuild_scaffold")
+        if isinstance(rebuild_artifacts, dict):
+            preferred_renderer = _preferred_renderer_hint(rebuild_artifacts)
+            if preferred_renderer:
+                rebuild_artifacts["preferred_renderer"] = preferred_renderer
+            self_verify = run_rebuild_self_verify(
+                reference_bundle=capture_bundle,
+                rebuild_artifacts=rebuild_artifacts,
+                output_dir=output_root,
+            )
+            result["self_verify"] = self_verify
+            persisted["self_verify"] = self_verify.get("persisted")
+            if not self_verify.get("overall_ready_for_exact_clone"):
+                repair_loop = _build_repair_loop(
+                    capture_bundle=capture_bundle,
+                    rebuild_artifacts=rebuild_artifacts,
+                    initial_self_verify=self_verify,
+                    output_root=output_root,
+                )
+                if repair_loop.get("available"):
+                    best_pass = repair_loop.get("best_pass")
+                    if isinstance(best_pass, dict):
+                        result["repair_pass"] = best_pass
+                        persisted["repair_pass"] = {
+                            "artifacts": best_pass.get("persisted"),
+                            "self_verify": ((best_pass.get("self_verify") or {}).get("persisted")),
+                        }
+                    result["repair_passes"] = repair_loop.get("passes")
+                    result["repair_loop"] = {
+                        "status": repair_loop.get("status"),
+                        "pass_count": repair_loop.get("pass_count"),
+                        "max_passes": repair_loop.get("max_passes"),
+                        "minimum_score_delta": repair_loop.get("minimum_score_delta"),
+                        "initial_score": repair_loop.get("initial_score"),
+                        "best_score": repair_loop.get("best_score"),
+                        "best_pass_index": repair_loop.get("best_pass_index"),
+                        "overall_ready_for_exact_clone": repair_loop.get("overall_ready_for_exact_clone"),
+                        "stop_reason": repair_loop.get("stop_reason"),
+                        "persisted": repair_loop.get("persisted"),
+                        "note": repair_loop.get("note"),
+                    }
+                    persisted["repair_passes"] = repair_loop.get("persisted")
+            plan_path = persisted.get("plan")
+            if isinstance(plan_path, str):
+                Path(plan_path).write_text(json.dumps(result, indent=2) + "\n")
+
+    return result
+
+
+def persist_reproduction_bundle(output_dir: Path, result: dict[str, Any]) -> dict[str, Any]:
+    reproduction_dir = output_dir / "reproduction"
+    reproduction_dir.mkdir(parents=True, exist_ok=True)
+
+    persisted: dict[str, str] = {}
+    plan_path = reproduction_dir / "plan.json"
+    plan_path.write_text(json.dumps(result, indent=2) + "\n")
+    persisted["plan"] = str(plan_path)
+
+    rebuild_prompt = result.get("rebuild_prompt")
+    if isinstance(rebuild_prompt, str) and rebuild_prompt.strip():
+        rebuild_prompt_path = reproduction_dir / "rebuild-prompt.txt"
+        rebuild_prompt_path.write_text(rebuild_prompt.rstrip() + "\n")
+        persisted["rebuild_prompt"] = str(rebuild_prompt_path)
+
+    evidence_limitations = result.get("evidence_limitations")
+    if isinstance(evidence_limitations, dict) and evidence_limitations:
+        evidence_path = reproduction_dir / "evidence-limitations.json"
+        evidence_path.write_text(json.dumps(evidence_limitations, indent=2, ensure_ascii=False) + "\n")
+        persisted["evidence_limitations"] = str(evidence_path)
+
+    rebuild_scaffold = result.get("rebuild_scaffold")
+    if isinstance(rebuild_scaffold, dict):
+        persisted["rebuild_scaffold"] = persist_rebuild_scaffold(reproduction_dir, rebuild_scaffold)
+
+    exact_reuse = result.get("exact_reuse")
+    if isinstance(exact_reuse, dict):
+        snippets = exact_reuse.get("snippets", {})
+        html_path = reproduction_dir / "embed.html"
+        embed_url = str(exact_reuse.get("url") or "")
+        embed_title = str((exact_reuse.get("title") or result.get("title") or "Embedded reference"))
+        html_document = build_embed_html_document(embed_url, embed_title) if embed_url else snippets.get("html", "")
+        html_path.write_text(html_document.rstrip() + "\n")
+        persisted["embed_html"] = str(html_path)
+
+        nextjs_path = reproduction_dir / "embed.tsx"
+        nextjs_path.write_text(snippets.get("nextjs", "") + "\n")
+        persisted["embed_tsx"] = str(nextjs_path)
+
+        prompt_path = reproduction_dir / "prompt.txt"
+        prompt_lines = [
+            "Use the original exact reuse target instead of rebuilding this reference.",
+            f"Platform: {exact_reuse.get('platform')}",
+            f"Kind: {exact_reuse.get('kind')}",
+            f"URL: {exact_reuse.get('url')}",
+            f"Verification: {((exact_reuse.get('verification') or {}).get('status'))}",
+        ]
+        prompt_lines.extend(_prompt_evidence_limitations(result.get("evidence_limitations")))
+        prompt_path.write_text("\n".join(prompt_lines) + "\n")
+        persisted["prompt"] = str(prompt_path)
+
+        verification = exact_reuse.get("verification")
+        if isinstance(verification, dict):
+            verification_path = reproduction_dir / "exact-reuse-verification.json"
+            verification_path.write_text(json.dumps(verification, indent=2) + "\n")
+            persisted["exact_reuse_verification"] = str(verification_path)
+
+    return persisted
+
+
+def _preferred_renderer_hint(rebuild_artifacts: dict[str, str]) -> dict[str, str] | None:
+    if not isinstance(rebuild_artifacts, dict):
+        return None
+
+    next_runtime_keys = (
+        "next-app/app/layout.tsx",
+        "next-app/app/page.tsx",
+        "next-app/app/globals.css",
+        "next-app/components/BoundedReferencePage.tsx",
+        "next-app/components/reference-data.ts",
+    )
+    if all(rebuild_artifacts.get(key) for key in next_runtime_keys):
+        return {
+            "name": "next-runtime-app",
+            "reason": "Latest generated next-app scaffold is present, so the booted Next runtime should be verified first.",
+            "entrypoint": rebuild_artifacts["next-app/app/page.tsx"],
+        }
+
+    if rebuild_artifacts.get("app-preview.html"):
+        return {
+            "name": "role-inferred-app",
+            "reason": "Role-inferred app preview is the freshest bounded renderer before the low-level starter scaffold.",
+            "entrypoint": rebuild_artifacts["app-preview.html"],
+        }
+
+    if rebuild_artifacts.get("starter.html"):
+        return {
+            "name": "starter",
+            "reason": "Starter scaffold is the only available renderer entrypoint.",
+            "entrypoint": rebuild_artifacts["starter.html"],
+        }
+
+    return None
