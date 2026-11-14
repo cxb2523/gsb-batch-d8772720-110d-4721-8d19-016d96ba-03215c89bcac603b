@@ -61,6 +61,12 @@ Against the real site, drop `--base-url` (defaults to `https://www.tiktok.com`) 
 
 Outputs: `out/run-*/{tiktok.author,tiktok.video}.jsonl`, `a2ui.jsonl` (the full A2UI stream, server and
 client messages interleaved), `out/test-*/report.{json,html}`, `events.jsonl`, `steps/NNN-{M.jpg,A.json}`.
+Failed runs also leave fault bundles under `out/run-*/faults/NNN-<reason>/` (reason, dom.html, screenshot,
+HAR, spans, projection, fingerprint). Review one without reopening a browser:
+
+```bash
+npx tsx bin/a2flow.ts review out/run-tiktok.profile/faults/001-run-failed   # exit 0 consistent · 1 mismatch · 2 insufficient evidence
+```
 
 ## Studio
 
@@ -139,7 +145,7 @@ src/runtime/     driver (A2UI-only), bridge (A2UI → browser), runner (flow + r
 src/derive/      capture, heuristic, refine (vision patch), cache (inference cache), derive (+ manifest scaffold)
 src/harness/     perceive (lane M), sidebyside (lockstep + checks + report), server (live viewer)
 viewer/          index.html + a2ui-renderer.js (dependency-free A2UI web renderer, clickable → actions)
-src/machine/      XState runner, interrupts, policy, ledger, diagnose
+src/machine/      XState runner, interrupts, policy, ledger, diagnose, offline fault-bundle review
 src/actor/        QuickJS-wasm host + Worker entry (the in-browser actor) and Node shims
 src/studio/       Studio session server: MCP tools, scenes, research, pricing, export
 studio/           Next.js Studio UI

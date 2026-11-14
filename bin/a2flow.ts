@@ -9,6 +9,7 @@
  *                          [--base-url u] [--out dir] [--stream file|-] [--serve port] [--headful] [--no-humanize]
  *   a2flow extract <manifest> <a2ui.jsonl> [--out dir]      rebuild route datasets from a recorded A2UI stream (no browser)
  *   a2flow diagnose <manifest> <fault-bundle-dir>            classify a fault (site changed / unhandled state / blocked / transient) for the authoring pass
+ *   a2flow review <fault-bundle-dir>                         offline, browser-free verdict on a fault bundle: reason, state, view + fingerprint consistency
  *   a2flow replay <manifest> <fault-bundle> [--serve port] [--headful]   recreate a faulted run from its bundle (snapshot + URL), run forward, diagnose
  *   a2flow test <manifest> --input '{…}' [--adapter …] [--base-url u] [--out dir] [--serve port] [--min-coverage 0.9]
  */
@@ -149,6 +150,15 @@ async function main() {
       }
       await stop?.();
       await a.close();
+      return;
+    }
+    case "review": {
+      const { reviewFaultBundle, formatReview } = await import("../src/machine/review.js");
+      if (!positionals[0]) throw new Error("fault bundle dir required");
+      const r = reviewFaultBundle(resolve(positionals[0]));
+      console.log(formatReview(r));
+      console.log(JSON.stringify(r, null, 2));
+      process.exitCode = r.verdict === "consistent" ? 0 : r.verdict === "mismatch" ? 1 : 2;
       return;
     }
     case "diagnose": {
