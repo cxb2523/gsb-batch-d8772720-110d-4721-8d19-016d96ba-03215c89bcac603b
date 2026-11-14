@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.benchmarks/
+
+# 采集运行产物
+logs/
+*.log
+小红书博主笔记_*.csv
