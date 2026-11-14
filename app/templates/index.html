@@ -222,13 +222,17 @@
             <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
         </div>
         <p id="statusText" class="text-muted small">Initializing browser engine...</p>
+        <p id="pageProgressText" class="text-muted small"></p>
     </div>
 
-    <div id="result-section" class="mt-4" style="display: none;">
-        <div class="card p-4 text-center" style="max-width: 400px; width: 100%; border: 1px solid rgba(255,255,255,0.1); background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);">
+    <div id="result-section" class="mt-4" style="display: none; max-width: 640px; width: 100%;">
+        <div class="card p-4 text-center" style="width: 100%; border: 1px solid rgba(255,255,255,0.1); background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);">
             <h4 class="mb-3 text-white fw-bold">Extraction Complete</h4>
-            <p class="mb-4 text-light">Successfully harvested and stored dataset.</p>
+            <p id="resultSummary" class="mb-3 text-light">Successfully harvested and stored dataset.</p>
+            <div id="pageReport" class="text-start mb-3" style="max-height: 300px; overflow-y: auto;"></div>
+            <div id="retryNotice" class="mb-3" style="display: none;"></div>
             <div class="d-grid gap-2">
+                <button id="retryBtn" class="btn btn-success" style="display: none;" onclick="retryFailed()">Retry Failed Pages</button>
                 <a href="/visualization" class="btn btn-primary">View Visualization</a>
             </div>
         </div>
@@ -249,7 +253,10 @@
         }
 
         document.getElementById('input-section').style.display = 'none';
+        document.getElementById('result-section').style.display = 'none';
         document.getElementById('progress-section').style.display = 'block';
+        document.getElementById('progressBar').classList.remove('bg-danger');
+        document.getElementById('progressBar').style.width = '0%';
 
         fetch('/start-scrape', {
             method: 'POST',
@@ -269,34 +276,113 @@
         });
     }
 
+    const REASON_LABELS = {
+        'continue': '继续翻页',
+        'target_reached': '达到目标数量',
+        'no_cards': '未找到房源卡片',
+        'no_next_button': '无下一页按钮',
+        'pagination_error': '翻页异常'
+    };
+
+    function reasonLabel(code) {
+        return REASON_LABELS[code] || code || '未知';
+    }
+
+    function renderPageReport(pageRecords) {
+        const container = document.getElementById('pageReport');
+        if (!pageRecords || pageRecords.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+        let html = '<table class="table table-sm table-dark table-striped align-middle mb-0" style="font-size: 0.85rem;">' +
+            '<thead><tr><th>页</th><th>新增</th><th>累计</th><th>结局</th></tr></thead><tbody>';
+        pageRecords.forEach(r => {
+            const badge = r.success
+                ? '<span class="badge bg-success">成功</span>'
+                : '<span class="badge bg-danger">失败</span>';
+            let reason = reasonLabel(r.reason);
+            if (!r.success && r.error) {
+                reason += '<br><small class="text-danger">' + r.error + '</small>';
+            }
+            html += '<tr><td>第 ' + r.page + ' 页</td><td>+' + r.new_records +
+                    '</td><td>' + r.total_records + '</td><td>' + badge + ' ' + reason + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
+    function showResult(data) {
+        const failed = data.failed_pages || [];
+        const summary = document.getElementById('resultSummary');
+        summary.innerText = '共采集 ' + (data.total_records || 0) + ' / ' + (data.target || 0) +
+            ' 条，完成 ' + (data.pages_completed || 0) + ' 页。';
+
+        renderPageReport(data.page_records);
+
+        const retryBtn = document.getElementById('retryBtn');
+        const retryNotice = document.getElementById('retryNotice');
+        if (failed.length > 0) {
+            retryBtn.style.display = 'block';
+            retryBtn.innerText = 'Retry Failed Pages (' + failed.join(', ') + ')';
+            retryNotice.style.display = 'none';
+        } else {
+            retryBtn.style.display = 'none';
+            retryNotice.style.display = 'block';
+            retryNotice.innerHTML = '<small class="text-muted">上次采集没有失败页，无可重试内容。</small>';
+        }
+
+        document.getElementById('progress-section').style.display = 'none';
+        document.getElementById('result-section').style.display = 'block';
+    }
+
+    function retryFailed() {
+        fetch('/retry-failed', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'started') {
+                document.getElementById('result-section').style.display = 'none';
+                document.getElementById('progress-section').style.display = 'block';
+                document.getElementById('progressBar').style.width = '0%';
+                document.getElementById('statusText').innerText = 'Retrying failed pages: ' + data.pages.join(', ');
+                pollStatus();
+            } else {
+                // e.g. no_failed_pages / no_previous_run — show the message, no empty run
+                const retryNotice = document.getElementById('retryNotice');
+                retryNotice.style.display = 'block';
+                retryNotice.innerHTML = '<small class="text-warning">' + (data.message || '无法重试') + '</small>';
+            }
+        });
+    }
+
     function pollStatus() {
-        let progress = 0;
         const interval = setInterval(() => {
             fetch('/status')
             .then(response => response.json())
             .then(data => {
                 const bar = document.getElementById('progressBar');
                 const text = document.getElementById('statusText');
+                const pageText = document.getElementById('pageProgressText');
 
                 text.innerText = data.message;
-                
-                if (data.is_scraping) {
-                    // Simulate smooth progress if status is running but no granular percentage
-                    if (progress < 90) {
-                        progress += 5;
-                        bar.style.width = progress + '%';
+
+                // Real progress: total_records / target, driven by the server
+                if (typeof data.progress === 'number') {
+                    bar.style.width = data.progress + '%';
+                }
+                pageText.innerText = '已完成 ' + (data.pages_completed || 0) + ' 页 · 累计 ' +
+                    (data.total_records || 0) + ' / ' + (data.target || 0) + ' 条';
+
+                if (!data.is_scraping) {
+                    clearInterval(interval);
+                    if (data.message === 'Error') {
+                        bar.classList.add('bg-danger');
+                        text.innerText = "Error: " + data.error;
+                    } else {
+                        if (!data.failed_pages || data.failed_pages.length === 0) {
+                            bar.style.width = '100%';
+                        }
+                        setTimeout(() => showResult(data), 800);
                     }
-                } else if (data.message === 'Completed') {
-                    bar.style.width = '100%';
-                    clearInterval(interval);
-                    setTimeout(() => {
-                        document.getElementById('progress-section').style.display = 'none';
-                        document.getElementById('result-section').style.display = 'block';
-                    }, 800);
-                } else if (data.message === 'Error') {
-                    bar.classList.add('bg-danger');
-                    text.innerText = "Error: " + data.error;
-                    clearInterval(interval);
                 }
             });
         }, 1000);
