@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -9,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from noodle import NoodleScraper
+
+BASE_DIR = Path(__file__).resolve().parent
 
 scraper = NoodleScraper()
 
@@ -27,10 +30,10 @@ app = FastAPI(
 )
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 # Setup templates
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
 def setup_jinja_env():
@@ -102,7 +105,10 @@ async def api_search(
     page: int = Query(1, description="Page number", ge=1),
     with_sources: bool = Query(
         False,
-        description="Merge direct links into every result (two upstream requests per video)",
+        description=(
+            "Merge direct links into every result (at most two upstream requests "
+            "per video, each result carries sources_status/sources_error)"
+        ),
     ),
 ):
     """API endpoint for searching videos"""

@@ -43,6 +43,7 @@ Async scraper built on `curl_cffi.requests.AsyncSession`:
 - 🕸️ One request per search page — results are parsed straight from the listing in source-site order
 - 🎬 Two requests per video page load (`/watch/{id}` → player page) — the `window.playlist` object with direct `.mp4` links is pulled on demand, with the `Referer` header the player page requires
 - 🧼 Robust playlist extraction via `JSONDecoder.raw_decode` (tolerates trailing JS)
+- 🩺 Per-result enrichment outcomes (`sources_status` / `sources_error`) — a failed video keeps its listing data instead of silently looking link-less
 
 ### 🖥️ `app.py`
 
@@ -63,7 +64,14 @@ Opt-in enrichment for mass grabbers:
 ```
 GET /api/search?q={query}&page={page}&with_sources=1
 ```
-Merges `sources` (sorted high→low), `tags`, `player_url` and precise `duration` into every result. Costs two upstream requests per video, fetched with bounded concurrency — use deliberately.
+Merges `sources` (sorted high→low), `tags`, `player_url` and a precise `duration` into every result. At most two upstream requests per video, fetched with bounded concurrency — use deliberately.
+
+Every result carries an outcome so a partially failed page never needs a full rerun:
+
+- `sources_status: "ok"` — links, tags and duration were merged; `sources_error` is `null`.
+- `sources_status: "failed"` — the listing fields (`id`, `title`, `image`, `duration`, `duration_text`) are untouched and `sources_error` gives a readable reason (`video page could not be loaded`, `player URL is missing from the video page`, `player page could not be loaded`, `playlist could not be parsed`).
+
+Failed entries never drop results, never reorder the page (order always matches the source site) and never turn the request into an error. Without `with_sources` the endpoint stays a single listing request, and results carry no enrichment fields at all.
 
 ### 📹 Get Video Details
 ```
@@ -84,6 +92,15 @@ Returns application health status.
 - curl-cffi (Chrome-impersonating HTTP client)
 - selectolax (fast C-based HTML parsing)
 - Jinja2 (templating)
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests never touch the network: listing, video and player pages are built as local HTML, so the success / partial-failure / total-failure paths of `with_sources=1` are covered deterministically, along with the fact that plain searches issue no video-page requests at all.
 
 ## ⚖️ License
 

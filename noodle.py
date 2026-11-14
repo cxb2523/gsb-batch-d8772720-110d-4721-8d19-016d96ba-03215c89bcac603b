@@ -5,7 +5,11 @@ from urllib.parse import quote_plus, urlparse
 
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.errors import RequestsError
-from selectolax.parser import HTMLParser
+
+try:  # selectolax >= 1.0 removed the old ``parser`` backend
+    from selectolax.lexbor import LexborHTMLParser as HTMLParser
+except ImportError:  # pragma: no cover - compatibility with older selectolax
+    from selectolax.parser import HTMLParser
 
 
 def _parse_duration(text: str) -> int | None:
@@ -28,6 +32,31 @@ def _format_duration(seconds: int | None) -> str | None:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
+
+
+class VideoFetchError(Exception):
+    """A video's direct links could not be resolved.
+
+    The message is deliberately short and user-readable so it can be exposed
+    verbatim as the per-result failure reason of ``with_sources=1`` searches.
+    """
+
+
+#: Maximum number of videos enriched concurrently by ``search_videos``.
+#: Each video needs at most two upstream requests, so the request burst stays
+#: bounded regardless of the number of results on the page.
+MAX_ENRICH_CONCURRENCY = 5
+
+# Readable outcomes for the enrichment stage. Kept as constants so callers
+# (and tests) can match on reasons without depending on prose formatting.
+ERR_VIDEO_PAGE = "video page could not be loaded"
+ERR_PLAYER_MISSING = "player URL is missing from the video page"
+ERR_PLAYER_PAGE = "player page could not be loaded"
+ERR_PLAYLIST = "playlist could not be parsed"
+ERR_UNEXPECTED = "sources could not be fetched"
+
+SOURCE_STATUS_OK = "ok"
+SOURCE_STATUS_FAILED = "failed"
 
 
 class NoodleScraper:
@@ -83,8 +112,19 @@ class NoodleScraper:
         """Search for videos. One request, results in source-site order.
 
         With ``with_sources`` the direct links, tags and durations are merged
-        into every result on demand -- two extra upstream requests per video,
-        fetched with bounded concurrency.
+        into every result on demand -- at most two extra upstream requests per
+        video, fetched with bounded concurrency.
+
+        Every enriched result also carries an outcome:
+
+        * ``sources_status == "ok"`` -- ``sources``, ``tags``, ``duration``,
+          ``duration_text`` and ``player_url`` were merged.
+        * ``sources_status == "failed"`` -- the listing fields (``id``,
+          ``title``, ``image``, ``duration``, ``duration_text``) are left
+          untouched and ``sources_error`` explains why enrichment failed.
+
+        A failed entry never removes results or fails the request; ordering is
+        always the source-site order of the listing page.
         """
         response = await self._get(
             f"{self.base_url}/video/{quote_plus(query)}?p={page}"
@@ -104,22 +144,43 @@ class NoodleScraper:
                 videos.append(item)
 
         if with_sources and videos:
-            semaphore = asyncio.Semaphore(5)
+            semaphore = asyncio.Semaphore(MAX_ENRICH_CONCURRENCY)
 
             async def enrich(item: dict) -> None:
+                """Resolve one video in place; never raise."""
                 async with semaphore:
-                    details = await self.get_video_by_id(item["id"])
-                if details is None:
-                    return
-                item.update(
-                    {
-                        "sources": details["sources"],
-                        "tags": details["tags"],
-                        "duration": details["duration"],
-                        "duration_text": details["duration_text"],
-                        "player_url": details["player_url"],
-                    }
-                )
+                    try:
+                        details = await self._fetch_video_details(item["id"])
+                    except VideoFetchError as e:
+                        item["sources_status"] = SOURCE_STATUS_FAILED
+                        item["sources_error"] = str(e)
+                        return
+                    except Exception:
+                        # One broken entry must not discard the whole page.
+                        item["sources_status"] = SOURCE_STATUS_FAILED
+                        item["sources_error"] = ERR_UNEXPECTED
+                        return
+
+                    # Merge rather than overwrite: the player page is the
+                    # precise source, but a missing meta must not erase the
+                    # duration the listing already provided.
+                    duration = (
+                        details["duration"]
+                        if details["duration"] is not None
+                        else item.get("duration")
+                    )
+                    item.update(
+                        {
+                            "sources": details["sources"],
+                            "tags": details["tags"],
+                            "duration": duration,
+                            "duration_text": details["duration_text"]
+                            or item.get("duration_text"),
+                            "player_url": details["player_url"],
+                            "sources_status": SOURCE_STATUS_OK,
+                            "sources_error": None,
+                        }
+                    )
 
             await asyncio.gather(*(enrich(item) for item in videos))
 
@@ -171,11 +232,22 @@ class NoodleScraper:
 
         The playlist lives on the player page (``og:video`` URL) and that
         page checks the Referer, so the video page URL is sent along.
+
+        Returns ``None`` when the links cannot be resolved. Callers that need
+        to tell the failure modes apart should use ``_fetch_video_details``,
+        which raises ``VideoFetchError`` with a readable reason instead.
         """
+        try:
+            return await self._fetch_video_details(video_id)
+        except VideoFetchError:
+            return None
+
+    async def _fetch_video_details(self, video_id: str) -> dict:
+        """Like ``get_video_by_id`` but raises ``VideoFetchError`` on failure."""
         video_id = video_id.strip("/")
         response = await self._get(f"{self.base_url}/watch/{video_id}")
         if response is None or response.status_code != 200:
-            return None
+            raise VideoFetchError(ERR_VIDEO_PAGE)
 
         video_page_url = str(response.url)
         base_url = self._origin(video_page_url)
@@ -183,11 +255,13 @@ class NoodleScraper:
 
         og_video_tag = tree.css_first('meta[property="og:video"]')
         if og_video_tag is None:
-            return None
+            raise VideoFetchError(ERR_PLAYER_MISSING)
 
         # og:video points to the player CDN host; the same path is served on
         # the site origin, so rewrite it to keep player and links on one host.
         player_url = urlparse(og_video_tag.attributes.get("content") or "")
+        if not player_url.path:
+            raise VideoFetchError(ERR_PLAYER_MISSING)
         player_url = player_url._replace(
             scheme=urlparse(base_url).scheme, netloc=urlparse(base_url).netloc
         ).geturl()
@@ -211,12 +285,12 @@ class NoodleScraper:
                 duration = int(raw_duration)
 
         player_response = await self._get(player_url, referer=video_page_url)
-        if player_response is None:
-            return None
+        if player_response is None or player_response.status_code != 200:
+            raise VideoFetchError(ERR_PLAYER_PAGE)
 
         playlist = self.parse_playlist(player_response.text, video_id)
         if playlist is None:
-            return None
+            raise VideoFetchError(ERR_PLAYLIST)
 
         sources = sorted(
             playlist.get("sources") or [], key=self._quality_key, reverse=True
