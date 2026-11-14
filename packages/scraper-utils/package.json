@@ -1,0 +1,40 @@
+{
+  "name": "scraper-utils",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Shared utilities for scrapers in the crawlee-one monorepo",
+  "author": "Juro Oravec <juraj.oravec.josefson@gmail.com>",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "lint": "eslint ./src",
+    "lint:fix": "eslint ./src --fix",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "actor-spec": "workspace:*",
+    "crawlee-one": "workspace:*",
+    "eta": "catalog:",
+    "lodash-es": "catalog:"
+  },
+  "devDependencies": {
+    "@types/lodash-es": "catalog:",
+    "apify": "catalog:"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "name": "crawlee-one",
+  "version": "3.0.2",
+  "type": "module",
+  "private": false,
+  "description": "Production-ready web scraping in a single function call. Built on Crawlee. Data transforms, caching, privacy compliance, and error tracking -- out of the box.",
+  "author": "Juro Oravec <juraj.oravec.josefson@gmail.com>",
+  "homepage": "https://github.com/JuroOravec/crawlee-one#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JuroOravec/crawlee-one.git",
+    "directory": "packages/crawlee-one"
+  },
+  "bugs": {
+    "url": "https://github.com/JuroOravec/crawlee-one/issues"
+  },
+  "license": "MIT",
+  "keywords": [
+    "crawlee",
+    "crawlee-one",
+    "apify",
+    "actor",
+    "crawler",
+    "scraper",
+    "template",
+    "web-scraping",
+    "web-scraper",
+    "web-crawler",
+    "data-extraction",
+    "typescript",
+    "automation",
+    "playwright",
+    "cheerio"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./apify": {
+      "types": "./dist/lib/integrations/apify.d.ts",
+      "import": "./dist/apify.js"
+    },
+    "./sentry": {
+      "types": "./dist/lib/telemetry/sentry.d.ts",
+      "import": "./dist/sentry.js"
+    }
+  },
+  "types": "dist/index.d.ts",
+  "bin": "dist/cli.js",
+  "scripts": {
+    "start": "pnpm run start:dev",
+    "start:prod": "node dist/index.js",
+    "start:dev": "tsx ./src/index.ts",
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "lint": "eslint ./src",
+    "lint:fix": "eslint ./src --fix",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "bench": "vitest bench --run",
+    "bench:gen": "tsx benchmarks/run-bench.ts generate",
+    "docs:gen": "typedoc src/index.ts --plugin typedoc-plugin-markdown --tsconfig tsconfig.json --gitRevision main --out ./docs/typedoc"
+  },
+  "dependencies": {
+    "actor-spec": "workspace:*",
+    "commander": "catalog:",
+    "cosmiconfig": "catalog:",
+    "dotenv": "catalog:",
+    "glob": "catalog:",
+    "jiti": "catalog:",
+    "lodash-es": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "@sentry/node": "catalog:peers",
+    "apify": "catalog:peers",
+    "apify-actor-config": "workspace:*",
+    "apify-client": "catalog:peers",
+    "cheerio": "catalog:peers",
+    "crawlee": "catalog:peers",
+    "got-scraping": "catalog:peers",
+    "playwright": "catalog:peers",
+    "vitest": "catalog:"
+  }
+}
