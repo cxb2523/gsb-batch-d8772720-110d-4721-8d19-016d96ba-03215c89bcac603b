@@ -1,0 +1,7 @@
+{
+  "name": "Live Dashboard",
+  "zip_release": true,
+  "filename": "live_dashboard.zip",
+  "render_readme": true,
+  "homeassistant": "2024.11.0"
+}

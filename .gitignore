@@ -1,0 +1,36 @@
+# Personal Home Assistant config — never publish a real installation's data
+public/config.js
+uploads/
+**/entities.json
+**/*entities*.json
+**/home_dashboard*.txt
+*.snapshot.json
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Local scratch
+*.log
+
+# Esclude i costi locali di graphify
+graphify-out/cost.json
+
+# OPZIONALE: Sblocca questa riga se preferisci non committare la cache locale
+graphify-out/cache/
+
+# Stato locale di graphify (percorso Python, cartella scansionata) — specifico
+# della macchina, non portabile tra installazioni
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+
+# Analisi derivata (comunità/coesione/hub/domande) — rigenerabile da graph.json,
+# stesso trattamento di cost.json/cache/ qui sopra
+graphify-out/.graphify_analysis.json
+
+# v2 — www/ inside the integration is built from public/ (release zip,
+# scripts/deploy_ha.sh); the source of truth stays public/.
+custom_components/live_dashboard/www/
+**/__pycache__/
+build/
+live_dashboard.zip

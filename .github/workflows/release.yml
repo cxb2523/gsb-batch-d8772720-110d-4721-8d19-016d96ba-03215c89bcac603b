@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  zip-and-attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # v2 — HACS category Integration: the zip is extracted into
+      # config/custom_components/live_dashboard/, so it holds the integration
+      # at its top level plus the dashboard's files (public/) under www/,
+      # which the integration serves at /live_dashboard/.
+      - name: Check versions match the tag
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          manifest=$(python3 -c "import json;print(json.load(open('custom_components/live_dashboard/manifest.json'))['version'])")
+          if [ "v$manifest" != "$tag" ]; then
+            echo "manifest.json version $manifest does not match tag $tag"; exit 1
+          fi
+
+      - name: Build live_dashboard.zip
+        # Integration + public/ as www/, plus the bridge files that keep a
+        # 1.x HACS Dashboard install working after this update — see the
+        # script's header.
+        run: scripts/build_release.sh
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" live_dashboard.zip --clobber

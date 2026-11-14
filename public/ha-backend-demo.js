@@ -1,0 +1,622 @@
+// ===========================================================================
+//  HA BACKEND — DEMO IMPLEMENTATION
+//
+//  Same contract as ha-backend-panel.js (see that file), but talks to an
+//  entirely invented, in-memory Home Assistant instead of a real one. Every
+//  entity here is fictional — generic room names, "Alex" and "Sam" as the
+//  people, no reference to any real installation. This is what runs when
+//  the page is opened with ?demo, or opened directly with no panel_custom
+//  host to answer it (e.g. straight from file://).
+//
+//  It exists so someone can open the page and see the dashboard working —
+//  all views, Energy and Irrigation included — before installing anything.
+//
+//  Classic script, not an ES module (see discovery.js's top comment for why)
+//  — wrapped in an IIFE since it shares one global scope with every other
+//  file loaded via loadScript() in dash_neumo*.html, and ha-backend-panel.js
+//  declares its own same-named BACKEND_KIND / connect.
+// ===========================================================================
+
+(function () {
+
+const BACKEND_KIND = 'demo';
+
+const TICK_MS = 4000;
+
+function entity(id, area_id, state, attributes) {
+  return { entity_id: id, area_id, state, attributes: attributes || {} };
+}
+
+// A handful of generic, clearly-fake rooms — including a few extra ones with
+// nothing but a light, so the "+N stanze" overflow affordance (rooms.max, see
+// discovery.js) has something to show even in the demo.
+const SEED = [
+  entity('light.soggiorno', 'soggiorno', 'on', { friendly_name: 'Soggiorno', brightness: 210 }),
+  entity('cover.soggiorno_tapparella', 'soggiorno', 'open', { friendly_name: 'Tapparella soggiorno', current_position: 70, supported_features: 15 }),
+  entity('media_player.soggiorno_tv', 'soggiorno', 'playing', { friendly_name: 'TV soggiorno', media_title: 'Demo channel' }),
+  entity('sensor.soggiorno_temperatura', 'soggiorno', '21.4', { friendly_name: 'Temperatura soggiorno', device_class: 'temperature', unit_of_measurement: '°C' }),
+  entity('sensor.soggiorno_umidita', 'soggiorno', '48', { friendly_name: 'Umidità soggiorno', device_class: 'humidity', unit_of_measurement: '%' }),
+  // Extra room-card pill candidates (see v1.4.8 fix ticket, B2/B3): more than
+  // 4 compete here on purpose, to prove the card actually caps at 4 and
+  // respects the allarmi/aperture/presenza/temperatura/umidità/resto order
+  // instead of just showing whichever sensor happened to be discovered first.
+  entity('binary_sensor.soggiorno_finestra', 'soggiorno', 'on', { friendly_name: 'Finestra soggiorno', device_class: 'window' }),
+  entity('sensor.soggiorno_illuminamento', 'soggiorno', '240', { friendly_name: 'Luminosità soggiorno', device_class: 'illuminance', unit_of_measurement: 'lx' }),
+  entity('sensor.soggiorno_telecomando_batteria', 'soggiorno', '12', { friendly_name: 'Telecomando TV batteria', device_class: 'battery', unit_of_measurement: '%' }),
+
+  entity('light.camera', 'camera', 'off', { friendly_name: 'Camera' }),
+  entity('cover.camera_tapparella', 'camera', 'closed', { friendly_name: 'Tapparella camera', current_position: 0, supported_features: 15 }),
+  entity('climate.camera', 'camera', 'heat', { friendly_name: 'Termostato camera', temperature: 20, current_temperature: 19.5 }),
+
+  entity('light.camera_bimbi', 'camera_bimbi', 'off', { friendly_name: 'Camera bimbi' }),
+  entity('cover.camera_bimbi_tapparella', 'camera_bimbi', 'closed', { friendly_name: 'Tapparella camera bimbi', current_position: 10, supported_features: 15 }),
+
+  entity('light.cucina', 'cucina', 'on', { friendly_name: 'Cucina', brightness: 255 }),
+  entity('switch.cucina_forno', 'cucina', 'off', { friendly_name: 'Forno' }),
+  // Same device as the oven switch — proves a switch shows its own device's
+  // wattage in the room panel (B4) without becoming a pill or a row of its
+  // own (see DEVICE_LINKS below).
+  entity('sensor.cucina_forno_potenza', 'cucina', '38', { friendly_name: 'Forno potenza', device_class: 'power', unit_of_measurement: 'W' }),
+  entity('binary_sensor.cucina_movimento', 'cucina', 'on', { friendly_name: 'Movimento cucina', device_class: 'motion' }),
+
+  entity('light.bagno', 'bagno', 'off', { friendly_name: 'Bagno' }),
+  entity('cover.bagno_tapparella', 'bagno', 'open', { friendly_name: 'Tapparella bagno', current_position: 100, supported_features: 15 }),
+  entity('humidifier.bagno_deumidificatore', 'bagno', 'off', { friendly_name: 'Deumidificatore bagno' }),
+  entity('binary_sensor.bagno_allagamento', 'bagno', 'on', { friendly_name: 'Sensore allagamento bagno', device_class: 'moisture' }),
+
+  entity('light.studio', 'studio', 'on', { friendly_name: 'Studio', brightness: 180 }),
+  entity('switch.studio_stampante', 'studio', 'off', { friendly_name: 'Stampante' }),
+
+  entity('light.ingresso', 'ingresso', 'off', { friendly_name: 'Ingresso' }),
+  entity('cover.ingresso_tapparella_1', 'ingresso', 'open', { friendly_name: 'Tapparella ingresso 1', current_position: 100, supported_features: 15 }),
+  entity('cover.ingresso_tapparella_2', 'ingresso', 'open', { friendly_name: 'Tapparella ingresso 2', current_position: 100, supported_features: 15 }),
+  entity('sensor.ingresso_temperatura', 'ingresso', '19.8', { friendly_name: 'Temperatura ingresso', device_class: 'temperature', unit_of_measurement: '°C' }),
+  entity('lock.ingresso_porta', 'ingresso', 'unlocked', { friendly_name: 'Porta ingresso' }),
+
+  entity('switch.lavatrice', 'lavanderia', 'off', { friendly_name: 'Lavatrice' }),
+  entity('vacuum.robot_aspirapolvere', 'lavanderia', 'docked', { friendly_name: 'Robot aspirapolvere' }),
+
+  // appliances (Fase successiva — nessun dominio HA generico per "in corso",
+  // quindi mappatura esplicita via config.appliances; vedi DEMO_CONFIG sotto)
+  entity('sensor.lavatrice_stato', 'lavanderia', 'lavaggio', { friendly_name: 'Lavatrice stato' }),
+  entity('sensor.lavatrice_energia_oggi', 'lavanderia', '340', { friendly_name: 'Lavatrice energia oggi', unit_of_measurement: 'Wh' }),
+  entity('binary_sensor.asciugatrice_stato', 'lavanderia', 'off', { friendly_name: 'Asciugatrice stato' }),
+
+  entity('light.giardino', 'giardino', 'off', { friendly_name: 'Luci giardino' }),
+  entity('fan.giardino_ventilazione', 'giardino', 'off', { friendly_name: 'Ventilazione veranda' }),
+
+  entity('switch.garage_luce', 'garage', 'off', { friendly_name: 'Luce garage' }),
+  // No SET_POSITION bit on purpose: a real garage-door opener is usually
+  // open/close/stop only, and this is the demo's one example of the guard
+  // in dash_neumo*.html that hides the position slider when the device
+  // doesn't support it (v1.5.2) — buttons only, same as it'd render live.
+  entity('cover.garage_portone', 'garage', 'closed', { friendly_name: 'Portone garage', current_position: 0, supported_features: 11 }),
+
+  entity('light.corridoio', 'corridoio', 'off', { friendly_name: 'Corridoio' }),
+  entity('sensor.corridoio_co2', 'corridoio', '640', { friendly_name: 'CO₂ corridoio', device_class: 'carbon_dioxide', unit_of_measurement: 'ppm' }),
+  entity('sensor.corridoio_pm25', 'corridoio', '9', { friendly_name: 'PM2.5 corridoio', device_class: 'pm25', unit_of_measurement: 'µg/m³' }),
+
+  // A diagnostic entity in an otherwise-normal area, to prove the
+  // disabled_by/hidden_by/entity_category filters actually apply in the
+  // demo too, not just in discovery.js's unit-level logic.
+  entity('sensor.router_wifi_rssi', 'corridoio', '-52', { friendly_name: 'RSSI router', unit_of_measurement: 'dBm' }),
+
+  // The v1.7.1 bug, modeled directly (see CLAUDE.md): Matter re-registers a
+  // device after a core update, the old device keeps the user's area/name,
+  // the entities that actually work migrate to a new device with no area —
+  // area_id: null here on purpose, resolved only through DEVICE_LINKS below
+  // (to 'device_relay_new', itself arealess in DEVICES), so this cover hits
+  // discoverRooms's `no_area` discard exactly like the real one did. Always
+  // present in plain `?demo` — no special scenario needed to prove either
+  // this or the paired "device sdoppiati" warning (see DEVICES).
+  entity('cover.relay_2pm_shade', null, 'closed', { friendly_name: 'Relay Switch 2PM Shade', current_position: 0, supported_features: 15 }),
+
+  // people
+  entity('person.alex', null, 'home', { friendly_name: 'Alex' }),
+  entity('person.sam', null, 'not_home', { friendly_name: 'Sam' }),
+
+  // weather + alarm + modes
+  entity('weather.demo_home', null, 'partlycloudy', { friendly_name: 'Casa', temperature: 18.5 }),
+  // Optional local weather station (see DEMO_CONFIG.weatherStation below) —
+  // feelsLike/dewPoint have no other config field, so demo needs its own
+  // entities to show them at all.
+  entity('sensor.station_feels_like', null, '17.8', { friendly_name: 'Percepita', unit_of_measurement: '°C' }),
+  entity('sensor.station_dew_point', null, '9.4', { friendly_name: 'Punto di rugiada', unit_of_measurement: '°C' }),
+  entity('sun.sun', null, 'above_horizon', {}),
+  entity('alarm_control_panel.demo_home', null, 'disarmed', { friendly_name: 'Allarme', supported_features: 7 }),
+  entity('input_select.house_mode', null, 'Casa', { friendly_name: 'Modalità casa', options: ['Casa', 'Fuori', 'Notte', 'Cinema'] }),
+
+  // energy (Fase 3 — generic roles, not tied to any inverter brand)
+  entity('sensor.solar_power', null, '2.3', { friendly_name: 'Produzione FV', unit_of_measurement: 'kW' }),
+  entity('sensor.house_power', null, '1.1', { friendly_name: 'Consumo casa', unit_of_measurement: 'kW' }),
+  entity('sensor.grid_import_power', null, '0.0', { friendly_name: 'Prelievo rete', unit_of_measurement: 'kW' }),
+  entity('sensor.grid_export_power', null, '1.2', { friendly_name: 'Immissione rete', unit_of_measurement: 'kW' }),
+  entity('sensor.battery_soc', null, '68', { friendly_name: 'Batteria', unit_of_measurement: '%' }),
+  entity('sensor.battery_power', null, '0.4', { friendly_name: 'Potenza batteria', unit_of_measurement: 'kW' }),
+  entity('sensor.inverter_status', null, 'normal', { friendly_name: 'Stato inverter' }),
+  entity('sensor.solar_energy_today', null, '9.8', { friendly_name: 'Prodotti oggi', unit_of_measurement: 'kWh' }),
+  entity('sensor.grid_import_today', null, '1.4', { friendly_name: 'Prelevati oggi', unit_of_measurement: 'kWh' }),
+  // Plausible enough for the double ring to look real: ~63% self-consumption
+  // (autoconsumo = 9.8 - 3.6 = 6.2 kWh of the 9.8 produced).
+  entity('sensor.grid_export_today', null, '3.6', { friendly_name: 'Immessi oggi', unit_of_measurement: 'kWh' }),
+  entity('sensor.electricity_price', null, '0.22', { friendly_name: 'Prezzo elettricità', unit_of_measurement: '€/kWh' }),
+
+  // irrigation (Fase 3 — two zones, generic)
+  entity('sensor.zone1_soil_moisture', null, '34', { friendly_name: 'Umidità zona 1', unit_of_measurement: '%' }),
+  entity('switch.zone1_valve', null, 'off', { friendly_name: 'Valvola zona 1' }),
+  entity('sensor.zone1_advisory', null, 'Irrigare presto', { minuti_consigliati: 12, urgenza: 'moderata', umidita_suolo: '34%' }),
+  entity('input_number.zone1_deficit', null, '3.2', { friendly_name: 'Deficit zona 1', unit_of_measurement: 'mm' }),
+  entity('input_number.zone1_week_mm', null, '9', { friendly_name: 'Settimana zona 1', unit_of_measurement: 'mm' }),
+  entity('input_datetime.zone1_last_run', null, new Date(Date.now() - 2 * 86400000).toISOString(), { friendly_name: 'Ultima irrigazione zona 1' }),
+
+  entity('sensor.zone2_soil_moisture', null, '52', { friendly_name: 'Umidità zona 2', unit_of_measurement: '%' }),
+  entity('switch.zone2_valve', null, 'off', { friendly_name: 'Valvola zona 2' }),
+  entity('sensor.zone2_advisory', null, 'Suolo ok', { minuti_consigliati: 0, urgenza: '', umidita_suolo: '52%' }),
+  entity('input_number.zone2_deficit', null, '0.6', { friendly_name: 'Deficit zona 2', unit_of_measurement: 'mm' }),
+  entity('input_number.zone2_week_mm', null, '14', { friendly_name: 'Settimana zona 2', unit_of_measurement: 'mm' }),
+  entity('input_datetime.zone2_last_run', null, new Date(Date.now() - 5 * 86400000).toISOString(), { friendly_name: 'Ultima irrigazione zona 2' }),
+
+  // vehicle (optional module — see live_dashboard_config.example.js)
+  entity('sensor.car_fuel_level', null, '64', { friendly_name: 'Livello carburante', unit_of_measurement: '%' }),
+  entity('sensor.car_range', null, '480', { friendly_name: 'Autonomia', unit_of_measurement: 'km' }),
+  entity('sensor.car_odometer', null, '38210', { friendly_name: 'Contachilometri', unit_of_measurement: 'km' }),
+  entity('sensor.car_adblue_level', null, '78', { friendly_name: 'AdBlue', unit_of_measurement: '%' }),
+  entity('binary_sensor.car_tire_warning', null, 'off', { friendly_name: 'Pressione pneumatici' }),
+  entity('binary_sensor.car_windows_closed', null, 'on', { friendly_name: 'Finestrini' }),
+
+  // cameras (Fase 3 — no entity_picture on purpose: the demo has no real
+  // camera feed to show, so every tile stays on its icon placeholder, same
+  // as a real installation whose camera integration hasn't produced a
+  // snapshot yet. camera.corridoio is flagged hideUntilTap below to exercise
+  // the privacy tap-to-reveal behavior in the demo too.
+  entity('camera.cancello', 'giardino', 'idle', { friendly_name: 'Cancello' }),
+  entity('binary_sensor.cancello_motion', 'giardino', 'on', { friendly_name: 'Movimento cancello', device_class: 'motion' }),
+  entity('camera.ingresso', 'ingresso', 'idle', { friendly_name: 'Ingresso' }),
+  entity('camera.corridoio', 'corridoio', 'idle', { friendly_name: 'Corridoio' }),
+  // Three more, purely to exercise the home card's adaptive grid (v1.4.9) at
+  // 4 and 6 cameras — a real install's count is whatever HA reports, but the
+  // demo needs enough of them to prove the 2x2 and the "+N altre" fallback.
+  entity('camera.soggiorno', 'soggiorno', 'idle', { friendly_name: 'Soggiorno' }),
+  entity('camera.cucina', 'cucina', 'idle', { friendly_name: 'Cucina' }),
+  entity('camera.garage', 'garage', 'idle', { friendly_name: 'Garage' })
+];
+
+// entity_id -> device_id, only for the pairs that need to prove the
+// "motion sensor on the same device as the camera" discovery link — every
+// other demo entity has no device at all (buildRegistries defaults to null).
+const DEVICE_LINKS = {
+  'camera.cancello': 'device_cancello',
+  'binary_sensor.cancello_motion': 'device_cancello',
+  'switch.cucina_forno': 'device_forno',
+  'sensor.cucina_forno_potenza': 'device_forno',
+  'cover.relay_2pm_shade': 'device_relay_new'
+};
+
+// Device-registry rows (v1.7.1) — empty until now, since nothing before
+// needed one: every other demo device relation only mattered at the entity
+// level (DEVICE_LINKS above). findDuplicateDevices (discovery.js) pairs
+// devices by serial_number, so the two rows below share one — same
+// physical relay, "re-registered" by Matter after an update, exactly the
+// CLAUDE.md v1.7.1 bug. Deliberately just these two: every other demo
+// entity keeps working through DEVICE_LINKS or no device at all, so this
+// pair doesn't change anything else about the demo.
+const DEVICES = [
+  { id: 'device_relay_old', area_id: 'soggiorno', name: 'Tapparella 1', name_by_user: null,
+    model: 'Relay Switch 2PM', serial_number: 'SN-RELAY2PM-014', hw_version: 'v2', via_device_id: 'device_matter_bridge' },
+  { id: 'device_relay_new', area_id: null, name: 'Relay Switch 2PM Shade', name_by_user: null,
+    model: 'Relay Switch 2PM', serial_number: 'SN-RELAY2PM-014', hw_version: 'v2', via_device_id: 'device_matter_bridge' }
+];
+
+const AREA_NAMES = {
+  soggiorno: 'Soggiorno', camera: 'Camera', camera_bimbi: 'Camera Bimbi', cucina: 'Cucina',
+  bagno: 'Bagno', studio: 'Studio', ingresso: 'Ingresso', lavanderia: 'Lavanderia',
+  giardino: 'Giardino', garage: 'Garage', corridoio: 'Corridoio'
+};
+
+// config.js overrides don't apply to the demo (there's no real installation
+// behind it) — the dashboards use this fixed mapping instead whenever
+// backend.kind === 'demo', so Energy/Irrigation/Vehicle/alarm/modes all show
+// up without anyone having to write a config.js just to see the demo.
+const DEMO_CONFIG = {
+  alarm: 'alarm_control_panel.demo_home',
+  modes: { select: 'input_select.house_mode', script: 'script.set_house_mode' },
+  people: [],
+  weather: 'weather.demo_home',
+  quickActions: null,
+  energy: {
+    production: 'sensor.solar_power', consumption: 'sensor.house_power',
+    gridImport: 'sensor.grid_import_power', gridExport: 'sensor.grid_export_power',
+    battery: { soc: 'sensor.battery_soc', power: 'sensor.battery_power' },
+    inverterStatus: 'sensor.inverter_status',
+    productionToday: 'sensor.solar_energy_today', gridToday: 'sensor.grid_import_today',
+    gridExportToday: 'sensor.grid_export_today',
+    price: 'sensor.electricity_price'
+  },
+  irrigation: {
+    zones: [
+      { name: 'Zona 1', moisture: 'sensor.zone1_soil_moisture', valve: 'switch.zone1_valve',
+        durations: [5, 10, 15], advisory: 'sensor.zone1_advisory', deficit: 'input_number.zone1_deficit',
+        weekMm: 'input_number.zone1_week_mm', lastRun: 'input_datetime.zone1_last_run' },
+      { name: 'Zona 2', moisture: 'sensor.zone2_soil_moisture', valve: 'switch.zone2_valve',
+        durations: [5, 10, 15], advisory: 'sensor.zone2_advisory', deficit: 'input_number.zone2_deficit',
+        weekMm: 'input_number.zone2_week_mm', lastRun: 'input_datetime.zone2_last_run' }
+    ],
+    weather: null, et0: null, etc: null, effectiveRain: null, summary: null
+  },
+  // feelsLike/dewPoint have no other config field to fall back to; temp/
+  // humidity/wind/rain/irradiance/et0 would reuse irrigation.weather/et0 if
+  // those were set above, but the demo leaves them null on purpose to also
+  // exercise the "weather station with no irrigation configured" path.
+  weatherStation: { feelsLike: 'sensor.station_feels_like', dewPoint: 'sensor.station_dew_point' },
+  vehicle: {
+    fuel: 'sensor.car_fuel_level', battery: null, range: 'sensor.car_range', odometer: 'sensor.car_odometer',
+    cells: [{ label: 'AdBlue', entity: 'sensor.car_adblue_level', unit: '%' }],
+    warnings: [
+      { entity: 'binary_sensor.car_tire_warning', label: 'Pressione pneumatici' },
+      { entity: 'binary_sensor.car_windows_closed', label: 'Finestrini', positiveIsGood: true }
+    ]
+  },
+  cameras: {
+    primary: null, hideUntilTap: ['camera.corridoio'], snapshotInterval: 10, gridTab: 6
+  },
+  appliances: [
+    { name: 'Lavatrice', icon: '#i-wash', status: 'sensor.lavatrice_stato',
+      stateLabels: { lavaggio: 'Lavaggio' },
+      energyToday: 'sensor.lavatrice_energia_oggi',
+      powerSwitch: 'switch.lavatrice' },
+    { name: 'Asciugatrice', icon: '#i-dryer', status: 'binary_sensor.asciugatrice_stato' }
+  ]
+};
+
+// ===========================================================================
+//  SCENARI FORZABILI (?demo&scenario=<id>) — vedi CLAUDE.md.
+//
+//  Un solo vincolo, che decide tutto il resto: uno scenario è un insieme di
+//  dati applicato a SEED/DEMO_CONFIG qui sotto, mai un `if (scenario === …)`
+//  altrove nel codice. dash_neumo.html, discovery.js e la formattazione non
+//  sanno che gli scenari esistono — vedono solo entità diverse.
+// ===========================================================================
+const SCENARIOS = [
+  { id: 'default', name: 'Giornata normale' },
+  { id: 'export', name: 'Sole forte, immissione',
+    states: {
+      'sensor.solar_power': { state: '4.6' },
+      'sensor.house_power': { state: '0.7' },
+      'sensor.grid_import_power': { state: '0.0' },
+      'sensor.grid_export_power': { state: '3.7' },
+      'sensor.battery_soc': { state: '95' },
+      'sensor.battery_power': { state: '-0.4' },
+      'sensor.solar_energy_today': { state: '15.4' },
+      'sensor.grid_import_today': { state: '0.1' },
+      'sensor.grid_export_today': { state: '8.9' }
+    } },
+  { id: 'import', name: 'Nuvolo, prelievo',
+    states: {
+      'sensor.solar_power': { state: '0.05' },
+      'sensor.house_power': { state: '1.6' },
+      'sensor.grid_import_power': { state: '1.55' },
+      'sensor.grid_export_power': { state: '0.0' },
+      'sensor.battery_soc': { state: '28' },
+      'sensor.battery_power': { state: '0.6' },
+      'sensor.solar_energy_today': { state: '0.6' },
+      'sensor.grid_import_today': { state: '5.9' },
+      'sensor.grid_export_today': { state: '0.0' }
+    } },
+  { id: 'night', name: 'Notte',
+    states: {
+      'sun.sun': { state: 'below_horizon' },
+      'sensor.solar_power': { state: '0.0' },
+      'sensor.grid_export_power': { state: '0.0' },
+      'sensor.house_power': { state: '0.9' },
+      'sensor.grid_import_power': { state: '0.85' },
+      'sensor.battery_soc': { state: '41' },
+      'sensor.battery_power': { state: '0.45' }
+    } },
+  // The most important scenario — see CLAUDE.md. Entities removed from SEED
+  // (not just left out of the config), so the diagnostics tell "unconfigured"
+  // apart from "missing" (that's the `missing` scenario, below).
+  { id: 'partial', name: 'Dati parziali',
+    removeIds: ['sensor.grid_export_power', 'sensor.grid_export_today', 'sensor.battery_soc', 'sensor.battery_power'],
+    patchConfig(cfg) {
+      cfg.energy.gridExport = null;
+      cfg.energy.gridExportToday = null;
+      cfg.energy.battery = null;
+      return cfg;
+    } },
+  // Config promises entities that were never renamed here — SEED is
+  // untouched, only DEMO_CONFIG.energy points at ids that don't exist.
+  { id: 'missing', name: 'Entità inesistenti',
+    patchConfig(cfg) {
+      const en = cfg.energy;
+      en.production = 'sensor.solar_power_missing';
+      en.consumption = 'sensor.house_power_missing';
+      en.gridImport = 'sensor.grid_import_power_missing';
+      en.gridExport = 'sensor.grid_export_power_missing';
+      en.battery = { soc: 'sensor.battery_soc_missing', power: 'sensor.battery_power_missing' };
+      en.inverterStatus = 'sensor.inverter_status_missing';
+      en.productionToday = 'sensor.solar_energy_today_missing';
+      en.gridToday = 'sensor.grid_import_today_missing';
+      en.gridExportToday = 'sensor.grid_export_today_missing';
+      en.price = 'sensor.electricity_price_missing';
+      return cfg;
+    } },
+  { id: 'odd-units', name: 'Unità anomale',
+    states: {
+      'sensor.solar_power': { state: '2.6', attributes: { unit_of_measurement: 'Kw' } },
+      'sensor.house_power': { state: '850', attributes: { unit_of_measurement: 'w' } },
+      'sensor.grid_import_power': { state: '0.0012', attributes: { unit_of_measurement: 'MW' } },
+      'sensor.grid_export_power': { state: '4100', attributes: { unit_of_measurement: 'BTU/h' } }
+    } },
+  // v1.8.1 — exercises the action-log/toast "timeout" path (dash_neumo*
+  // .html's call()) without a 15s real wait or real hardware, same spirit
+  // as `partial`/`missing` for the energy/discovery diagnostics: every
+  // `switch.*` service call rejects with the same .code:'timeout' shape
+  // ha-backend-panel.js's real 15s timeout produces, after a short delay —
+  // see demoBackend().call below for where this id is actually read.
+  { id: 'call-timeout', name: 'Chiamate switch in timeout' },
+  // v1.9.0 — a panel that declares code_format, so every arm/disarm opens
+  // the PIN pad. The demo accepts DEMO_ALARM_CODE only; anything else
+  // fails the same way a real panel does, to show the "code not accepted"
+  // path. Pure data, like every other scenario: the check below is keyed
+  // on the entity's own code_format attribute, not on this scenario's id.
+  { id: 'alarm-pin', name: 'Allarme con codice (1234)',
+    states: {
+      'alarm_control_panel.demo_home': { attributes: { code_format: 'number', code_arm_required: true } }
+    } }
+];
+const DEMO_ALARM_CODE = '1234';
+const SCENARIO_MAP = {};
+SCENARIOS.forEach((s) => { SCENARIO_MAP[s.id] = s; });
+
+function currentScenarioId() {
+  try {
+    const id = new URLSearchParams(window.location.search).get('scenario');
+    return (id && SCENARIO_MAP[id]) ? id : 'default';
+  } catch (e) {
+    return 'default';
+  }
+}
+
+function scenarioSeed(scenario) {
+  let seed = SEED.map((e) => Object.assign({}, e, { attributes: Object.assign({}, e.attributes) }));
+  if (scenario.removeIds) {
+    const drop = new Set(scenario.removeIds);
+    seed = seed.filter((e) => !drop.has(e.entity_id));
+  }
+  if (scenario.states) {
+    seed = seed.map((e) => {
+      const patch = scenario.states[e.entity_id];
+      if (!patch) return e;
+      return Object.assign({}, e, {
+        state: patch.state !== undefined ? patch.state : e.state,
+        attributes: Object.assign({}, e.attributes, patch.attributes || {})
+      });
+    });
+  }
+  return seed;
+}
+
+function scenarioConfig(scenario) {
+  const cfg = JSON.parse(JSON.stringify(DEMO_CONFIG));
+  return scenario.patchConfig ? scenario.patchConfig(cfg) : cfg;
+}
+
+const ACTIVE_SCENARIO_ID = currentScenarioId();
+const ACTIVE_SEED = scenarioSeed(SCENARIO_MAP[ACTIVE_SCENARIO_ID]);
+const ACTIVE_CONFIG = scenarioConfig(SCENARIO_MAP[ACTIVE_SCENARIO_ID]);
+
+function buildRegistries() {
+  const areas = Object.keys(AREA_NAMES).map((id) => ({ area_id: id, name: AREA_NAMES[id], icon: null }));
+  const entities = ACTIVE_SEED.map((e) => ({
+    entity_id: e.entity_id, area_id: e.area_id, device_id: DEVICE_LINKS[e.entity_id] || null,
+    disabled_by: null, hidden_by: null,
+    entity_category: e.entity_id === 'sensor.router_wifi_rssi' ? 'diagnostic' : null
+  }));
+  return { areas, devices: DEVICES, entities };
+}
+
+function cloneStates() {
+  const out = {};
+  for (const e of ACTIVE_SEED) out[e.entity_id] = { state: e.state, attributes: Object.assign({}, e.attributes) };
+  return out;
+}
+
+function rand(min, max) { return min + Math.random() * (max - min); }
+
+async function connect(handlers) {
+  const states = cloneStates();
+  const registries = buildRegistries();
+  let closed = false;
+  let timer = null;
+
+  function emit() { if (!closed) handlers.onStates(Object.assign({}, states)); }
+
+  handlers.onStatus('connecting');
+  await new Promise((r) => setTimeout(r, 350));
+  if (closed) return demoBackend();
+  emit();
+  handlers.onStatus('connected');
+
+  // A light random walk on a few sensors so the demo doesn't look frozen —
+  // purely cosmetic, no relation to how a real installation behaves.
+  timer = setInterval(() => {
+    const t = states['sensor.soggiorno_temperatura'];
+    if (t) t.state = (parseFloat(t.state) + rand(-0.15, 0.15)).toFixed(1);
+    const solar = states['sensor.solar_power'];
+    if (solar) solar.state = Math.max(0, parseFloat(solar.state) + rand(-0.2, 0.2)).toFixed(2);
+    const house = states['sensor.house_power'];
+    if (house) house.state = Math.max(0.1, parseFloat(house.state) + rand(-0.1, 0.1)).toFixed(2);
+    emit();
+  }, TICK_MS);
+
+  function setState(id, state, attrs) {
+    const e = states[id];
+    if (!e) return;
+    if (state !== undefined) e.state = state;
+    if (attrs) Object.assign(e.attributes, attrs);
+  }
+
+  function ids(data) {
+    const t = (data && data.target) || {};
+    const raw = t.entity_id !== undefined ? t.entity_id : (data && data.entity_id);
+    return raw == null ? [] : Array.isArray(raw) ? raw : [raw];
+  }
+
+  function demoBackend() {
+    return {
+      kind: BACKEND_KIND,
+
+      call: async function (domain, service, data) {
+        // v1.8.1 — `?demo&scenario=call-timeout`: every switch.* call (the
+        // irrigation valve domain) rejects instead of succeeding, with the
+        // same .code:'timeout' shape ha-backend-panel.js's real 15s
+        // CALL_TIMEOUT_MS produces, so the toast/action-log/pending-button
+        // path is provable without waiting 15s or owning real hardware.
+        if (ACTIVE_SCENARIO_ID === 'call-timeout' && domain === 'switch') {
+          await new Promise((r) => setTimeout(r, 400));
+          const err = new Error('timeout in attesa della risposta da Home Assistant (demo)');
+          err.code = 'timeout';
+          throw err;
+        }
+        if (domain === 'alarm_control_panel') {
+          const needsCode = ids(data).some((id) => states[id] && states[id].attributes && states[id].attributes.code_format);
+          if (needsCode && (data && data.code) !== DEMO_ALARM_CODE) {
+            await new Promise((r) => setTimeout(r, 300));
+            throw new Error('Invalid alarm code (demo)');
+          }
+        }
+        await new Promise((r) => setTimeout(r, 120));
+        const targets = ids(data);
+
+        if (domain === 'light') {
+          for (const id of targets) {
+            if (service === 'turn_on') setState(id, 'on', data && data.brightness !== undefined ? { brightness: data.brightness } : {});
+            else if (service === 'turn_off') setState(id, 'off');
+            else if (service === 'toggle') setState(id, states[id] && states[id].state === 'on' ? 'off' : 'on');
+          }
+        } else if (domain === 'switch') {
+          for (const id of targets) setState(id, service === 'turn_on' ? 'on' : 'off');
+        } else if (domain === 'cover') {
+          for (const id of targets) {
+            if (service === 'open_cover') setState(id, 'open', { current_position: 100 });
+            else if (service === 'close_cover') setState(id, 'closed', { current_position: 0 });
+            else if (service === 'set_cover_position') {
+              const pos = Number(data.position);
+              setState(id, pos === 0 ? 'closed' : 'open', { current_position: pos });
+            }
+            // stop_cover: no state change in the demo, same as a real cover mid-travel.
+          }
+        } else if (domain === 'media_player') {
+          for (const id of targets) setState(id, service === 'turn_on' ? 'playing' : 'off');
+        } else if (domain === 'vacuum') {
+          for (const id of targets) {
+            setState(id, 'returning');
+            setTimeout(() => { setState(id, 'docked'); emit(); }, 3000);
+          }
+        } else if (domain === 'lock') {
+          for (const id of targets) setState(id, service === 'unlock' ? 'unlocked' : 'locked');
+        } else if (domain === 'humidifier') {
+          for (const id of targets) setState(id, service === 'turn_on' ? 'on' : 'off');
+        } else if (domain === 'alarm_control_panel') {
+          const map = { alarm_disarm: 'disarmed', alarm_arm_home: 'armed_home', alarm_arm_away: 'armed_away', alarm_arm_night: 'armed_night', alarm_arm_vacation: 'armed_vacation' };
+          for (const id of targets) if (map[service]) setState(id, map[service]);
+        } else if (domain === 'script' && service === 'set_house_mode' && data && data.mode) {
+          setState('input_select.house_mode', data.mode);
+        } else if (domain === 'input_button' && service === 'press') {
+          // No persistent state for a button press in the demo — the caller
+          // (irrigation zone "N min" buttons) drives the valve directly via
+          // switch.turn_on/turn_off instead.
+        }
+        emit();
+      },
+
+      history: async function (entity_id, points) {
+        await new Promise((r) => setTimeout(r, 80));
+        const n = Math.max(1, points || 30);
+        if (/soil_ch|soil_moisture/.test(entity_id)) {
+          // 48h-style short window, slow-moving.
+          let v = 40;
+          return Array.from({ length: n }, () => (v += rand(-1.5, 1.2), v = Math.max(15, Math.min(70, v)), Math.round(v)));
+        }
+        if (/_today$/.test(entity_id)) {
+          // Daily counters: plausible day-by-day totals, not a running walk.
+          const base = entity_id.indexOf('grid') !== -1 ? 2 : 9;
+          return Array.from({ length: n }, () => Math.max(0, base + rand(-base * 0.6, base * 0.6)));
+        }
+        let v = 20;
+        return Array.from({ length: n }, () => (v += rand(-0.8, 0.8), Math.round(v * 10) / 10));
+      },
+
+      registries: async function () {
+        await new Promise((r) => setTimeout(r, 60));
+        return registries;
+      },
+
+      // The demo's DEMO_CONFIG.energy above always sets production/
+      // gridToday/gridExportToday explicitly, which take precedence over
+      // both of these in the resolution cascade (see dash_neumo*.html) — so
+      // neither is ever actually called in demo mode. Implemented anyway
+      // for contract completeness, same as any other backend.
+      energyPrefs: async function () {
+        return null;
+      },
+
+      energyToday: async function () {
+        return null;
+      },
+
+      // v1.8.0's hourly ring strip. Real statistic_ids are unknowable in the
+      // demo (nothing is actually recorded), so this recognizes only the
+      // fixed ids DEMO_CONFIG.energy itself hands out above and — if none of
+      // the requested ids match any of those — returns null, the same shape
+      // a real install with no recorder history for that statistic_id would
+      // give back. That's what the `missing` scenario (config points at
+      // `*_missing` ids) exercises: the "statistiche assenti" card state.
+      // Otherwise it synthesizes a full 24-hour solar bell keyed to each
+      // bucket's actual local hour-of-day — not the loop index — so the
+      // peak always lands on 13:00 regardless of when the demo is loaded,
+      // and the "no export sensor" / "no production at all" shapes are
+      // reproduced by omitting those series when the caller didn't ask for
+      // them (mirrors the `partial` scenario's gridExport: null).
+      energyHourly: async function (ids) {
+        await new Promise((r) => setTimeout(r, 90));
+        const known = new Set(['sensor.solar_energy_today', 'sensor.grid_import_today', 'sensor.grid_export_today']);
+        const requested = [].concat((ids && ids.production) || [], (ids && ids.gridImport) || [], (ids && ids.gridExport) || [], (ids && ids.consumption) || []);
+        if (!requested.some((id) => known.has(id))) return null;
+        const hasProduction = ((ids && ids.production) || []).some((id) => known.has(id));
+        const hasExport = ((ids && ids.gridExport) || []).some((id) => known.has(id));
+        const now = new Date();
+        const out = [];
+        for (let i = 0; i < 24; i++) {
+          const dt = new Date(now);
+          dt.setMinutes(0, 0, 0);
+          dt.setHours(dt.getHours() - (23 - i));
+          const hod = dt.getHours();
+          const solar = hasProduction ? Math.max(0, 1.45 * Math.exp(-Math.pow(hod - 13, 2) / 18)) : 0;
+          const load = 0.35 + 0.25 * Math.exp(-Math.pow(hod - 8, 2) / 4) + 0.45 * Math.exp(-Math.pow(hod - 20.5, 2) / 6);
+          const gridImport = Math.max(0, load - solar);
+          const gridExport = hasExport ? Math.max(0, solar - load) : 0;
+          out.push({
+            hourStart: dt.toISOString(),
+            production: hasProduction ? Math.round(solar * 100) / 100 : null,
+            gridImport: Math.round(gridImport * 100) / 100,
+            gridExport: hasExport ? Math.round(gridExport * 100) / 100 : null,
+            consumption: null
+          });
+        }
+        return out;
+      },
+
+      close: function () {
+        closed = true;
+        if (timer) clearInterval(timer);
+      }
+    };
+  }
+
+  return demoBackend();
+}
+
+window.CasaBackendDemo = { BACKEND_KIND, connect, DEMO_CONFIG: ACTIVE_CONFIG, SCENARIOS, activeScenario: ACTIVE_SCENARIO_ID };
+
+})();

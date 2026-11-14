@@ -1,0 +1,2187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- v1.9.0 — React ships with the dashboard instead of coming from unpkg on
+     every load: support.js's loadReactUmd() skips its CDN fetch when
+     window.React/ReactDOM already exist, so these two plain tags (before
+     support.js, same file:// constraint as every other script here) are the
+     whole switch. Byte-identical to the unpkg files support.js pins by SRI.
+     A missing vendor/ file (half-copied manual install) still falls back to
+     the CDN; CASA_REACT_SOURCE records which one actually ran, for
+     Diagnostica → Ambiente. Versioned file names, not ?v=: the content of
+     react@18.3.1 never changes, so there's nothing to cache-bust. -->
+<script src="./vendor/react-18.3.1.production.min.js"></script>
+<script src="./vendor/react-dom-18.3.1.production.min.js"></script>
+<script>window.CASA_REACT_SOURCE = (window.React && window.ReactDOM) ? 'local' : 'cdn';</script>
+<!-- v2 — shared logic (window.CasaCore), before support.js: see casa-core.js. Same ?v= as the page, like bust(). -->
+<script>(function () { var v = new URLSearchParams(location.search).get('v'); document.write('<script src="./casa-core.js' + (v ? '?v=' + encodeURIComponent(v) : '') + '"><\/script>'); })();</script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+/* v1.9.0 — fonts ship in ./vendor/fonts/ (OFL, see vendor/README.md) instead of Google Fonts: the page looks the same with no internet. Figtree is variable, one file per subset covers every weight used here. */
+@font-face{font-family:'Caprasimo';font-style:normal;font-weight:400;font-display:swap;src:url('./vendor/fonts/caprasimo-latin-ext.woff2') format('woff2');unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:'Caprasimo';font-style:normal;font-weight:400;font-display:swap;src:url('./vendor/fonts/caprasimo-latin.woff2') format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Figtree';font-style:normal;font-weight:300 900;font-display:swap;src:url('./vendor/fonts/figtree-latin-ext.woff2') format('woff2');unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:'Figtree';font-style:normal;font-weight:300 900;font-display:swap;src:url('./vendor/fonts/figtree-latin.woff2') format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+:root{--font-heading:"Caprasimo",system-ui,sans-serif;--font-body:"Figtree",system-ui,sans-serif}
+:root,[data-theme="day"]{--page:#eaeef4;--gr:#e0e5ec;--nu-d:#a3b1c6;--nu-l:#ffffff;--tx:#2b303b;--tx2:#5a6377;
+--acc:#c67139;--accT:#8c491a;--sage:#7a8a5e;--sageT:#4f5c39;--feed:#b3c194;--onAcc:#fff;--tint:rgba(198,113,57,.13);--warn:#b4741c;--alert:#a83e2b;--ok:#4f5c39}
+[data-theme="night"]{--page:#1a1e25;--gr:#23282f;--nu-d:#14171c;--nu-l:#2e343d;--tx:#e7ebf2;--tx2:#98a2b3;
+--acc:#d98c53;--accT:#eeb283;--sage:#9aab79;--sageT:#b3c294;--feed:#b3c294;--onAcc:#1a1e25;--tint:rgba(217,140,83,.15);--warn:#e0a95c;--alert:#e08974;--ok:#b3c294}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);font-family:var(--font-body),system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;color:inherit;border:0;cursor:pointer;-webkit-tap-highlight-color:transparent}
+a{color:var(--accT);text-decoration:none}a:hover{color:var(--acc)}
+[data-nu]{--nu-out:6px 6px 13px var(--nu-d),-6px -6px 13px var(--nu-l);--nu-sm:4px 4px 8px var(--nu-d),-4px -4px 8px var(--nu-l);
+--nu-in:inset 5px 5px 10px var(--nu-d),inset -5px -5px 10px var(--nu-l);--nu-ins:inset 3px 3px 7px var(--nu-d),inset -3px -3px 7px var(--nu-l)}
+[data-sel="true"]{box-shadow:inset 4px 4px 9px var(--nu-d),inset -4px -4px 9px var(--nu-l)!important;background:var(--tint)!important;color:var(--accT)!important}
+[data-on="true"]{background:var(--tint)}
+[data-tone="warn"]{color:var(--warn)}[data-tone="alert"]{color:var(--alert)}[data-tone="ok"]{color:var(--ok)}[data-tone="acc"]{color:var(--acc)}
+[data-dim="true"]{opacity:.45}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:38px;background:transparent;margin:0}
+input[type=range]::-webkit-slider-runnable-track{height:38px;border-radius:999px;background:var(--gr);
+box-shadow:inset 3px 3px 7px var(--nu-d),inset -3px -3px 7px var(--nu-l)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:30px;height:30px;margin-top:4px;border-radius:999px;
+background:var(--gr);box-shadow:2px 2px 5px var(--nu-d),-2px -2px 5px var(--nu-l),inset 0 0 0 5px var(--acc)}
+input[type=range]::-moz-range-track{height:38px;border-radius:999px;background:var(--gr)}
+input[type=range]::-moz-range-thumb{width:30px;height:30px;border:5px solid var(--acc);border-radius:999px;background:var(--gr)}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+[data-r="cover-band"]{transition:height .5s ease}
+[data-m="two"]{display:grid;gap:10px;grid-template-columns:repeat(2,minmax(0,1fr))}
+[data-m="three"]{display:grid;gap:9px;grid-template-columns:repeat(3,minmax(0,1fr))}
+[data-m="camgrid"]{display:grid;gap:9px;grid-template-columns:1fr 1fr}
+[data-m="col"]{display:flex;flex-direction:column;gap:12px}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+[data-m="view"]{animation:fade .22s ease both}
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-bulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A5.9 5.9 0 0 0 18 8 6 6 0 0 0 6 8c0 1.2.5 2.5 1.5 3.5.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></symbol>
+<symbol id="i-therm" viewBox="0 0 24 24"><path d="M14 4v10.5a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></symbol>
+<symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7Z"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 0 0 .5-9 6 6 0 0 0-11.6 1.6A3.7 3.7 0 0 0 7 19Z"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.7 8.9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1 1 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1Z"/></symbol>
+<symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
+<symbol id="i-sprout" viewBox="0 0 24 24"><path d="M7 20h10"/><path d="M10 20c5.5-2.5.8-6.4 3-10"/><path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8Z"/><path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2Z"/></symbol>
+<symbol id="i-grass" viewBox="0 0 24 24"><path d="M12 21V9M12 21c0-5-3-8-7-9 1 5 3 8 7 9ZM12 21c0-5 3-8 7-9-1 5-3 8-7 9ZM12 9c0-3 1-5 3-6-1.5 2-1 4-1 6"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-wash" viewBox="0 0 24 24"><rect x="4" y="2" width="16" height="20" rx="3"/><circle cx="12" cy="14" r="4.5"/><path d="M8 6h.01M11 6h.01"/></symbol>
+<symbol id="i-dryer" viewBox="0 0 24 24"><rect x="4" y="2" width="16" height="20" rx="3"/><path d="M8 6h.01M11 6h.01"/><circle cx="12" cy="14" r="4.5"/><path d="M10.3 12.3a2.6 2.6 0 0 1 3.6 2.4M13.7 15.7a2.6 2.6 0 0 1-3.6-2.4"/></symbol>
+<symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></symbol>
+<symbol id="i-sofa" viewBox="0 0 24 24"><path d="M4 11V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M2 13a2 2 0 0 1 4 0v3h12v-3a2 2 0 0 1 4 0v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/></symbol>
+<symbol id="i-bed" viewBox="0 0 24 24"><path d="M3 20V9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11"/><path d="M3 14h18M7 11h4"/></symbol>
+<symbol id="i-crib" viewBox="0 0 24 24"><path d="M4 4v16M20 4v16M4 9h16M4 20h16M9 9v11M15 9v11"/></symbol>
+<symbol id="i-door" viewBox="0 0 24 24"><path d="M6 22V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v19"/><path d="M3 22h18M14 12h.01"/></symbol>
+<symbol id="i-bath" viewBox="0 0 24 24"><path d="M4 12h16v4a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4Z"/><path d="M7 12V6a2 2 0 0 1 4 0M6 20l-1 2M18 20l1 2"/></symbol>
+<symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M2 19h20"/></symbol>
+<symbol id="i-hall" viewBox="0 0 24 24"><path d="M3 21V5a2 2 0 0 1 2-2h6v18M11 21h10V9h-6"/><path d="M7 12h.01"/></symbol>
+<symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 13h14a3 3 0 1 1-3 3"/><path d="M3 18h7"/></symbol>
+<symbol id="i-rain" viewBox="0 0 24 24"><path d="M17 14a4 4 0 0 0 .4-8A6 6 0 0 0 6 8.2 3.6 3.6 0 0 0 6.5 14"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/></symbol>
+<symbol id="i-solar" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M12 1v1.5M12 13.5V15M5.6 8H4.1M19.9 8h-1.5M7.5 3.5 6.4 2.4M17.6 2.4l-1.1 1.1"/><path d="M4 20h16l-2-4H6Z"/></symbol>
+<symbol id="i-tower" viewBox="0 0 24 24"><path d="M12 3v18M7 21l5-14 5 14M5 8h14M6.5 13h11"/></symbol>
+<symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="17" height="10" rx="2.5"/><path d="M22 11v2"/></symbol>
+<symbol id="i-house" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22V13h6v9"/></symbol>
+<symbol id="i-car" viewBox="0 0 24 24"><path d="M5 17h14M3 17v-4l2-6h14l2 6v4"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/><path d="M5 13h14"/></symbol>
+<symbol id="i-fuel" viewBox="0 0 24 24"><path d="M4 22V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v18M3 22h12M4 12h10"/><path d="M14 8h3a2 2 0 0 1 2 2v7a1.5 1.5 0 0 0 3 0v-6l-2-4"/></symbol>
+<symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="13" rx="2"/><path d="M8 21h8M12 18v3"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+<symbol id="i-shutter-close" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 8h16M4 12.5h16M4 17h16"/></symbol>
+<symbol id="i-shutter-open" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 6.5h16M4 9h16"/><path d="M4 21 20 3"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20Z"/><path d="M12 9v5M12 17h.01"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m4 13 5 5L20 6"/></symbol>
+<symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2v6M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v5"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11A8 8 0 0 0 6.3 6.3L4 8.5"/><path d="M4 4v4.5h4.5"/><path d="M4 13a8 8 0 0 0 13.7 4.7L20 15.5"/><path d="M20 20v-4.5h-4.5"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+<symbol id="i-cam" viewBox="0 0 24 24"><path d="M3 8.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="m15 11 5-3v8l-5-3Z"/></symbol>
+<symbol id="i-motion" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.5 6.5a7.8 7.8 0 0 0 0 11M17.5 6.5a7.8 7.8 0 0 1 0 11M3.5 3.5a12 12 0 0 0 0 17M20.5 3.5a12 12 0 0 1 0 17"/></symbol>
+<symbol id="i-window" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 12h16M12 3v18"/></symbol>
+<symbol id="i-lux" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 4v1.4M12 18.6V20M6.2 6.2l1 1M16.8 16.8l1 1M3.2 12h1.4M19.4 12h1.4M6.2 17.8l1-1M16.8 7.2l1-1"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M7.5 11V7.5a4.5 4.5 0 0 1 9 0V11"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+</defs></svg>
+
+<div data-nu="1" data-theme="{{ theme }}" style="min-height:100dvh;background:var(--page);color:var(--tx);max-width:560px;margin:0 auto;padding:14px 14px calc(134px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:12px;padding-bottom:{{ scenarioBarPad }}">
+
+<div style="display:flex;align-items:center;gap:11px;flex:none">
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:21px;line-height:1.1">{{ greeting }}</div>
+<div style="display:flex;align-items:center;gap:7px;font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:4px">
+<span data-tone="{{ connTone }}" style="width:8px;height:8px;border-radius:999px;background:currentColor;flex:none"></span>
+{{ dateStr }} · {{ timeStr }}
+</div>
+</div>
+<sc-if value="{{ hasWeather }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ goMeteo }}" title="{{ S.weatherStation }}" style="display:flex;align-items:center;gap:8px;height:46px;padding:0 14px 0 12px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);flex:none">
+<svg width="19" height="19" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ wxIconRef }}"></use></svg>
+<span style="font:600 14px/1 var(--font-body)">{{ wxTemp }}</span>
+<span style="width:1px;height:16px;background:var(--nu-d);opacity:.5"></span>
+<span style="font:600 11px/1 var(--font-body);color:var(--tx2)">{{ wxHumidity }}</span>
+</button>
+</sc-if>
+<button onClick="{{ openSettings }}" title="{{ S.settings }}" style="width:46px;height:46px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="19" height="19" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cog"></use></svg>
+</button>
+<button onClick="{{ toggleTheme }}" title="{{ S.dayNight }}" style="width:46px;height:46px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="19" height="19" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use ref="{{ themeIconRef }}"></use></svg>
+</button>
+</div>
+
+<sc-if value="{{ tabCasa }}" hint-placeholder-val="{{ true }}">
+<div data-m="col" data-screen-label="Casa">
+
+<sc-if value="{{ showModes }}" hint-placeholder-val="{{ true }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)">{{ S.houseMode }}</div>
+<div data-m="two" style="margin-top:12px">
+<sc-for list="{{ modes }}" as="m" hint-placeholder-count="4">
+<button onClick="{{ m.set }}" data-sel="{{ m.sel }}" style="height:50px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body);display:flex;align-items:center;justify-content:center;gap:8px">
+<svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use ref="{{ m.iconRef }}"></use></svg>
+{{ m.label }}
+</button>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasPeople }}" hint-placeholder-val="{{ true }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)">{{ S.whoIsHome }}</div>
+<div style="display:flex;flex-wrap:wrap;gap:9px;margin-top:12px">
+<sc-for list="{{ people }}" as="p" hint-placeholder-count="2">
+<div data-on="{{ p.home }}" style="display:flex;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:999px;padding:6px 14px 6px 7px">
+<span style="width:34px;height:34px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;font:700 13px/1 var(--font-body);color:var(--accT)">{{ p.initial }}</span>
+<span style="font:600 12px/1.2 var(--font-body)">{{ p.name }}<span style="display:block;font:500 10.5px/1.2 var(--font-body);color:var(--tx2);margin-top:2px">{{ p.where }}</span></span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px">
+<div style="display:flex;align-items:baseline;gap:8px">
+<span style="font-family:var(--font-heading);font-size:25px;line-height:1">{{ onCount }}</span>
+<span style="font:600 12px/1.3 var(--font-body);color:var(--tx2);flex:1">{{ S.onNow }}</span>
+<sc-if value="{{ someLit }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ allLightsOff }}" style="height:40px;padding:0 14px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);font:600 11.5px/1 var(--font-body);color:var(--accT);flex:none">{{ S.lightsOffShort }}</button>
+</sc-if>
+</div>
+<div style="display:flex;flex-direction:column;gap:9px;margin-top:13px">
+<sc-for list="{{ activeItems }}" as="a" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:11px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:17px;padding:9px 11px">
+<svg width="18" height="18" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ a.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ a.sub }}</div>
+</div>
+<button onClick="{{ a.off }}" title="{{ S.turnOff }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="16" height="16" fill="none" stroke="var(--accT)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-power"></use></svg>
+</button>
+</div>
+</sc-for>
+<sc-if value="{{ nothingOn }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 12.5px/1.5 var(--font-body);color:var(--tx2)">{{ S.allOffShort }}</div>
+</sc-if>
+</div>
+</div>
+
+<sc-if value="{{ hasAnyCovers }}" hint-placeholder-val="{{ true }}">
+<div data-m="two">
+<button onClick="{{ allCoversDown }}" style="background:var(--gr);box-shadow:var(--nu-out);border-radius:20px;padding:14px;min-height:76px;display:flex;flex-direction:column;align-items:flex-start;gap:8px;text-align:left">
+<svg width="20" height="20" fill="none" stroke="var(--accT)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shutter-close"></use></svg>
+<span style="font:600 12.5px/1.2 var(--font-body)">{{ S.coversDown }}</span>
+</button>
+<button onClick="{{ allCoversUp }}" style="background:var(--gr);box-shadow:var(--nu-out);border-radius:20px;padding:14px;min-height:76px;display:flex;flex-direction:column;align-items:flex-start;gap:8px;text-align:left">
+<svg width="20" height="20" fill="none" stroke="var(--accT)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shutter-open"></use></svg>
+<span style="font:600 12.5px/1.2 var(--font-body)">{{ S.coversUp }}<span style="display:block;font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ coversOpenNote }}</span></span>
+</button>
+</div>
+</sc-if>
+
+<sc-for list="{{ casaSections }}" as="sec" hint-placeholder-count="3">
+<sc-if value="{{ sec.isEnergy }}" hint-placeholder-val="{{ false }}">
+<sc-if value="{{ hasEnergy }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ goEnergia }}" style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px;text-align:left;width:100%;display:block">
+<span style="display:flex;align-items:center;gap:8px">
+<span style="flex:1;font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)">{{ S.now }}</span>
+<svg width="16" height="16" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;transform:rotate(-90deg)"><use href="#i-down"></use></svg>
+</span>
+<span data-m="three" style="margin-top:12px">
+<sc-for list="{{ nowCells }}" as="c" hint-placeholder-count="3">
+<span style="display:block;background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 10px">
+<svg width="16" height="16" fill="none" stroke="{{ c.stroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use ref="{{ c.iconRef }}"></use></svg>
+<span style="display:block;font-family:var(--font-heading);font-size:15px;line-height:1.1;margin-top:7px">{{ c.val }}</span>
+<span style="display:block;font:500 10px/1.25 var(--font-body);color:var(--tx2);margin-top:3px">{{ c.label }}</span>
+</span>
+</sc-for>
+</span>
+</button>
+</sc-if>
+</sc-if>
+
+<sc-if value="{{ sec.isCameras }}" hint-placeholder-val="{{ false }}">
+<sc-if value="{{ hasCameras }}" hint-placeholder-val="{{ false }}">
+<sc-if value="{{ camHomeSingle }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ camMain.open }}" style="position:relative;display:block;width:100%;aspect-ratio:16/8;border-radius:22px;background:var(--nu-d);box-shadow:var(--nu-ins);overflow:hidden;padding:0">
+<sc-if value="{{ camMain.showImg }}" hint-placeholder-val="{{ false }}">
+<img ref="{{ camMain.srcRef }}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+</sc-if>
+<sc-if value="{{ camMain.showIcon }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;inset:0;display:grid;place-items:center;opacity:.4">
+<svg width="30" height="30" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cam"></use></svg>
+</div>
+</sc-if>
+<div style="position:absolute;left:0;right:0;bottom:0;display:flex;align-items:flex-end;gap:8px;padding:10px 12px;text-align:left">
+<div style="flex:1;min-width:0">
+<div style="font:600 12.5px/1.2 var(--font-body)">{{ camMain.name }}</div>
+<div style="font:500 10px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ camMain.stamp }}</div>
+</div>
+<sc-if value="{{ camMain.motion }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);flex:none">
+<svg width="12" height="12" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion"></use></svg>
+<span style="font:600 10px/1 var(--font-body);color:var(--accT)">{{ S.motion }}</span>
+</div>
+</sc-if>
+</div>
+</button>
+</sc-if>
+<sc-if value="{{ camHomeMulti }}" hint-placeholder-val="{{ false }}">
+<div data-m="camgrid">
+<sc-for list="{{ camHomeTiles }}" as="c" hint-placeholder-count="2">
+<button onClick="{{ c.open }}" style="position:relative;display:block;width:100%;aspect-ratio:16/9;border-radius:15px;background:var(--nu-d);box-shadow:var(--nu-ins);overflow:hidden;padding:0;outline:{{ c.outline }};outline-offset:-2px">
+<sc-if value="{{ c.showImg }}" hint-placeholder-val="{{ false }}">
+<img ref="{{ c.srcRef }}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+</sc-if>
+<sc-if value="{{ c.showIcon }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;inset:0;display:grid;place-items:center;opacity:.4">
+<svg width="22" height="22" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cam"></use></svg>
+</div>
+</sc-if>
+<sc-if value="{{ c.more }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;display:grid;place-items:center">
+<span style="font:600 12.5px/1.2 var(--font-body);color:var(--tx2)">{{ c.moreLabel }}</span>
+</div>
+</sc-if>
+<sc-if value="{{ c.hasName }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;left:8px;bottom:6px;font:600 11px/1.2 var(--font-body)">{{ c.name }}</div>
+</sc-if>
+<sc-if value="{{ c.motion }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;top:6px;right:6px;display:flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm)">
+<svg width="11" height="11" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion"></use></svg>
+</div>
+</sc-if>
+</button>
+</sc-for>
+</div>
+</sc-if>
+</sc-if>
+</sc-if>
+
+<sc-if value="{{ sec.isAlarm }}" hint-placeholder-val="{{ false }}">
+<sc-if value="{{ hasAlarm }}" hint-placeholder-val="{{ true }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px">
+<div style="display:flex;align-items:center;gap:12px">
+<svg width="24" height="24" fill="none" stroke="{{ alarmStroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-shield"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)">{{ S.alarm }}</div>
+<div data-tone="{{ alarmTone }}" style="font-family:var(--font-heading);font-size:19px;line-height:1.15;margin-top:5px">{{ alarmLabel }}</div>
+</div>
+</div>
+<div data-m="three" style="margin-top:13px">
+<sc-for list="{{ alarmBtns }}" as="b" hint-placeholder-count="3">
+<button onClick="{{ b.run }}" data-sel="{{ b.sel }}" style="height:48px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1.2 var(--font-body);color:var(--tx2);padding:0 4px">{{ b.label }}</button>
+</sc-for>
+</div>
+<sc-if value="{{ hasAlarmCodeNote }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-top:10px">{{ alarmCodeNote }}</div>
+</sc-if>
+</div>
+</sc-if>
+</sc-if>
+</sc-for>
+
+</div>
+</sc-if>
+
+<sc-if value="{{ tabStanze }}" hint-placeholder-val="{{ false }}">
+<div onPointerDown="{{ panelLpDown }}" onPointerMove="{{ panelLpMove }}" onPointerUp="{{ panelLpUp }}" onPointerLeave="{{ panelLpUp }}" onPointerCancel="{{ panelLpUp }}" onContextMenu="{{ panelLpMenu }}" data-m="col" data-screen-label="Stanze" style="gap:10px">
+<sc-for list="{{ rooms }}" as="r" hint-placeholder-count="8">
+<div data-on="{{ r.active }}" style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:11px 12px">
+<div style="display:flex;align-items:center;gap:9px">
+<button onClick="{{ r.toggleOpen }}" style="flex:1;min-width:0;display:flex;align-items:center;gap:11px;background:transparent;box-shadow:none;padding:0;min-height:52px;text-align:left">
+<svg width="21" height="21" fill="none" stroke="{{ r.stroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ r.iconRef }}"></use></svg>
+<span style="flex:1;min-width:0">
+<span style="display:block;font:600 14px/1.2 var(--font-body)">{{ r.name }}</span>
+<span style="display:block;font:500 11.5px/1.35 var(--font-body);color:var(--tx2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.sub }}</span>
+</span>
+<svg width="16" height="16" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ r.chevRef }}"></use></svg>
+</button>
+<sc-if value="{{ r.hasCovers }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ r.closeCovers }}" title="{{ S.closeCoversTitle }}" style="width:48px;height:48px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none">
+<svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shutter-close"></use></svg>
+</button>
+<button onClick="{{ r.openCovers }}" title="{{ S.openCoversTitle }}" style="width:48px;height:48px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none">
+<svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shutter-open"></use></svg>
+</button>
+</sc-if>
+<sc-if value="{{ r.hasLight }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ r.toggleLight }}" data-sel="{{ r.lightOn }}" title="{{ S.lightsTitle }}" style="width:48px;height:48px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none">
+<svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-bulb"></use></svg>
+</button>
+</sc-if>
+</div>
+
+<sc-if value="{{ r.hasQuick }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px">
+<sc-for list="{{ r.quick }}" as="q" hint-placeholder-count="2">
+<span data-tone="{{ q.tone }}" style="display:flex;align-items:center;gap:5px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:999px;padding:5px 9px;font:600 10.5px/1 var(--font-body);color:var(--tx2)">
+<svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ q.iconRef }}"></use></svg>
+{{ q.val }}
+</span>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ r.isOpen }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:11px;margin-top:12px">
+
+<sc-if value="{{ r.hasSensors }}" hint-placeholder-val="{{ false }}">
+<div data-m="two">
+<sc-for list="{{ r.sensors }}" as="s" hint-placeholder-count="2">
+<div data-entity-id="{{ s.id }}" style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 13px">
+<div style="font-family:var(--font-heading);font-size:17px;line-height:1.1">{{ s.val }}</div>
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ s.label }}</div>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-for list="{{ r.lights }}" as="l" hint-placeholder-count="1">
+<div data-entity-id="{{ l.id }}" style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:18px;padding:12px 13px">
+<div style="display:flex;align-items:center;gap:11px">
+<svg width="19" height="19" fill="none" stroke="{{ l.stroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-bulb"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body)">{{ l.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ l.sub }}</div>
+</div>
+<button onClick="{{ l.toggle }}" data-sel="{{ l.on }}" style="height:44px;padding:0 16px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1 var(--font-body);color:var(--tx2);flex:none">{{ l.action }}</button>
+</div>
+<sc-if value="{{ l.on }}" hint-placeholder-val="{{ false }}">
+<input type="range" min="1" max="100" value="{{ l.bri }}" onChange="{{ l.setBri }}" style="margin-top:11px">
+</sc-if>
+</div>
+</sc-for>
+
+<sc-for list="{{ r.covers }}" as="c" hint-placeholder-count="1">
+<div style="position:relative;overflow:hidden;background:var(--gr);box-shadow:var(--nu-ins);border-radius:18px;padding:12px 13px">
+<sc-if value="{{ c.hasBand }}" hint-placeholder-val="{{ false }}">
+<div data-r="cover-band" style="position:absolute;top:0;left:0;right:0;height:{{ c.bandPct }};background:repeating-linear-gradient(180deg,rgba(198,113,57,.22) 0 6px,rgba(198,113,57,.13) 6px 12px);border-bottom:{{ c.bandBorder }}"></div>
+</sc-if>
+<div style="position:relative;display:flex;align-items:center;gap:10px">
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body)">{{ c.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ c.sub }}</div>
+</div>
+<div style="display:flex;gap:7px;flex:none">
+<button onClick="{{ c.down }}" title="{{ S.down }}" style="width:46px;height:46px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2)">
+<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shutter-close"></use></svg>
+</button>
+<button onClick="{{ c.stop }}" title="{{ S.stop }}" style="width:46px;height:46px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2)">
+<svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-stop"></use></svg>
+</button>
+<button onClick="{{ c.up }}" title="{{ S.up }}" style="width:46px;height:46px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2)">
+<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shutter-open"></use></svg>
+</button>
+</div>
+</div>
+<sc-if value="{{ c.hasPosition }}" hint-placeholder-val="{{ false }}">
+<input type="range" min="0" max="100" value="{{ c.pos }}" onInput="{{ c.drag }}" onPointerUp="{{ c.setPos }}" onKeyUp="{{ c.setPos }}" style="position:relative;touch-action:none;user-select:none;margin-top:11px">
+</sc-if>
+</div>
+</sc-for>
+
+<sc-for list="{{ r.appliances }}" as="a" hint-placeholder-count="1">
+<div data-entity-id="{{ a.id }}" style="display:flex;align-items:center;gap:11px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:18px;padding:12px 13px">
+<svg width="19" height="19" fill="none" stroke="{{ a.stroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ a.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body)">{{ a.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ a.sub }}</div>
+</div>
+<sc-if value="{{ a.hasPowerOff }}" hint-placeholder-val="{{ false }}">
+<button onClick="{{ a.powerOff }}" title="{{ S.turnOff }}" style="width:44px;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none">
+<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-power"></use></svg>
+</button>
+</sc-if>
+</div>
+</sc-for>
+
+<sc-for list="{{ r.switches }}" as="w" hint-placeholder-count="1">
+<div data-entity-id="{{ w.id }}" style="display:flex;align-items:center;gap:11px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:18px;padding:12px 13px">
+<svg width="19" height="19" fill="none" stroke="{{ w.stroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ w.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body)">{{ w.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ w.sub }}</div>
+</div>
+<button onClick="{{ w.toggle }}" data-sel="{{ w.on }}" style="height:44px;padding:0 16px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1 var(--font-body);color:var(--tx2);flex:none">{{ w.action }}</button>
+</div>
+</sc-for>
+
+<sc-for list="{{ r.media }}" as="m" hint-placeholder-count="1">
+<div data-dim="{{ m.quiet }}" data-entity-id="{{ m.id }}" style="display:flex;align-items:center;gap:11px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:18px;padding:12px 13px">
+<svg width="19" height="19" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-tv"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ m.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ m.sub }}</div>
+</div>
+<button onClick="{{ m.toggle }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none">
+<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-power"></use></svg>
+</button>
+</div>
+</sc-for>
+
+<sc-for list="{{ r.extras }}" as="e" hint-placeholder-count="1">
+<!-- v1.8.1: read-only row — see dash_neumo.html's copy of panel.extras. -->
+<div data-dim="{{ e.quiet }}" data-entity-id="{{ e.id }}" style="display:flex;align-items:center;gap:11px;background:transparent;border-bottom:1px solid var(--nu-d);padding:10px 13px">
+<svg width="17" height="17" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ e.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0;font:600 12.5px/1.2 var(--font-body)">{{ e.name }}</div>
+<div style="font:500 12px/1 var(--font-body);color:var(--tx2)">{{ e.val }}</div>
+</div>
+</sc-for>
+
+</div>
+</sc-if>
+</div>
+</sc-for>
+<sc-if value="{{ hasNoAreas }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:18px;display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+<svg width="22" height="22" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-hall"></use></svg>
+<div style="font:600 14px/1.3 var(--font-body)">{{ S.noAreasTitle }}</div>
+<div style="font:500 12px/1.5 var(--font-body);color:var(--tx2)">{{ S.noAreasBody }}</div>
+<button onClick="{{ goToAreas }}" style="margin-top:4px;height:40px;padding:0 16px;border-radius:13px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12.5px/1 var(--font-body);color:var(--accT)">{{ S.noAreasCta }}</button>
+</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ tabCam }}" hint-placeholder-val="{{ false }}">
+<div data-m="col" data-screen-label="Sorveglianza">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px;display:flex;align-items:center;gap:12px">
+<svg width="22" height="22" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-cam"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:18px;line-height:1.15">{{ camHeadline }}</div>
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);margin-top:4px">{{ camSub }}</div>
+</div>
+</div>
+<sc-for list="{{ camList }}" as="c" hint-placeholder-count="4">
+<button onClick="{{ c.open }}" style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:12px;display:flex;flex-direction:column;gap:10px;text-align:left;width:100%">
+<div style="position:relative;width:100%;aspect-ratio:16/9;border-radius:16px;background:var(--nu-d);box-shadow:var(--nu-ins);overflow:hidden;flex:none">
+<sc-if value="{{ c.showImg }}" hint-placeholder-val="{{ false }}">
+<img ref="{{ c.srcRef }}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+</sc-if>
+<sc-if value="{{ c.showIcon }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;inset:0;display:grid;place-items:center;opacity:.4">
+<svg width="28" height="28" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cam"></use></svg>
+</div>
+</sc-if>
+</div>
+<div style="display:flex;align-items:center;gap:8px;width:100%">
+<div style="flex:1;min-width:0">
+<div style="font:600 13.5px/1.2 var(--font-body)">{{ c.name }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ c.area }}</div>
+</div>
+<sc-if value="{{ c.motion }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;align-items:center;gap:5px;height:24px;padding:0 10px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);flex:none">
+<svg width="13" height="13" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion"></use></svg>
+<span style="font:600 10.5px/1 var(--font-body);color:var(--accT)">{{ S.motion }}</span>
+</div>
+</sc-if>
+</div>
+</button>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ tabIrr }}" hint-placeholder-val="{{ false }}">
+<div data-m="col" data-screen-label="Irrigazione">
+
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px">
+<div style="display:flex;align-items:flex-start;gap:12px">
+<svg width="22" height="22" fill="none" stroke="var(--sage)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px"><use href="#i-grass"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:18px;line-height:1.2">{{ irrSummary }}</div>
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);margin-top:5px;text-wrap:pretty">{{ irrSub }}</div>
+</div>
+</div>
+<sc-if value="{{ hasResetButton }}" hint-placeholder-val="{{ false }}">
+<button onClick="{{ resetWeek }}" style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:46px;margin-top:13px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1 var(--font-body);color:var(--tx2)">
+<svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"></use></svg>
+{{ S.resetWeek }}
+</button>
+</sc-if>
+</div>
+
+<sc-for list="{{ zones }}" as="z" hint-placeholder-count="2">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px">
+<div style="display:flex;align-items:flex-start;gap:12px">
+<svg width="21" height="21" fill="none" stroke="var(--sage)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px"><use href="#i-sprout"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 14px/1.2 var(--font-body)">{{ z.name }}</div>
+<div data-tone="{{ z.tone }}" style="font:600 12px/1.4 var(--font-body);margin-top:5px;text-wrap:pretty">{{ z.advisory }}</div>
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);margin-top:4px">{{ z.urgenza }}</div>
+</div>
+<div style="flex:none;text-align:right">
+<div style="font-family:var(--font-heading);font-size:21px;line-height:1">{{ z.soil }}</div>
+<div style="font:500 10px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ S.soil }}</div>
+</div>
+</div>
+
+<div data-m="two" style="margin-top:13px">
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 13px">
+<div style="font-family:var(--font-heading);font-size:17px;line-height:1.1">{{ z.deficit }}</div>
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ S.deficitAccumulated }}</div>
+</div>
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 13px">
+<div style="font-family:var(--font-heading);font-size:17px;line-height:1.1">{{ z.mmWeek }}</div>
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ S.mmPerWeek }}</div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:8px;font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:12px">
+<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-timer"></use></svg>
+{{ z.lastRunLine }}
+</div>
+
+<sc-if value="{{ z.showButtons }}" hint-placeholder-val="{{ true }}">
+<div data-m="three" style="margin-top:13px">
+<sc-for list="{{ z.buttons }}" as="b" hint-placeholder-count="3">
+<button data-sel="{{ b.pending }}" onClick="{{ b.run }}" style="height:50px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12.5px/1 var(--font-body);color:var(--accT);display:flex;align-items:center;justify-content:center;gap:6px">
+<svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-timer"></use></svg>
+{{ b.label }}
+</button>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{ z.isRunning }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;align-items:center;gap:10px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:15px;padding:0 14px;height:50px;margin-top:13px">
+<svg width="15" height="15" fill="none" stroke="var(--accT)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-timer"></use></svg>
+<span style="flex:1;font:600 12.5px/1 var(--font-body);color:var(--accT)">{{ z.runningLabel }}</span>
+<button onClick="{{ z.stop }}" style="height:44px;padding:0 14px;border-radius:12px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1 var(--font-body);color:var(--tx2);flex:none">{{ S.stop }}</button>
+</div>
+</sc-if>
+
+<button onClick="{{ z.toggleChart }}" style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:44px;margin-top:10px;border-radius:14px;background:transparent;font:600 11.5px/1 var(--font-body);color:var(--tx2)">
+<svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"></use></svg>
+{{ z.chartLabel }}
+</button>
+<sc-if value="{{ z.showChart }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:18px;padding:12px 13px 6px">
+<div style="display:flex;justify-content:space-between;font:500 10px/1 var(--font-body);color:var(--tx2);margin-bottom:6px">
+<span>{{ S.soilMoisture48h }}</span><span>{{ z.soil }}</span>
+</div>
+<svg viewBox="0 0 240 54" preserveAspectRatio="none" style="display:block;width:100%;height:54px;overflow:visible">
+<polyline ref="{{ z.sparkRef }}" fill="none" stroke="var(--sage)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+</svg>
+</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ tabEnergia }}" hint-placeholder-val="{{ false }}">
+<div data-m="col" data-screen-label="Energia">
+
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px">
+<sc-if value="{{ energyEmptyState }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:8px">
+<div style="font:600 13px/1.4 var(--font-body);word-break:break-all">{{ energyMissingLabel }}</div>
+<div style="font:500 11.5px/1.4 var(--font-body);color:var(--tx2)">{{ S.energyEmptyBody }}</div>
+<button onClick="{{ openEnergySettings }}" style="align-self:flex-start;margin-top:2px;height:44px;padding:0 16px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12.5px/1 var(--font-body);color:var(--accT)">{{ S.energyEmptyCta }}</button>
+</div>
+</sc-if>
+<sc-if value="{{ hasNewRing }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)">{{ S.solar }}</div>
+<div style="position:relative;width:150px;height:150px;margin:14px auto;border-radius:999px;box-shadow:var(--nu-ins);display:grid;place-items:center">
+<svg viewBox="0 0 200 200" style="position:absolute;inset:7px;width:136px;height:136px">
+<g transform="rotate(-90 100 100)">
+<circle cx="100" cy="100" r="86" fill="none" stroke="var(--nu-d)" stroke-width="16" opacity="0.45"></circle>
+<circle cx="100" cy="100" r="86" fill="none" stroke="var(--sage)" stroke-width="16" stroke-linecap="{{ outerSelfCap }}" stroke-dasharray="{{ outerSelfArc }}" stroke-dashoffset="{{ outerSelfOffset }}"></circle>
+<circle cx="100" cy="100" r="86" fill="none" stroke="var(--acc)" stroke-width="16" stroke-linecap="{{ outerGridCap }}" stroke-dasharray="{{ outerGridArc }}" stroke-dashoffset="{{ outerGridOffset }}"></circle>
+<sc-if value="{{ hasInnerRing }}" hint-placeholder-val="{{ false }}">
+<circle cx="100" cy="100" r="62" fill="none" stroke="var(--nu-d)" stroke-width="14" opacity="0.35"></circle>
+<circle cx="100" cy="100" r="62" fill="none" stroke="var(--sage)" stroke-width="14" stroke-linecap="{{ innerSelfCap }}" stroke-dasharray="{{ innerSelfArc }}" stroke-dashoffset="{{ innerSelfOffset }}"></circle>
+<circle cx="100" cy="100" r="62" fill="none" stroke="var(--feed)" stroke-width="14" stroke-linecap="{{ innerFeedCap }}" stroke-dasharray="{{ innerFeedArc }}" stroke-dashoffset="{{ innerFeedOffset }}"></circle>
+</sc-if>
+</g>
+</svg>
+<div style="position:relative;text-align:center">
+<div style="font-family:var(--font-heading);font-size:26px;line-height:1">{{ consumoCasaBig }}</div>
+<div style="font:600 10px/1.3 var(--font-body);color:var(--tx2);margin-top:4px">{{ kwhConsumedLabel }}</div>
+</div>
+</div>
+<sc-for list="{{ ringLegend }}" as="l" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">
+<span style="width:10px;height:10px;border-radius:999px;background:{{ l.color }};flex:none"></span>
+<span style="flex:1;font:500 12.5px/1 var(--font-body);color:var(--tx2)">{{ l.label }}</span>
+<span style="font:600 13px/1 var(--font-body)">{{ l.val }}</span>
+</div>
+</sc-for>
+<sc-if value="{{ hasHourlyStrip }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:20px;padding:16px 16px 12px;margin-top:9px">
+<div style="display:flex;align-items:stretch;gap:3px;height:96px">
+<sc-for list="{{ hourlyBars }}" as="b" hint-placeholder-count="24">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:2px">
+<sc-if value="{{ b.hasFeed }}" hint-placeholder-val="{{ false }}">
+<div style="height:{{ b.feedH }};border-radius:{{ b.feedRadius }};background:var(--feed)" title="{{ b.title }}"></div>
+</sc-if>
+<sc-if value="{{ b.hasGrid }}" hint-placeholder-val="{{ false }}">
+<div style="height:{{ b.gridH }};border-radius:{{ b.gridRadius }};background:var(--acc)" title="{{ b.title }}"></div>
+</sc-if>
+<sc-if value="{{ b.hasAuto }}" hint-placeholder-val="{{ false }}">
+<div style="height:{{ b.autoH }};border-radius:{{ b.autoRadius }};background:var(--sage)" title="{{ b.title }}"></div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;justify-content:space-between;margin-top:9px;font:600 10px/1 var(--font-body);color:var(--tx2);letter-spacing:.05em">
+<sc-for list="{{ hourlyAxisLabels }}" as="a" hint-placeholder-count="5">
+<span>{{ a }}</span>
+</sc-for>
+</div>
+</div>
+<sc-if value="{{ hasHourlyPeak }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 10.5px/1.45 var(--font-body);color:var(--tx2);margin-top:3px">{{ hourlyPeakLabel }}</div>
+</sc-if>
+</sc-if>
+</sc-if>
+<sc-if value="{{ hasOldRing }}" hint-placeholder-val="{{ true }}">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2)">{{ S.producedToday }}</div>
+<div style="display:flex;align-items:flex-end;gap:9px;margin-top:9px">
+<span style="font-family:var(--font-heading);font-size:38px;line-height:1">{{ prodToday }}</span>
+<span style="font:600 13px/1 var(--font-body);color:var(--tx2);padding-bottom:5px">kWh</span>
+</div>
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);margin-top:7px">{{ energySummaryLine }}</div>
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 13px;margin-top:13px">
+<div style="font-family:var(--font-heading);font-size:16px;line-height:1.1">{{ gridToday }}</div>
+<div title="{{ S.fromGridHint }}" style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:3px;text-decoration:underline;text-decoration-style:dotted;text-decoration-color:var(--nu-d);text-underline-offset:3px;display:inline-block">{{ S.fromGrid }}</div>
+</div>
+</sc-if>
+</div>
+
+<sc-if value="{{ hasPowerCells }}" hint-placeholder-val="{{ true }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin-bottom:12px">{{ S.now }}</div>
+<div style="display:flex;flex-direction:column;gap:9px">
+<sc-for list="{{ nowCells }}" as="c" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:11px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 13px">
+<svg width="18" height="18" fill="none" stroke="{{ c.stroke }}" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ c.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0;font:600 12.5px/1.2 var(--font-body)">{{ c.label }}</div>
+<div style="font-family:var(--font-heading);font-size:16px;line-height:1">{{ c.val }}</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ energyTabFallback }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;gap:8px">
+<sc-for list="{{ ringLegend }}" as="l" hint-placeholder-count="3">
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:14px;padding:11px 8px;display:flex;flex-direction:column;gap:5px;align-items:center;flex:1;min-width:0">
+<span style="width:7px;height:7px;border-radius:999px;background:{{ l.color }};flex:none"></span>
+<span style="font-family:var(--font-heading);font-size:18px;line-height:1;white-space:nowrap">{{ l.num }}<span style="font:500 12px/1 var(--font-body);color:var(--tx2)"> kWh</span></span>
+<span style="font:500 12px/1.2 var(--font-body);color:var(--tx2);text-align:center">{{ l.short }}</span>
+</div>
+</sc-for>
+</div>
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:14px;padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+<span style="font:600 12px/1.3 var(--font-body);color:var(--accT)">{{ energyTabSelfPctLine }}</span>
+<span style="font:500 12px/1.3 var(--font-body);color:var(--tx2)">{{ S.production }} <strong style="color:var(--tx)">{{ prodTodayFull }}</strong></span>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ energyTabChart }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ toggleEnergyChart }}" style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:48px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1 var(--font-body);color:var(--tx2)">
+<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"></use></svg>
+{{ energyChartLabel }}
+</button>
+</sc-if>
+
+<sc-if value="{{ showEnergyChart }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px">
+<div style="display:flex;gap:5px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:999px;padding:5px">
+<sc-for list="{{ ranges }}" as="r" hint-placeholder-count="3">
+<button onClick="{{ r.set }}" data-sel="{{ r.sel }}" style="flex:1;height:40px;border-radius:999px;background:transparent;color:var(--tx2);font:600 12px/1 var(--font-body)">{{ r.label }}</button>
+</sc-for>
+</div>
+<sc-if value="{{ hasHistory }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;align-items:flex-end;gap:3px;height:136px;margin-top:15px">
+<sc-for list="{{ bars }}" as="b" hint-placeholder-count="7">
+<div title="{{ b.title }}" style="flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column;align-items:center;gap:6px;justify-content:flex-end;height:100%">
+<div style="flex:1;min-height:0;width:100%;display:flex;align-items:flex-end;justify-content:center;gap:2px">
+<span style="width:5px;height:{{ b.hp }};border-radius:999px;background:var(--sage)"></span>
+<span style="width:5px;height:{{ b.hg }};border-radius:999px;background:var(--acc)"></span>
+<sc-if value="{{ hasExportBars }}" hint-placeholder-val="{{ false }}">
+<span style="width:5px;height:{{ b.he }};border-radius:999px;background:var(--feed)"></span>
+</sc-if>
+</div>
+<span style="font:500 9px/1 var(--font-body);color:var(--tx2);white-space:nowrap;flex:none">{{ b.label }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;gap:14px;font:500 10.5px/1 var(--font-body);color:var(--tx2);margin-top:11px">
+<span style="display:flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-radius:999px;background:var(--sage)"></span>{{ S.produced }}</span>
+<span title="{{ S.fromGridHint }}" style="display:flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-radius:999px;background:var(--acc)"></span><span style="text-decoration:underline;text-decoration-style:dotted;text-decoration-color:var(--nu-d);text-underline-offset:3px">{{ S.fromGrid }}</span></span>
+<sc-if value="{{ hasExportBars }}" hint-placeholder-val="{{ false }}">
+<span style="display:flex;align-items:center;gap:6px"><span style="width:9px;height:9px;border-radius:999px;background:var(--feed)"></span>{{ feedInLabel }}</span>
+</sc-if>
+</div>
+</sc-if>
+<sc-if value="{{ noHistory }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;align-items:center;justify-content:center;height:136px;margin-top:15px;padding:0 8px">
+<span style="font:500 12px/1.4 var(--font-body);color:var(--tx2);text-align:center">{{ noHistoryLabel }}</span>
+</div>
+</sc-if>
+<div data-m="two" style="margin-top:14px">
+<sc-for list="{{ periodCells }}" as="c" hint-placeholder-count="4">
+<div style="background:var(--gr);box-shadow:var(--nu-ins);border-radius:16px;padding:11px 13px">
+<div style="font-family:var(--font-heading);font-size:16px;line-height:1.1">{{ c.val }}</div>
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ c.label }}</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ tabAuto }}" hint-placeholder-val="{{ false }}">
+<div data-m="col" data-screen-label="Auto">
+
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px">
+<div style="display:flex;align-items:flex-start;gap:12px">
+<svg width="24" height="24" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px"><use href="#i-car"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:19px;line-height:1.15">{{ carRange }}</div>
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);margin-top:5px">{{ carMeta }}</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+<svg width="17" height="17" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-fuel"></use></svg>
+<div style="flex:1;height:14px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-ins);overflow:hidden">
+<div data-tone="{{ fuelTone }}" style="height:100%;width:{{ fuelWidth }};border-radius:999px;background:currentColor"></div>
+</div>
+<span style="font:600 12.5px/1 var(--font-body);flex:none">{{ fuelPct }}</span>
+</div>
+</div>
+
+<div data-m="two">
+<sc-for list="{{ carCells }}" as="c" hint-placeholder-count="6">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:18px;padding:13px">
+<div style="font-family:var(--font-heading);font-size:17px;line-height:1.1">{{ c.val }}</div>
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:4px">{{ c.label }}</div>
+</div>
+</sc-for>
+</div>
+
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:16px">
+<div style="font:600 10.5px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin-bottom:12px">{{ S.controls }}</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<sc-for list="{{ warnings }}" as="w" hint-placeholder-count="6">
+<div data-dim="{{ w.quiet }}" style="display:flex;align-items:center;gap:11px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:15px;padding:10px 13px">
+<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" data-tone="{{ w.tone }}" style="flex:none"><use ref="{{ w.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0;font:600 12.5px/1.2 var(--font-body)">{{ w.label }}</div>
+<div data-tone="{{ w.tone }}" style="font:500 11px/1 var(--font-body)">{{ w.val }}</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ tabMeteo }}" hint-placeholder-val="{{ false }}">
+<div data-m="col" data-screen-label="Meteo">
+
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:24px;padding:16px;display:flex;align-items:center;gap:14px">
+<svg width="30" height="30" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ wxIconRef }}"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:30px;line-height:1">{{ wxTemp }}</div>
+<div style="font:500 11.5px/1.35 var(--font-body);color:var(--tx2);margin-top:5px">{{ wxDetailLine }}</div>
+</div>
+</div>
+
+<div data-m="two">
+<sc-for list="{{ station }}" as="s" hint-placeholder-count="10">
+<div style="background:var(--gr);box-shadow:var(--nu-out);border-radius:18px;padding:13px">
+<svg width="17" height="17" fill="none" stroke="var(--sage)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use ref="{{ s.iconRef }}"></use></svg>
+<div style="font-family:var(--font-heading);font-size:17px;line-height:1.1;margin-top:8px">{{ s.val }}</div>
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:4px">{{ s.label }}</div>
+</div>
+</sc-for>
+</div>
+
+<sc-if value="{{ hasIrrigation }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ goIrr }}" style="display:flex;align-items:center;gap:12px;width:100%;background:var(--gr);box-shadow:var(--nu-out);border-radius:22px;padding:15px 16px;text-align:left">
+<svg width="20" height="20" fill="none" stroke="var(--sage)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-sprout"></use></svg>
+<span style="flex:1;min-width:0">
+<span style="display:block;font:600 13px/1.2 var(--font-body)">{{ S.goToIrrigation }}</span>
+<span style="display:block;font:500 11px/1.35 var(--font-body);color:var(--tx2);margin-top:3px">{{ irrSummary }}</span>
+</span>
+</button>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ camOpen }}" hint-placeholder-val="{{ false }}">
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;inset:0;z-index:44;background:var(--page);display:flex;flex-direction:column;color:var(--tx);padding:calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom))">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex:none">
+<div style="width:40px;height:40px;border-radius:15px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="18" height="18" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cam"></use></svg>
+</div>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:18px;line-height:1.15">{{ camName }}</div>
+<div style="font:500 11px/1.3 var(--font-body);color:var(--tx2);margin-top:2px">{{ camArea }}</div>
+</div>
+<button onClick="{{ closeCam }}" style="width:40px;height:40px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="16" height="16" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"></use></svg>
+</button>
+</div>
+<div style="position:relative;flex:1;min-height:0;border-radius:20px;background:var(--nu-d);box-shadow:var(--nu-ins);overflow:hidden">
+<sc-if value="{{ camLayerVideo }}" hint-placeholder-val="{{ false }}">
+<video ref="{{ camVideoRef }}" autoplay playsinline muted style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain"></video>
+</sc-if>
+<sc-if value="{{ camLayerSnapshot }}" hint-placeholder-val="{{ false }}">
+<img ref="{{ camStreamSrcRef }}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain">
+</sc-if>
+<sc-if value="{{ camNoStream }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;inset:0;display:grid;place-items:center;opacity:.4">
+<svg width="40" height="40" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cam"></use></svg>
+</div>
+</sc-if>
+<sc-if value="{{ camShowBadge }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;left:12px;top:12px;display:flex;align-items:center;gap:7px;height:27px;padding:0 11px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm)">
+<span style="width:7px;height:7px;border-radius:999px;background:var(--acc);flex:none"></span>
+<span style="font:600 10.5px/1 var(--font-body);color:var(--accT)">{{ camBadgeLabel }}</span>
+</div>
+</sc-if>
+</div>
+<div style="display:flex;align-items:center;gap:8px;margin-top:13px;font:500 11px/1.3 var(--font-body);color:var(--tx2);flex:none">
+<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-timer"></use></svg>
+{{ S.camAutoClose }} {{ camCountdown }}
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ settingsScreen1 }}" hint-placeholder-val="{{ false }}">
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;inset:0;z-index:44;background:var(--page);color:var(--tx);overflow-y:auto;padding:calc(14px + env(safe-area-inset-top)) 14px calc(24px + env(safe-area-inset-bottom))">
+<div style="display:flex;align-items:center;gap:13px;margin-bottom:8px">
+<div style="width:48px;height:48px;border-radius:18px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="21" height="21" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cog"></use></svg>
+</div>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:22px;line-height:1.1">{{ S.settings }}</div>
+<div style="font:500 11.5px/1.4 var(--font-body);color:var(--tx2);margin-top:3px">{{ prefsStorageNote }}</div>
+</div>
+<button onClick="{{ closeSettings }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="18" height="18" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"></use></svg>
+</button>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:5px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:24px;padding:5px;margin:14px 0 18px">
+<sc-for list="{{ settingsTabs }}" as="st" hint-placeholder-count="4">
+<button onClick="{{ st.go }}" data-sel="{{ st.sel }}" style="flex:none;display:flex;align-items:center;gap:6px;border-radius:999px;padding:0 16px;height:44px;background:transparent;color:var(--tx2);font:600 12.5px/1 var(--font-body);white-space:nowrap">
+{{ st.label }}
+<sc-if value="{{ st.hasIssue }}" hint-placeholder-val="{{ false }}">
+<span data-tone="warn" style="width:7px;height:7px;border-radius:999px;background:currentColor;flex:none"></span>
+</sc-if>
+</button>
+</sc-for>
+</div>
+
+<sc-if value="{{ settingsTabStanze }}" hint-placeholder-val="{{ true }}">
+<sc-if value="{{ hasSettingsRooms }}" hint-placeholder-val="{{ true }}">
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:0 2px 9px">{{ S.rooms }}</div>
+<div style="display:flex;flex-direction:column;gap:7px;margin-bottom:20px">
+<sc-for list="{{ settingsRooms }}" as="r" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:7px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:7px 9px">
+<svg width="18" height="18" fill="none" stroke="{{ r.stroke }}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ r.iconRef }}"></use></svg>
+<div onClick="{{ r.open }}" style="flex:1;min-width:0;text-align:left">
+<div style="font:600 13px/1.2 var(--font-body);color:{{ r.stroke }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.name }}</div>
+<sc-if value="{{ r.diff }}" hint-placeholder-val="{{ false }}">
+<button onClick="{{ r.clearDiff }}" style="display:inline-flex;align-items:center;min-height:44px;padding:0;background:transparent;font:600 10.5px/1.3 var(--font-body);color:var(--accT);text-align:left">{{ S.settingsDiffFromConfig }}</button>
+</sc-if>
+<sc-if value="{{ r.diffOff }}" hint-placeholder-val="{{ true }}">
+<div style="font:500 10.5px/1.3 var(--font-body);color:var(--tx2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.countLabel }}</div>
+</sc-if>
+</div>
+<button onClick="{{ r.up }}" title="{{ S.up }}" style="width:44px;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none;opacity:{{ r.upOpacity }}">
+<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-up"></use></svg>
+</button>
+<button onClick="{{ r.down }}" title="{{ S.down }}" style="width:44px;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none;opacity:{{ r.downOpacity }}">
+<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-down"></use></svg>
+</button>
+<button onClick="{{ r.toggle }}" style="width:44px;height:26px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-ins);flex:none;position:relative">
+<span style="position:absolute;top:2px;left:{{ r.thumbLeft }};width:22px;height:22px;border-radius:999px;background:var(--acc);box-shadow:var(--nu-sm)"></span>
+</button>
+<button onClick="{{ r.open }}" title="{{ S.details }}" style="width:44px;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none">
+<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"></use></svg>
+</button>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:0 2px 9px">{{ S.settingsSectionOrder }}</div>
+<div style="display:flex;flex-direction:column;gap:7px;margin-bottom:8px">
+<sc-for list="{{ settingsSectionOrder }}" as="sec" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:7px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:7px 9px;opacity:{{ sec.dimOpacity }}">
+<svg width="18" height="18" fill="none" stroke="var(--tx2)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ sec.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0;font:600 13px/1.2 var(--font-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ sec.label }}</div>
+<button onClick="{{ sec.up }}" title="{{ S.up }}" style="width:44px;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none;opacity:{{ sec.upOpacity }}">
+<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-up"></use></svg>
+</button>
+<button onClick="{{ sec.down }}" title="{{ S.down }}" style="width:44px;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;color:var(--tx2);flex:none;opacity:{{ sec.downOpacity }}">
+<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-down"></use></svg>
+</button>
+</div>
+</sc-for>
+</div>
+<button onClick="{{ sectionResetOpen }}" style="display:inline-flex;align-items:center;min-height:44px;padding:0;background:transparent;font:600 11px/1.3 var(--font-body);color:var(--accT);margin-bottom:20px">{{ S.settingsSectionOrderReset }}</button>
+
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:0 2px 9px">{{ S.settingsSections }}</div>
+<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px">
+<sc-for list="{{ settingsModules }}" as="m" hint-placeholder-count="5">
+<button onClick="{{ m.toggle }}" data-sel="{{ m.active }}" style="border-radius:999px;padding:0 14px;height:36px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12px/1 var(--font-body)">{{ m.label }}</button>
+</sc-for>
+</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-bottom:20px">{{ S.settingsSectionsNote }}</div>
+
+<div style="display:flex;gap:9px;margin-top:6px">
+<button onClick="{{ settingsExportRun }}" style="flex:1;height:48px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--accT);font:600 12.5px/1 var(--font-body)">{{ S.settingsExport }}</button>
+<button onClick="{{ settingsResetRun }}" style="flex:1;height:48px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ S.settingsReset }}</button>
+</div>
+</sc-if>
+
+<sc-if value="{{ settingsTabCamere }}" hint-placeholder-val="{{ false }}">
+<sc-if value="{{ hasSettingsCameras }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;flex-direction:column;gap:7px;margin-bottom:20px">
+<sc-for list="{{ settingsCameras }}" as="c" hint-placeholder-count="1">
+<div style="display:flex;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:7px 9px">
+<svg width="18" height="18" fill="none" stroke="var(--tx2)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-cam"></use></svg>
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.name }}</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px">
+<sc-if value="{{ c.diff }}" hint-placeholder-val="{{ false }}">
+<button onClick="{{ c.clearDiff }}" style="display:inline-flex;align-items:center;min-height:44px;padding:0;background:transparent;font:600 10.5px/1.3 var(--font-body);color:var(--accT)">{{ S.settingsDiffFromConfig }}</button>
+</sc-if>
+<sc-if value="{{ c.visible }}" hint-placeholder-val="{{ true }}">
+<button onClick="{{ c.toggleTapGate }}" data-sel="{{ c.tapGated }}" style="background:var(--nu-ins);box-shadow:var(--nu-ins);border-radius:999px;padding:2px 9px;min-height:22px;font:600 10px/1.4 var(--font-body);color:var(--tx2)">{{ S.settingsHideUntilTap }}</button>
+</sc-if>
+</div>
+</div>
+<button onClick="{{ c.toggle }}" style="width:44px;height:26px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-ins);flex:none;position:relative">
+<span style="position:absolute;top:2px;left:{{ c.thumbLeft }};width:22px;height:22px;border-radius:999px;background:var(--acc);box-shadow:var(--nu-sm)"></span>
+</button>
+</div>
+</sc-for>
+</div>
+</sc-if>
+</sc-if>
+
+<sc-if value="{{ settingsTabEnergia }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:0 2px 9px">{{ S.settingsPowerUnitLabel }}</div>
+<div style="display:flex;gap:7px;margin-bottom:6px">
+<sc-for list="{{ powerUnitOptions }}" as="pu" hint-placeholder-count="3">
+<button onClick="{{ pu.set }}" data-sel="{{ pu.sel }}" style="flex:1;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ pu.label }}</button>
+</sc-for>
+</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-bottom:20px">{{ S.settingsPowerUnitDailyNote }}</div>
+
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:0 2px 9px">{{ S.settingsPlugThresholdLabel }}</div>
+<div style="display:flex;gap:7px;margin-bottom:6px">
+<sc-for list="{{ plugThresholdOptions }}" as="pt" hint-placeholder-count="4">
+<button onClick="{{ pt.set }}" data-sel="{{ pt.sel }}" style="flex:1;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ pt.label }}</button>
+</sc-for>
+</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-bottom:20px">{{ S.settingsPlugThresholdNote }}</div>
+
+<sc-if value="{{ showBatterySignControl }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin:0 2px 9px">{{ S.settingsBatterySignHeading }}</div>
+<div style="display:flex;gap:7px;margin-bottom:6px">
+<sc-for list="{{ batterySignOptions }}" as="bs" hint-placeholder-count="2">
+<button onClick="{{ bs.set }}" data-sel="{{ bs.sel }}" style="flex:1;height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ bs.label }}</button>
+</sc-for>
+</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-bottom:8px">{{ batterySignLiveLabel }}</div>
+<sc-if value="{{ batterySignSuspect }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:6px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:11px 13px;margin-bottom:8px" data-tone="warn">
+<div style="font:600 11.5px/1.3 var(--font-body)">{{ S.settingsBatterySignSuspectTitle }}</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2)">{{ S.settingsBatterySignSuspectBody }}</div>
+<button onClick="{{ batterySignInvert }}" style="align-self:flex-start;height:40px;padding:0 14px;border-radius:12px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12px/1 var(--font-body);color:var(--accT)">{{ S.settingsBatterySignInvert }}</button>
+</div>
+</sc-if>
+<div style="margin-bottom:20px"></div>
+</sc-if>
+
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagEnergyInstantHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-for list="{{ diagEnergyInstantRows }}" as="row" hint-placeholder-count="3">
+<div style="display:flex;flex-direction:column;gap:3px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<div style="font:600 11px/1.3 var(--font-body);color:var(--tx)">{{ row.roleLabel }}</div>
+<div style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);white-space:normal;overflow-wrap:break-word">{{ row.idLabel }}</div>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;margin-top:1px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ row.valueLabel }}</span>
+<span data-tone="{{ row.tone }}" style="font:600 10.5px/1.4 var(--font-body);color:var(--tx)">{{ row.verdictLabel }}</span>
+</div>
+<sc-if value="{{ row.unitWarn }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 10px/1.4 var(--font-body);margin-top:2px" data-tone="warn">{{ S.diagUnitMismatch }}</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagEnergyDailyHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-if value="{{ diagPrefsFailed }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px;font:500 10.5px/1.4 var(--font-body)" data-tone="warn">{{ S.diagPrefsFailedMsg }}</div>
+</sc-if>
+<sc-for list="{{ diagEnergyDailyRows }}" as="row" hint-placeholder-count="3">
+<div style="display:flex;flex-direction:column;gap:3px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<div style="font:600 11px/1.3 var(--font-body);color:var(--tx)">{{ row.roleLabel }}</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2)">{{ row.sourceLabel }}</div>
+<div style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);white-space:normal;overflow-wrap:break-word">{{ row.idsLabel }}</div>
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx)">{{ row.valueLabel }}</div>
+<sc-if value="{{ row.counterWarn }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 10px/1.4 var(--font-body);margin-top:2px" data-tone="warn">{{ S.diagCounterWarn }}</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<!-- v2 — Settings -> Configurazione (integration installs): where the config
+     comes from; administrators can store it in Home Assistant for everyone.
+     Values from casa-core.js vmSharedConfig(). -->
+<sc-if value="{{ settingsTabConfig }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:12px 14px;margin-bottom:14px">
+<div style="font:600 11px/1 var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--tx2);margin-bottom:8px">{{ S.sharedSourceLabel }}</div>
+<div style="font:600 13px/1.4 var(--font-body)">{{ sharedSourceText }}</div>
+<div style="font:500 11px/1.45 var(--font-body);color:var(--tx2);margin-top:6px">{{ S.sharedExplain }}</div>
+</div>
+<sc-if value="{{ sharedReadOnly }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 11.5px/1.45 var(--font-body);color:var(--tx2);margin:0 2px 14px">{{ S.sharedNonAdmin }}</div>
+</sc-if>
+<sc-if value="{{ sharedHasError }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 11.5px/1.4 var(--font-body);color:var(--accT);margin:0 2px 10px">{{ sharedErrorText }}</div>
+</sc-if>
+<sc-if value="{{ sharedBusy }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 12px/1.4 var(--font-body);color:var(--tx2);margin:0 2px 10px">{{ S.sharedSaving }}</div>
+</sc-if>
+<sc-if value="{{ sharedCanEdit }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:9px">
+<sc-for list="{{ sharedActions }}" as="a" hint-placeholder-count="3">
+<button onClick="{{ a.run }}" style="min-height:44px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--accT);font:600 12.5px/1.25 var(--font-body);padding:10px 14px;text-align:left">{{ a.label }}<span style="display:block;font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-top:3px">{{ a.hint }}</span></button>
+</sc-for>
+</div>
+</sc-if>
+</sc-if>
+
+<sc-if value="{{ settingsTabDiagnostica }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagConfigHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px;font:500 11.5px/1.4 var(--font-body);color:var(--tx)">{{ diagConfigSummary }}</div>
+<sc-if value="{{ diagConfigOutsideIframe }}" hint-placeholder-val="{{ false }}">
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px;font:500 10.5px/1.4 var(--font-body)" data-tone="warn">{{ S.diagConfigOutsideIframe }}</div>
+</sc-if>
+<sc-if value="{{ hasDiagConfigAttempts }}" hint-placeholder-val="{{ true }}">
+<sc-for list="{{ diagConfigAttempts }}" as="a" hint-placeholder-count="1">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);white-space:normal;overflow-wrap:break-word;flex:1;min-width:0">{{ a.path }}</span>
+<span data-tone="{{ a.tone }}" style="font:600 10.5px/1.4 var(--font-body);color:var(--tx2);flex:none">{{ a.verdictLabel }}</span>
+</div>
+</sc-for>
+</sc-if>
+</div>
+
+<sc-if value="{{ hasDiagCameraRows }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagCameraHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-for list="{{ diagCameraRows }}" as="row" hint-placeholder-count="2">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ row.label }}</span>
+<span style="font:600 11px/1.4 var(--font-body);color:var(--tx);text-align:right">{{ row.value }}</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasDiagRingRow }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagRingHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ S.diagRingInUse }}</span>
+<span style="font:600 11px/1.4 var(--font-body);color:var(--tx);text-align:right">{{ diagRingValue }}</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ S.diagHourlyInUse }}</span>
+<span style="font:600 11px/1.4 var(--font-body);color:var(--tx);text-align:right">{{ diagHourlyValue }}</span>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasAlarm }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagAlarmHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-for list="{{ diagAlarmRows }}" as="row" hint-placeholder-count="4">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ row.label }}</span>
+<span style="font:600 11px/1.4 var(--font-body);color:var(--tx);text-align:right">{{ row.value }}</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasDiagActions }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagActionsHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-if value="{{ hasDiagActionRows }}" hint-placeholder-val="{{ true }}">
+<sc-for list="{{ diagActionRows }}" as="row" hint-placeholder-count="3">
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px;user-select:text">
+<div style="display:flex;justify-content:space-between;align-items:baseline;gap:9px">
+<span style="font:600 11.5px/1.4 var(--font-body);color:var(--tx)">{{ row.domainService }}</span>
+<span style="font:500 10px/1.4 var(--font-body);color:var(--tx2)">{{ row.time }}</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:baseline;gap:9px;margin-top:2px">
+<span style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);word-break:break-all">{{ row.entityId }}</span>
+<span data-tone="{{ row.tone }}" style="font:600 10.5px/1.4 var(--font-body);color:var(--tx2);white-space:nowrap;flex:none">{{ row.outcomeLabel }} · {{ row.msLabel }}</span>
+</div>
+</div>
+</sc-for>
+</sc-if>
+<sc-if value="{{ noDiagActionRows }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);padding:9px 11px">{{ S.diagActionsEmpty }}</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasDiagIrrigationRows }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.diagIrrigationHeading }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-for list="{{ diagIrrigationRows }}" as="row" hint-placeholder-count="1">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ row.name }}</span>
+<span style="font:600 11px/1.4 var(--font-body);color:var(--tx);text-align:right">{{ row.value }}</span>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<div style="font:600 10.5px/1 var(--font-body);color:var(--tx2);margin:0 2px 6px">{{ S.environment }}</div>
+<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+<sc-for list="{{ diagEnvRows }}" as="row" hint-placeholder-count="5">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<span style="font:500 11px/1.4 var(--font-body);color:var(--tx2)">{{ row.label }}</span>
+<span style="font:600 11px/1.4 var(--font-body);color:var(--tx);text-align:right">{{ row.value }}</span>
+</div>
+</sc-for>
+</div>
+
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;overflow:hidden;margin-bottom:16px">
+<button onClick="{{ diagReasonsToggle }}" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:10px 11px;background:transparent;text-align:left">
+<span style="font:600 12.5px/1.3 var(--font-body);color:var(--tx)">{{ S.diagReasonsHeading }} <span style="color:var(--tx2);font-weight:500">· {{ diagReasonTotalLabel }}</span></span>
+<svg width="14" height="14" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;transform:{{ diagReasonsChevRotate }}"><use href="#i-down"></use></svg>
+</button>
+<sc-if value="{{ diagReasonsOpen }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:8px;padding:0 11px 12px">
+
+<sc-if value="{{ hasDiagDuplicateDevices }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:6px;background:var(--nu-d);border-radius:14px;padding:11px 12px" data-tone="warn">
+<div style="font:600 11.5px/1.3 var(--font-body)">{{ diagDuplicateDevicesTitle }}</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2)">{{ S.diagDuplicateDevicesBody }}</div>
+<sc-for list="{{ diagDuplicateDevices }}" as="pair" hint-placeholder-count="1">
+<div style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);white-space:normal;overflow-wrap:break-word">{{ pair.line }}</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasDiagReasonGroups }}" hint-placeholder-val="{{ true }}">
+<sc-for list="{{ diagReasonGroups }}" as="grp" hint-placeholder-count="3">
+<div style="background:var(--nu-d);border-radius:14px;overflow:hidden">
+<button onClick="{{ grp.toggle }}" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:9px 11px;background:transparent;text-align:left">
+<span style="font:600 11.5px/1.3 var(--font-body);color:var(--tx)">{{ grp.label }} <span style="color:var(--tx2);font-weight:500">({{ grp.count }})</span></span>
+<svg width="12" height="12" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;transform:{{ grp.chevRotate }}"><use href="#i-down"></use></svg>
+</button>
+<sc-if value="{{ grp.open }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;flex-direction:column;gap:6px;padding:0 11px 11px">
+<sc-if value="{{ grp.hasExplain }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-bottom:2px">{{ grp.explain }}</div>
+</sc-if>
+<sc-for list="{{ grp.rows }}" as="row" hint-placeholder-count="2">
+<div style="background:var(--gr);box-shadow:var(--nu-sm);border-radius:12px;padding:8px 10px">
+<div style="font:600 12px/1.3 var(--font-body);color:var(--tx)">{{ row.name }}</div>
+<div style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);margin-top:2px;white-space:normal;overflow-wrap:break-word">{{ row.entityIdLabel }}</div>
+<sc-if value="{{ row.hasReasonExtra }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2);margin-top:2px">{{ row.reasonExtra }}</div>
+</sc-if>
+</div>
+</sc-for>
+</div>
+</sc-if>
+</div>
+</sc-for>
+</sc-if>
+
+</div>
+</sc-if>
+</div>
+
+<button onClick="{{ diagCopyRun }}" style="width:100%;height:48px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx);font:600 12.5px/1 var(--font-body)">{{ S.diagCopyButton }}</button>
+<div style="font:500 10px/1.4 var(--font-body);color:var(--tx2);margin:8px 2px 0">{{ S.diagCopyPrivacyNote }}</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ diagClose }}" style="position:fixed;inset:0;background:rgba(20,24,30,.52);backdrop-filter:blur(3px);z-index:50;animation:fade .18s ease"></div>
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;z-index:51;inset:0;display:grid;place-items:center;padding:18px;pointer-events:none;color:var(--tx)">
+<div style="width:min(520px,100%);max-height:82vh;overflow-y:auto;background:var(--page);box-shadow:0 22px 54px rgba(20,24,30,.3);border-radius:24px;padding:18px;pointer-events:auto;animation:fade .18s ease">
+<div style="font-family:var(--font-heading);font-size:18px;line-height:1.2;margin-bottom:10px">{{ S.diagCopyButton }}</div>
+<sc-if value="{{ diagCopied }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 12px/1.4 var(--font-body);color:var(--tx);margin-bottom:10px">{{ S.settingsExportCopied }}</div>
+</sc-if>
+<sc-if value="{{ diagNotCopied }}" hint-placeholder-val="{{ true }}">
+<div style="font:600 12px/1.4 var(--font-body);color:var(--tx2);margin-bottom:10px">{{ S.settingsExportSelect }}</div>
+</sc-if>
+<textarea value="{{ diagText }}" onChange="{{ diagTextChange }}" onClick="{{ diagTextClick }}" style="width:100%;height:220px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:14px;border:0;padding:12px;font:500 10.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx);resize:vertical"></textarea>
+<div style="display:flex;margin-top:14px">
+<button onClick="{{ diagClose }}" style="flex:1;height:46px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ S.settingsBack }}</button>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ settingsScreen2 }}" hint-placeholder-val="{{ false }}">
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;inset:0;z-index:44;background:var(--page);color:var(--tx);overflow-y:auto;padding:calc(14px + env(safe-area-inset-top)) 14px calc(24px + env(safe-area-inset-bottom))">
+<div style="display:flex;align-items:center;gap:9px;margin-bottom:18px">
+<button onClick="{{ settingsBack }}" title="{{ S.settingsBack }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="17" height="17" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(180deg)"><use href="#i-chev"></use></svg>
+</button>
+<svg width="22" height="22" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ settingsRoomDetail.iconRef }}"></use></svg>
+<div style="flex:1;min-width:0;font-family:var(--font-heading);font-size:19px;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ settingsRoomDetail.name }}</div>
+<button onClick="{{ closeSettings }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="17" height="17" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"></use></svg>
+</button>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<sc-for list="{{ settingsRoomDetail.entities }}" as="en" hint-placeholder-count="4">
+<div style="display:flex;align-items:center;gap:9px;background:var(--gr);box-shadow:var(--nu-sm);border-radius:16px;padding:9px 11px">
+<div style="flex:1;min-width:0">
+<div style="font:600 13px/1.2 var(--font-body);color:{{ en.nameColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ en.name }}</div>
+<div style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ en.id }}</div>
+<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+<span style="display:inline-block;background:var(--nu-ins);box-shadow:var(--nu-ins);border-radius:999px;padding:2px 9px;font:600 10.5px/1.4 var(--font-body);color:var(--accT);white-space:nowrap">{{ en.reason }}</span>
+<sc-if value="{{ en.diff }}" hint-placeholder-val="{{ false }}">
+<button onClick="{{ en.clearDiff }}" style="display:inline-flex;align-items:center;min-height:44px;padding:0;background:transparent;font:600 10.5px/1.3 var(--font-body);color:var(--accT)">{{ S.settingsDiffFromConfig }}</button>
+</sc-if>
+</div>
+</div>
+<button onClick="{{ en.toggle }}" style="width:44px;height:26px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-ins);flex:none;position:relative">
+<span style="position:absolute;top:2px;left:{{ en.thumbLeft }};width:22px;height:22px;border-radius:999px;background:var(--acc);box-shadow:var(--nu-sm)"></span>
+</button>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ sectionResetConfirmOpen }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ sectionResetCancel }}" style="position:fixed;inset:0;background:rgba(20,24,30,.42);backdrop-filter:blur(3px);z-index:50;animation:fade .18s ease"></div>
+<div style="position:fixed;z-index:51;left:50%;bottom:32px;transform:translateX(-50%);width:min(320px,calc(100vw - 32px));background:var(--page);border-radius:22px;box-shadow:0 18px 44px rgba(20,24,30,.3);padding:16px">
+<div style="font:600 13px/1.4 var(--font-body);color:var(--tx);margin-bottom:4px;text-align:center">{{ S.settingsSectionOrderResetTitle }}</div>
+<div style="font:500 11.5px/1.4 var(--font-body);color:var(--tx2);margin-bottom:12px;text-align:center">{{ S.settingsSectionOrderResetBody }}</div>
+<div style="display:flex;gap:8px">
+<button onClick="{{ sectionResetCancel }}" style="flex:1;height:48px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ S.settingsBack }}</button>
+<button onClick="{{ sectionResetConfirmRun }}" style="flex:1;height:48px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--accT);font:600 12.5px/1 var(--font-body)">{{ S.settingsReset }}</button>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ longMenuOpen }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ longMenuClose }}" style="position:fixed;inset:0;background:rgba(20,24,30,.42);backdrop-filter:blur(3px);z-index:50;animation:fade .18s ease"></div>
+<div style="position:fixed;z-index:51;left:50%;bottom:32px;transform:translateX(-50%);width:min(320px,calc(100vw - 32px));background:var(--page);border-radius:22px;box-shadow:0 18px 44px rgba(20,24,30,.3);padding:16px">
+<div style="font:600 13px/1.3 var(--font-body);color:var(--tx2);margin-bottom:10px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ longMenuName }}</div>
+<button onClick="{{ longMenuHide }}" style="width:100%;height:48px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--accT);font:600 13px/1 var(--font-body)">{{ S.settingsLongPressHide }}</button>
+</div>
+</sc-if>
+
+<sc-if value="{{ exportOpen }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ exportClose }}" style="position:fixed;inset:0;background:rgba(20,24,30,.52);backdrop-filter:blur(3px);z-index:50;animation:fade .18s ease"></div>
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;z-index:51;inset:0;display:grid;place-items:center;padding:18px;pointer-events:none;color:var(--tx)">
+<div style="width:min(520px,100%);max-height:82vh;overflow-y:auto;background:var(--page);box-shadow:0 22px 54px rgba(20,24,30,.3);border-radius:24px;padding:18px;pointer-events:auto;animation:fade .18s ease">
+<div style="font-family:var(--font-heading);font-size:18px;line-height:1.2;margin-bottom:10px">{{ S.settingsExport }}</div>
+<sc-if value="{{ exportCopied }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 12px/1.4 var(--font-body);color:var(--accT);margin-bottom:10px">{{ S.settingsExportCopied }}</div>
+</sc-if>
+<sc-if value="{{ exportNotCopied }}" hint-placeholder-val="{{ true }}">
+<div style="font:600 12px/1.4 var(--font-body);color:var(--tx2);margin-bottom:10px">{{ S.settingsExportSelect }}</div>
+</sc-if>
+<textarea value="{{ exportText }}" onChange="{{ exportTextChange }}" onClick="{{ exportTextClick }}" style="width:100%;height:200px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:14px;border:0;padding:12px;font:500 10.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx);resize:vertical"></textarea>
+<div style="font:600 12px/1.4 var(--font-body);margin-top:14px;margin-bottom:10px">{{ S.settingsExportOffer }}</div>
+<div style="display:flex;gap:9px">
+<button onClick="{{ exportClearOverrides }}" style="flex:1;height:46px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--accT);font:600 12.5px/1 var(--font-body)">{{ S.settingsExportClear }}</button>
+<button onClick="{{ exportKeepOverrides }}" style="flex:1;height:46px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);color:var(--tx2);font:600 12.5px/1 var(--font-body)">{{ S.settingsExportKeep }}</button>
+</div>
+</div>
+</div>
+</sc-if>
+
+<div style="position:fixed;left:0;right:0;bottom:0;background:var(--page);padding:8px 10px calc(8px + env(safe-area-inset-bottom));box-shadow:0 -8px 18px rgba(0,0,0,.06);z-index:5">
+<div style="max-width:540px;margin:0 auto;display:flex;gap:4px;background:var(--gr);box-shadow:var(--nu-ins);border-radius:999px;padding:5px">
+<sc-for list="{{ tabs }}" as="t" hint-placeholder-count="6">
+<button onClick="{{ t.go }}" data-sel="{{ t.sel }}" style="flex:1;min-width:0;height:54px;border-radius:999px;background:transparent;color:var(--tx2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:0 2px">
+<svg width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use ref="{{ t.iconRef }}"></use></svg>
+<span style="font:600 9.5px/1 var(--font-body);letter-spacing:.01em">{{ t.label }}</span>
+</button>
+</sc-for>
+</div>
+</div>
+
+<!-- Demo scenario bar — see dash_neumo.html's copy for the "why". Stacked
+     above the bottom tab bar (fixed, ~80px + safe area), never over it. -->
+<sc-if value="{{ scenarioBarVisible }}" hint-placeholder-val="{{ false }}">
+<div style="position:fixed;left:0;right:0;bottom:calc(84px + env(safe-area-inset-bottom));background:#14171c;display:flex;gap:6px;padding:6px 8px;overflow-x:auto;box-shadow:0 -1px 0 rgba(0,0,0,.4);z-index:6">
+<sc-for list="{{ scenarioItems }}" as="sc" hint-placeholder-count="7">
+<button onClick="{{ sc.go }}" style="flex:none;min-height:44px;min-width:44px;padding:0 14px;border-radius:8px;background:{{ sc.bg }};color:{{ sc.fg }};font:600 11.5px/1 var(--font-body);letter-spacing:.02em;white-space:nowrap">{{ sc.label }}</button>
+</sc-for>
+</div>
+</sc-if>
+
+<!-- v2 — shared-config JSON editor (vmSharedConfig). Validated on save:
+     invalid JSON or anything but an object is reported here, not stored. -->
+<sc-if value="{{ sharedEditorOpen }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ sharedEditorClose }}" style="position:fixed;inset:0;background:rgba(20,24,30,.52);backdrop-filter:blur(3px);z-index:48"></div>
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;z-index:49;inset:0;display:grid;place-items:center;padding:16px;pointer-events:none;color:var(--tx)">
+<div style="width:min(760px,100%);max-height:92vh;display:flex;flex-direction:column;background:var(--page);box-shadow:0 22px 54px rgba(20,24,30,.3);border-radius:26px;padding:18px;pointer-events:auto">
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+<div style="flex:1;font-family:var(--font-heading);font-size:19px;line-height:1.15">{{ S.sharedEditorTitle }}</div>
+<button onClick="{{ sharedEditorClose }}" aria-label="{{ S.pinCancel }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="17" height="17" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"></use></svg>
+</button>
+</div>
+<textarea spellcheck="false" value="{{ sharedEditorText }}" onChange="{{ sharedEditorInput }}" style="flex:1;min-height:320px;width:100%;resize:vertical;border:0;outline:0;border-radius:16px;background:var(--gr);box-shadow:var(--nu-ins);padding:12px;font:500 12px/1.5 ui-monospace,Menlo,monospace;color:var(--tx)"></textarea>
+<sc-if value="{{ sharedEditorHasError }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 11.5px/1.4 var(--font-body);color:var(--accT);margin-top:10px">{{ sharedEditorError }}</div>
+</sc-if>
+<button onClick="{{ sharedEditorSave }}" data-sel="true" style="height:48px;margin-top:12px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);font:600 13px/1 var(--font-body);color:var(--tx)">{{ sharedEditorSaveLabel }}</button>
+</div>
+</div>
+</sc-if>
+
+<!-- v2 — migration notice for a 1.x HACS Dashboard install updated to 2.0
+     (vmMigration). It keeps working; this says how to switch, once. -->
+<sc-if value="{{ migrationShow }}" hint-placeholder-val="{{ false }}">
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;z-index:65;left:50%;top:14px;transform:translateX(-50%);width:min(560px,calc(100vw - 24px));background:var(--page);box-shadow:0 18px 44px rgba(20,24,30,.3);border-radius:18px;padding:14px 16px;color:var(--tx)">
+<div style="font:700 13.5px/1.3 var(--font-body)">{{ S.migrationTitle }}</div>
+<div style="font:500 11.5px/1.45 var(--font-body);color:var(--tx2);margin-top:5px">{{ S.migrationBody }}</div>
+<div style="display:flex;gap:9px;margin-top:10px">
+<button onClick="{{ migrationOpenGuide }}" data-sel="true" style="flex:1;min-height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12.5px/1.2 var(--font-body);color:var(--tx)">{{ S.migrationGuide }}</button>
+<button onClick="{{ migrationDismiss }}" style="flex:1;min-height:44px;border-radius:14px;background:var(--gr);box-shadow:var(--nu-sm);font:600 12.5px/1.2 var(--font-body);color:var(--tx2)">{{ S.migrationLater }}</button>
+</div>
+</div>
+</sc-if>
+
+<!-- Alarm PIN pad (v1.9.0) — see alarmGuardedCall() in renderVals. Opens
+     only for a panel declaring code_format. No mount animation, same reason
+     as the toast below: with live state updates, a style= animation would
+     replay on every unrelated re-render while the pad is open. -->
+<sc-if value="{{ pinOpen }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ pinCancel }}" style="position:fixed;inset:0;background:rgba(20,24,30,.52);backdrop-filter:blur(3px);z-index:46"></div>
+<div data-nu="1" data-theme="{{ theme }}" style="position:fixed;z-index:47;inset:0;display:grid;place-items:center;padding:20px;pointer-events:none;color:var(--tx)">
+<div style="width:min(340px,100%);background:var(--page);box-shadow:0 22px 54px rgba(20,24,30,.3);border-radius:30px;padding:22px;pointer-events:auto">
+<div style="display:flex;align-items:center;gap:12px">
+<div style="width:44px;height:44px;border-radius:17px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="20" height="20" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"></use></svg>
+</div>
+<div style="flex:1;min-width:0">
+<div style="font-family:var(--font-heading);font-size:19px;line-height:1.15">{{ S.pinTitle }}</div>
+<div style="font:500 11.5px/1.3 var(--font-body);color:var(--tx2);margin-top:3px">{{ pinAction }}</div>
+</div>
+<button onClick="{{ pinCancel }}" aria-label="{{ S.pinCancel }}" style="width:44px;height:44px;border-radius:999px;background:var(--gr);box-shadow:var(--nu-sm);display:grid;place-items:center;flex:none">
+<svg width="17" height="17" fill="none" stroke="var(--tx2)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"></use></svg>
+</button>
+</div>
+<sc-if value="{{ pinNumeric }}" hint-placeholder-val="{{ true }}">
+<div style="height:52px;margin-top:18px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-ins);display:grid;place-items:center;font:700 22px/1 var(--font-body);letter-spacing:8px;color:var(--tx)">{{ pinDots }}</div>
+</sc-if>
+<sc-if value="{{ pinIsText }}" hint-placeholder-val="{{ false }}">
+<input type="password" autocomplete="off" aria-label="{{ S.pinTitle }}" value="{{ pinValue }}" onChange="{{ pinInput }}" onKeyDown="{{ pinKeyDown }}" style="display:block;width:100%;height:52px;margin-top:18px;border:0;outline:0;border-radius:16px;background:var(--gr);box-shadow:var(--nu-ins);text-align:center;font:700 18px/1 var(--font-body);color:var(--tx)">
+</sc-if>
+<sc-if value="{{ pinHasError }}" hint-placeholder-val="{{ false }}">
+<div style="font:600 11.5px/1.4 var(--font-body);color:var(--accT);margin-top:10px;text-align:center">{{ S.pinRejected }}</div>
+</sc-if>
+<sc-if value="{{ pinNumeric }}" hint-placeholder-val="{{ true }}">
+<div style="display:grid;grid-template-columns:repeat(3,64px);gap:12px;justify-content:center;margin-top:18px">
+<sc-for list="{{ pinKeys }}" as="k" hint-placeholder-count="12">
+<button onClick="{{ k.run }}" aria-label="{{ k.aria }}" data-sel="{{ k.isOk }}" style="width:64px;height:64px;border-radius:20px;background:var(--gr);box-shadow:var(--nu-sm);font:600 20px/1 var(--font-body);color:var(--tx)">{{ k.label }}</button>
+</sc-for>
+</div>
+</sc-if>
+<sc-if value="{{ pinIsText }}" hint-placeholder-val="{{ false }}">
+<button onClick="{{ pinSubmit }}" data-sel="true" style="display:block;width:100%;height:52px;margin-top:14px;border-radius:16px;background:var(--gr);box-shadow:var(--nu-sm);font:600 14px/1 var(--font-body);color:var(--tx)">{{ pinSubmitLabel }}</button>
+</sc-if>
+</div>
+</div>
+</sc-if>
+
+<!-- Action toast (v1.8.1) — see dash_neumo.html's copy for the "why" (no
+     mount animation). Cleared above both the tab bar and the scenario bar
+     so it's never obscured by either. -->
+<sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+<div style="position:fixed;z-index:20;left:16px;right:16px;bottom:calc(160px + env(safe-area-inset-bottom));background:var(--page);box-shadow:0 18px 44px rgba(20,24,30,.3);border-radius:16px;padding:13px 16px;display:flex;align-items:center;gap:10px;color:var(--tx)">
+<svg width="17" height="17" fill="none" stroke="var(--acc)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><use href="#i-alert"></use></svg>
+<span style="font:600 12.5px/1.4 var(--font-body)">{{ toastText }}</span>
+</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:430,&quot;height&quot;:900},&quot;startTab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;casa&quot;,&quot;stanze&quot;,&quot;irrigazione&quot;,&quot;energia&quot;,&quot;auto&quot;,&quot;meteo&quot;],&quot;default&quot;:&quot;casa&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Comportamento&quot;},&quot;themePref&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;auto&quot;,&quot;day&quot;,&quot;night&quot;],&quot;default&quot;:&quot;auto&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Comportamento&quot;},&quot;showModes&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Comportamento&quot;}}">
+// v2 — the logic shared with the other layout lives in casa-core.js (loaded
+// in <head>, before support.js): this page keeps its initial state and its
+// own renderVals(), i.e. what is specific to this layout.
+const { DEFAULT_CONFIG, mergeConfig, ASSET_V, bust, loadScript, switchScenario, CONFIG_PATHS, loadUserConfig } = window.CasaCore;
+
+class Component extends window.CasaCore.base(DCLogic) {
+  state = { st: {}, status: 'connecting', tab: null, theme: null, hist: null, range: 7, room: null, charts: {}, now: Date.now(), hassLanguage: null, cam: null, camRevealed: {}, snapTick: Date.now(),
+    settingsOpen: false, settingsRoom: null, settingsTab: null, prefs: { v: 1 }, prefsStorage: null, exportSheet: null, longMenu: null, diagSheet: null, sectionResetConfirm: false,
+    diagReasonsOpen: false, diagReasonGroupsOpen: {}, hourlyEnergy: undefined,
+    toast: null, irrigationEnds: {}, irrPending: {}, pin: null, shared: null, sharedEditor: null };
+
+  chartOn(k) { return !!this.state.charts[k]; }
+  toggleChart(k) {
+    this.setState((s) => {
+      const next = Object.assign({}, s.charts);
+      next[k] = !next[k];
+      return { charts: next };
+    });
+  }
+
+  roomDetail(r) {
+    const extraTuples = [].concat(r.climate || [], r.fan || [], r.vacuum || [], r.waterHeater || [], r.lawnMower || []);
+    const applianceItems = this.applianceItems(r.id);
+    // See dash_neumo.html for why switch-like toggles (switch, humidifier,
+    // lock, valve, siren) share one list instead of one section each.
+    const switchTuples = (r.switches || []).map((sw) => {
+      const on = this.isOn(sw[0]);
+      const powerId = sw[3];
+      const plug = this.plugStatus(sw[0], powerId);
+      return { id: sw[0], name: sw[1], icon: sw[2], iconRef: this._bindAttr('href', sw[2]), on, action: on ? this.t('turnOff') : this.t('turnOn'), stroke: on ? 'var(--acc)' : 'var(--tx2)',
+        sub: plug.sub,
+        toggle: () => this.call('switch', on ? 'turn_off' : 'turn_on', { entity_id: sw[0] }) };
+    });
+    const humidifierTuples = (r.humidifier || []).map((h) => {
+      const on = this.isOn(h[0]);
+      return { id: h[0], name: h[1], icon: h[2], iconRef: this._bindAttr('href', h[2]), on, action: on ? this.t('turnOff') : this.t('turnOn'), stroke: on ? 'var(--acc)' : 'var(--tx2)',
+        sub: on ? this.t('switch.running') : this.t('switch.off'),
+        toggle: () => this.call('humidifier', on ? 'turn_off' : 'turn_on', { entity_id: h[0] }) };
+    });
+    const lockTuples = (r.lock || []).map((l) => {
+      const unlocked = this.s(l[0]) === 'unlocked';
+      return { id: l[0], name: l[1], icon: l[2], iconRef: this._bindAttr('href', l[2]), on: unlocked, action: unlocked ? this.t('lock.lockAction') : this.t('lock.unlockAction'), stroke: unlocked ? 'var(--acc)' : 'var(--tx2)',
+        sub: unlocked ? this.t('lock.unlocked') : this.t('lock.locked'),
+        toggle: () => this.call('lock', unlocked ? 'lock' : 'unlock', { entity_id: l[0] }) };
+    });
+    const valveTuples = (r.valve || []).map((v) => {
+      const open = this.s(v[0]) === 'open';
+      return { id: v[0], name: v[1], icon: v[2], iconRef: this._bindAttr('href', v[2]), on: open, action: open ? this.t('valve.closeAction') : this.t('valve.openAction'), stroke: open ? 'var(--acc)' : 'var(--tx2)',
+        sub: open ? this.t('valve.open') : this.t('valve.closed'),
+        toggle: () => this.call('valve', open ? 'close_valve' : 'open_valve', { entity_id: v[0] }) };
+    });
+    const sirenTuples = (r.siren || []).map((s) => {
+      const on = this.isOn(s[0]);
+      return { id: s[0], name: s[1], icon: s[2], iconRef: this._bindAttr('href', s[2]), on, action: on ? this.t('turnOff') : this.t('turnOn'), stroke: on ? 'var(--acc)' : 'var(--tx2)',
+        sub: on ? this.t('siren.sounding') : this.t('switch.off'),
+        toggle: () => this.call('siren', on ? 'turn_off' : 'turn_on', { entity_id: s[0] }) };
+    });
+    const switchesAll = switchTuples.concat(humidifierTuples, lockTuples, valveTuples, sirenTuples);
+    return {
+      hasAppliances: applianceItems.length > 0, appliances: applianceItems,
+      hasSensors: (r.sensors || []).length > 0,
+      sensors: (r.sensors || []).map((s) => ({ id: s[0], label: s[1], icon: s[2], val: this.val(s[0], s[3], s[4]) })),
+      lights: (r.lights || []).map((id) => {
+        const on = this.isOn(id);
+        const b = this.at(id, 'brightness') || 200;
+        return { id, name: this.fn(id), on, action: on ? this.t('turnOff') : this.t('turnOn'), stroke: on ? 'var(--acc)' : 'var(--tx2)',
+          sub: on ? Math.round((b / 255) * 100) + '% ' + this.t('light.brightnessSuffix') : this.t('common.off'),
+          bri: Math.max(1, Math.round((b / 255) * 100)),
+          toggle: () => this.call('light', on ? 'turn_off' : 'turn_on', { entity_id: id }),
+          setBri: (e) => this.call('light', 'turn_on', { entity_id: id, brightness: Math.round((Number(e.target.value) / 100) * 255) }) };
+      }),
+      covers: (r.covers || []).map((id) => {
+        const live = this.at(id, 'current_position');
+        const liveVal = live === undefined ? 0 : live;
+        const dragVal = this.state.coverDrag ? this.state.coverDrag[id] : undefined;
+        const pos = dragVal !== undefined && dragVal !== liveVal ? dragVal : liveVal;
+        // Bit 4 (SET_POSITION) of supported_features — some covers only know
+        // open/close/stop, and set_cover_position legitimately fails on
+        // those. Show the slider only when the device claims it.
+        const hasPosition = ((Number(this.at(id, 'supported_features')) || 0) & 4) === 4;
+        const clearDrag = () => {
+          if (!this.state.coverDrag || this.state.coverDrag[id] === undefined) return;
+          const d = Object.assign({}, this.state.coverDrag);
+          delete d[id];
+          this.setState({ coverDrag: d });
+        };
+        // Band (v1.8.0) — see dash_neumo.html's copy of this block for the
+        // full rationale; kept identical here.
+        const hasBand = live !== undefined && pos < 100;
+        const bandBorder = hasBand && pos > 0 ? '2px solid rgba(140,73,26,.35)' : 'none';
+        return { id, name: this.fn(id), pos, hasPosition,
+          hasBand, bandPct: Math.round(100 - pos) + '%', bandBorder,
+          sub: live === undefined ? this.s(id) : pos === 0 ? this.t('cover.closed') : pos === 100 ? this.t('cover.fullyOpen') : this.t('cover.openAt', { pct: pos }),
+          up: () => { clearDrag(); this.cover(id, 'open_cover'); },
+          down: () => { clearDrag(); this.cover(id, 'close_cover'); },
+          stop: () => { clearDrag(); this.cover(id, 'stop_cover'); },
+          drag: (e) => this.setState({ coverDrag: Object.assign({}, this.state.coverDrag, { [id]: Number(e.target.value) }) }),
+          // Fires once, on release (pointer or keyboard). Guards against NaN
+          // — possible if the row unmounts mid-gesture (e.g. hidden while
+          // dragging) so the event lands on a detached node — and against
+          // redundant calls when the released value matches what's already
+          // live.
+          setPos: (e) => {
+            const v = Number(e.target.value);
+            if (!Number.isFinite(v) || v === liveVal) return;
+            this.cover(id, 'set_cover_position', { position: v });
+          } };
+      }),
+      switches: switchesAll,
+      media: (r.media || []).map((id) => {
+        const s = this.s(id);
+        const live = s !== 'unavailable' && s !== 'unknown';
+        return { id, name: this.fn(id), quiet: !live,
+          sub: !live ? this.t('common.unreachable') : s === 'playing' ? (this.at(id, 'media_title') || this.t('media.playing')) : s === 'off' ? this.t('common.off') : s,
+          toggle: () => this.call('media_player', s === 'off' ? 'turn_on' : 'turn_off', { entity_id: id }) };
+      }),
+      extras: extraTuples.map((x) => {
+        const s = this.s(x[0]);
+        const live = s !== 'unavailable' && s !== 'unknown';
+        return { id: x[0], name: x[1], icon: x[2], iconRef: this._bindAttr('href', x[2]), quiet: !live, val: !live ? this.t('common.unreachable') : (this.unit(x[0]) ? this.val(x[0], 1) : s) };
+      })
+    };
+  }
+
+  renderVals() {
+    const d = new Date(this.state.now);
+    const h = d.getHours();
+    const pref = this.props.themePref || 'auto';
+    const theme = this.state.theme || (pref !== 'auto' ? pref : (this.s('sun.sun') === 'below_horizon' ? 'night' : 'day'));
+    const tab = this.state.tab || this.props.startTab || 'casa';
+    const greeting = h < 6 ? this.t('greeting.night') : h < 12 ? this.t('greeting.morning') : h < 18 ? this.t('greeting.afternoon') : this.t('greeting.evening');
+
+    const modesCfg = this.discovery ? this.discovery.discoverModes(this.cfg) : null;
+    const hasModes = !!modesCfg;
+    const modeIcons = { Casa: '#i-sofa', Home: '#i-sofa', Fuori: '#i-door', Away: '#i-door', Notte: '#i-moon', Night: '#i-moon', Cinema: '#i-tv', Movie: '#i-tv' };
+    const cur = hasModes ? this.s(modesCfg.select) : null;
+    const scriptId = hasModes ? modesCfg.script.split('.').slice(1).join('.') : null;
+    const modes = hasModes ? (this.at(modesCfg.select, 'options') || []).map((o) => ({
+      label: o, icon: modeIcons[o] || '#i-sofa', iconRef: this._bindAttr('href', modeIcons[o] || '#i-sofa'), sel: cur === o,
+      set: () => this.call('script', scriptId, { mode: o })
+    })) : [];
+
+    const weatherId = this.discovery ? this.discovery.discoverWeather(this.state.st, this.cfg) : null;
+    const hasWeather = !!weatherId;
+    const wx = weatherId ? this.s(weatherId) : null;
+    const wxMap = {
+      sunny: ['#i-sun', this.t('wx.sunny')], clear: ['#i-sun', this.t('wx.sunny')], 'clear-night': ['#i-moon', this.t('wx.sunny')],
+      partlycloudy: ['#i-cloud', this.t('wx.partlyCloudy')], cloudy: ['#i-cloud', this.t('wx.cloudy')],
+      rainy: ['#i-rain', this.t('wx.rainy')], pouring: ['#i-rain', this.t('wx.pouring')], windy: ['#i-wind', this.t('wx.windy')]
+    };
+    const wxi = wxMap[wx] || ['#i-cloud', wx || '—'];
+    // Fallback when no local weather station is configured (see below).
+    const entityT = weatherId ? this.at(weatherId, 'temperature') : null;
+    const entityH = weatherId ? this.at(weatherId, 'humidity') : null;
+
+    const peopleIds = this.discovery ? this.discovery.discoverPeople(this.state.st, this.cfg) : [];
+    const hasPeople = peopleIds.length > 0;
+    const people = peopleIds.map((id) => ({
+      initial: (this.fn(id) || '?').trim().charAt(0).toUpperCase(),
+      name: (this.fn(id) || '').split(' ')[0],
+      home: this.s(id) === 'home',
+      where: this.s(id) === 'home' ? this.t('people.home') : this.t('people.away')
+    }));
+
+    const statusMap = { connected: [this.t('status.connected'), 'ok'], connecting: [this.t('status.connecting'), 'warn'], error: [this.t('status.error'), 'alert'] };
+    const stt = statusMap[this.state.status] || ['—', 'warn'];
+
+    // See dash_neumo.html's copy of this block for the full explanation.
+    const en = this.cfg.energy || {};
+    const edDaily = this.energyDaily || {};
+    const prodT = en.productionToday ? this.n(en.productionToday) : (edDaily.prodToday != null ? edDaily.prodToday : null);
+    const gridT = en.gridToday ? this.n(en.gridToday) : (edDaily.gridToday != null ? edDaily.gridToday : null);
+    const exportT = en.gridExportToday ? this.n(en.gridExportToday) : (edDaily.gridExportToday != null ? edDaily.gridExportToday : null);
+    const consT = en.consumptionToday ? this.n(en.consumptionToday) : null;
+    const hasEnergy = (!!en.production || prodT != null || gridT != null) && this.MODULE_VISIBLE('energy');
+    // Empty state, case (b) — see dash_neumo.html's copy of this block for
+    // the full "why" (v1.6.0).
+    // v2 — shared with the other layout: casa-core.js vmEnergyEmpty().
+    const {
+      energyEmptyState, energyMissingLabel, openEnergySettings
+    } = this.vmEnergyEmpty({ en, gridT, hasEnergy, prodT });
+
+    const hasIrrigation = !!(this.cfg.irrigation && this.cfg.irrigation.zones && this.cfg.irrigation.zones.length) && this.MODULE_VISIBLE('irrigation');
+    const hasVehicle = !!(this.cfg.vehicle) && this.MODULE_VISIBLE('vehicle');
+
+    // config.weatherStation is optional, on top of what irrigation.weather
+    // already maps — an install with irrigation configured doesn't have to
+    // retype the same local sensors just to prefer them here over the
+    // weather.* entity's (less precise, less local) attributes. Only
+    // feelsLike/dewPoint have no other home and always come from here.
+    const irrWx = (this.cfg.irrigation && this.cfg.irrigation.weather) || {};
+    const ws = this.cfg.weatherStation || {};
+    const stationTempId = ws.temp || irrWx.temp || null;
+    const stationHumidityId = ws.humidity || irrWx.humidity || null;
+    const stationWindId = ws.wind || irrWx.wind || null;
+    const stationRainId = ws.rain || irrWx.rain || null;
+    const stationIrradianceId = ws.irradiance || irrWx.irradiance || null;
+    const stationEt0Id = ws.et0 || (this.cfg.irrigation && this.cfg.irrigation.et0) || null;
+    const outT = stationTempId ? this.n(stationTempId) : entityT;
+    const outH = stationHumidityId ? this.n(stationHumidityId) : entityH;
+    const hasStation = !!(stationTempId || stationHumidityId || stationWindId || stationRainId || stationIrradianceId || stationEt0Id || ws.feelsLike || ws.dewPoint);
+    const alarmId = this.ALARM_ID();
+    const hasAlarm = !!alarmId;
+
+    // cameras — see dash_neumo.html for the full explanation of this block.
+    const camCfg = this.cfg.cameras || {};
+    const camsRaw = (this.discovery && this.MODULE_VISIBLE('cameras')) ? (() => {
+      const prefs = this.PREFS(), ch = this.CONFIG_HIDDEN(), d = this.discovery;
+      const cfgTapGated = new Set((camCfg.hideUntilTap || []).map(String));
+      return d.discoverCameras(this.state.st, this.registries, this.cfg, {
+        isHidden: (id) => !d.resolveVisible(id, prefs.cameras, ch.cameras),
+        isTapGated: (id) => (prefs.hideUntilTap !== undefined ? prefs.hideUntilTap.includes(id) : cfgTapGated.has(id))
+      });
+    })() : [];
+    const hasCameras = camsRaw.length > 0;
+    const hasCamTab = camsRaw.length >= 2;
+    // Casa home section order (v1.7.0) — same computation as desktop; see
+    // that file's comment for the rationale.
+    const casaSections = this.SECTION_ORDER().map((id) => ({
+      id, isAlarm: id === 'alarm', isEnergy: id === 'energy', isCameras: id === 'cameras'
+    }));
+    const snapTick = this.state.snapTick;
+    const camList = camsRaw.map((c) => {
+      const revealed = !!this.state.camRevealed[c.id];
+      const showImg = !!c.picture && (!c.hidden || revealed);
+      const camSrc = showImg ? c.picture + (c.picture.indexOf('?') === -1 ? '?' : '&') + 't=' + snapTick : '';
+      return {
+        id: c.id, name: c.name, area: c.area, motion: c.motion, picture: c.picture,
+        showImg, showIcon: !showImg,
+        src: camSrc, srcRef: this._bindAttr('src', camSrc),
+        stamp: new Date(snapTick).toLocaleTimeString(this.lang === 'it' ? 'it-IT' : 'en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        open: () => { if (c.hidden && !revealed) this._revealCam(c.id); else this._openCam(c.id); }
+      };
+    });
+    const camMain = camList[0] || { name: '—', showImg: false, showIcon: true, motion: false, stamp: '', srcRef: this._bindAttr('src', ''), open: () => {} };
+    const camMotionOne = camList.find((c) => c.motion);
+    const camHeadline = camMotionOne ? this.t('cameras.motionDetected', { name: camMotionOne.name }) : this.t('cameras.allQuiet');
+    const camSub = this.t('cameras.tabSub', { n: camList.length, seconds: camCfg.snapshotInterval || 10 });
+    const goCams = () => this.setState({ tab: 'camere' });
+
+    // Home card: never a 2x2 on mobile (see dash_neumo.html for the desktop
+    // version and the full v1.4.9 rationale) — capped at 2 tiles side by
+    // side, motion-first. Beyond 2 cameras the second tile becomes a
+    // "+N altre" counter instead of a second real preview.
+    const camHomeSorted = camList.slice().sort((a, b) => (b.motion ? 1 : 0) - (a.motion ? 1 : 0));
+    const camHomeCount = camHomeSorted.length;
+    const camHomeSingle = camHomeCount <= 1;
+    const camHomeMulti = camHomeCount >= 2;
+    let camHomeTiles = [];
+    if (camHomeCount === 2) {
+      camHomeTiles = camHomeSorted.map((c) => Object.assign({}, c, { hasName: true, more: false }));
+    } else if (camHomeCount >= 3) {
+      camHomeTiles = [Object.assign({}, camHomeSorted[0], { hasName: true, more: false }), {
+        id: '__cam_more', hasName: false, more: true, motion: false, showImg: false, showIcon: false,
+        moreLabel: this.t('cameras.moreCount', { n: camHomeCount - 1 }), open: goCams
+      }];
+    }
+    camHomeTiles = camHomeTiles.map((c) => Object.assign({}, c, { outline: c.motion ? '2px solid var(--acc)' : 'none' }));
+    // v2 — shared with the other layout: casa-core.js vmCameraDetail().
+    const {
+      camCur, camOpen, camLayerVideo, camLayerSnapshot, camStreamSrc, camNoStream,
+      camVideoRef, camShowBadge, camBadgeLabel, camCountdown
+    } = this.vmCameraDetail({ camList });
+
+
+    const activeItems = [];
+    const applianceSwitches = new Set((this.cfg.appliances || []).map((a) => a.powerSwitch).filter(Boolean));
+    const entityHiddenForActive = this.ENTITY_HIDDEN_SET();
+    const activeSwitchPowerMap = this.discovery ? this.discovery.powerSensorForSwitch(this.state.st, this.registries) : new Map();
+    Object.keys(this.state.st).forEach((id) => {
+      if (entityHiddenForActive.has(id)) return;
+      const dom = id.split('.')[0];
+      const s = this.s(id);
+      if (dom === 'light' && s === 'on') {
+        const b = this.at(id, 'brightness');
+        activeItems.push({ icon: '#i-bulb', iconRef: this._bindAttr('href', '#i-bulb'), name: this.fn(id), sub: b ? Math.round((b / 255) * 100) + '% ' + this.t('light.brightnessSuffix') : this.t('common.on'), off: () => this.call('light', 'turn_off', { entity_id: id }) });
+      } else if (dom === 'switch' && s === 'on' && !applianceSwitches.has(id)) {
+        const plug = this.plugStatus(id, activeSwitchPowerMap.get(id) || null);
+        activeItems.push({ icon: '#i-plug', iconRef: this._bindAttr('href', '#i-plug'), name: this.fn(id), sub: plug.sub, off: () => this.call('switch', 'turn_off', { entity_id: id }) });
+      } else if (dom === 'media_player' && s === 'playing') {
+        activeItems.push({ icon: '#i-tv', iconRef: this._bindAttr('href', '#i-tv'), name: this.fn(id), sub: this.at(id, 'media_title') || this.t('media.playing'), off: () => this.call('media_player', 'turn_off', { entity_id: id }) });
+      } else if (dom === 'vacuum' && (s === 'cleaning' || s === 'returning')) {
+        activeItems.push({ icon: '#i-bot', iconRef: this._bindAttr('href', '#i-bot'), name: this.t('vacuum.name'), sub: s === 'cleaning' ? this.t('vacuum.cleaning') : this.t('vacuum.returning'), off: () => this.call('vacuum', 'return_to_base', { entity_id: id }) });
+      }
+    });
+    (this.MODULE_VISIBLE('appliances') ? (this.cfg.appliances || []) : []).forEach((a) => {
+      const { idle, label } = this.applianceState(a);
+      if (idle) return;
+      const aIcon = a.icon || '#i-wash';
+      activeItems.push({
+        icon: aIcon, iconRef: this._bindAttr('href', aIcon), name: a.name, sub: label,
+        off: a.powerSwitch ? () => this.call('switch', 'turn_off', { entity_id: a.powerSwitch }) : () => {}
+      });
+    });
+    activeItems.sort((a, b) => a.name.localeCompare(b.name));
+
+    const ALL_LIGHTS = this.discovery ? this.discovery.discoverAllOfDomain(this.state.st, this.registries, 'light') : [];
+    const ALL_COVERS = this.discovery ? this.discovery.discoverAllOfDomain(this.state.st, this.registries, 'cover') : [];
+    const litCount = ALL_LIGHTS.filter((id) => this.isOn(id)).length;
+    const openCount = ALL_COVERS.filter((id) => (this.at(id, 'current_position') || 0) > 0).length;
+
+    const tabDefs = [['casa', this.t('tab.casa'), '#i-house'], ['stanze', this.t('rooms'), '#i-sofa']];
+    if (hasCamTab) tabDefs.push(['camere', this.t('tab.cameras'), '#i-cam']);
+    if (hasIrrigation) tabDefs.push(['irrigazione', this.t('tab.irrigation'), '#i-sprout']);
+    if (hasEnergy) tabDefs.push(['energia', this.t('tab.energy'), '#i-zap']);
+    if (hasVehicle) tabDefs.push(['auto', this.t('tab.vehicle'), '#i-car']);
+    if (hasWeather || hasStation) tabDefs.push(['meteo', this.t('tab.weather'), '#i-cloud']);
+    const tabs = tabDefs.map((t) => ({ label: t[1], icon: t[2], iconRef: this._bindAttr('href', t[2]), sel: tab === t[0], go: () => this.setState({ tab: t[0] }) }));
+
+    const roomsResult = this.ROOMS_RESULT();
+    const allRoomsFlat = roomsResult.rooms.concat(roomsResult.overflow);
+    // Settings-panel entity hide — see dash_neumo.html's copy of this same
+    // step for the full explanation. room.catalog is left untouched so the
+    // settings screen's own room-detail view can still list hidden entities.
+    if (this.discovery) {
+      const entityHidden = this.ENTITY_HIDDEN_SET();
+      allRoomsFlat.forEach((r) => this.discovery.applyEntityVisibility(r, entityHidden));
+    }
+    // Empty state, case (a) — see dash_neumo.html's copy of this block for
+    // the full "why" (v1.6.0).
+    const allRoomsResCaseA = this.ALL_ROOMS_RESULT();
+    const hasNoAreas = allRoomsResCaseA.rooms.length === 0 && allRoomsResCaseA.overflow.length === 0;
+    const goToAreas = () => { try { window.top.location.href = '/config/areas/dashboard'; } catch (e) {} };
+    // See dash_neumo.html for the pill priority order (allarmi, aperture,
+    // presenza, temperatura, umidità, il resto) and per-domain busy rules.
+    const PILL_PRIORITY = { alarm: 0, openings: 1, presence: 2, temperature: 3, humidity: 4 };
+    const pillPriority = (kind) => PILL_PRIORITY[kind] !== undefined ? PILL_PRIORITY[kind] : 5;
+    const rooms = allRoomsFlat.map((r) => {
+      const isOpen = this.state.room === r.id;
+      const lightOn = (r.lights || []).some((id) => this.isOn(id));
+      const climateOn = (r.climate || []).some((c) => this.s(c[0]) !== 'off' && this.s(c[0]) !== 'unavailable');
+      const fanOn = (r.fan || []).some((f) => this.isOn(f[0]));
+      const vacuumOn = (r.vacuum || []).some((v) => this.s(v[0]) === 'cleaning');
+      const humidifierOn = (r.humidifier || []).some((h) => this.isOn(h[0]));
+      const lockUnlocked = (r.lock || []).some((l) => this.s(l[0]) === 'unlocked');
+      const waterHeaterOn = (r.waterHeater || []).some((w) => this.s(w[0]) !== 'off' && this.s(w[0]) !== 'unavailable' && this.s(w[0]) !== 'unknown');
+      const valveOpen = (r.valve || []).some((v) => this.s(v[0]) === 'open');
+      const lawnMowerOn = (r.lawnMower || []).some((m) => this.s(m[0]) === 'mowing');
+      const sirenOn = (r.siren || []).some((s) => this.isOn(s[0]));
+      const presenceOn = (r.status || []).some((p) => p[4] === 'presence');
+      const busy = lightOn || (r.switches || []).some((sw) => this.isOn(sw[0])) || (r.media || []).some((id) => this.s(id) === 'playing')
+        || climateOn || fanOn || vacuumOn || humidifierOn || lockUnlocked || waterHeaterOn || valveOpen || lawnMowerOn || sirenOn || presenceOn;
+      const statusPills = (r.status || []).map((p) => ({
+        icon: p[2], iconRef: this._bindAttr('href', p[2]), val: this.t('pill.' + p[3]),
+        tone: p[4] === 'alarm' ? 'acc' : undefined, prio: pillPriority(p[4])
+      }));
+      const sensorPills = (r.sensors || []).map((s) => ({
+        icon: s[2], iconRef: this._bindAttr('href', s[2]), val: this.val(s[0], s[3], s[4]),
+        tone: s[5] === 'battery' ? 'acc' : undefined, prio: pillPriority(s[5])
+      })).filter((q) => q.val !== '—');
+      const quick = statusPills.concat(sensorPills).sort((a, b) => a.prio - b.prio).slice(0, 4);
+      const chevIcon = isOpen ? '#i-up' : '#i-down';
+      const base = {
+        id: r.id, name: r.name, icon: r.icon, iconRef: this._bindAttr('href', r.icon), sub: this.roomSummary(r), active: busy,
+        stroke: busy ? 'var(--acc)' : 'var(--tx2)', isOpen, chev: chevIcon, chevRef: this._bindAttr('href', chevIcon),
+        hasLight: (r.lights || []).length > 0, lightOn, hasCovers: (r.covers || []).length > 0,
+        hasAppliances: false, appliances: [],
+        quick, hasQuick: quick.length > 0,
+        toggleOpen: () => this.setState({ room: isOpen ? null : r.id }),
+        toggleLight: () => this.call('light', lightOn ? 'turn_off' : 'turn_on', { entity_id: r.lights }),
+        closeCovers: () => this.call('cover', 'close_cover', { entity_id: r.covers }),
+        openCovers: () => this.call('cover', 'open_cover', { entity_id: r.covers })
+      };
+      const empty = { hasSensors: false, sensors: [], lights: [], covers: [], switches: [], media: [], extras: [] };
+      return Object.assign(base, isOpen ? this.roomDetail(r) : empty);
+    });
+
+    // v2 — shared with the other layout: casa-core.js vmAlarm().
+    const {
+      al, alarmSt, supp, alarmNeedsCodeArm, alarmNeedsCodeDisarm, pin,
+      pinOpen, pinNumeric, pinSet, pinCancel, pinSubmit, pinKeys,
+      alarmBtns, alarmCodeNote
+    } = this.vmAlarm({ alarmId, hasAlarm });
+
+
+    const invRaw = hasEnergy && en.inverterStatus ? this.s(en.inverterStatus) : null;
+    const invStatus = invRaw == null ? '—' : /standby/i.test(invRaw) ? this.t('energy.inverterStandby') : /normal|grid|on.?grid/i.test(invRaw) ? this.t('energy.inverterProducing') : invRaw;
+
+    // See dash_neumo.html's copy of this block for the full explanation.
+    // v2 — shared with the other layout: casa-core.js vmEnergyRing().
+    const {
+      autoconsumo, consumoCasa, dailyConsumptionDerived, hasOuterRing, hasInnerRing, hasNewRing,
+      outerSelf, outerGrid, innerSelf, innerFeed, ringLegend
+    } = this.vmEnergyRing({ consT, energyEmptyState, exportT, gridT, prodT });
+
+    // Ring strip (v1.8.0) — see dash_neumo.html's copy of this block for the
+    // full rationale; kept identical here.
+    // v2 — shared with the other layout: casa-core.js vmHourlyStrip().
+    const {
+      hourlyBars, hourlyAxisLabels, hasHourlyStrip, hourlyPeakLabel
+    } = this.vmHourlyStrip({ hasNewRing });
+
+    // diagHourlyValue (Diagnostica's dashboard counterpart for this strip)
+    // is computed further down, alongside diagRingValue — both need `S`,
+    // which isn't assigned until inside the settings-panel block below.
+
+    // House consumption, derived (v1.6.0) — see dash_neumo.html's copy of
+    // this block for the full explanation.
+    // v2 — shared with the other layout: casa-core.js vmLiveConsumption().
+    const {
+      consumptionDisplayWatts, consumptionVal, consumptionLabel, batterySign
+    } = this.vmLiveConsumption({ en, hasEnergy });
+
+
+    const nowCells = hasEnergy ? [
+      { icon: '#i-solar', iconRef: this._bindAttr('href', '#i-solar'), stroke: 'var(--acc)', label: this.t('production'), val: this.powerVal(en.production) },
+      { icon: '#i-house', iconRef: this._bindAttr('href', '#i-house'), stroke: 'var(--sage)', label: consumptionLabel, val: consumptionVal },
+      { icon: '#i-tower', iconRef: this._bindAttr('href', '#i-tower'), stroke: 'var(--tx2)', label: this.t('fromGrid'), val: this.powerVal(en.gridImport) }
+    ] : [];
+    // See dash_neumo.html's copy of this block for the full explanation
+    // (power sensors only ever come from config.js; zero-config installs
+    // relying on HA's own Energy dashboard never get them).
+    const hasPowerCells = !!(en.production || en.consumption || en.gridImport) && !energyEmptyState;
+    const energyTabFallback = !hasPowerCells && hasNewRing;
+    const dailySelfPct = hasOuterRing && consumoCasa ? this.dec(Math.min(100, (autoconsumo / consumoCasa) * 100), 0) + '%' : '—';
+    const energyTabChart = !energyEmptyState;
+
+    const price = hasEnergy && en.price ? this.n(en.price) : null;
+    const R = this.state.range;
+    const ranges = [7, 14, 30].map((v) => ({ label: this.t('energy.days', { n: v }), sel: R === v, set: () => this.setState({ range: v }) }));
+    const hp = this.state.hist && this.state.hist.prod ? this.state.hist.prod.slice(-R) : [];
+    const hg = this.state.hist && this.state.hist.grid ? this.state.hist.grid.slice(-R) : [];
+    // See dash_neumo.html's copy of this field for why it's not zero-filled
+    // when absent.
+    const he = this.state.hist && this.state.hist.exp ? this.state.hist.exp.slice(-R) : [];
+    const hasExportBars = he.length > 0;
+    const bMax = Math.max.apply(null, [1].concat(hp, hg, hasExportBars ? he : []));
+    const barStep = Math.ceil(hp.length / 7) || 1;
+    const bars = hp.map((v, i) => {
+      const g = hg[i] || 0;
+      const e = hasExportBars ? (he[i] || 0) : 0;
+      const dt = new Date(this.state.now - (hp.length - 1 - i) * 86400000);
+      return {
+        hp: Math.max(3, (v / bMax) * 100).toFixed(1) + '%',
+        hg: Math.max(3, (g / bMax) * 100).toFixed(1) + '%',
+        he: Math.max(3, (e / bMax) * 100).toFixed(1) + '%',
+        label: (hp.length <= 14 || i % barStep === 0) ? dt.getDate() + '/' + (dt.getMonth() + 1) : '',
+        title: dt.toLocaleDateString(this.lang === 'it' ? 'it-IT' : 'en-GB', { day: 'numeric', month: 'long' }) + ' · ' + this.t('energy.producedShort') + ' ' + this.dec(v, 2) + ' kWh · ' + this.t('energy.fromGridShort') + ' ' + this.dec(g, 2) + ' kWh'
+          + (hasExportBars ? ' · ' + this.t('energy.feedIn') + ' ' + this.dec(e, 2) + ' kWh' : '')
+      };
+    });
+    const totP = hp.reduce((a, b) => a + b, 0);
+    const totG = hg.reduce((a, b) => a + b, 0);
+    const totE = he.reduce((a, b) => a + b, 0);
+    // See dash_neumo.html's copy of this block for the full explanation.
+    const hasHistory = bars.length > 0;
+    const noHistory = !hasHistory;
+    const periodCells = hasEnergy ? [
+      { label: this.t('energy.producedPeriod'), val: this.dec(totP, 1) + ' kWh' },
+      { label: this.t('energy.takenFromGrid'), val: this.dec(totG, 1) + ' kWh' },
+    ].concat(hasExportBars ? [{ label: this.t('energy.feedIn'), val: this.dec(totE, 1) + ' kWh' }] : []).concat([
+      { label: this.t('energy.gridCost'), val: price === null ? '—' : this.dec(totG * price, 2) + ' €' },
+      { label: this.t('energy.avgPerDay'), val: hp.length ? this.dec(totP / hp.length, 2) + ' kWh' : '—' }
+    ]) : [];
+
+    const irrZones = hasIrrigation ? this.cfg.irrigation.zones : [];
+    const zoneTone = (txt) => /stress/i.test(txt || '') ? 'alert' : new RegExp(this.t('irrigation.needsWaterMatch'), 'i').test(txt || '') ? 'warn' : 'ok';
+    const zones = irrZones.map((z, i) => {
+      const adv = z.advisory ? this.s(z.advisory) : null;
+      const mins = z.advisory ? (this.at(z.advisory, 'minuti_consigliati') || 0) : 0;
+      const lastRaw = z.lastRun ? this.s(z.lastRun) : null;
+      let last = '—';
+      if (lastRaw && lastRaw !== 'unknown' && lastRaw !== 'unavailable') {
+        const t = new Date(lastRaw.indexOf('T') === -1 ? lastRaw.replace(' ', 'T') : lastRaw);
+        if (!isNaN(t)) last = t.toLocaleDateString(this.lang === 'it' ? 'it-IT' : 'en-GB', { day: 'numeric', month: 'short' }) + ' · ' + t.toLocaleTimeString(this.lang === 'it' ? 'it-IT' : 'en-GB', { hour: '2-digit', minute: '2-digit' });
+      }
+      const chartVisible = this.chartOn('zone' + i);
+      const zoneSpark = this.spark(this.state.hist ? this.state.hist['zone' + i] : null, 240, 54);
+      // v1.8.1 — see dash_neumo.html's copy of this block for the full
+      // rationale; kept identical here.
+      const irrPending = this.state.irrPending || {};
+      const isRunning = !!(z.valve && this.isOn(z.valve));
+      const endsAt = z.valve ? (this.state.irrigationEnds || {})[z.valve] : undefined;
+      const remainMin = endsAt != null ? Math.max(0, Math.round((endsAt - this.state.now) / 60000)) : null;
+      const makeDurationButton = (label, key, run) => ({
+        label, pending: !!irrPending[key],
+        run: () => {
+          if (irrPending[key]) return;
+          this.setState({ irrPending: Object.assign({}, this.state.irrPending, { [key]: true }) });
+          Promise.resolve(run()).then(() => {
+            this.setState({ irrPending: Object.assign({}, this.state.irrPending, { [key]: false }) });
+          });
+        }
+      });
+      return {
+        name: z.name, advisory: adv || '—', tone: zoneTone(adv),
+        urgenza: (z.advisory ? (this.at(z.advisory, 'urgenza') || '') : '') + (mins > 0 ? ' · ' + this.t('irrigation.recommendedMin', { n: mins }) : ''),
+        soil: (z.advisory && this.at(z.advisory, 'umidita_suolo')) || this.val(z.moisture, 0, '%'),
+        deficit: z.deficit ? this.val(z.deficit, 1, ' mm') : '—',
+        mmWeek: z.weekMm ? this.val(z.weekMm, 1, ' mm') : '—',
+        lastRunLine: this.t('irrigation.lastRun', { when: last }),
+        showChart: chartVisible, chartLabel: chartVisible ? this.t('chart.hide') : this.t('chart.show48h'),
+        toggleChart: () => this.toggleChart('zone' + i),
+        spark: zoneSpark, sparkRef: this._bindAttr('points', zoneSpark),
+        isRunning, showButtons: !isRunning,
+        runningLabel: remainMin != null ? this.t('irrigation.runningFor', { n: remainMin }) : this.t('irrigation.running'),
+        stop: () => this.call('switch', 'turn_off', { entity_id: z.valve }),
+        // See dash_neumo.html for why there are two mechanisms here.
+        buttons: (z.buttons && z.buttons.length)
+          ? z.buttons.map((b) => makeDurationButton(this.t('irrigation.minutes', { n: b.minutes }), 'btn:' + b.entity, () => this.call('input_button', 'press', { entity_id: b.entity })))
+          : (z.valve ? (z.durations || [5, 10, 15]).map((m) => makeDurationButton(this.t('irrigation.minutes', { n: m }), 'valve:' + z.valve + ':' + m, () => this.runValve(z.valve, m))) : [])
+      };
+    });
+
+    // Soil moisture stays out of here (it already has its own numbers in
+    // the Irrigation tab) — reached instead via the "go to irrigation" link
+    // below, not duplicated as pills.
+    const stationDefs = [];
+    if (outT !== null) stationDefs.push(['#i-therm', this.t('wx.outdoorTemp'), this.dec(outT, 1) + '°']);
+    if (outH !== null) stationDefs.push(['#i-drop', this.t('wx.outdoorHumidity'), this.dec(outH, 0) + '%']);
+    if (ws.feelsLike) stationDefs.push(['#i-therm', this.t('wx.feelsLike'), this.val(ws.feelsLike, 1, '°')]);
+    if (ws.dewPoint) stationDefs.push(['#i-drop', this.t('wx.dewPoint'), this.val(ws.dewPoint, 1, '°')]);
+    if (stationWindId) stationDefs.push(['#i-wind', this.t('wx.wind'), this.val(stationWindId, 1, ' km/h')]);
+    if (stationRainId) stationDefs.push(['#i-rain', this.t('wx.rainToday'), this.val(stationRainId, 1, ' mm')]);
+    if (stationIrradianceId) stationDefs.push(['#i-solar', this.t('wx.irradiance'), this.val(stationIrradianceId, 0, ' W/m²')]);
+    if (stationEt0Id) stationDefs.push(['#i-sun', this.t('irrigation.et0Today'), this.val(stationEt0Id, 2, ' mm')]);
+    const station = stationDefs.map((x) => ({ icon: x[0], iconRef: this._bindAttr('href', x[0]), label: x[1], val: x[2] }));
+
+    const veh = this.cfg.vehicle || {};
+    const fuel = hasVehicle && veh.fuel ? this.n(veh.fuel) : null;
+    const battery = hasVehicle && veh.battery ? this.n(veh.battery) : null;
+    const gaugePct = fuel !== null ? fuel : battery;
+    const carCells = hasVehicle ? (veh.cells || []).map((c) => ({ label: c.label, val: this.val(c.entity, c.decimals !== undefined ? c.decimals : 0, c.unit != null ? ' ' + c.unit : undefined) })) : [];
+    const warnings = hasVehicle ? (veh.warnings || []).map((w) => {
+      const on = this.isOn(w.entity);
+      const good = w.positiveIsGood ? on : !on;
+      const wIcon = good ? '#i-check' : '#i-alert';
+      return { label: w.label, icon: wIcon, iconRef: this._bindAttr('href', wIcon), tone: good ? 'ok' : 'alert', quiet: good, val: good ? this.t('vehicle.ok') : this.t('vehicle.check') };
+    }) : [];
+
+    const energyChart = this.chartOn('energia');
+
+    // v2 — shared with the other layout: casa-core.js vmSettingsDiag().
+    const {
+      settingsRooms, settingsCameras, settingsModules, settingsSectionOrder, settingsRoomDetail, doExport,
+      diagConfigAttempts, diagConfigSummary, diagConfigOutsideIframe, diagEnergyInstantRows, diagEnergyDailyRows, diagPrefsFailed,
+      diagEnvRows, diagActionRows, hasDiagActions, diagIrrigationRows, hasDiagIrrigationRows, diagCameraRows,
+      diagRingValue, diagHourlyValue, diagAlarmRows, diagReasonGroups, diagReasonTotalLabel, hasDiagReasonGroups,
+      hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle, doDiag, settingsTabs, powerUnitOptions,
+      plugThresholdOptions, showBatterySignControl, batterySignOptions, batterySignLiveLabel, batterySignSuspect, batterySignInvert
+    } = this.vmSettingsDiag({ hasAlarm, alarmId, alarmNeedsCodeArm, alarmNeedsCodeDisarm, supp, batterySign, camList, consumptionDisplayWatts, en, gridT, prodT, hasEnergy, hasNewRing, irrZones });
+
+    const diagSheet = this.state.diagSheet;
+    const exportSheet = this.state.exportSheet;
+    const longMenuId = this.state.longMenu;
+
+    // See dash_neumo.html's copy of this block for why. Stacked above the
+    // bottom tab bar (fixed, ~80px + safe area) rather than covering it.
+    const scenarioBarVisible = this.kind === 'demo' && !this.bare;
+    const scenarioBackend = scenarioBarVisible ? window.CasaBackendDemo : null;
+    const scenarioItems = scenarioBackend ? scenarioBackend.SCENARIOS.map((sc) => {
+      const sel = sc.id === scenarioBackend.activeScenario;
+      return {
+        id: sc.id, label: sc.name, sel,
+        bg: sel ? '#454d59' : 'transparent', fg: sel ? '#f4f6fa' : '#9aa3b2',
+        go: () => switchScenario(sc.id)
+      };
+    }) : [];
+    const scenarioBarPad = scenarioBarVisible ? 'calc(190px + env(safe-area-inset-bottom))' : 'calc(134px + env(safe-area-inset-bottom))';
+
+    // Action toast (v1.8.1) — see dash_neumo.html's copy of this block.
+    const hasToast = !!this.state.toast;
+    const toastText = this.state.toast ? this.state.toast.text : '';
+
+    return {
+      S: this.strings, isDemo: this.kind === 'demo',
+      hasToast, toastText,
+      scenarioBarVisible, scenarioItems, scenarioBarPad,
+      theme, tabs,
+      toggleTheme: () => this.setState({ theme: theme === 'night' ? 'day' : 'night' }),
+      themeIcon: theme === 'night' ? '#i-moon' : '#i-sun',
+      themeIconRef: this._bindAttr('href', theme === 'night' ? '#i-moon' : '#i-sun'),
+      greeting,
+      dateStr: d.toLocaleDateString(this.lang === 'it' ? 'it-IT' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
+      timeStr: d.toLocaleTimeString(this.lang === 'it' ? 'it-IT' : 'en-GB', { hour: '2-digit', minute: '2-digit' }),
+      connTone: stt[1], connLabel: stt[0],
+      tabCasa: tab === 'casa', tabStanze: tab === 'stanze', tabIrr: tab === 'irrigazione',
+      tabEnergia: tab === 'energia', tabAuto: tab === 'auto', tabMeteo: tab === 'meteo', tabCam: tab === 'camere',
+      casaSections,
+      hasEnergy, hasIrrigation, hasVehicle, hasWeather: hasWeather || hasStation, hasAlarm, hasModes, hasPeople,
+      hasNoAreas, goToAreas,
+      hasCameras, hasCamTab, camList, camMain, camHeadline, camSub,
+      camHomeSingle, camHomeMulti, camHomeTiles,
+      camOpen, camName: camCur ? camCur.name : '', camArea: camCur ? camCur.area : '',
+      camLayerVideo, camVideoRef, camLayerSnapshot, camStreamSrcRef: this._bindAttr('src', camStreamSrc), camNoStream, camShowBadge, camBadgeLabel,
+      camCountdown, closeCam: () => this._closeCam(),
+      goEnergia: () => this.setState({ tab: 'energia' }),
+      goMeteo: () => this.setState({ tab: 'meteo' }),
+      goIrr: () => this.setState({ tab: 'irrigazione' }),
+      showModes: hasModes,
+      modes, people,
+      alarmLabel: al[0], alarmTone: al[1], alarmStroke: alarmSt === 'disarmed' ? 'var(--tx2)' : 'var(--acc)', alarmBtns,
+      hasAlarmCodeNote: !!alarmCodeNote, alarmCodeNote,
+      pinOpen, pinNumeric, pinIsText: pinOpen && !pinNumeric, pinKeys, pinCancel, pinSubmit,
+      pinAction: pin ? pin.label : '', pinValue: pin ? pin.value : '', pinHasError: !!(pin && pin.error),
+      pinDots: pin && pin.value ? '•'.repeat(pin.value.length) : '',
+      pinSubmitLabel: pin && pin.busy ? '…' : this.strings.pinConfirm,
+      pinInput: (e) => { const p = this.state.pin; if (p && !p.busy) pinSet({ value: e.target.value, error: false }); },
+      pinKeyDown: (e) => { if (e.key === 'Enter') pinSubmit(); else if (e.key === 'Escape') pinCancel(); },
+      onCount: activeItems.length, activeItems, nothingOn: activeItems.length === 0,
+      someLit: litCount > 0, hasAnyCovers: ALL_COVERS.length > 0,
+      allLightsOff: () => this.call('light', 'turn_off', { entity_id: ALL_LIGHTS }),
+      allCoversUp: () => this.call('cover', 'open_cover', { entity_id: ALL_COVERS }),
+      allCoversDown: () => this.call('cover', 'close_cover', { entity_id: ALL_COVERS }),
+      coversOpenNote: this.t('quick.openFraction', { open: openCount, total: ALL_COVERS.length }),
+      rooms,
+      wxIcon: wxi[0], wxIconRef: this._bindAttr('href', wxi[0]), wxLabel: wxi[1], wxTemp: outT === null ? '—' : this.dec(outT, 0) + '°',
+      wxHumidity: outH === null ? '—' : this.dec(outH, 0) + '%',
+      wxDetailLine: this.t('wx.humidityDetailLine', { label: wxi[1], humidity: outH === null ? '—' : this.dec(outH, 0) + '%' }),
+      nowCells, invStatus, hasPowerCells, energyTabFallback,
+      energyEmptyState, energyMissingLabel, openEnergySettings,
+      energyTabSelfPctLine: this.t('energy.selfConsumption', { pct: dailySelfPct }),
+      hasNewRing, hasInnerRing, hasOldRing: !hasNewRing && !energyEmptyState,
+      outerSelfArc: hasOuterRing ? outerSelf.dasharray : '', outerSelfOffset: hasOuterRing ? outerSelf.dashoffset : '0', outerSelfCap: hasOuterRing ? outerSelf.cap : 'butt',
+      outerGridArc: hasOuterRing ? outerGrid.dasharray : '', outerGridOffset: hasOuterRing ? outerGrid.dashoffset : '0', outerGridCap: hasOuterRing ? outerGrid.cap : 'butt',
+      innerSelfArc: hasInnerRing ? innerSelf.dasharray : '', innerSelfOffset: hasInnerRing ? innerSelf.dashoffset : '0', innerSelfCap: hasInnerRing ? innerSelf.cap : 'butt',
+      innerFeedArc: hasInnerRing ? innerFeed.dasharray : '', innerFeedOffset: hasInnerRing ? innerFeed.dashoffset : '0', innerFeedCap: hasInnerRing ? innerFeed.cap : 'butt',
+      consumoCasaBig: consumoCasa === null ? '—' : this.dec(consumoCasa, 1),
+      kwhConsumedLabel: this.t(dailyConsumptionDerived ? 'energy.kwhConsumedDerived' : 'energy.kwhConsumed'),
+      ringLegend,
+      prodToday: prodT === null ? '—' : this.dec(prodT, 1),
+      prodTodayFull: prodT === null ? '—' : this.dec(prodT, 2) + ' kWh',
+      gridToday: gridT === null ? '—' : this.dec(gridT, 2) + ' kWh',
+      // pct is dailySelfPct, not a live production/consumption ratio — this
+      // line sits right above gridToday (a daily total) in the hasOldRing
+      // fallback, so mixing in an instantaneous ratio here made the two
+      // adjacent numbers describe different time windows without saying so.
+      // See dash_neumo.html's copy of this fix for the full "why" (found via
+      // the `partial` demo scenario). dailySelfPct is '—' in exactly the
+      // case that reaches hasOldRing — an honest dash beats a
+      // contradiction-inducing wrong percentage.
+      energySummaryLine: this.t('energy.summaryLine', { status: invStatus, pct: dailySelfPct }),
+      showEnergyChart: energyChart && !energyEmptyState, energyTabChart,
+      energyChartLabel: energyChart ? this.t('chart.hide') : this.t('chart.show'),
+      toggleEnergyChart: () => this.toggleChart('energia'),
+      ranges, bars, periodCells, hasExportBars,
+      hasHistory, noHistory, noHistoryLabel: this.t('energy.noHistory'),
+      feedInLabel: this.t('energy.feedIn'),
+      hasResetButton: hasIrrigation && !!this.cfg.irrigation.resetButton,
+      irrSummary: hasIrrigation ? (this.cfg.irrigation.summary ? this.s(this.cfg.irrigation.summary) : this.t('irrigation.defaultSummary', { n: zones.length })) : '',
+      irrSub: hasIrrigation
+        ? [
+            this.cfg.irrigation.etc ? this.t('irrigation.etcShort') + ' ' + this.val(this.cfg.irrigation.etc, 2, ' mm') : null,
+            zones.some((z) => z.deficit !== '—') ? this.t('irrigation.deficitShort') + ' ' + zones.filter((z) => z.deficit !== '—').map((z) => z.name + ' ' + z.deficit).join(' / ') : null
+          ].filter(Boolean).join(' · ')
+        : '',
+      zones,
+      resetWeek: hasIrrigation && this.cfg.irrigation.resetButton ? () => this.call('input_button', 'press', { entity_id: this.cfg.irrigation.resetButton }) : () => {},
+      station,
+      vehicleTitle: hasVehicle ? (veh.name || this.t('tab.vehicle')) : '',
+      carMeta: hasVehicle ? this.t('vehicle.meta', { range: veh.range ? this.val(veh.range, 0, ' km') : '—', odometer: veh.odometer ? this.val(veh.odometer, 0, ' km') : '—' }) : '',
+      carRange: hasVehicle && veh.range ? this.t('vehicle.rangeLine', { range: this.val(veh.range, 0, ' km') }) : '—',
+      fuelPct: gaugePct === null ? '—' : this.dec(gaugePct, 0) + '%',
+      fuelWidth: (gaugePct === null ? 0 : Math.max(2, Math.min(100, gaugePct))) + '%',
+      fuelTone: gaugePct === null ? 'ok' : gaugePct < 20 ? 'alert' : gaugePct < 40 ? 'warn' : 'ok',
+      carCells, warnings,
+      panelLpDown: (e) => this._panelLpDown(e), panelLpMove: (e) => this._panelLpMove(e), panelLpUp: () => this._panelLpUp(), panelLpMenu: (e) => this._panelLpMenu(e),
+
+      // settings panel (v1.5.0) — see dash_neumo.html's copy for why
+      // openSettings picks a tab and what settingsTab does/doesn't persist.
+      openSettings: () => {
+        const tab = this._settingsProblemTab() || this.state.settingsTab || 'stanze';
+        this.setState({ settingsOpen: true, settingsRoom: null, settingsTab: tab });
+      },
+      closeSettings: () => this.setState({ settingsOpen: false, settingsRoom: null }),
+      settingsScreen1: this.state.settingsOpen && !this.state.settingsRoom,
+      settingsScreen2: this.state.settingsOpen && !!this.state.settingsRoom,
+      settingsBack: () => this.setState({ settingsRoom: null }),
+      prefsStorageNote: this.state.prefsStorage === 'local' ? this.strings.settingsSavedLocal : this.strings.settingsSavedHass,
+      settingsTabs,
+      settingsTabStanze: (this.state.settingsTab || 'stanze') === 'stanze',
+      settingsTabEnergia: this.state.settingsTab === 'energia',
+      settingsTabCamere: this.state.settingsTab === 'camere',
+      settingsTabDiagnostica: this.state.settingsTab === 'diagnostica',
+      settingsTabConfig: this.state.settingsTab === 'config',
+      ...this.vmSharedConfig(), ...this.vmMigration(),
+      powerUnitOptions, plugThresholdOptions,
+      showBatterySignControl, batterySignOptions, batterySignLiveLabel, batterySignSuspect, batterySignInvert,
+      settingsRooms, hasSettingsRooms: settingsRooms.length > 0,
+      settingsCameras, hasSettingsCameras: settingsCameras.length > 0,
+      settingsModules,
+      settingsSectionOrder,
+      sectionResetConfirmOpen: this.state.sectionResetConfirm,
+      sectionResetOpen: () => this.setState({ sectionResetConfirm: true }),
+      sectionResetCancel: () => this.setState({ sectionResetConfirm: false }),
+      sectionResetConfirmRun: () => this.SETTINGS_RESET_SECTIONS(),
+      settingsRoomDetail,
+      settingsExportRun: doExport,
+      settingsResetRun: () => this.SETTINGS_RESET(),
+      exportOpen: !!exportSheet, exportText: exportSheet ? exportSheet.text : '',
+      exportCopied: exportSheet ? exportSheet.copied : false, exportNotCopied: exportSheet ? !exportSheet.copied : false,
+      exportClose: () => this.setState({ exportSheet: null }),
+      exportTextChange: () => {}, exportTextClick: (e) => e.target.select(),
+      exportKeepOverrides: () => this.setState({ exportSheet: null }),
+      exportClearOverrides: () => { this.SETTINGS_RESET(); this.setState({ exportSheet: null }); },
+      longMenuOpen: !!longMenuId, longMenuName: longMenuId ? this.fn(longMenuId) : '',
+      longMenuHide: () => { if (longMenuId) this.SETTINGS_LONG_HIDE(longMenuId); },
+      longMenuClose: () => this.setState({ longMenu: null }),
+
+      // diagnostics panel (v1.5.1)
+      diagConfigAttempts, hasDiagConfigAttempts: diagConfigAttempts.length > 0,
+      diagConfigSummary, diagConfigOutsideIframe,
+      diagEnergyInstantRows, diagEnergyDailyRows, diagPrefsFailed,
+      diagEnvRows,
+      diagCameraRows, hasDiagCameraRows: diagCameraRows.length > 0,
+      diagRingValue, hasDiagRingRow: !!diagRingValue, diagHourlyValue,
+      diagActionRows, hasDiagActions, hasDiagActionRows: diagActionRows.length > 0, noDiagActionRows: diagActionRows.length === 0,
+      diagIrrigationRows, hasDiagIrrigationRows,
+      hourlyBars, hourlyAxisLabels, hasHourlyStrip, hourlyPeakLabel, hasHourlyPeak: !!hourlyPeakLabel,
+      hasHourlyStripGap: !hasHourlyStrip,
+      diagAlarmRows,
+      diagReasonsOpen: this.state.diagReasonsOpen, diagReasonsToggle: () => this.setState({ diagReasonsOpen: !this.state.diagReasonsOpen }),
+      diagReasonsChevRotate: this.state.diagReasonsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+      diagReasonTotalLabel, diagReasonGroups, hasDiagReasonGroups,
+      hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle,
+      diagCopyRun: doDiag,
+      diagOpen: !!diagSheet, diagText: diagSheet ? diagSheet.text : '',
+      diagCopied: diagSheet ? diagSheet.copied : false, diagNotCopied: diagSheet ? !diagSheet.copied : false,
+      diagClose: () => this.setState({ diagSheet: null }),
+      diagTextChange: () => {}, diagTextClick: (e) => e.target.select()
+    };
+  }
+}
+</script>
+</body>
+</html>

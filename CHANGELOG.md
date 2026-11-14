@@ -1,0 +1,1339 @@
+# Changelog
+
+All notable changes to this project are documented here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [2.0.0] - 2026-11-11
+
+La 1.9 non è mai stata pubblicata: le sue modifiche (le prime sezioni qui
+sotto) escono direttamente con la 2.0, insieme al lavoro "major".
+
+### Added — configurazione condivisa in Home Assistant
+
+- **La configurazione può stare dentro Home Assistant**, uguale per tutti
+  gli utenti e i dispositivi, invece che solo nel file
+  `live_dashboard_config.js`. Nuova scheda Impostazioni → **Configurazione**
+  (solo con l'integrazione), per gli amministratori:
+  - **Importa il file in Home Assistant**;
+  - **Salva le scelte del pannello per tutti**: stanze, entità e telecamere
+    nascoste e gli ordini scelti nel pannello, che finora valevano solo per
+    chi li sceglieva, diventano quelli di tutti (stessa logica di "Esporta
+    come config.js");
+  - **Modifica il JSON**, con validazione prima di salvare;
+  - **Torna al file**, con conferma.
+- **Se c'è una configurazione in HA ha la precedenza**, il file resta come
+  riserva e per l'installazione manuale. Diagnostica → Config dice da dove
+  arriva e chi l'ha salvata quando. I non amministratori la vedono in sola
+  lettura.
+- Integrazione: archivio in `.storage/live_dashboard.config`, comandi
+  WebSocket `live_dashboard/config/get` (tutti) e `live_dashboard/config/set`
+  (solo amministratori, oggetto JSON fino a 256 KB).
+
+### Added — icona dell'integrazione
+
+- Cartella `brand/` nell'integrazione (icona e logo, anche in versione 2x):
+  l'icona compare in Home Assistant quando si aggiunge e nella pagina delle
+  integrazioni.
+
+### Added — ponte di migrazione dalla 1.x
+
+- **Chi aggiorna la vecchia voce Dashboard di HACS alla 2.0 non resta con lo
+  schermo nero.** Lo zip contiene alla radice un `panel.js` di raccordo e due
+  pagine di reindirizzamento: la dashboard continua a funzionare con il
+  vecchio blocco `panel_custom`, anche sui tablet che hanno ancora in cache il
+  `panel.js` della 1.x. Provato estraendo lo zip vero in una cartella di
+  prova su un'installazione reale.
+- **Avviso nella dashboard** per quelle installazioni ("Passa
+  all'integrazione Live Dashboard", con "Come fare" e "Più tardi", che si
+  chiude per utente), e Diagnostica → Ambiente le indica come "Dashboard HACS
+  1.x — da passare all'integrazione". Le installazioni manuali in `www/` non
+  vedono nessun avviso: restano supportate.
+- **Avviso nelle Riparazioni** se, con l'integrazione attiva, è ancora
+  installata la vecchia Dashboard 1.x.
+- `scripts/build_release.sh`: un solo script costruisce lo zip, usato dal
+  workflow di release e in locale.
+
+### Fixed
+
+- Le schede delle Impostazioni vanno a capo invece di uscire dal pannello:
+  con la quinta scheda "Diagnostica" finiva fuori dal bordo.
+- Pannello stanza su desktop: lo stato delle luci ("80% luminosità",
+  "spenta") era scritto in italiano anche con la dashboard in inglese; ora
+  usa le stesse traduzioni del mobile.
+
+### Breaking — installazione come integrazione di Home Assistant
+
+- **Live Dashboard ora è un'integrazione** (`custom_components/live_dashboard`),
+  categoria HACS **Integrazione** invece di Dashboard. Serve lei i file della
+  dashboard da `/live_dashboard/` e registra il pannello nella barra laterale:
+  niente più blocco `panel_custom` in `configuration.yaml`, niente `?v=` da
+  aggiornare a mano a ogni versione, niente più schermo nero per un `name:`
+  che non corrisponde al nome della cartella. Si aggiunge da Impostazioni →
+  Dispositivi e servizi; titolo, icona, percorso e "solo amministratori" si
+  scelgono lì e si cambiano dalle opzioni senza reinstallare.
+- **Chi ha la 1.x reinstalla una volta**: HACS non può cambiare la categoria
+  di un repository. Rimuovere la Dashboard da HACS, togliere il blocco
+  `panel_custom` di `live_dashboard-panel`, aggiungere il repository come
+  Integrazione, riavviare, aggiungere l'integrazione (README → "Passare dalla
+  1.x alla 2.0"). La configurazione in `config/www/live_dashboard_config.js`
+  non cambia.
+- **Se il vecchio blocco è rimasto**, l'integrazione non si contende `/casa`
+  con lui: lo dice nel modulo di configurazione e in Impostazioni →
+  Riparazioni, con cosa togliere. Stesso avviso nelle Riparazioni se mancano
+  i file della dashboard.
+- **L'installazione manuale resta** (copiare `public/` in `www/` + blocco
+  `panel_custom`), con le funzioni di sempre.
+- Diagnostica → Ambiente → **"Installazione"**: integrazione o
+  `panel_custom` manuale.
+- Requisito minimo: Home Assistant **2024.11**.
+- Release e CI: lo zip contiene l'integrazione con la dashboard in `www/`, e
+  il workflow verifica che la versione del manifest coincida con il tag;
+  hassfest e il controllo di HACS girano a ogni push. 38 test Node.
+- Verificato su un'installazione reale (HA 2026.11.1): integrazione caricata,
+  pannello servito da `/live_dashboard/`, push differenziale e React locale
+  attivi, errori del modulo di opzioni corretti per un percorso già occupato
+  e per uno non valido.
+
+### Added — live delle telecamere via WebRTC
+
+- **Il live si apre in circa un secondo.** Quando Home Assistant offre
+  WebRTC per una telecamera (il go2rtc integrato in HA, o l'integrazione
+  della telecamera stessa), la dashboard lo usa come primo livello: è lo
+  stesso percorso della card telecamera di HA. Misurato su una telecamera
+  reale (Imou, HEVC 2560×1440): primo fotogramma in **1,0 s** sul tablet e
+  **0,76 s** sul telefono, contro **~12 s** con HLS, che deve prima avviare
+  lo stream e costruire i segmenti. Non serve più tenere acceso "Preload
+  stream" per avere un'apertura rapida.
+- **Stesso handshake del frontend di HA** (2026.11): configurazione client,
+  peer connection solo in ricezione, offerta tramite sottoscrizione
+  `camera/webrtc/offer`, candidati ICE in entrambe le direzioni. Il video
+  resta muto, come dalla 1.9.
+- **Se WebRTC non va, si torna all'HLS da soli**: errore da HA, connessione
+  ICE fallita o nessun fotogramma entro 12 secondi → hls.js, HLS nativo,
+  fermi immagine, come prima. Diagnostica → Telecamere dice quale livello
+  è attivo e, dopo un ripiego, da quale e perché (provato forzando un errore
+  sulla telecamera reale: "hls.js · fell back after WebRTC").
+- **Il ponte con Home Assistant ora gestisce le sottoscrizioni**, non solo
+  richiesta/risposta: `panel.js` inoltra all'iframe gli eventi di HA man mano
+  che arrivano. Limitato per esplicito ai comandi WebRTC delle telecamere;
+  le sottoscrizioni aperte si chiudono quando la pagina si ricarica o il
+  pannello si chiude.
+- Un test simula l'intero handshake (candidati trattenuti fino alla
+  sessione, risposta, errore, ripiego, chiusura): 33 test in tutto.
+
+### Changed — un solo nucleo di codice per desktop e mobile
+
+- **La logica della dashboard ora esiste una volta sola**, in
+  `public/casa-core.js`. Fino alla 1.x `dash_neumo.html` (tablet a muro) e
+  `dash_neumo_mobile.html` (telefono) avevano ciascuna una copia completa: 85
+  metodi su 86 identici, più ~800 righe uguali dentro `renderVals()`. Ogni
+  correzione andava fatta due volte (le telecamere della 1.9 ne sono
+  l'esempio), e le due copie avevano già commenti divergenti. Ora le pagine
+  contengono solo il proprio layout: template, `state` iniziale e il proprio
+  `renderVals()`, che assembla i blocchi comuni (`vmSettingsDiag`, `vmAlarm`,
+  `vmCameraDetail`, `vmEnergyRing`, `vmHourlyStrip`, `vmEnergyEmpty`,
+  `vmLiveConsumption`). Le pagine passano da 4.580/3.677 righe a
+  2.643/2.124; `casa-core.js` ~2.100 righe.
+- **Nessun cambiamento visibile, verificato.** L'output di `renderVals()` è
+  stato confrontato prima/dopo ogni passo su 378 combinazioni (9 scenari demo
+  × 2 layout × 21 stati dell'interfaccia): identico. L'unica differenza,
+  voluta e senza effetti, è un campo in più (`thumbColor`) nelle righe stanza
+  delle impostazioni del mobile, che il template mobile non usa.
+- **Gli aggiornamenti delle pagine arrivano ai tablet senza riavviare Home
+  Assistant.** `panel.js` legge la versione da `version.json` (scavalcando la
+  cache di 31 giorni con cui HA serve `/local/`) e la usa come `?v=`
+  dell'iframe: dopo questo aggiornamento non serve più cambiare
+  `module_url` né riavviare HA a ogni versione, salvo quando cambia
+  `panel.js` stesso.
+- **`support.js` è trattato come dipendenza congelata**: il suo sorgente
+  (`dc-runtime/`) non è nel repo, quindi non si modifica e un test ne fissa
+  l'hash, come per i file in `vendor/`.
+- **Test**: 32 in tutto, tra cui unità sulle funzioni che prima stavano
+  dentro le pagine e non erano raggiungibili da Node (normalizzazione W/kW,
+  consumo derivato con la convenzione del segno della batteria, prese smart,
+  regole del PIN dell'allarme e tastierino), e un test che impedisce a una
+  pagina di ridefinire un metodo già presente nel nucleo comune.
+
+### Dalla 1.9 (mai pubblicata)
+
+Release "funziona anche senza internet, e chiede il codice". Tutto quello che
+la dashboard carica all'avvio ora arriva dall'installazione stessa, la
+centrale d'allarme con PIN si comanda dalla dashboard, e l'irrigazione ha una
+rete di sicurezza che gira dentro Home Assistant.
+
+### Fixed
+
+- **La dashboard dipendeva da internet per partire, senza dirlo.**
+  `support.js` scaricava React 18.3.1 da `unpkg.com` a ogni caricamento: un
+  Home Assistant senza accesso a internet, una rete che blocca le CDN o un
+  disservizio di unpkg rischiavano uno schermo vuoto, senza nessun messaggio
+  sul tablet. Il README diceva "no dependencies". Ora `react` e `react-dom`
+  sono in `public/vendor/` (~140 KB, licenza MIT inclusa), caricati con due
+  tag `<script>` prima di `support.js`: il runtime trova già `window.React`
+  e salta il download. I file sono **identici byte per byte** a quelli di
+  unpkg: lo SHA-384 coincide con l'SRI già fissato in `support.js`, e un test
+  lo ricontrolla. Se `vendor/` manca (copia manuale a metà), la CDN resta
+  come fallback.
+- **Font da Google Fonts.** Caprasimo e Figtree ora sono in
+  `public/vendor/fonts/` (woff2, licenza OFL, ~53 KB in tutto). Figtree è
+  variabile: un file per sottoinsieme copre tutti i pesi usati, compreso il
+  500 che prima veniva simulato dal browser. Verificato sul campo: zero
+  richieste fuori dall'installazione all'avvio.
+- **Ogni aggiornamento di stato copiava tutto `hass.states` nell'iframe.**
+  `panel.js` inviava ogni 600 ms una copia completa di tutte le entità
+  (su un'installazione reale: 666 entità, ~175 KB a messaggio) e la
+  dashboard si ridisegnava anche quando l'aggiornamento riguardava
+  un'entità che non mostra. Ora dopo il primo snapshot passa solo ciò che è
+  cambiato (`casa:hass-states-delta`): Home Assistant sostituisce l'oggetto
+  di un'entità quando cambia, quindi basta confrontare i riferimenti. Un
+  aggiornamento che non cambia nulla non invia nulla. Misurato sulla stessa
+  installazione: 30 secondi, 4 messaggi, 13 entità, ~14 KB. Uno snapshot
+  completo viene comunque reinviato ogni 5 minuti e a ogni ricaricamento
+  dell'iframe, come rete di sicurezza.
+- **Il live delle telecamere non era mai davvero live (dalla 1.5.4).**
+  Provato su una telecamera reale (Imou, HEVC 2560×1440):
+  - lo stream ripartiva da capo a ogni render (il conto alla rovescia ne
+    fa uno al secondo): 14 ricaricamenti in 10 secondi, riproduzione mai
+    oltre 0,45 s. La causa era una callback `ref` nuova a ogni render che
+    reimpostava `src`. Ora ogni stream ha una callback stabile e non tocca
+    più niente se non cambia;
+  - l'audio della telecamera usciva ad alto volume dal tablet: React non
+    applicava l'attributo `muted` del template. Ora il video è muto
+    davvero;
+  - il livello dei fermi immagine rapidi non mostrava nessun fotogramma
+    sulle telecamere lente (un fermo immagine = 8,5 s su quella provata):
+    l'URL cambiava ogni 400 ms e a ogni render, annullando ogni
+    caricamento. Ora il fotogramma successivo si chiede solo quando il
+    precedente è arrivato, caricato fuori schermo e poi sostituito. Stesso
+    test: prima immagine dopo 2 s, poi una ogni 2-3 s. `_bindAttr` non
+    riscrive più un attributo con lo stesso valore, che riavviava il
+    caricamento di qualunque `<img>`;
+  - ordine dei livelli: prima hls.js ovunque esista Media Source, l'HLS
+    nativo solo dove hls.js non gira (iOS prima della 17.1). Chrome
+    risponde "maybe" a `canPlayType` per HLS ma il suo player nativo è il
+    meno prevedibile; è la stessa scelta del frontend di Home Assistant;
+  - se un livello fallisce mentre gira (errore fatale di hls.js, errore
+    del `<video>`) si scende al successivo — hls.js, HLS nativo, fermi
+    immagine — invece di restare su un riquadro nero con scritto "Live".
+    Diagnostica → Telecamere dice da quale livello è ripiegata e perché;
+  - il badge dice "Connessione…" finché il video non parte davvero (Home
+    Assistant può metterci 10-15 s ad avviare uno stream) e "Live" solo
+    dopo.
+
+### Added
+
+- **Tastierino PIN per l'allarme.** Una centrale che dichiara
+  `code_format` prima mostrava solo la nota "usa l'app Home Assistant". Ora
+  ogni inserimento/disinserimento apre un tastierino (tasti da 64 px) per
+  `code_format: number`, oppure un campo password con la tastiera di
+  sistema per i codici alfanumerici. Il tastierino resta aperto finché Home
+  Assistant risponde: con un codice sbagliato cancella le cifre e dice
+  "Codice non accettato", oltre al toast. Il codice non viene mai salvato,
+  registrato in Diagnostica → Ultime azioni, né incluso in "Copia
+  diagnostica". Nuovo scenario demo `?demo&scenario=alarm-pin` (codice
+  `1234`).
+- **Blueprint "irrigation safety close".** In
+  `blueprints/automation/live_dashboard/`, importabile con un clic dal
+  README: chiude le valvole rimaste aperte oltre un tempo massimo (20 minuti
+  di default), chiunque le abbia aperte, più quelle ancora aperte al
+  riavvio di Home Assistant. Copre il limite dichiarato nella 1.8.1: con
+  zero dashboard aperte la chiusura temporizzata non partiva. Gestisce sia
+  `switch.*` sia `valve.*`. Validato su un'installazione reale (blueprint
+  caricato da HA, trigger e azioni validi per `validate_config`).
+- **`hls.js` 1.7.4 incluso** (`vendor/hls.light.min.js`, ~390 KB, Apache-2.0),
+  caricato solo quando si apre il live di una telecamera, su ogni browser con
+  Media Source (tutti tranne iOS prima della 17.1). Prima
+  quel livello del live era scritto ma sempre inattivo, e quegli utenti
+  vedevano al massimo i fermi immagine rapidi. Il file è identico a quello
+  del pacchetto npm (integrità sha512 del registry verificata). Provato su
+  una telecamera reale, desktop e mobile: riproduzione continua, muta.
+- **Diagnostica → Ambiente → "Runtime React"**: "incluso nella dashboard"
+  oppure "da CDN (unpkg) — vendor/ mancante, serve internet".
+- **Test e CI.** 20 test con il test runner di Node, senza dipendenze
+  (`node --test 'tests/*.test.mjs'`): ordine delle sezioni, visibilità,
+  prese smart, duplicati Matter, motivi di scarto di `discoverRooms`,
+  integrità dei file in `vendor/`, nessuna risorsa esterna nelle pagine,
+  stesse chiavi in `it.js` ed `en.js`, `VERSION` allineata al CHANGELOG.
+  Nuovo workflow `.github/workflows/test.yml` su push e pull request.
+
+### Note
+
+- La domanda aperta della 1.5.4 su `hls.js` partiva dall'idea che sarebbe
+  stata "la prima dipendenza di terze parti a runtime". Non era così: React
+  lo era già, da CDN. Con `vendor/` e il test di integrità la decisione è
+  diventata semplice: è incluso, e si carica solo quando serve.
+- `public/vendor/README.md` elenca ogni file incluso con versione, licenza e
+  hash.
+
+---
+
+**English summary.** Everything the dashboard loads at startup now comes
+from the installation itself: React 18.3.1 (byte-identical to the unpkg
+files, SHA-384 matching the SRI in `support.js`) and the Caprasimo/Figtree
+web fonts ship in `public/vendor/`, so a local-only Home Assistant no longer
+risks a blank wall tablet; Diagnostica → Environment shows which React copy
+ran. `panel.js` now pushes only changed entities to the iframe after one
+full snapshot (measured on a real 666-entity install: ~14 KB in 30 s instead
+of a ~175 KB snapshot per update), with a full resync every 5 minutes and on
+iframe reload. Alarm panels declaring `code_format` get a PIN pad (numeric
+keypad or password field); the code is never stored or logged. A new
+automation blueprint closes irrigation valves left open past a maximum time
+from inside Home Assistant, covering the zero-open-dashboards gap noted in
+1.8.1. `hls.js` 1.7.4 ships in `vendor/` and loads only when a camera's
+live view opens. The camera live view, broken since 1.5.4, now actually
+plays: a new ref callback on every render restarted the stream every
+second (14 reloads in 10 s on a real camera), camera audio played unmuted,
+and the fast-still fallback never finished a frame on slow cameras. Layer
+order is now hls.js first, native HLS where hls.js can't run, stills last,
+with automatic fallback on a runtime error and a "Connecting…" badge until
+frames play. 20 dependency-free Node tests and a CI workflow on push/PR.
+
+## [1.8.1] - 2026-09-22
+
+Patch nata da una issue: "i pulsanti dell'irrigazione e la riga del clima non
+rispondono, zero errori in console, Home Assistant è raggiungibile". La causa
+non era un bug nel percorso tap → servizio HA (intatto), ma il fatto che
+niente in questo progetto guardasse mai l'esito di quel percorso.
+
+### Fixed
+
+- **`call()` non era più fire-and-forget silenzioso.** Ogni chiamata
+  servizio passa ora da un unico punto che registra esito (`ok`/`error`/
+  `timeout`) e durata in un ring buffer di sessione (ultime 20), mostrato in
+  Diagnostica → **Ultime azioni** — la sezione da incollare in una issue
+  d'ora in poi. Un errore o un timeout mostra anche un toast in basso, col
+  nome dell'entità e il motivo; un successo no, perché si vede già dallo
+  stato che cambia. `call()` non rifiuta mai la promise che ritorna, quindi
+  resta sicuro da chiamare senza `await` come già faceva la maggior parte
+  del codice.
+- **Il timeout si riconosce da un codice, non da una stringa.** Il timeout a
+  15s di `ha-backend-panel.js` marca l'errore con `.code = 'timeout'`, non
+  più solo un testo in italiano da confrontare a mano.
+- **I pulsanti durata irrigazione erano tappabili una seconda volta prima
+  che il primo tap avesse un esito.** Ora vanno visibilmente incassati dal
+  tap all'esito e ignorano un secondo tap nel frattempo.
+- **La riga clima nel pannello stanza sembrava un pulsante e non lo è mai
+  stata.** Tolta l'ombra in rilievo: resta una riga piatta, stesso testo,
+  stessa altezza, nessun cursore a mano.
+
+### Added
+
+- **Lo stato dell'irrigazione viene dalla valvola, non dal pulsante.**
+  Valvola `on` → i tre pulsanti durata diventano "In corso · N min" +
+  **Ferma**; chiusa, tornano i pulsanti. Vale solo per zone con `valve` — le
+  zone `buttons` (input_button) restano come sempre, perché questa
+  dashboard non ha modo di sapere quando finiscono.
+- **La chiusura temporizzata non dipende più solo da un `setTimeout` nella
+  scheda che l'ha avviata.** La scadenza è salvata su `frontend/user_data`
+  (o `localStorage` in demo) e controllata ogni 15s da qualunque client sia
+  aperto, più una volta all'apertura — così ricaricare la pagina, chiudere
+  la scheda o passare dal telefono al tablet non lascia la valvola aperta.
+  Il `setTimeout` originale resta come percorso veloce quando la scheda è
+  ancora viva. **Non basta con zero dashboard aperte**: il README ora lo
+  dice esplicitamente, con `buttons` + automazione (o il timer nativo della
+  valvola) come alternativa garantita lato HA.
+- **Diagnostica → Irrigazione**: per ogni zona con una scadenza attiva o
+  appena scaduta, "chiusura prevista alle HH:MM" o "scaduta, chiusa alle
+  HH:MM".
+- **Diagnostica → Ambiente**: nuova riga `embed_iframe (panel_custom)` —
+  come panel.js stesso vede la propria configurazione `panel_custom`, non
+  solo come dash_neumo.html vede il proprio iframe (già mostrato).
+- Demo: nuovo scenario `?demo&scenario=call-timeout` — ogni chiamata
+  `switch.*` va in timeout con lo stesso `.code` del timeout reale a 15s,
+  per provare il percorso toast/ring-buffer/pulsante-incassato senza
+  aspettare 15 secondi veri né avere hardware reale.
+
+---
+
+**English summary.** This patch traces back to a support issue: irrigation
+buttons and the climate row "don't respond," no console errors, Home
+Assistant reachable. The tap → service-call path was intact; nothing ever
+read its outcome. `call()` is now the single choke point for every service
+call, logging outcome/duration to a session ring buffer (Diagnostica →
+**Recent actions** — the section to paste into a future issue) and toasting
+on error/timeout. Irrigation duration buttons go visibly pressed until their
+outcome resolves and ignore a second tap meanwhile. Irrigation state now
+comes from the valve entity, not the last-tapped button, and the timed
+auto-close survives a reload or a fully-closed tab via a deadline saved to
+`frontend/user_data` (localStorage in demo), checked every 15s by whichever
+client is open — see the README for why zero open dashboards still needs
+`buttons` + an automation, or the valve's own timer, for a hard guarantee.
+The climate/fan/vacuum row in the room panel no longer looks like a button,
+because it never was one.
+
+## [1.8.0] - 2026-09-14
+
+### Added
+
+- **Storia oraria nell'anello.** Sotto l'anello energia della card Solare
+  (nel layout largo e in quello compatto degli install con telecamere),
+  dentro l'incasso neumorfico consueto, una striscia di 24 barre impilate —
+  una per ora delle ultime 24 — con la stessa grammatica dell'anello, solo
+  lineare invece che radiale: base salvia (autoconsumo), sopra terracotta
+  (prelievo), in cima salvia chiaro (immissione, solo nelle ore in cui il
+  tetto ha prodotto più del consumo). Dati dalle statistiche orarie già in
+  Home Assistant (`recorder/statistics_during_period`, periodo `hour`) sugli
+  stessi `statistic_id` della sorgente energia già configurata — nessuna
+  entità nuova, nessuna modifica al `recorder`. Una sola chiamata
+  all'apertura della vista, ricaricata al cambio d'ora, mai a ogni refresh di
+  stato. Quando le statistiche sono assenti o vuote la card resta
+  esattamente quella di prima — nessun placeholder, nessun errore — e il
+  motivo compare in Diagnostica → Anello energia → Striscia oraria (v1.7.1
+  sapeva già dirlo per le entità mancanti dalle stanze; ora lo sa dire anche
+  per questo). Storico parziale (meno di 24 ore) mostra solo le ore che ci
+  sono, allineate a destra, senza riempire di zeri. Un'installazione solo
+  rete (senza fotovoltaico) mostra comunque la striscia, tutta terracotta.
+- **Posizione reale sulle tapparelle.** La card cover del pannello stanza
+  usa la sua posizione come sfondo: una banda a righe (stessa tinta
+  terracotta della grammatica energia) scende dall'alto per la frazione
+  chiusa — al 62% aperto la banda copre il 38% della card, con una battuta
+  di 2px dove si ferma. Lo slider di posizione resta identico (stessa
+  posizione, stesso comportamento al rilascio, stessi pulsanti): la banda è
+  pura lettura, zero superficie interattiva in più, stessi bersagli tattili
+  di prima (verificato: 44×44px, stesso numero). Tapparella completamente
+  aperta: nessuna banda e nessun bordo residuo. Cover senza `current_position`
+  esposto: nessuna banda, card invariata — mai una posizione finta al posto
+  di nessuna posizione. Durante il trascinamento la banda segue il valore
+  ottimistico dello slider, non quello confermato, così non scatta al
+  rilascio. La room card della griglia in home resta quella di sempre (solo
+  testo, nessuna banda) — un controllo lì si presterebbe ad ambiguità col
+  tap che apre la stanza.
+
+## [1.7.1] - 2026-09-14
+
+### Compatibilità con Home Assistant 2026.9.0
+
+Nessuna modifica necessaria alla dashboard: gli attributi di stato che legge
+(`friendly_name`, `device_class`, `media_title`, `entity_picture`) sono
+invariati. La rimozione di `battery_level` non la riguarda — i valori di
+batteria si configurano come id di sensori, non come attributi.
+
+**Attenzione ai dispositivi Matter dopo l'aggiornamento.** Su alcune
+installazioni 2026.9.0 ri-registra i dispositivi Matter come nuovi: lo stesso
+apparecchio fisico compare due volte, e le entità che rispondono ai comandi
+migrano sulla copia nuova, che nasce **senza area** e con il nome di fabbrica.
+Le entità originali restano orfane con il nome e l'area che avevi scelto.
+
+Poiché la dashboard raggruppa per area, i dispositivi finiti sulla copia senza
+area **scompaiono dalle stanze**. Caso osservato: 12 tapparelle
+SwitchBot Relay Switch 2PM sparite tutte insieme.
+
+Come rimediare, per ogni dispositivo:
+
+1. Impostazioni → Dispositivi → Matter, apri la copia che **ha i comandi**
+   (apri/chiudi, accendi/spegni) — non quella con le sole entità diagnostiche.
+2. Assegna l'area e rinominala. Accetta il rinomino delle entità proposto.
+3. Verifica che i comandi agiscano sul dispositivo fisico.
+4. Elimina l'entità orfana rimasta (quella senza dispositivo).
+
+Le due copie si accoppiano confrontando il **serial number**, non il nome: il
+nome è proprio la cosa che diverge.
+
+Da questa versione la sezione **Diagnostica** del pannello impostazioni segnala
+il caso da sola, elencando i dispositivi con serial duplicato e indicando quale
+area riassegnare.
+
+### Added
+
+- **Diagnostica now says why an entity doesn't show up.** Found on a real
+  install after updating Home Assistant core to **2026.9.0**: 12 SwitchBot
+  Relay Switch 2PM covers, connected via Matter, vanished from the
+  dashboard with no message anywhere. The cause — Matter had re-registered
+  every relay as a second device with the same serial number, a factory
+  name, and no area; the working `cover` entities migrated to that new,
+  area-less device, while the old device (with the user's area and name)
+  kept only its diagnostic entities. `discoverRooms` already discarded the
+  now-invisible covers correctly — for someone on a wall tablet or the
+  companion app, with no console, that discard was invisible too. This
+  release doesn't change what discovery keeps or drops (v1.7.1 is
+  observability, not a new filter): every discard point now logs *why* —
+  no area assigned, an unrecognized area, no live state, already claimed by
+  another module (energy/irrigation/cameras/...), disabled or hidden in HA,
+  a diagnostic/config entity, an empty room, or a YAML-defined entity HA
+  refuses to delete ("does not have a unique ID"). Settings → Diagnostica
+  gained a closed-by-default "Diagnostica · N entità non mostrate" section,
+  grouped by reason and sorted by how actionable the reason is — "nessuna
+  area assegnata" first, not whichever group happens to be biggest (that's
+  almost always "entità di diagnostica", the least interesting one). Two
+  devices sharing a serial number where only one has an area — the exact
+  2026.9.0/Matter case above — get their own warning at the top, naming
+  both devices and which area to reassign. The demo (`?demo`, from
+  `file://`) reproduces the bug directly, no real installation required:
+  one cover with no area behind a duplicated device, alongside the
+  existing `sensor.router_wifi_rssi` diagnostic-category entity.
+
+## [1.7.0] - 2026-08-27
+
+### Added
+
+- **Home section order.** The Casa home screen's Alarm/Energy/Surveillance
+  cards can now be reordered — one linear order shared by desktop (which
+  card fills column 3 first) and mobile (the Casa tab's stack), so a
+  solar-heavy install can put Energy first and a camera-heavy one can put
+  Surveillance first, without the two formats ever disagreeing about which
+  order is "current". Settings → Rooms gained a "Home section order" list
+  right below the room list, with 44px up/down arrows per row (no
+  drag-and-drop — this panel already scrolls, and a long-press-to-drag
+  gesture would collide with the long-press-to-hide gesture fixed in
+  v1.5.2) and a confirm-gated "Reset to default order". A hidden section
+  (Energy/Surveillance can be hidden from the existing "Sections" toggles;
+  Alarm shows only when an alarm entity exists) stays in the order list,
+  greyed, still movable — hiding and later re-showing a section returns it
+  to wherever it was left, not to the end. `config.js`'s new
+  `sections.order` sets an installation default; each user's own choice
+  from the panel overrides it, same hierarchy as `rooms.order`. A section
+  a saved order doesn't mention — the common case once a future release
+  adds a fourth one — is fused in next to its default neighbours rather
+  than appended at the end, so reordering today doesn't strand that section
+  out of sight later; an id a saved order mentions that no longer exists is
+  dropped silently. Rooms, onNow/quick actions, and desktop's column
+  layout itself are unchanged and out of scope for this release.
+
+## [1.6.0] - 2026-08-27
+
+### Added
+
+- **House consumption, derived automatically.** The one remaining manual
+  step in the whole setup — hand-writing a `template sensor` in
+  `configuration.yaml` just to add production + grid-import − grid-export
+  together — is gone. Leave `config.energy.consumption` unset and, whenever
+  production/gridImport/gridExport all resolve, the instantaneous "house
+  consumption" tile computes itself from them (plus battery charge/discharge
+  power, when configured); an explicit sensor still always wins. Any of the
+  three missing and it shows an honest "—" rather than a number from an
+  incomplete sum — never a partial derivation quietly passed off as the real
+  thing. The derived value declares itself everywhere it appears
+  ("House consumption now · calculated", "kWh calculated" at the ring's
+  center) rather than being indistinguishable from a measured sensor.
+  Battery sign handling: two separate always-positive charge/discharge
+  sensors need no configuration at all; a single signed sensor defaults to
+  positive-means-charging, with an explicit toggle in Settings → Energy
+  (live-updating derived value shown right below it) for installs where
+  that's backwards. Getting the sign wrong is self-diagnosing rather than
+  silently wrong: a rolling few-minutes window watches for the derived value
+  coming out negative more often than not, and when it does, Settings →
+  Energy raises a named verdict with a one-tap invert — never a bare
+  negative "consumption" number on screen in the meantime. See README's
+  "House consumption, derived automatically" section and
+  `TROUBLESHOOTING.md`.
+- **Self-explanatory empty states, three cases instead of one silent
+  blank.** (a) Rooms discovery finding nothing at all now shows a
+  "Go to Areas" card regardless of *why* it's empty — widened from the old
+  check (literally zero areas in the registry) to the actually-common cause
+  (areas exist, entities were just never assigned to one). (b) A configured
+  energy role pointing at an entity ID that no longer exists (the `missing`
+  demo scenario's exact case — a sensor renamed by an integration update,
+  the rest of the install still fine) now names the missing ID directly and
+  links to the exact Settings → Energy row, instead of quietly rendering an
+  unexplained ring full of dashes. (c) A module the user hid on purpose from
+  the Settings visibility panel (v1.5.0) stays hidden with nothing shown at
+  all — confirmed as already-correct behavior, not something this pass
+  needed to add. Reproduce case (b) on demand with `?demo&scenario=missing`;
+  case (a) has no demo scenario of its own — the demo backend's entities are
+  all pre-assigned to areas, so there's no data patch that reproduces it
+  there.
+- **Seven forceable data scenarios in demo mode**
+  (`?demo&scenario=export|import|night|partial|missing|odd-units`, plus
+  `default`), each a pure data patch to `SEED`/`DEMO_CONFIG` in
+  `ha-backend-demo.js` applied before the backend connects — no branching
+  added anywhere else, so what runs under a scenario is exactly the code a
+  real installation runs. A thin, deliberately non-neumorphic dark bar at
+  the bottom of the demo (desktop and mobile) switches between them and
+  writes the choice into the URL; `&bare` hides it for screenshots. `partial`
+  and `missing` are the two that matter most: `partial` removes the export
+  and battery entities from `SEED` itself (not just the config) so
+  Diagnostica correctly reports them as "not configured" rather than
+  "missing", and exercises the single-ring energy fallback that several past
+  bugs (double unit suffixes, the `gridNote` mixing bug) lived in unseen;
+  `missing` instead points `DEMO_CONFIG.energy` at entity IDs absent from
+  `SEED`, producing the empty energy state and lighting up the Settings →
+  Energia diagnostics indicators added in v1.5.3. See CLAUDE.md and
+  `TROUBLESHOOTING.md` for the full scenario table.
+
+### Fixed
+
+- **The single-ring energy fallback's headline self-consumption line
+  mixed an instantaneous production/consumption ratio into a card that's
+  otherwise entirely about the day's totals** — sitting directly above a
+  daily grid-import figure, so a demo with no configured export sensor
+  could show "100% self-consumption" right next to "1.4 kWh from grid" (both
+  true, about different things, presented as one statement). Same class of
+  bug as the `energy.gridNote` fix in v1.5.4, just in the line above it,
+  which is why it survived that pass. Now reads the same daily
+  self-consumption percentage used everywhere else this label appears, and
+  honestly shows "—" when the day's total isn't derivable — found by
+  building the `partial` demo scenario above, which is the only path that
+  reaches this fallback with live sensors still present.
+
+## [1.5.4] - 2026-08-21
+
+### Fixed
+
+- **Live camera view was a black rectangle on RTSP/ONVIF/generic cameras —
+  most of the installed base.** The live overlay built its stream URL by
+  string-substituting the preview URL (`camera_proxy` -> `camera_proxy_stream`),
+  which only ever serves MJPEG; cameras Home Assistant repackages through its
+  `stream` component (RTSP, ONVIF, generic, the majority of real installs)
+  don't expose that endpoint at all, so the preview worked (a different,
+  universal endpoint) while the live tap didn't. Also fixed in the same
+  pass: the old MJPEG stream's signed token expired after a few minutes with
+  nothing on screen to explain the resulting black frame. Replaced with a
+  three-layer strategy, first one that works wins, always silent on
+  failure: (1) `camera/stream` in HLS format, played natively where the
+  browser supports it (Safari/iOS); (2) the same stream via a vendored
+  `hls.js` — the code path exists but no vendor file ships in this release
+  (open question, see below); (3) fast `camera_proxy` still-image polling
+  (2-3 fps, re-reading the signed token every cycle so it can't expire),
+  labeled "anteprima aggiornata"/"preview refreshing" instead of "live" so
+  it never pretends to be more than it is. The fast poll only runs while
+  the camera detail is open and pauses with the tab, same as the existing
+  preview timer.
+- **Smart plugs read "accesa" as "in use" even when the appliance behind
+  them was idle.** A `switch.*`'s relay state answers "is it energized",
+  not "is the washer actually washing" — the appliances module already knew
+  this distinction, but a plug that ended up in the generic room list
+  (the common case for anyone without a `config.appliances` entry) never
+  got it. Switches whose device also exposes a `device_class: power` sensor
+  (true for most smart plugs) now read as three levels — off / active
+  (relay closed, under a 3 W default threshold — energized but idle) /
+  running (at or above threshold, shown with live wattage) — everywhere a
+  switch state is shown: the room panel, the room summary line, and the
+  "on now" list. The threshold is adjustable from Settings -> Energia. A
+  switch with no power sensor on its device is unaffected, exactly the
+  v1.5.3 behavior.
+- **`energy.gridNote` (the note under the single-ring energy card) mixed an
+  instantaneous grid-export reading into a sentence about the day's
+  totals**, sitting right below a ring that's entirely daily — e.g. "1,4 kWh
+  dalla rete · 0,85 kW in immissione". Now both halves are the same day's
+  totals as the ring above them. Only reachable via the single-ring
+  fallback (installs with partial daily energy data), which is why it went
+  unnoticed for months.
+- **Units baked into a translated template string instead of the
+  formatted value** (`energy.periodNote`, which hardcoded " kWh" after an
+  unlabeled number) — moved into the value the same way every other power/
+  energy string in this codebase already does it, so a translator editing
+  the sentence can never accidentally duplicate or drop a unit.
+
+### Added
+
+- **Alarm panel auto-discovery.** Previously the only module in this
+  project with no auto-discovery at all — no `config.alarm`, no card,
+  regardless of brand. Now the first `alarm_control_panel.*` entity Home
+  Assistant reports shows up with zero configuration, the same way rooms/
+  weather/people do; `config.alarm` still always wins when more than one
+  panel exists and discovery's alphabetical pick isn't the right one.
+- **Alarm PIN awareness.** An entity declaring `code_format` fails `failed
+  to perform action` when armed/disarmed without a `code` — this dashboard
+  has no PIN pad yet, so instead of calling the service blindly (and
+  failing silently on screen) a gated action is now a no-op with an
+  explicit note explaining a code is needed. `code_arm_required: false`
+  installs are unaffected — arming still works with no code, as before.
+  A full PIN keypad is follow-up work.
+- **`ARM_CUSTOM_BYPASS` ("Personalizzato"/"Custom") alarm button**, the one
+  `supported_features` bit the existing dynamic button logic didn't cover
+  yet.
+- **Three new Diagnostica rows**: per camera, which live-view layer
+  actually activated and whether `camera/stream` itself succeeded; which
+  energy ring is in use and, for the single-ring fallback, which daily
+  value is missing; and the alarm entity, how it was found, its declared
+  capabilities, and whether it requires a code.
+
+### Open question
+
+Whether to vendor `hls.js` (~180 KB) for the second live-view layer. The
+code path is written and ready; the file itself isn't included in this
+release — it would be the project's first third-party runtime dependency,
+worth deciding with real data on how many installs stay on the fast-preview
+fallback rather than up front. The new camera Diagnostica row is what lets
+that be answered from real installs instead of guessed.
+
+## [1.5.3] - 2026-08-20
+
+### Fixed
+
+- **Instantaneous power sensors reporting in W were silently treated as
+  kW, showing a number 1000x too small.** Every power call site (the NOW
+  tiles, the room-panel smart-plug wattage row, the Diagnostics panel's
+  energy-instant rows, the grid-export note) forced a literal `kW`/`W`
+  suffix instead of reading the sensor's own `unit_of_measurement` — a
+  1.8kW inverter and an 1800W inverter from two different integrations
+  showed the same "1.8" with no way to tell which unit it actually meant,
+  and a W-only sensor rendered as "1.80 kW", wrong by three orders of
+  magnitude with nothing on screen to suggest it. A new shared
+  `powerVal()` helper reads the real unit (`W`/`kW`/`MW`, case-insensitive)
+  and normalizes to watts before formatting; an unrecognized unit is shown
+  as-is with its own label rather than silently converted, since an honest
+  number in a strange unit beats a wrong one in the expected unit. Also
+  fixed, found while touching this code: the grid-export sentence in the
+  Energia tab was appending a literal " kW" after an already-unit-suffixed
+  value, rendering "0.85 kW kW exporting".
+
+### Added
+
+- **Instantaneous power unit setting** (Settings -> Energy): **Auto**
+  (under 1000 W shows as W with no decimals, at or above shows as kW with
+  one decimal — the default and the same threshold the fix above already
+  used), or force **W** or **kW** always. Decimals follow the unit and
+  aren't a separate control — a second setting for a one-glance number
+  would be a question with no real answer. Applies everywhere an
+  instantaneous power value is shown (NOW tiles, Diagnostics panel,
+  smart-plug wattage, both desktop and mobile); daily kWh totals — the
+  ring, the bar chart — are untouched by this setting on purpose, since
+  they're energy, not power, and a label says so under the control.
+- **Settings panel navigation**: the panel had grown to five flat,
+  continuously-scrolling sections (rooms, cameras, instant energy, daily
+  energy, diagnostics) since v1.5.0/v1.5.1. It's now four tabs — **Stanze
+  · Energia · Telecamere · Diagnostica** — in a horizontally-scrollable
+  pill row (never abbreviated labels or icons-only, per the project's
+  density rule), 44px targets throughout. Instant and daily energy diag
+  share the Energia tab since they're the same subject looked at two ways.
+  Rooms/Sections-visibility/Export/Reset live under Stanze, the closest
+  thing this panel has to a general-structure tab. The active tab survives
+  closing the panel for the session (not persisted across reloads or
+  devices — it's navigation state, not a sticky preference). Because the
+  settings panel is where someone goes when something's broken, any
+  grouping that hides the broken field is a regression by definition, so
+  two rules hold regardless: a small dot marks a tab with a real
+  Diagnostics-verified issue (entity missing/unavailable, a kWh sensor in
+  a power role, a lifetime counter mistaken for a daily one, a config load
+  failure — the same verdicts the v1.5.1 Diagnostics panel already
+  computes, reused rather than re-derived), and opening the panel while
+  any tab has one jumps straight there, overriding the remembered tab —
+  chasing a misconfigured sensor shouldn't require renavigating on every
+  open.
+
+## [1.5.2] - 2026-08-20
+
+### Fixed
+
+- **Cover position slider on touch: dragging could trigger the long-press
+  "hide entity" menu and, intermittently, `Failed to perform action
+  cover.set_cover_position`.** Two symptoms, one root cause: the long-press
+  timer that opens the hide-entity menu (settings panel, v1.5.0) wasn't
+  cancelled by finger movement, and a slow drag *is* a long-press — finger
+  down, time passing, timer firing — it just doesn't show on desktop, where
+  a mouse drag takes ~300ms. If it fired mid-drag, the entity's row could
+  unmount before `pointerup`, so the event landed on a detached node,
+  `e.target.value` was no longer meaningful, `Number()` produced `NaN`, and
+  the service call went out with `position: NaN`.
+  - The long-press timer now dies on `pointermove` past a 10px threshold
+    from the `pointerdown` origin, and on `pointercancel` (which Android
+    fires once it takes a gesture over for scrolling) — not just on
+    `pointerup` as before.
+  - The cover row no longer participates in long-press-to-hide at all: it's
+    the dashboard's single most frequent continuous-drag control, so rather
+    than merely guard the gesture, the shortcut is removed from it —
+    hiding a cover was already one tap away in the settings panel (v1.5.0).
+    Lights, switches, appliances, sensors, media, and extras keep the
+    shortcut; only the row holding the slider drops it.
+  - The position slider itself now sets `touch-action:none` and
+    `user-select:none`, so a long press over it no longer triggers Android's
+    own text-selection handles/context menu — a third symptom of the same
+    gesture.
+  - `set_cover_position` is now called at most once per drag: `onTouchEnd`
+    was firing alongside `onPointerUp` on touch devices (pointer events
+    already cover touch), sending the same command twice per release.
+    `onKeyUp` was added so the slider stays operable with the arrow keys.
+  - Two guards were added before the service call fires: a non-finite
+    (`NaN`) value is dropped rather than sent, and a released value equal
+    to the entity's already-known position is skipped, cutting spurious
+    calls from tapping the slider without moving it.
+  - The position slider is now shown only when the cover reports the
+    `SET_POSITION` bit (4) in `supported_features`; covers that only
+    support open/close/stop show just those three buttons, since
+    `set_cover_position` legitimately fails on them and the previous
+    behavior offered a control the device never had.
+  - Verified: `set_position` (missing the `cover.` service prefix, and
+    distinct from the correct `cover.set_cover_position`) does not appear
+    anywhere in `public/` — the error in the original report was the
+    long-press/`NaN` bug above, not a wrong service name.
+  - `dash_neumo.html` and `dash_neumo_mobile.html` duplicate this gesture
+    logic; both were fixed identically. No visual or configuration changes.
+
+## [1.5.1] - 2026-08-16
+
+### Added
+
+- **Diagnostics panel**, the new last section of the settings panel (gear
+  icon → Diagnostica) — prompted by a real support case: a user with a Shelly
+  EM saw correct daily totals and ring but every instantaneous energy tile
+  stuck on "—". Getting to the cause took six messages, because every clue
+  the dashboard already computes — which `config.js` path loaded, which
+  entity resolved for each energy role, from which source (config, Home
+  Assistant's own Energy dashboard, or auto-discovery) — only ever reached
+  `console.info`, and this project's actual audience is companion-app/wall-
+  tablet users who have no console to open. This release adds no new
+  configuration; it only explains what's already being decided:
+  - **Config**: the exact path `config.js` loaded from, or "no config
+    found" with every path tried, in order. Distinguishes a genuinely
+    missing file (404) from the far more confusing case of a file that
+    *is* being served but never runs — a syntax error still fires the
+    `<script>` tag's `load` event, so that failure mode used to degrade
+    silently into "just auto-discovery" with no hint why. Also flags when
+    the page isn't running inside the Home Assistant panel at all, since
+    then the `/local/` paths are never even attempted.
+  - **Energy — instantaneous values**: one row per role (production,
+    consumption, gridImport, gridExport, battery power/SoC, inverter
+    status) with the configured entity ID, its live value, and one of four
+    plain verdicts — ok, not configured (neutral, not an error), entity
+    doesn't exist (almost always a typo), or unavailable. A fifth check
+    layered on top flags the single most common mix-up: an energy-in-kWh
+    sensor wired into a role that expects power in W/kW — a plausible-
+    looking but wrong number.
+  - **Energy — daily totals**: renders the same resolution the ring
+    already computes (`_resolveEnergyDaily`), source spelled out in plain
+    language ("from config.js" / "from Home Assistant's Energy dashboard"
+    / "guessed from the sensor name" / "no source found"), and says so
+    explicitly when `energy/get_prefs` itself failed. Also catches the
+    exact bug that triggered this release: a `*Today` field pointed at a
+    lifetime-cumulative sensor (`state_class: total_increasing` with no
+    `last_reset`) instead of a real daily counter — it never resets at
+    midnight, so "produced today" only ever grows.
+  - **Environment**: version, active backend (panel/demo), whether the
+    page is running inside the HA panel iframe, detected language, and
+    area/entity/room/camera counts from discovery.
+  - **Copy diagnostics**, a full-width button (not an icon) that puts all
+    four blocks on the clipboard as plain text, with a selectable-text
+    fallback for browsers/companion apps that deny clipboard access from
+    an iframe — a bug report becomes a paste instead of six back-and-forth
+    messages, with version, paths and entity IDs already included. Entity
+    IDs are never truncated with an ellipsis, since the point is being
+    able to paste them straight into Developer Tools.
+  - Opens and renders even when discovery, the backend, or config loading
+    failed entirely — that's exactly the situation it exists for. Works
+    in demo mode from `file://` with the built-in fake data, same as the
+    rest of the settings panel.
+  - No new configuration keys, no entity resolution changes, no behavior
+    changes — this release only surfaces what the dashboard already
+    decides internally.
+
+## [1.5.0] - 2026-08-16
+
+### Added
+
+- **Settings panel**, reached from a new gear icon next to the day/night
+  toggle — two independent Facebook-group reports asked for the same thing:
+  no way to hide/un-hide a room or an entity without editing `config.js`
+  over SSH/Samba, and auto-discovery occasionally pulling in an irrelevant
+  entity (a diagnostic sensor, say) alongside the real ones in a room. The
+  panel never resolves *which* entity plays a role — `config.js` keeps that
+  job entirely — it only decides what's *visible* and in what order, as a
+  layer on top:
+  - **Rooms**: show/hide, reorder with up/down arrows, and — the point of
+    the exercise — a room `config.js` hides can be shown again from here,
+    something a plain hidden-list could never do (needed a per-key
+    true/false/unset override, not just an exclusion list).
+  - **Entities**: tap into a room from the panel for the full list of
+    everything it contributes, each with a pill naming *why* it's there
+    (`domain light`, `device_class temperature`, ...) — the exact
+    information needed to spot and hide the one that doesn't belong.
+    A long-press (600ms) or right-click on any row directly in the
+    dashboard does the same thing without opening the panel at all.
+  - **Cameras**: hide entirely, or flip the existing "icon until tapped"
+    privacy gate per camera.
+  - **Sections**: turn Energy/Irrigation/Surveillance/Appliances/Vehicle
+    off outright, independent of whether they'd otherwise have data to
+    show.
+  - Any row the panel overrides against what `config.js` says carries a
+    "differs from config.js" pill with its own tap target to drop just
+    that override.
+  - **Export as config.js**: turns the current picks into a paste-ready
+    `window.CASA_CONFIG` block, copied to the clipboard (falling back to
+    selectable text where the Clipboard API isn't available), with an
+    offer afterward to clear the now-redundant overrides.
+  - Persists via Home Assistant's own per-user `frontend/set_user_data` —
+    follows you from the wall tablet to your phone — with a `localStorage`
+    fallback (demo mode, older Home Assistant, no permission), surfaced in
+    the panel's own header instead of failing silently.
+  - Desktop gets a 420px slide-over drawer with a second screen for a
+    room's entity list; mobile gets a full-page view instead, matching how
+    the two layouts already diverge for the room panel and camera view.
+  - New optional `config.js` keys backing all of this — `entities.hide`,
+    `cameras.hide`, `modules.hide` — same shape and spirit as the existing
+    `rooms.hide`/`rooms.order`.
+  - Not in this version, on purpose: free repositioning of cards, choosing
+    which column a room lands in, a theme/color editor, new views. This
+    panel filters and reorders what auto-discovery found; composing a
+    layout from scratch is Lovelace's job, not this one's.
+
+## [1.4.9] - 2026-08-16
+
+### Fixed
+
+- **The Casa view's Sorveglianza card always showed a single camera, even
+  when the Sorveglianza tab itself listed several** — reported by a user on
+  Reddit ("The surveillance tab shows all my cams but the home dash only
+  one"). The card rendered `camList[0]` and stopped there, a reasonable
+  default with one camera and the wrong one with four. It now adapts to the
+  camera count: 1 stays the unchanged hero card; 2 become side-by-side
+  tiles; 3 become two tiles on top and one spanning the full width below
+  (instead of leaving the fourth grid cell empty); 4 fill a 2×2 grid; 5+
+  show the top 3 plus a "+N altre"/"+N more" tile that opens the
+  Sorveglianza tab. Tiles are sorted motion-first (stable, so the rest keeps
+  `camList`'s existing order), carry the same accent outline + motion pill
+  the tab already uses, and hidden cameras still show their icon instead of
+  a snapshot — tapping any tile opens its stream exactly as before. Mobile
+  gets the same motion-first logic but never a 2×2 grid: it caps at 2 tiles
+  side by side, with the second becoming the "+N altre" counter past 2
+  cameras. The snapshot refresh interval is unchanged — the Sorveglianza tab
+  has already fired one simultaneous request per camera on the same timer
+  since cameras shipped, so up to 4 parallel requests from the home card is
+  smaller than what the tab already does routinely, not a new ceiling.
+
+## [1.4.8] - 2026-08-16
+
+### Fixed
+
+- **Room tiles stretched to fill the leftover column height instead of
+  sizing to their own content** — reported by a user on Reddit, alongside
+  a side-by-side comparison against Dwains Dashboard: a room with one light
+  ended up the same 190px-tall tile as one with six devices. `[data-r="rooms"]`
+  now sizes each row to `min-content` instead of splitting the flex
+  container's leftover space across rows; the column scrolls once it's
+  full. `rooms.max` (an explicit config value always wins) defaults to 12
+  instead of 8, since rows no longer need a fixed height to look
+  intentional.
+
+### Added
+
+- **Rooms now discover seven more domains**: `humidifier`, `lock`,
+  `water_heater`, `valve`, `lawn_mower`, `siren` — each with its own icon,
+  room-panel toggle row, and busy/active semantics (a lock is "active" when
+  unlocked, a valve when open, a siren when sounding — not the on/off
+  inverse of that).
+- **Room cards show status pills** for `binary_sensor` device classes that
+  say something worth knowing: door/window/opening/garage_door (open),
+  motion/occupancy/presence, and moisture/smoke/gas — the last shown in
+  the accent color. A closed door or an empty room produces no pill, same
+  as before; presence counts toward a room being "active", an open
+  door/window on its own doesn't.
+- **Three more sensor pills**: `illuminance`, `carbon_dioxide`, `pm25`, and
+  a `battery` pill that only appears under 20% — a charged battery isn't
+  news. Room cards cap at four pills, in priority order (alarms, openings,
+  presence, temperature, humidity, everything else); the room panel shows
+  the rest.
+- **A switch on the same device as a `device_class: power` sensor shows its
+  instantaneous wattage inline in the room panel** (e.g. "BroadlinkSP4L ·
+  42 W") — same device→entity relationship already used for cameras and
+  their motion sensor. Voltage, current and energy/counter sensors are
+  still deliberately never shown, on a switch's row or anywhere else — see
+  the README's "Known limits" for the full discovered-domains list.
+
+## [1.4.7] - 2026-08-15
+
+### Fixed
+
+- **On a zero-config install (HA's own Energy dashboard auto-discovered,
+  no `config.energy` block), the Energy tab opened on four empty cells
+  even though the home screen's Fotovoltaico card worked fine** —
+  reported by a user on Reddit ("On the homescreen I see the solar but
+  not on the energy tab"). Those instant-power (kW) cells only ever
+  come from `config.energy` — `energy/get_prefs` and auto-discovery
+  both work in energy (kWh) counters, not power — so an install relying
+  on either of those two now sees the same double-ring and daily
+  totals the home screen already resolved, instead of a broken-looking
+  blank header. Installs with power sensors configured see no change.
+- **The trend chart drew a flat row of zero-height bars when there was
+  no history yet**, which reads as "you produce nothing" rather than
+  "no data yet" — a zero-config install never gets chart history either
+  (the same `config.energy` gap above), so this was almost certainly
+  part of what the reporting user saw. Replaced with a plain message
+  when the chosen period has no data for any series.
+
+## [1.4.6] - 2026-08-15
+
+### Fixed
+
+- **Card shadows were visibly cut off at the four edges of the page**,
+  reported by a user on Reddit. The root container's padding (16px
+  top/bottom, 18px left/right) was smaller than the neumorphic shadow's
+  own reach (up to 22px), so any card sitting flush against the page
+  edge had its shadow clipped by the root's `overflow:hidden` instead
+  of fading out — most visible exactly where the gradient should have
+  been softest. Padding is now 22px/24px, matching the shadow's reach;
+  nothing else changed (gaps, card padding, and the scrollable inner
+  areas — where a clipped edge reads as scrolling, not a defect — are
+  untouched). Mobile wasn't affected: its page isn't clipped in the
+  first place, so there was nothing to fix there.
+
+## [1.4.5] - 2026-08-15
+
+### Fixed
+
+- **The three home-screen energy values (self-consumption, grid, fed to
+  grid) were invisible whenever surveillance cameras were also
+  configured.** The compact Fotovoltaico card — the layout used on any
+  install with cameras, so the normal case — swapped the three-line
+  legend for a one-line summary instead of dropping the values
+  somewhere else; they simply weren't in the markup. Replaced with
+  three small tiles under the ring, showing the same numbers the
+  full-size card already had, with a shortened summary line underneath.
+- **The Energy view's chart colored production and grid import the
+  opposite way from the home-screen ring** — sage meant solar there and
+  terracotta meant grid, but the chart had them backwards. Fixed
+  alongside adding the fed-to-grid bar (see below), since correcting
+  one without the other would have left the two views agreeing on
+  nothing.
+
+### Added
+
+- **A third bar for energy fed back to the grid**, next to production
+  and grid import, in both the desktop chart and the mobile
+  stick-chart — the daily total the ring already tracks but the trend
+  chart never showed. Installs without an export sensor mapped keep
+  the original two-bar layout; no sensor means no bar, not a bar stuck
+  at zero.
+
+## [1.4.4] - 2026-08-15
+
+### Fixed
+
+- **On mobile, every appliance (Lavatrice, Asciugatrice) was rendered
+  twice inside its room card.** `dash_neumo_mobile.html` had two
+  identical loops over the appliance list — a copy-paste leftover the
+  desktop layout never had. The duplicate loop is gone; each appliance
+  now appears once, same as desktop.
+
+### Changed
+
+- **Removed the "N min remaining" text shown next to a running
+  appliance.** Home Assistant integrations report a washer/dryer's
+  remaining-time sensor inconsistently enough (units, absolute vs.
+  relative values) that it could render nonsense on some installs — a
+  running Lavatrice showing "2026 min remaining" on one setup, for
+  example. Rather than add per-integration guessing, the appliance card
+  now just shows its state label (e.g. "Lavaggio") while running; the
+  optional `remaining` config field, its i18n string, and the demo
+  sensor for it are removed. `energyToday` (shown while idle) is
+  unaffected.
+
+## [1.4.3] - 2026-08-14
+
+### Fixed
+
+- **On installs with a single grid meter, the Energy ring showed
+  production but never prelievo (grid import) or immissione (grid
+  export), even though Home Assistant's own Energy dashboard had both.**
+  Home Assistant reports a grid source's import/export sensors two
+  different ways depending on the install: some list them under
+  `flow_from`/`flow_to` (handled since 1.4.1), others put them directly
+  on the source — the shape this project hadn't handled at all until
+  now. Both are read equally now, and if an install somehow reports a
+  sensor both ways, it's only counted once rather than doubled.
+- If a future install reports its grid or solar source in a shape this
+  page still doesn't recognize, the diagnostic log (`[live_dashboard]
+  energia`, printed on every load) now also lists the field names it
+  did find on that source — enough to tell at a glance what's different,
+  instead of just "not found".
+
+## [1.4.2] - 2026-08-14
+
+### Fixed
+
+- **Every page load logged a red console error for each icon and camera
+  image the page hadn't loaded data for yet — 15+ of them, plus one for
+  the irrigation sparkline chart.** These looked like broken requests
+  (`GET /local/.../%7B%7B%20m.icon%20%7D%7D 404`) because they were: the
+  browser's own HTML parser fetches an `<img src>` or `<use href>` the
+  instant it sees the tag, before this page's own code has run at all, and
+  it doesn't know `{{ m.icon }}` is a placeholder waiting for real data —
+  it just tries to load that text as a URL. Confirmed happening within
+  ~30ms of navigation start, well before anything on the page could
+  reasonably have set a real value yet. Every one of these is now set
+  after the fact, once real data exists, instead of being written directly
+  into the page.
+- The same root cause made the irrigation soil-moisture chart occasionally
+  log `<polyline> attribute points: Expected number` — fixed the same way.
+- A separate, unrelated issue produced console warnings like `{{
+  S.onNow }} never resolved` on every load, for text that in fact always
+  ended up correct on screen — the page's very first render (before any
+  real data has loaded at all) used to leave a gap where some labels
+  briefly had no value yet, which is normal, but was being logged as if it
+  were permanent. That first render now resolves to nothing shown, rather
+  than to a warning, with no change to what appears once real data loads a
+  moment later.
+- Fixed a related timing gap from 1.4.0: whether a card like Energy or the
+  no-areas-assigned message showed up could very briefly disagree with
+  whether its text was ready, depending on exactly when Home Assistant's
+  next update arrived during startup. Both now always become ready
+  together.
+
+## [1.4.1] - 2026-08-14
+
+### Fixed
+
+- The Fotovoltaico ring's auto-discovery from Home Assistant's Energy
+  dashboard (`energy/get_prefs`, added in 1.4.0) could resolve production
+  but not grid import/export on real installs with more than one solar
+  array or more than one grid meter/contract — the mapping only ever kept
+  the first entry for each role and silently dropped the rest. It now sums
+  every entry HA reports for a role, which is what installs with a second
+  array or a second contract actually need.
+- A near-zero segment (e.g. an install feeding back a fraction of a percent
+  to the grid) could draw a small stray dot on the ring at the segment
+  boundary instead of just not showing, because `stroke-linecap: round`
+  still paints a dot for a zero-length dash. Segments this small now use
+  `stroke-linecap: butt` instead, which draws nothing for zero length, same
+  as intended.
+
+### Added
+
+- A `console.info` at boot naming, for each of production/grid-import/
+  grid-export: which tier resolved it (`config.js`, HA's Energy dashboard,
+  or auto-discovery), which entity/statistic it resolved to, and the value
+  read. A ring showing a wrong or missing number was previously
+  indistinguishable from one that couldn't find its sensors at all — this
+  makes the difference visible in the console without guessing.
+- A real `energy/get_prefs` failure (unsupported command, permissions) is
+  now logged with `console.warn` instead of being silently treated the same
+  as "no Energy dashboard configured" — the two cases were previously
+  indistinguishable from the console.
+
+## [1.4.0] - 2026-08-14
+
+### Changed
+
+- **The Fotovoltaico ring is now two concentric rings, and the number in
+  the middle means something different than before.** The previous ring
+  compared today's solar production against today's grid import — two
+  numbers that were never meant to sum to anything, so the percentage it
+  showed didn't correspond to a real quantity. The new ring shows two real
+  totals instead: the outer ring is today's house consumption (self-used
+  solar + grid import), the inner ring is today's solar production
+  (self-used solar + fed back to the grid). The self-used-solar segment is
+  the same color and the same starting point in both, since it's the one
+  number shared between them. If you've been reading the old percentage
+  for a while, expect it to look different now — this isn't a restyle of
+  the same math, it's different math. See the README's "Enabling Energy"
+  section for the two identities behind it.
+- **Energy setup is optional if you've already configured it in Home
+  Assistant.** The ring now reads your solar/grid sensor mapping straight
+  from HA's own Energy dashboard (Settings -> Dashboards -> Energy) when
+  you have one set up, and falls back to a best-effort guess from
+  `device_class: energy` sensors when you don't — `config.js`'s `energy`
+  block is only needed to override either of those, not to see the ring at
+  all. Explicit `config.js` values still always win when set.
+- With no grid-export sensor available anywhere, the ring falls back to the
+  previous single-ring view rather than guessing or showing an empty inner
+  ring — see the README for the full set of fallback rules.
+
+### Added
+
+- `config.energy.gridExportToday` and `config.energy.consumptionToday`,
+  both optional, for installs that want to point the new ring at specific
+  sensors rather than let it derive or auto-discover them.
+- A install-time self-check for the single most common HACS/manual install
+  mistake: `panel_custom`'s `name:` not matching the folder the dashboard
+  is actually running from. Previously this produced a blank/black panel
+  with nothing in the console to explain why. It now prints a
+  `console.error` naming the `name:` it expected, and shows the same
+  message on the page itself for anyone who doesn't open dev tools.
+
+### Fixed
+
+- The README's manual-install section showed a "second copy side by side"
+  pattern (`casa` / `casa2`, picking your own `name:` per copy) that only
+  ever applied to manual installs — nothing marked it as such, so it read
+  as generally applicable and could lead a HACS install to a `name:`
+  mismatch (the exact failure the self-check above now catches). Both the
+  manual and HACS sections now say explicitly that HACS's folder — and
+  therefore its `name:` — isn't a per-install choice.
+
+## [1.3.1] - 2026-08-14
+
+### Fixed
+
+- The shipped example config file is renamed `live_dashboard_config.example.js`
+  (was `live_dashboard_config.js` in 1.3.0). It always was inert on its own —
+  the config lookup only ever checks for `config.js` or
+  `live_dashboard_config.js`, never a `.example.js` file — but sharing its
+  name with the file you're supposed to create in `config/www/` was an easy
+  trap: someone editing it in place, inside the plugin's own folder, would
+  see it work right up until the next update overwrote it.
+
+## [1.3.0] - 2026-08-14
+
+### Added
+
+- **HACS support.** The dashboard can now be installed and updated through
+  HACS as a custom repository, category **Dashboard**, alongside the
+  existing manual install method — see the README's "Via HACS" section.
+- **A config location that HACS updates can't erase.** Your `config.js`
+  overrides can now live at `config/www/live_dashboard_config.js`. This is
+  the new recommended spot, because it sits outside the folder a HACS
+  update overwrites — previous versions only supported placing it next to
+  the dashboard's own files, which meant an update would wipe it out on a
+  HACS install. If you already have a working `config.js` from a manual
+  install, it's picked up exactly as before — nothing to change, nothing
+  breaks.
+
+## [1.2.0] - 2026-08-14
+
+### Added
+
+- Weather station (optional, `config.weatherStation`): outdoor
+  temperature/humidity in the weather widget and its detail card can now
+  prefer a local weather station's own sensors over the `weather:`
+  entity's current-conditions attributes, plus wind, rain, irradiance,
+  ET₀, feels-like, and dew point — none of which a `weather.*` entity
+  reliably exposes. Reuses `irrigation.weather`/`irrigation.et0` when
+  already set, so an install with irrigation configured only has to add
+  `feelsLike`/`dewPoint`, which have no other field to live in. Entirely
+  optional and additive — with nothing configured, behavior is unchanged.
+
+### Changed
+
+- The weather detail card no longer lists per-zone soil moisture as
+  duplicate pills (it already has its own numbers in the Irrigation tab);
+  the existing "go to irrigation" link with a one-line summary covers that
+  instead of repeating the same figures in two places.
+
+## [1.1.2] - 2026-08-14
+
+### Fixed
+
+- An entity already wired into a specialized module — an appliance's
+  `powerSwitch`, an irrigation zone's `valve`, the weather-station sensors
+  used for ET0 — could also show up as a plain generic control or room
+  "environment" pill if it happened to be assigned to an area, duplicating
+  it with unrelated context. Found on a real installation: a weather
+  station's outdoor temperature/humidity (already driving irrigation math)
+  was cluttering its area's room card as a generic sensor reading, right
+  alongside genuinely unrelated numbers like an inverter's internal
+  temperature. `discoverRooms()` now excludes any entity referenced
+  anywhere in `config.js`, not just appliance switches, from the generic
+  per-room lists — one config-schema-agnostic exclusion instead of a
+  hardcoded field list to keep in sync as modules grow.
+
+## [1.1.1] - 2026-08-14
+
+### Fixed
+
+- `dash_neumo.html`/`dash_neumo_mobile.html` cache-bust `?v=` only ever
+  covered the page itself (via the iframe src) — the scripts it loads in
+  turn (`discovery.js`, `config.js`, the i18n/backend files) had no
+  cache-bust at all, so a browser could keep a stale `discovery.js` (missing
+  a recent fix or feature) even after a fresh deploy and a full HA restart,
+  with no visible sign anything was wrong. Found validating Appliances
+  (1.1.0) against a real installation: the page was demonstrably fresh
+  (correct `ASSET_VERSION` in the iframe URL) but behavior still matched
+  the pre-1.1.0 code. Every `loadScript()` call now reuses the same `?v=`
+  the page itself was loaded with, so one `ASSET_VERSION` bump busts the
+  whole chain, not just the page.
+
+## [1.1.0] - 2026-08-14
+
+### Added
+
+- Appliances (optional, `config.appliances`): washer/dryer-style status —
+  running state, remaining minutes, energy today — for setups where a plain
+  switch isn't enough to show whether something is actually running. Like
+  Vehicle, this is explicit config since no Home Assistant domain
+  standardizes it. Appliances appear in the Casa "on right now" list, the
+  room summary, and a dedicated card in the room panel; a `powerSwitch` set
+  on one stops being auto-discovered as a plain toggle in its room, so it
+  isn't shown twice.
+
+### Fixed
+
+- Desktop's "on right now" list had a few labels hardcoded in Italian
+  instead of going through translation — invisible until `hass.language`
+  (or a browser set to English) actually requested English. Mobile already
+  did this correctly; desktop now matches it.
+
+## [1.0.1] - 2026-08-14
+
+### Fixed
+
+- The "selected" state (`[data-sel="true"]`) — modes, tabs, alarm buttons,
+  range pickers, light/switch toggle chips — was completely inert
+  wherever a button's own inline `style` also set `background`/
+  `box-shadow`/`color`, which inline styles always win over a plain
+  stylesheet rule regardless of specificity. On mobile's mode buttons this
+  meant zero visible difference between the active mode and the others —
+  not subtle, literally no difference in computed style. Fixed with
+  `!important` on the override (verified against every affected surface on
+  both layouts) and, while touching it, made the state itself easier to
+  read at a glance: a soft tinted background alongside the existing
+  inset-shadow and accent-color change, instead of the shadow alone.
+
+## [1.0.0] - 2026-08-13
+
+Validated end to end against a real Home Assistant installation, running
+alongside its original hand-built dashboard, not just the demo dataset.
+
+### Added
+
+- Empty-state guidance when zero Home Assistant areas exist: a message and
+  a direct link to Settings → Areas instead of a silently blank Stanze
+  section — this is the single most likely reason a fresh install would
+  look broken on first load.
+- Inline tooltip on the Fotovoltaico card's "grid" figure (dotted
+  underline, hover/tap) clarifying it's energy imported from the grid, not
+  total house consumption — in the dashboard itself, not only the README,
+  since someone who clones the repo may never open it.
+
+### Fixed
+
+- Mobile's Energia tab showed a tile labeled "Consumo casa" that actually
+  duplicated the grid-import value — the same number as the adjacent,
+  correctly-labeled "Dalla rete" tile. Found while adding the tooltip
+  above. The mislabeled tile is removed.
+
+## [0.3.0] - 2026-08-13
+
+### Added
+
+- Irrigation zones can now run timed watering through `buttons` — one
+  `input_button.*` per duration — as an alternative to `valve` +
+  `durations`. Found while validating against a real installation whose
+  zones are opened by a script/automation already owning the timing, with
+  no switch entity for the dashboard to drive directly; `valve` alone
+  couldn't represent that setup. `buttons` takes over from `valve` when
+  both are set.
+
+## [0.2.1] - 2026-08-13
+
+### Fixed
+
+- `panel.js` registered its custom element under a hardcoded `casa-panel`
+  tag regardless of the folder it was deployed to or the `name:` set in
+  `configuration.yaml`. Any install using a different `panel_custom.name`
+  (a renamed folder, or a second install running side by side with a
+  working one to try the public build without touching it) loaded as a
+  blank/black panel with no error in the console, because Home Assistant
+  created an element nothing had ever registered. The tag is now derived
+  from the module's own deploy folder (`config/www/<folder>/panel.js`
+  registers `<folder>-panel`), so `name:` just has to match the folder —
+  and two installs can now run side by side without a
+  `customElements.define()` collision. Documented in README.md/README.it.md
+  and TROUBLESHOOTING.md, along with the separate (and easy to conflate)
+  failure mode of a missing/stale `?v=` cache-bust on `module_url`.
+
+## [0.2.0] - 2026-08-12
+
+### Added
+
+- Cameras (optional, auto-discovered): a "Sorveglianza"/"Surveillance" tab
+  (from 2+ cameras), a featured-camera card in Casa, snapshot previews that
+  refresh on a timer (paused while the page isn't visible), a tap-to-live
+  MJPEG fullscreen overlay with a 2-minute auto-close, and a `hideUntilTap`
+  privacy mode for indoor cameras. Motion is read from any `binary_sensor`
+  with `device_class: motion` on the same device as the camera. The
+  Fotovoltaico card in Casa compacts itself when cameras are present, to
+  keep the fixed 1200×800 no-scroll layout.
+
+## [0.1.0] - 2026-08-12
+
+### Added
+
+- First public release. Auto-discovery of rooms, people, weather, alarm and
+  quick actions from Home Assistant's area/device/entity registries.
+- Optional modules, each hidden until configured: Energy (any inverter/meter
+  integration via role mapping), Irrigation (per-zone, degrades gracefully),
+  Vehicle (explicit sensor mapping, no generic HA domain for this exists).
+- Demo mode with a fully invented dataset — opens from `file://` or with
+  `?demo`, no Home Assistant required.
+- Italian and English UI, chosen from `hass.language` with a `config.js`
+  override and an English fallback.
+- `panel_custom` installation only for this release (see README).

@@ -1,0 +1,235 @@
+// ===========================================================================
+//  HA BACKEND — PANEL (panel_custom) IMPLEMENTATION
+//
+//  CONTRACT
+//    export const BACKEND_KIND: string
+//    export async function connect(handlers, readyTimeoutMs) -> backend
+//    backend.call(domain, service, data) -> Promise<void>
+//    backend.history(entity_id, points) -> Promise<number[]>   oldest -> newest
+//    backend.registries() -> Promise<{ areas, devices, entities }>
+//    backend.energyPrefs() -> Promise<object|null>   raw energy/get_prefs response
+//    backend.energyToday(entity_id) -> Promise<number|null>   today's stats delta
+//    backend.energyHourly(idsByRole) -> Promise<Array|null>   last 24h, hourly deltas
+//    backend.close() -> void
+//
+//  This file runs INSIDE the iframe that panel.js (the casa-panel custom
+//  element) mounts, in its own window/realm — it has no direct reference to
+//  the real `hass` object, which lives in the parent document. Every call is
+//  therefore relayed to the parent via postMessage and awaited there:
+//    connect()      waits for the first 'casa:hass-states' message
+//    call()         posts 'casa:call'          -> parent runs hass.callService(...)
+//    history()      posts 'casa:history'       -> parent runs hass.callWS(...)
+//    registries()   posts 'casa:registries'    -> parent runs hass.callWS(...) x3
+//    energyPrefs()  posts 'casa:energy-prefs'   -> parent runs hass.callWS('energy/get_prefs')
+//    energyToday()  posts 'casa:energy-today'   -> parent runs hass.callWS('recorder/statistics_during_period')
+//    energyHourly() posts 'casa:energy-hourly'  -> parent runs hass.callWS('recorder/statistics_during_period')
+//    userDataGet(key) posts 'casa:user-data-get' -> parent runs hass.callWS('frontend/get_user_data')
+//    userDataSet(key, value) posts 'casa:user-data-set' -> parent runs hass.callWS('frontend/set_user_data')
+//    cameraStream() posts 'casa:camera-stream'  -> parent runs hass.callWS('camera/stream')
+//    ws(msg)        posts 'casa:ws'             -> parent runs hass.callWS(msg)  (allow-listed types, v2)
+//    subscribe(msg, onEvent) posts 'casa:subscribe' -> parent runs
+//                   hass.connection.subscribeMessage and relays every event as
+//                   'casa:sub-event'; the returned handle's unsubscribe()
+//                   posts 'casa:unsubscribe' (v2, camera WebRTC)
+//  panel.js answers with the matching '*-result' message, matched back up by
+//  a request id.
+//
+//  connect() is given a timeout by ha-backend.js (the dispatcher): if this
+//  page is opened directly (not inside panel.js's iframe), no parent will
+//  ever answer 'casa:ready' and this would hang forever — the caller races
+//  it against a timeout and falls back to the demo backend instead.
+//
+//  Classic script, not an ES module (see discovery.js's top comment for why)
+//  — wrapped in an IIFE since it shares one global scope with every other
+//  file loaded via loadScript() in dash_neumo*.html, and ha-backend-demo.js
+//  declares its own same-named BACKEND_KIND / connect.
+// ===========================================================================
+
+(function () {
+
+const BACKEND_KIND = 'panel';
+
+const CALL_TIMEOUT_MS = 15000;
+
+function normalizeData(data) {
+  const t = (data && data.target) || {};
+  const entity_id = t.entity_id !== undefined ? t.entity_id : (data && data.entity_id);
+  const out = Object.assign({}, data);
+  delete out.target;
+  if (entity_id !== undefined) out.entity_id = entity_id;
+  return out;
+}
+
+async function connect(handlers, readyTimeoutMs) {
+  const pending = new Map();
+  let reqId = 0;
+  let current = null;
+  const subs = new Map(); // subscription id -> onEvent(event, error)
+
+  function onMessage(e) {
+    if (e.source !== window.parent) return;
+    const d = e.data;
+    if (!d || typeof d !== 'object') return;
+
+    // v1.9.0 — panel.js sends one full snapshot ('casa:hass-states'), then
+    // only what changed ('casa:hass-states-delta'). `current` is this
+    // frame's copy the deltas patch; the app still receives a fresh object
+    // on every update, exactly as before. Applying the same message twice
+    // (connect() below routes the very first one through onMessage too) is
+    // harmless: both message kinds are idempotent.
+    if (d.type === 'casa:sub-event') {
+      const cb = subs.get(d.id);
+      if (cb) cb(d.event || null, d.error || null);
+      return;
+    }
+    if (d.type === 'casa:hass-states' || d.type === 'casa:hass-states-delta') {
+      if (d.type === 'casa:hass-states') {
+        current = Object.assign({}, d.states);
+      } else {
+        if (!current) return; // a delta before any snapshot has nothing to patch
+        Object.assign(current, d.changed);
+        for (const id of d.removed || []) delete current[id];
+      }
+      handlers.onStates(Object.assign({}, current));
+      if (handlers.onLanguage && d.language) handlers.onLanguage(d.language);
+      if (handlers.onEmbedIframe && d.embedIframe !== undefined) handlers.onEmbedIframe(d.embedIframe);
+      if (handlers.onInstall && d.install) handlers.onInstall(d.install);
+      if (handlers.onUser && d.user) handlers.onUser(d.user);
+      return;
+    }
+    if (d.type === 'casa:call-result' || d.type === 'casa:history-result' || d.type === 'casa:registries-result'
+      || d.type === 'casa:energy-prefs-result' || d.type === 'casa:energy-today-result' || d.type === 'casa:energy-hourly-result'
+      || d.type === 'casa:user-data-get-result' || d.type === 'casa:user-data-set-result'
+      || d.type === 'casa:camera-stream-result' || d.type === 'casa:ws-result') {
+      const p = pending.get(d.id);
+      if (!p) return;
+      pending.delete(d.id);
+      clearTimeout(p.timeout);
+      if (d.ok) p.resolve(d.result);
+      else p.reject(new Error(d.error || 'richiesta fallita'));
+    }
+  }
+  window.addEventListener('message', onMessage);
+
+  handlers.onStatus('connecting');
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    function onFirstStates(e) {
+      if (settled) return;
+      if (e.source !== window.parent) return;
+      if (e.data && e.data.type === 'casa:hass-states') {
+        settled = true;
+        window.removeEventListener('message', onFirstStates);
+        onMessage(e);
+        resolve();
+      }
+    }
+    window.addEventListener('message', onFirstStates);
+    window.parent.postMessage({ type: 'casa:ready' }, window.location.origin);
+    if (readyTimeoutMs) {
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', onFirstStates);
+        window.removeEventListener('message', onMessage);
+        reject(new Error('no hass within ' + readyTimeoutMs + 'ms'));
+      }, readyTimeoutMs);
+    }
+  });
+  handlers.onStatus('connected');
+
+  function send(type, payload) {
+    return new Promise((resolve, reject) => {
+      const id = ++reqId;
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        // .code, not just message text: callers (dash_neumo*.html's call()
+        // action log / toast) need to tell "timed out" apart from "HA
+        // rejected the service call" without matching a localized-sounding
+        // English string — v1.8.1.
+        const err = new Error('timeout in attesa della risposta da Home Assistant');
+        err.code = 'timeout';
+        reject(err);
+      }, CALL_TIMEOUT_MS);
+      pending.set(id, { resolve, reject, timeout });
+      window.parent.postMessage(Object.assign({ type, id }, payload), window.location.origin);
+    });
+  }
+
+  return {
+    kind: BACKEND_KIND,
+
+    call: function (domain, service, data) {
+      return send('casa:call', { domain, service, data: normalizeData(data) });
+    },
+
+    history: function (entity_id, points) {
+      return send('casa:history', { entity_id, points });
+    },
+
+    registries: function () {
+      return send('casa:registries', {});
+    },
+
+    energyPrefs: function () {
+      return send('casa:energy-prefs', {});
+    },
+
+    energyToday: function (entity_id) {
+      return send('casa:energy-today', { entity_id });
+    },
+
+    energyHourly: function (ids) {
+      return send('casa:energy-hourly', { ids });
+    },
+
+    userDataGet: function (key) {
+      return send('casa:user-data-get', { key });
+    },
+
+    userDataSet: function (key, value) {
+      return send('casa:user-data-set', { key, value });
+    },
+
+    // Resolves { url } (an HA-relative /api/hls/<token>/master_m3u8 path,
+    // same origin as this page since it's served by HA itself) or rejects —
+    // never returns a fabricated URL. Rejection is a normal outcome (no
+    // `stream` integration loaded, entity doesn't support it) that callers
+    // fall back from silently — see dash_neumo*.html's _camStartStream.
+    cameraStream: function (entity_id) {
+      return send('casa:camera-stream', { entity_id });
+    },
+
+    // v2 — one-shot WS command (panel.js allow-lists the types).
+    ws: function (msg) {
+      return send('casa:ws', { msg });
+    },
+
+    // v2 — HA subscription; onEvent(event, error) runs for every event, or
+    // once with `error` if subscribing failed. No timeout: a subscription
+    // lives until unsubscribe(), unlike send()'s request/response.
+    subscribe: function (msg, onEvent) {
+      const id = ++reqId;
+      subs.set(id, onEvent);
+      window.parent.postMessage({ type: 'casa:subscribe', id, msg }, window.location.origin);
+      return {
+        unsubscribe: function () {
+          if (!subs.delete(id)) return;
+          window.parent.postMessage({ type: 'casa:unsubscribe', id }, window.location.origin);
+        }
+      };
+    },
+
+    close: function () {
+      for (const id of subs.keys()) window.parent.postMessage({ type: 'casa:unsubscribe', id }, window.location.origin);
+      subs.clear();
+      window.removeEventListener('message', onMessage);
+      for (const p of pending.values()) { clearTimeout(p.timeout); p.reject(new Error('backend closed')); }
+      pending.clear();
+    }
+  };
+}
+
+window.CasaBackendPanel = { BACKEND_KIND, connect };
+
+})();

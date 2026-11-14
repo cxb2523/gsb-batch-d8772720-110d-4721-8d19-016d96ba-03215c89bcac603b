@@ -1,0 +1,610 @@
+<!-- title: Live Dashboard -->
+![Live Dashboard](assets/readme-header.png)
+
+# Live Dashboard
+
+[![Ultima release](https://img.shields.io/github/v/tag/mbonny95/live_dashboard?sort=semver&label=release&color=c67139)](https://github.com/mbonny95/live_dashboard/releases)
+[![Licenza: MIT](https://img.shields.io/badge/licenza-MIT-c67139)](LICENSE)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2022.x%2B-c67139)](#requisiti)
+
+*[Read in English](README.md)*
+
+Una dashboard per Home Assistant scritta a mano, a pagina singola, pensata
+per un tablet a muro: stanze, allarme, meteo e azioni rapide in un'unica
+schermata, con le view opzionali Energia e Irrigazione. Nessuna card
+Lovelace, nessuna dashboard YAML — legge le stanze e le entità direttamente
+dai registri di Home Assistant e si costruisce da sola.
+
+![Vista Casa, modalità demo](docs/screenshots/casa.png)
+
+**Provala senza installare nulla:** clona questo repo e apri
+`public/dash_neumo.html?demo` in un browser — funziona anche da `file://`,
+senza bisogno di Home Assistant. Mostra dati inventati e un badge `DEMO`;
+vedi [Modalità demo](#modalità-demo) più sotto.
+
+## Cos'è, e cosa non è
+
+- Una pagina singola che vive in un proprio pannello `panel_custom`, non una
+  dashboard Lovelace e non una card. Non cerca di essere nessuna delle due.
+- Pensata per un **tablet a muro, in orizzontale**, a una dimensione fissa
+  di circa 1200×800 — è un vincolo voluto (vedi "Modalità kiosk" più sotto),
+  non un difetto. Le singole colonne (stanze, telecamere) dimensionano le
+  tessere sul contenuto invece di stirarsi per riempire la pagina, e
+  scorrono al loro interno se un'installazione ne ha abbastanza da superare
+  l'altezza disponibile.
+- La pagina mobile (`dash_neumo_mobile.html`) è un secondo layout completo
+  per telefono, ma è secondario: le scelte di design (densità della griglia,
+  niente scroll) sono pensate prima di tutto per il tablet a muro.
+
+## Requisiti
+
+- Home Assistant **2024.11 o successivo** (serve l'API WebRTC delle
+  telecamere).
+- HACS, per l'installazione consigliata. Senza HACS, l'installazione
+  manuale qui sotto richiede accesso a `www/` e un `configuration.yaml`
+  modificabile.
+- Niente npm, niente build step. Solo HTML/CSS/JS semplice.
+- Nessun accesso a internet necessario per funzionare (v1.9.0). React
+  18.3.1, i due font web (Caprasimo, Figtree) e `hls.js` per il live delle
+  telecamere sono inclusi in `public/vendor/` invece di arrivare da una CDN o
+  da Google Fonts, quindi un Home Assistant solo locale disegna la dashboard
+  esattamente com'è pensata. Impostazioni → Diagnostica → Ambiente →
+  "Runtime React" dice quale copia di React è stata usata davvero. Versioni,
+  licenze e hash: `public/vendor/README.md`.
+
+## Installazione
+
+Dalla **v2.0** Live Dashboard è un'**integrazione** di Home Assistant: serve
+lei i file della dashboard e aggiunge il pannello nella barra laterale, quindi
+non c'è nessun blocco `panel_custom` da scrivere, nessun `?v=` da aggiornare
+a ogni versione e nessun nome di cartella da azzeccare. L'installazione
+manuale (copiare i file, scrivere lo YAML) resta un'alternativa senza HACS.
+
+### Via HACS (consigliato)
+
+1. In HACS aggiungi questo repo come repository personalizzato: **menu ⋮ →
+   Repository personalizzati**, URL `https://github.com/mbonny95/live_dashboard`,
+   categoria **Integrazione**.
+2. Cerca "Live Dashboard" in HACS, **Scarica**, poi **riavvia Home
+   Assistant** (te lo chiede HACS).
+3. **Impostazioni → Dispositivi e servizi → Aggiungi integrazione → Live
+   Dashboard.** Conferma i valori proposti (titolo "Casa", icona
+   `mdi:home-heart`, percorso `/casa`) o cambiali; si possono modificare dopo
+   dalle opzioni dell'integrazione, senza reinstallare. Il pannello compare
+   subito nella barra laterale.
+
+La tua configurazione va in **`config/www/live_dashboard_config.js`** (vedi
+"Configurare il resto" più sotto): fuori dalla cartella dell'integrazione,
+quindi gli aggiornamenti non la sovrascrivono mai. Gli aggiornamenti da HACS
+chiedono un riavvio di Home Assistant, come per ogni integrazione; nient'altro.
+
+Se il pannello non compare, guarda in **Impostazioni → Riparazioni**:
+l'integrazione spiega lì cosa non va (per esempio un percorso già usato da un
+altro pannello), e **Impostazioni → Diagnostica** dentro la dashboard mostra
+"Installazione: integrazione".
+
+### Passare dalla 1.x alla 2.0
+
+La 1.x era una *Dashboard* (plugin) di HACS, la 2.0 è un'*Integrazione*. Se
+aggiorni semplicemente la vecchia voce Dashboard in HACS non si rompe niente:
+la dashboard continua a funzionare con lo stesso blocco `panel_custom` e
+mostra un avviso ("Passa all'integrazione Live Dashboard") con il link a
+questi passi — con "Più tardi" lo chiudi e per te non ricompare. HACS non può
+cambiare la categoria di un repository, quindi una volta sola, quando ti
+torna comodo:
+
+1. In HACS rimuovi "Live Dashboard" (quella Dashboard). Il tuo
+   `config/www/live_dashboard_config.js` non viene toccato.
+2. Togli da `configuration.yaml` la voce `panel_custom` con
+   `name: live_dashboard-panel` (lascia le eventuali altre voci
+   `panel_custom`).
+3. Registra di nuovo il repository come **Integrazione**. La rimozione lo
+   lascia registrato come Dashboard nella lista di HACS, quindi prima va
+   tolto da lì: apri
+   **menu ⋮ → Repository personalizzati**, cancella con il cestino la riga
+   `mbonny95/live_dashboard · Dashboard`, poi **Aggiungi da link** con
+   `https://github.com/mbonny95/live_dashboard` e tipo **Integrazione**.
+   Quindi aprilo (dalla stessa lista, toccando la riga), premi **Installa**
+   (v2.0.0 o successiva) e riavvia Home Assistant.
+4. Aggiungi l'integrazione (passo 3 qui sopra). Stesso percorso `/casa` di
+   prima.
+
+Se salti il passo 2, l'integrazione non si contende `/casa` con il vecchio
+pannello: lo segnala in Impostazioni → Riparazioni e nel modulo di
+configurazione, e puoi togliere il vecchio blocco oppure scegliere un altro
+percorso.
+
+### Installazione manuale (senza HACS)
+
+1. Copia l'intera cartella `public/` in `config/www/casa/` (il nome è
+   arbitrario — `casa` è solo l'esempio usato qui sotto; è anche così che
+   puoi tenere una seconda copia in parallelo, es. `casa2/`, senza toccare
+   un'installazione `casa/` già funzionante).
+2. Aggiungi a `configuration.yaml`. **`name:` deve essere `<cartella>-panel`**,
+   corrispondente alla cartella scelta sopra:
+
+   ```yaml
+   panel_custom:
+     - name: casa-panel
+       url_path: casa
+       sidebar_title: Casa
+       sidebar_icon: mdi:home-heart
+       module_url: /local/casa/panel.js?v=1
+       embed_iframe: true
+       trust_external_script: false
+   ```
+
+   Stessa nota sul cache-busting di sopra: incrementa `?v=1` → `?v=2` → …
+   a mano ogni volta che aggiorni i file in questa cartella, dato che qui
+   non c'è una versione HACS da cui leggerlo.
+3. **Riavvia Home Assistant**, poi apri la nuova voce nella sidebar.
+
+**Stai passando da un'installazione manuale a HACS?** `module_url` e
+`name:` sopra sono diversi tra i due casi — aggiorna entrambe le righe, non
+solo una, altrimenti il pannello continua a caricare la copia vecchia (o
+niente del tutto).
+
+**Il pattern in parallelo qui sopra (`casa` / `casa2`) vale solo per
+l'installazione manuale — non si applica a HACS.** Sotto HACS la cartella è
+sempre `live_dashboard`, quindi `name:` è sempre `live_dashboard-panel`, non
+qualcosa che scegli tu per ogni copia. Portarsi dietro dall'installazione
+manuale l'abitudine di scegliere il proprio `name:` è il modo più comune per
+ritrovarsi con un `name:` che non corrisponde alla cartella da cui il
+pannello si registra davvero — vedi la nota sotto "Via HACS" più sopra per
+come si presenta quando va storto.
+
+Fatto — senza nessun file di config, la dashboard scopre da sola le tue aree
+e ne mostra fino a 12 come tessere stanza, più le eventuali entità
+`person.*`, la prima `weather.*` che trova, e (v1.5.4) la prima entità
+`alarm_control_panel.*`, di qualunque marca — i suoi pulsanti inserisci/
+disinserisci seguono il suo `supported_features`, così una centrale che non
+sa fare per esempio Notte non mostra mai un pulsante destinato a fallire.
+Con più di una centrale, `config.alarm` continua a scegliere quale; le
+altre semplicemente non vengono ancora mostrate. Selettore di modalità
+casa, Energia, Irrigazione e Auto restano nascosti finché non li attivi
+(vedi sotto) — non c'è modo di indovinare l'accoppiata giusta per uno
+script "modalità casa": per questo resta spento di default invece di
+tentare a caso.
+
+### Configurare il resto
+
+**Con l'integrazione (v2) la configurazione può stare dentro Home
+Assistant**, uguale per tutti gli utenti e i dispositivi: Impostazioni →
+**Configurazione** nella dashboard (solo amministratori):
+
+- **Importa il file in Home Assistant** — copia il tuo
+  `live_dashboard_config.js` così com'è;
+- **Salva le scelte del pannello per tutti** — stanze, entità e telecamere
+  nascoste e gli ordini scelti nel pannello diventano quelli di tutti;
+- **Modifica il JSON** — tutto il resto, stessa forma del file, validato
+  prima di salvare;
+- **Torna al file** — cancella la configurazione salvata.
+
+Quando c'è una configurazione salvata in Home Assistant ha la precedenza sul
+file, che resta come riserva; Diagnostica dice quale è in uso. Senza
+integrazione (installazione manuale) l'unica fonte resta il file qui sotto,
+come nella 1.x.
+
+Copia [`live_dashboard_config.example.js`](public/live_dashboard_config.example.js)
+in uno dei percorsi qui sotto — **rinominandolo mentre lo copi**, dato che
+il file di esempio vive dentro la cartella del plugin e verrebbe cancellato
+al prossimo aggiornamento se modificato lì — e scommenta quello che ti
+serve; ogni chiave è documentata in linea nel file. Viene cercato in
+quest'ordine, vince il primo trovato:
+
+1. `config/www/live_dashboard_config.js` — **consigliato per ogni
+   installazione, HACS o manuale.** Fuori da qualsiasi cartella gestita da
+   HACS, quindi gli aggiornamenti non lo toccano mai.
+2. `config/www/community/live_dashboard/config.js` — retrocompatibilità con
+   un layout HACS precedente; per nuove installazioni preferisci il
+   percorso 1.
+3. `config.js` accanto a `panel.js`, dentro la cartella in cui hai copiato
+   `public/` (solo installazioni manuali) — retrocompatibilità con
+   installazioni manuali esistenti; funziona ancora invariato, ma un
+   aggiornamento HACS lo cancellerebbe se usato lì, quindi non usare questo
+   percorso una volta passati a HACS.
+
+Qualunque percorso tu usi, tienilo fuori dal controllo di versione — contiene
+i tuoi entity ID (il `.gitignore` fornito esclude già `config.js` sotto
+`public/`; una copia sotto `config/www/` è comunque fuori da questo repo).
+
+**Da v1.5.0, `config.js` non è più l'unico modo per nascondere o riordinare
+quello che vedi.** L'ingranaggio nell'intestazione apre un pannello
+impostazioni (stanze, entità, telecamere, sezioni) che salva per utente
+tramite l'archivio account di Home Assistant, così due dispositivi
+(tablet a muro e telefono) collegati con lo stesso utente restano
+sincronizzati senza che nessuno dei due tocchi `config.js`. I due non
+entrano mai in conflitto: `config.js` resta l'unica autorità per
+*risolvere* quale sensore fa quale ruolo (produzione, allarme, stato
+elettrodomestico, ...) — il pannello decide solo cosa è *visibile*, sopra
+quello. Una riga che il pannello sovrascrive rispetto a quanto dice
+`config.js` mostra una piccola pillola "diverso dal config" con un
+bersaglio dedicato per togliere la sovrascrittura e tornare a obbedire al
+file. Il bottone "Esporta come config.js" del pannello trasforma le scelte
+attuali in un blocco pronto da incollare in quel file, per chi preferisce
+versionare il layout o applicarlo a tutti gli utenti di casa invece che al
+solo proprio account.
+
+**Da v1.7.0 si può riordinare anche le card Allarme/Energia/Sorveglianza
+della schermata Casa** — chi ha il fotovoltaico può mettere Energia in
+cima, chi ha quattro telecamere può mettere Sorveglianza in cima. È un
+ordine solo, condiviso fra desktop (quale card riempie per prima la terza
+colonna) e mobile (l'ordine della pila nella tab Casa), non due impostazioni
+indipendenti — il tablet a muro e il telefono non possono mai essere in
+disaccordo su qual è "l'ordine attuale". Impostazioni → Stanze ha una lista
+"Ordine sezioni Casa", con frecce su/giù per riga e un ripristino con
+conferma. `config.js` può fissare un ordine predefinito con
+`sections.order`, stessa gerarchia di override di `rooms.order`. Riordina
+solo queste tre card — le stanze, le card "accesi ora"/azioni rapide e le
+colonne stesse del desktop non ne fanno parte.
+
+## Attivare l'Energia
+
+**Può darsi che tu non debba configurare nulla qui.** Se hai già impostato
+l'Energy Dashboard di Home Assistant (Impostazioni -> Cruscotti -> Energia)
+con i tuoi sensori solare e rete, questa dashboard legge quella mappatura
+in automatico e l'anello Fotovoltaico compare da solo. Senza Energy
+Dashboard, tenta comunque un'ipotesi da qualunque sensore con
+`device_class: energy` + `state_class: total_increasing` il cui nome somigli
+a produzione/prelievo/immissione. Il blocco `energy` di `config.js`, qui
+sotto, serve solo a correggere quell'ipotesi o a coprire ciò che nessuna
+delle due fonti trova — utile per i valori istantanei e per quando
+l'auto-discovery indovina male, ma l'anello in sé spesso non ne ha bisogno.
+
+Quando lo compili, i sensori si chiedono per **ruolo**, non per marca, quindi
+funziona con qualunque integrazione li esponga. `productionToday` /
+`gridToday` / `gridExportToday` devono essere contatori giornalieri che si
+azzerano a mezzanotte — vedi TROUBLESHOOTING.md se i numeri sembrano
+sbagliati.
+
+| Ruolo | Huawei FusionSolar | SolarEdge | Fronius | Shelly EM | Energy Dashboard di HA |
+| --- | --- | --- | --- | --- | --- |
+| `production` | `sensor.*_panel_production_power` | `sensor.solaredge_current_power` | `sensor.inverter_power` | `sensor.shellyem_channel_a_power` | `sensor.solar_power` (tuo) |
+| `consumption` | `sensor.*_house_load_power` | *(opzionale — vedi sotto)* | *(opzionale — vedi sotto)* | `sensor.shellyem_channel_b_power` | `sensor.house_power` |
+| `gridImport` | `sensor.*_grid_consumption_power` | `sensor.solaredge_m1_ac_power` (lato prelievo) | `sensor.meter_power` | `sensor.shellyem_channel_b_power` | il tuo sensore di prelievo |
+| `gridExport` | `sensor.*_grid_injection_power` | stesso contatore, lato immissione | `sensor.meter_power` (negativo) | lo stesso, invertito | il tuo sensore di immissione |
+| `productionToday` | `sensor.*_panel_production_today` | `sensor.solaredge_lifetime_energy` (diff) | `sensor.energy_day` | Shelly EM non ha un contatore giornaliero — aggiungi un helper `utility_meter` | `sensor.solar_energy_today` |
+| `gridToday` | `sensor.*_grid_consumption_today` | via un helper `utility_meter` | `sensor.grid_energy_day` | via un helper `utility_meter` | `sensor.grid_import_today` |
+| `gridExportToday` | `sensor.*_grid_injection_today` | via un helper `utility_meter` | via un helper `utility_meter` | via un helper `utility_meter` | `sensor.grid_export_today` |
+| `battery` | `sensor.*_battery_soc` / `_power` | integrazione SolarEdge Battery | sensori batteria Fronius | — | — |
+| `inverterStatus` | `sensor.*_inverter_inverter_status` | `sensor.solaredge_status` | `sensor.status_code` | — | — |
+
+Se la tua integrazione non espone un contatore giornaliero per un ruolo,
+aggiungi un helper
+[`utility_meter`](https://www.home-assistant.io/integrations/utility_meter/)
+in Home Assistant che si azzeri ogni giorno e punta `config.js` su quello.
+
+`consumptionToday` (un contatore giornaliero del consumo di *tutta la casa*)
+non ha una riga sopra perché nessuna di queste integrazioni ne espone uno
+direttamente — è abbastanza raro da essere puramente opzionale, per
+l'installazione occasionale che ne ha uno (es. dal tracciamento "consumo"
+dell'Energy Dashboard di HA, se l'hai collegato a parte). Impostalo se ce
+l'hai; altrimenti lascialo vuoto e l'anello deriva l'autoconsumo da
+produzione ed immissione, che è quello che fa quasi ogni installazione.
+
+### Consumo casa (istantaneo), derivato in automatico
+
+La maggior parte delle integrazioni inverter/contatore espone produzione,
+prelievo e immissione come sensori di potenza live, ma non il consumo di
+tutta la casa — era l'unico ruolo che richiedeva scrivere a mano un
+`template sensor` in `configuration.yaml` solo per sommare gli altri tre.
+**Non serve più.** Lascia `consumption` non impostato e, ogni volta che
+`production`, `gridImport` e `gridExport` risolvono tutti e tre, questa
+dashboard lo calcola da sola:
+
+```
+consumo casa = produzione + prelievo − immissione + scaricaBatteria − caricaBatteria
+```
+
+Un sensore `consumption` esplicito, se lo imposti, vince sempre — questo è
+solo un fallback per quando non ce n'è uno. Se manca anche solo uno tra
+produzione/prelievo/immissione, la derivazione non parte affatto: ottieni un
+onesto "—" invece di un numero calcolato da una formula incompleta. Il
+valore derivato si dichiara ovunque compare — "Consumo casa adesso ·
+calcolato" nella tessera istantanea, "kWh calcolati" al posto di "kWh
+consumati" al centro dell'anello — così non viene mai scambiato per un
+sensore misurato.
+
+**Se hai una batteria:** la formula deve sapere che segno usa il tuo sensore
+di potenza batteria per la carica, perché non esiste una convenzione
+universale tra le integrazioni.
+
+- **Due sensori separati** (`config.energy.battery.chargePower` /
+  `dischargePower`, entrambi sempre positivi): nessuna ambiguità, niente da
+  configurare.
+- **Un sensore firmato** (`config.energy.battery.power`, il caso comune):
+  il default è **positivo = in carica**. Se per la tua integrazione è al
+  contrario, Impostazioni -> Energia ha un controllo esplicito **Potenza
+  batteria** — "Positivo = in carica" / "Positivo = in scarica" — con il
+  valore derivato dal vivo mostrato subito sotto, così lo vedi cambiare
+  mentre giri l'interruttore. Sbagliarlo fa uscire il consumo derivato
+  implausibile (negativo) più spesso che no; quando succede in modo
+  persistente, Impostazioni -> Energia accende un avviso che nomina la causa
+  probabile con una correzione a un tocco, e nel frattempo la dashboard
+  mostra "—" invece di un "consumo casa" negativo — vedi TROUBLESHOOTING.md.
+
+Il valore giornaliero in kWh (l'anello, "kWh consumati") aveva già una sua
+derivazione più vecchia (autoconsumo ricavato da produzione e immissione) —
+non toccata da nulla di quanto sopra, solo etichettata allo stesso modo
+quando è lei a fare il lavoro al posto di un sensore `consumptionToday`.
+
+### Unità della potenza istantanea
+
+Le tessere di produzione/consumo/prelievo/immissione/potenza batteria
+leggono l'`unit_of_measurement` che il sensore dichiara davvero (W, kW o MW
+— case-insensitive) e la normalizzano, così un sensore in W e uno in kW da
+due integrazioni diverse mostrano numeri coerenti invece che uno sbagliato
+di 1000 volte. Impostazioni -> Energia -> **Unità potenza istantanea**
+sceglie come mostrare il numero normalizzato: **Auto** (sotto 1000 W mostra
+W, da 1000 in su mostra kW — il default), oppure forza sempre **W** o
+**kW**. Riguarda solo la potenza istantanea; i totali giornalieri (l'anello,
+il grafico a barre) restano in kWh in ogni caso.
+
+### Come si legge l'anello
+
+L'anello Fotovoltaico è composto da due anelli concentrici, ciascuno che
+somma a qualcosa di reale:
+
+- **Anello esterno = consumo casa di oggi** — autoconsumo (fotovoltaico
+  autoconsumato) + prelievo (preso dalla rete).
+- **Anello interno = produzione FV di oggi** — lo stesso autoconsumo +
+  immissione (ceduta alla rete).
+
+L'autoconsumo è il numero condiviso da entrambi, per questo è disegnato
+dello stesso colore in entrambi gli anelli e i due anelli partono allineati
+in alto. Non è mai un sensore a sé — è derivato come `produzione − immissione`
+(oppure, se imposti `consumptionToday`, come `consumo − prelievo`, preferito
+quando disponibile perché non presuppone che produzione ed immissione si
+aggiornino in perfetto sincronismo).
+
+**Se sei abituato alla release precedente:** le versioni precedenti
+confrontavano direttamente `productionToday` con `gridToday` in un unico
+anello — produzione contro prelievo dalla rete, due numeri che non erano mai
+pensati per sommare a qualcosa, quindi la percentuale mostrata non
+corrispondeva a una quantità reale. Questo anello la sostituisce con due
+totali che sommano davvero al 100% di se stessi. Aspettati numeri diversi,
+non solo un restyling.
+
+Con solo `production` e `gridImport` noti (nessun sensore di immissione),
+l'anello ricade sulla vecchia vista a un anello singolo invece di mostrare
+un doppio anello sbagliato o vuoto — vedi TROUBLESHOOTING.md se ti aspetti
+il nuovo anello e non lo vedi.
+
+## Attivare l'Irrigazione
+
+Ogni zona è già utile con solo `moisture` (un `sensor.*` con stato in `%`) e
+un modo di far scorrere l'acqua: sparkline, stato valvola e pulsanti a
+durata. Due modi per collegare questa seconda parte, scegli quello che
+combacia con il tuo impianto:
+
+- `valve` — uno `switch.*` che questa dashboard apre da sola, chiamando
+  `switch.turn_on` e poi `switch.turn_off` dopo N minuti. Nessuna entità
+  helper aggiuntiva richiesta.
+- `buttons` — un `input_button.*` per ogni durata, per impianti dove uno
+  script/un'automazione possiede già la temporizzazione (es. un'automazione
+  quick-action per ogni durata) e non c'è uno switch da comandare
+  direttamente. Ha la precedenza su `valve` se sono impostati entrambi.
+
+**La chiusura temporizzata di `valve` richiede almeno una dashboard aperta.**
+La chiusura è una scadenza salvata su `frontend/user_data` (o, senza Home
+Assistant dietro, su `localStorage`) e controllata da qualunque client sia
+aperto ogni 15 secondi, più una volta quando un client si apre — non è legata
+alla scheda che ha avviato l'irrigazione, quindi ricaricarla o chiuderla non
+lascia la valvola aperta. Ma con **zero** dashboard aperte quando scade il
+tempo, niente la chiude: per una garanzia che non dipenda dall'esistenza di
+una scheda del browser, usa `buttons` con uno script/un'automazione che
+possiede la temporizzazione lato HA, oppure il timer nativo della valvola se
+ce l'ha.
+
+**Rete di sicurezza dentro Home Assistant (v1.9.0).** Il repo include un
+blueprint di automazione, [`irrigation_safety_close.yaml`](blueprints/automation/live_dashboard/irrigation_safety_close.yaml),
+che chiude le valvole rimaste aperte oltre un tempo massimo (20 minuti di
+default), chiunque le abbia aperte, più quelle ancora aperte quando Home
+Assistant si riavvia. Gira dentro HA, quindi copre anche il caso di zero
+dashboard aperte. Imposta il massimo un po' sopra la durata più lunga fra le
+`durations`. [Importalo con un clic](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmbonny95%2Flive_dashboard%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Flive_dashboard%2Firrigation_safety_close.yaml), oppure copia il file in
+`config/blueprints/automation/live_dashboard/`, poi crea un'automazione dal
+blueprint e scegli le stesse entità `valve`.
+
+Tutto il resto (`advisory`, `deficit`, `weekMm`, `lastRun`, `et0`, `etc`,
+`effectiveRain`, `summary`) è opzionale e compare solo se lo imposti.
+**La parte agronomica (ET₀/ETc, deficit accumulato) non fa parte di questo
+progetto**: dipende dalla tua stazione meteo e dai tuoi dati di suolo. Le
+automazioni che la calcolano nell'installazione originale da cui è nata
+questa dashboard sono una configurazione personale e non sono incluse qui;
+costruisci le tue (qualunque automazione che scriva il risultato in un
+`input_number`/`sensor` e lo punti da `config.js` funziona), oppure lascia
+questi campi non impostati e usa la dashboard solo per l'umidità in tempo
+reale e l'irrigazione manuale.
+
+## Stazione meteo (opzionale)
+
+Il widget meteo cliccabile (in alto in Casa, o una tab a sé su mobile)
+mostra temperatura/umidità esterna dall'entità `weather:` sopra, per
+impostazione predefinita. Se hai una stazione meteo locale,
+`config.weatherStation` fa in modo che i suoi sensori diventino la fonte
+preferita — di solito più precisa e più locale della stima "condizioni
+attuali" di un provider meteo — e aggiunge vento, pioggia, irraggiamento,
+ET₀, percepita e punto di rugiada, dati che un'entità `weather.*` in
+genere non espone in modo affidabile.
+
+Se hai già compilato `irrigation.weather` (sopra), temperatura, umidità,
+vento, pioggia, irraggiamento ed ET₀ vengono riusati automaticamente: qui
+serve aggiungere solo `feelsLike`/`dewPoint`, che non hanno altrove una
+casa. Del tutto opzionale: lascialo non impostato e l'entità `weather:`
+resta l'unica fonte, come prima.
+
+## Auto (opzionale)
+
+Non esiste un dominio Home Assistant che standardizzi la telematica
+veicolare, quindi `config.vehicle` è una mappatura esplicita campo per campo
+(carburante o batteria, autonomia, contachilometri, celle extra,
+binary_sensor di avviso). È stata usata con un'installazione Mercedes
+`mbapi2020`; dovrebbe funzionare con qualunque integrazione esponga sensori
+comparabili (Volvo, Kia Connect, BMW Connected Drive, lettori OBD-II
+generici), dato che qui non c'è nulla di specifico per una marca.
+
+## Elettrodomestici (opzionale)
+
+Lavatrice, asciugatrice, o qualunque cosa dove "è in funzione" conta più di
+un semplice acceso/spento. Nemmeno qui c'è un dominio standard, quindi
+`config.appliances` è un elenco esplicito, ogni voce abbinata a una stanza
+risolvendo l'area della sua entità `status` (stessa regola di tutto il
+resto — nessun campo stanza separato da compilare).
+
+- `status` — qualunque `sensor.*`/`binary_sensor.*`. Il suo stato grezzo
+  viene mostrato così com'è a meno che tu non lo mappi con `stateLabels`
+  (consigliato per un sensore a stato testuale come `sensor.lavatrice_stato`,
+  il cui vocabolario è interamente specifico dell'integrazione — un
+  `binary_sensor` con `on`/`off` si legge bene anche senza).
+- `idleStates` — quali stati contano come "non in funzione" (default
+  `off`/`power_off`/`idle`/`unavailable`/`unknown`). Sovrascrivilo se la tua
+  integrazione usa parole diverse per "fermo".
+- `energyToday` è opzionale e compare solo mentre è fermo.
+- `powerSwitch` è opzionale e aggiunge solo un pulsante di spegnimento — uno
+  switch "acceso" non viene trattato come "in funzione" (una lavatrice può
+  restare alimentata tra un ciclo e l'altro), quindi non decide mai cosa
+  viene mostrato. Se lo imposti, quello switch smette anche di comparire
+  come interruttore generico nella sua stanza, altrimenti si vedrebbe due
+  volte.
+
+Gli elettrodomestici in funzione compaiono anche in "cose accese adesso" in
+Casa e nel riepilogo della stanza, come una luce o un robot in pulizia.
+
+### Prese smart senza una voce in `config.appliances`
+
+Anche una `switch.*` generica nel pannello di una stanza fa la stessa
+distinzione "sta davvero assorbendo corrente" (v1.5.4), a costo zero: se il
+suo device espone anche un `sensor.*` con `device_class: power` (vero per la
+maggior parte delle prese smart), lo stato `on` del relè viene letto su tre
+livelli invece di due — **spenta**, **attiva** (relè chiuso, sotto soglia —
+alimentata ma ferma), o **in funzione** (sopra soglia, con i watt in tempo
+reale). La soglia di default è 3 W ed è regolabile da Impostazioni →
+Energia. Una presa senza sensore di potenza sul device non cambia — resta
+acceso/spento come prima.
+## Telecamere (opzionale)
+
+Auto-discovery completo da ogni entità `camera.*` che Home Assistant
+espone — area dal registry, movimento da un `binary_sensor` con
+`device_class: motion` sullo stesso device. `config.cameras` sovrascrive
+solo le eccezioni (vedi `live_dashboard_config.example.js`); non c'è nessun elenco di
+telecamere da mantenere a mano.
+
+- **Anteprime, non video.** Ogni tessera mostra uno snapshot da
+  `entity_picture` (l'URL che Home Assistant firma già da solo), ricaricato
+  ogni `snapshotInterval` secondi (10 di default). Il refresh si sospende
+  quando la scheda/pagina non è visibile.
+- **Live al tap, a strati, secondo ciò che la telecamera e il browser sanno
+  davvero fare** (v1.5.4). Toccare un'anteprima prova, in ordine, il primo
+  strato che funziona:
+  1. WebRTC, quando Home Assistant lo offre per la telecamera (il go2rtc
+     integrato in HA, o l'integrazione della telecamera) — lo stesso
+     percorso della card telecamera di HA, live in circa un secondo (v2). Se
+     va in errore, non si connette o non mostra un fotogramma entro 12
+     secondi, subentra lo strato successivo.
+  2. Uno stream HLS reale via il componente `stream` di Home Assistant,
+     riprodotto con `hls.js` 1.7.4 — incluso in `public/vendor/` dalla
+     v1.9.0 e caricato solo a questo punto (~390 KB, mai su una pagina che
+     non apre una telecamera). Chrome, Firefox, Android, Safari desktop,
+     iOS 17.1+ e la maggior parte delle companion app.
+  3. Lo stesso stream riprodotto nativamente dal browser, dove hls.js non
+     gira (iOS prima della 17.1). Il pannello Diagnostica mostra quale
+     strato è realmente in uso, e da quale è ripiegato se uno strato ha
+     fallito durante la riproduzione.
+  4. Fermi immagine rapidi (2–3 al secondo) dallo stesso endpoint
+     `entity_picture` già usato dalle anteprime, con l'etichetta "anteprima
+     aggiornata" invece di "live" — il ripiego quando la telecamera non ha
+     il supporto `stream` in Home Assistant, o `camera/stream` fallisce. Non
+     è una live fluida, ma si muove, su qualunque telecamera, su qualunque
+     piattaforma. Gira solo col dettaglio aperto, e si sospende con la
+     scheda/pagina.
+  Il dettaglio si chiude da solo dopo 2 minuti, o al tap.
+- **Privacy per le telecamere interne**: elenca un entity_id in
+  `hideUntilTap` e la sua tessera mostra solo un'icona — nessuna anteprima
+  caricata — finché qualcuno non la tocca una volta per vedere lo snapshot,
+  e una seconda per andare live. Pensata per una telecamera puntata su un
+  corridoio dove vive lo stesso tablet.
+- La tab "Sorveglianza" compare solo da **due telecamere in su** — con una
+  sola, la card in Casa e il suo overlay a schermo intero al tap sono già
+  tutta la funzione: una tab con una tessera sola non aggiungerebbe nulla.
+  Oltre `gridTab` telecamere (6 di default) la griglia della tab passa da 2
+  a 3 colonne.
+- Funziona solo su `panel_custom` (vedi "Cos'è, e cosa non è" sopra): gli
+  URL di snapshot/stream sono firmati da HA e same-origin col pannello, che
+  è esattamente ciò che un'eventuale variante standalone/token dovrebbe
+  gestire diversamente.
+
+## Modalità kiosk per il tablet a muro
+
+Punta [Fully Kiosk Browser](https://www.fully-kiosk.com/) (o un altro
+browser kiosk) su `https://<tuo-ha>/casa`. Per nascondere sidebar e header
+di Home Assistant sopra al pannello, usa
+[kiosk-mode](https://github.com/NemesisRE/kiosk-mode) da HACS, oppure le
+impostazioni immersive/zoom di Fully Kiosk. Risoluzione di riferimento
+1280×800 orizzontale — sotto quella larghezza o altezza la view Casa passa a
+un layout scorrevole (voluto — vedi TROUBLESHOOTING.md).
+
+## Modalità demo
+
+Apri la pagina con `?demo` in coda all'URL (oppure aprila direttamente fuori
+da `panel_custom` — da `file://` la dashboard non ha nessun host con cui
+parlare e passa da sola allo stesso backend demo dopo un breve timeout).
+Mostra tutte le view — Casa, Sorveglianza, Irrigazione, Energia, Auto — con
+dati inventati e un badge `DEMO` visibile, e non chiama mai un servizio
+reale. Le telecamere demo mostrano solo l'icona segnaposto (non c'è un feed
+vero da inventare), compresa una impostata `hideUntilTap` per far vedere
+anche quel comportamento.
+
+## Limiti noti
+
+- **Il risultato vale quanto le tue aree assegnate.** Ogni stanza,
+  dispositivo e telecamera su questa dashboard viene dai registri di
+  Home Assistant (aree/dispositivi/entità) — non c'è nessuna logica di
+  raggruppamento o denominazione alternativa oltre a quella. Se la tua
+  installazione ha le aree assegnate con coerenza, la dashboard ha già
+  senso al primo avvio, senza scrivere una riga di config. Se non hai mai
+  assegnato le aree — tutto resta sotto "nessuna area", come capita spesso
+  a un'installazione appena fatta — la dashboard sembrerà quasi vuota, e
+  non è un bug da segnalare: è `Impostazioni -> Aree` di Home Assistant che
+  aspetta di essere compilato, cosa che questa dashboard non può indovinare
+  al posto tuo.
+- **Le stanze mostrano ciò su cui agisci o che chiederesti a voce, non ogni
+  entità dell'area.** Domini raccolti: `light`, `switch`, `cover`,
+  `media_player`, `climate`, `fan`, `vacuum`, `humidifier`, `lock`,
+  `water_heater`, `valve`, `lawn_mower`, `siren`. Pillole sensore:
+  `temperature`, `humidity`, `illuminance`, `carbon_dioxide`, `pm25` e
+  `battery` (solo sotto il 20% — una batteria carica non è notizia), più le
+  pillole `binary_sensor` porta/finestra/apertura/portone garage,
+  movimento/presenza e allagamento/fumo/gas, mostrate solo quando sono
+  effettivamente "on" — una finestra chiusa è lo stato normale. `voltage`,
+  `current`, `energy` e gli altri sensori di misura elettrica non diventano
+  mai pillole né righe: il wattaggio istantaneo di uno switch compare invece
+  nella sua riga del pannello stanza, quando esiste un sensore
+  `device_class: power` sullo stesso device.
+- Pensata prima di tutto per un tablet a muro in orizzontale; la pagina
+  mobile è completa ma secondaria, non l'obiettivo primario del design.
+- Non sostituisce Lovelace: nessun selettore di card, nessun layout
+  drag-and-drop, nessuna dashboard YAML. È una pagina che riflette i tuoi
+  registri.
+- Il pannello impostazioni (ingranaggio, v1.5.0) nasconde, mostra e
+  riordina ciò che l'auto-discovery ha già trovato — non compone un layout
+  da zero. In particolare non fa: riposizionamento libero delle card,
+  scelta della colonna di una stanza, editor di temi/colori, o creazione
+  di nuove viste. Lovelace fa già tutto questo, ed è lo strumento giusto
+  quando è quello che cerchi.
+- Due modi di installazione (v2): l'integrazione (HACS, consigliato) o un
+  blocco `panel_custom` manuale. Entrambi usano le stesse pagine; Diagnostica →
+  Ambiente → "Installazione" dice con quale gira una dashboard.
+
+## Altro
+
+- Prima di aprire una issue, apri Impostazioni → Diagnostica nell'app e
+  incolla quello che mostra — dice da quale percorso è stata caricata la
+  config (o perché no), a cosa si è risolto ogni sensore energia e da quale
+  fonte, senza bisogno della console del browser. Il bottone "Copia
+  diagnostica" mette tutto negli appunti in un colpo solo.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — pannello bianco, stanze vuote,
+  grafici sbagliati, allarme senza pulsanti. (In inglese.)
+- [CHANGELOG.md](CHANGELOG.md)
+- [live_dashboard_config.example.js](public/live_dashboard_config.example.js) — ogni opzione, documentata
+  in linea.
