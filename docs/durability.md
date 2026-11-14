@@ -356,6 +356,26 @@ preserve already-decided outcomes after reporting/callback failures, and to
 keep lifecycle cleanup observers from changing the run result. Those catch-all
 boundaries do not suppress fatal process signals.
 
+Each final queue failure transition also records a short, stable retry reason.
+The reason is written as the `retry_reason` field of the `queue_item_fail` log
+event and counted in `QueueRunSummary.retry_reasons`. The event is emitted on
+every final failure transition, including checkpoint and processing-error paths
+that already logged a more specific event. The closed vocabulary is:
+
+| Reason | Decision |
+| --- | --- |
+| `business_failure` | terminal unless `retry_business_failures=True` |
+| `system_failure` | retry; covers `SystemException`, unknown exceptions, and failures without a failed transaction step |
+| `checkpoint_retry` | retry per the checkpoint's retry policy |
+| `checkpoint_terminal` | terminal per the checkpoint's retry policy |
+| `validation_error` | terminal; `ExecutionValidationError` or `JsonStateError` |
+| `lease_renewal` | retry |
+| `durable_binding` | terminal |
+
+The reason describes the decision the runner made, not necessarily the durable
+queue disposition a custom provider attests in `QueueAttemptOutcome`. Lease
+loss records no reason because the runner skips the final transition.
+
 After confirmed lease loss, the old worker records the item as failed in its run
 summary but leaves the queue row untouched. If another worker already claimed
 the item, that worker owns the next transition. If no worker owns it, normal
@@ -910,6 +930,13 @@ outcome it just wrote, so those counters describe the transition that happened,
 not merely the retry request. A custom `QueueProvider` may return `None`; the
 runner records that as `transition_unknown` rather than guessing from its retry
 argument.
+
+`QueueRunSummary.retry_reasons` counts final failure transitions by the runner's
+decision reason, using the closed vocabulary described under
+[runner failure policy](#runner-failure-policy). It is observational: it does
+not affect the retry decision, transition order, or `on_finish` timing, and lease
+loss contributes no reason. The reasons are also emitted as the `retry_reason`
+field of the `queue_item_fail` log event.
 
 The runner retries only short-lived SQLite `OperationalError` messages that
 contain `locked` or `busy`. This bounded retry policy uses 3 attempts with

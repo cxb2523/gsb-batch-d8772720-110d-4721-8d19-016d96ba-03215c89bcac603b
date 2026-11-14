@@ -557,6 +557,7 @@ class TestEngineLogging:
 class TestRunnerLogging:
     @pytest.mark.parametrize(("event", "expected"), [
         ("queue_claim_retry", "rpacore.queue.claim.retry"),
+        ("queue_item_fail", "rpacore.queue.item.fail"),
         ("queue_run_aborted", "rpacore.queue.run.aborted"),
         ("queue_run_completed", "rpacore.queue.run_completed"),
     ])

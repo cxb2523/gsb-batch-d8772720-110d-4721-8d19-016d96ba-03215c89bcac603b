@@ -98,6 +98,12 @@ class QueueRunSummary:
     scheduled retries, and lease loss. The disposition-specific counters are
     authoritative when present; ``transition_unknown`` covers providers that
     do not attest the result of ``fail()``.
+
+    ``retry_reasons`` counts each recorded failure transition by its short
+    machine-readable reason (for example ``business_failure`` or
+    ``checkpoint_retry``). It is observational only: it never changes the
+    retry decision or the queue transition, and lease loss does not record a
+    reason because no final transition occurred.
     """
 
     processed: int = field(default=0)
@@ -111,6 +117,7 @@ class QueueRunSummary:
     terminal_failed: int = field(default=0)
     lease_lost: int = field(default=0)
     transition_unknown: int = field(default=0)
+    retry_reasons: dict[str, int] = field(default_factory=dict)
 
 
 def run_queue_loop(
@@ -144,6 +151,8 @@ def run_queue_loop(
       unless retry_business_failures=True.
     - Calls queue.fail() with retry=True for system failures and unexpected errors.
     - Also calls queue.fail() if build_transaction() or any unexpected error raises.
+    - Logs every final failure transition as queue_item_fail with a retry_reason
+      attribute and counts it in QueueRunSummary.retry_reasons.
     - Calls after_item(item, transaction, error) once per item on ordinary item
       outcomes after execution, checkpointing, reporting, and notification.
             transaction is None if build_transaction() raised; error is None on normal paths
@@ -631,20 +640,11 @@ def _run_claimed_item_with_context(
         )
         return True
 
-    if isinstance(outcome_error, _CheckpointError):
-        retry = outcome_error.retry
-    elif isinstance(outcome_error, _DurableTransactionBindingError):
-        retry = False
-    elif isinstance(outcome_error, _LeaseRenewalError):
-        retry = True
-    elif isinstance(outcome_error, (ExecutionValidationError, JsonStateError)):
-        retry = False
-    else:
-        retry = (
-            retry_business_failures
-            or outcome_error is not None
-            or not _transaction_has_only_business_failures(transaction)
-        )
+    retry, retry_reason = _classify_queue_failure(
+        transaction,
+        outcome_error,
+        retry_business_failures=retry_business_failures,
+    )
     with heartbeat.operation_lock:
         transition_outcome, transition_error = _fail_queue_item_with_retries(
             queue,
@@ -661,18 +661,24 @@ def _run_claimed_item_with_context(
     if transition_error is not None:
         raise transition_error
     summary.failed += 1
+    summary.retry_reasons[retry_reason] = summary.retry_reasons.get(retry_reason, 0) + 1
     if transition_outcome is QueueAttemptOutcome.RETRY_SCHEDULED:
         summary.retry_scheduled += 1
     elif transition_outcome is QueueAttemptOutcome.FAILED:
         summary.terminal_failed += 1
     else:
         summary.transition_unknown += 1
-    if not error and not callback_failed and ctx is not None:
-        log.warning(
-            "Queue item failed (transaction status: %s)",
-            ctx.transaction.status,
-            extra={"event": "queue_item_fail", "queue_item_id": item.id, "queue_reference": item.reference, "worker_id": worker_id},
-        )
+    log.warning(
+        "Queue item failed (transaction status: %s)",
+        transaction.status if transaction is not None else "unknown",
+        extra={
+            "event": "queue_item_fail",
+            "queue_item_id": item.id,
+            "queue_reference": item.reference,
+            "worker_id": worker_id,
+            "retry_reason": retry_reason,
+        },
+    )
     return True
 
 
@@ -1099,6 +1105,42 @@ def _transaction_has_only_business_failures(transaction: Transaction | None) -> 
         step.exceptions and isinstance(step.exceptions[-1], BusinessException)
         for step in failed
     )
+
+
+def _classify_queue_failure(
+    transaction: Transaction | None,
+    outcome_error: Exception | None,
+    *,
+    retry_business_failures: bool,
+) -> tuple[bool, str]:
+    """Return ``(retry, retry_reason)`` for one item's final failure transition.
+
+    The reason is a short, stable, machine-readable identifier recorded on the
+    ``queue_item_fail`` log and in ``QueueRunSummary.retry_reasons``. The retry
+    decision keeps the runner's existing semantics:
+
+    - checkpoint failures follow the checkpoint's own ``retry`` policy;
+    - durable binding errors are terminal;
+    - lease renewal errors retry;
+    - execution-validation and JSON-state errors are terminal;
+    - business-only transaction failures are terminal unless
+      ``retry_business_failures`` is set;
+    - every other failure (system exceptions, unknown exceptions, and errors
+      with no failed transaction steps) retries.
+    """
+    if isinstance(outcome_error, _CheckpointError):
+        return outcome_error.retry, (
+            "checkpoint_retry" if outcome_error.retry else "checkpoint_terminal"
+        )
+    if isinstance(outcome_error, _DurableTransactionBindingError):
+        return False, "durable_binding"
+    if isinstance(outcome_error, _LeaseRenewalError):
+        return True, "lease_renewal"
+    if isinstance(outcome_error, (ExecutionValidationError, JsonStateError)):
+        return False, "validation_error"
+    if outcome_error is None and _transaction_has_only_business_failures(transaction):
+        return retry_business_failures, "business_failure"
+    return True, "system_failure"
 
 
 def _strict_transaction_checkpoint(

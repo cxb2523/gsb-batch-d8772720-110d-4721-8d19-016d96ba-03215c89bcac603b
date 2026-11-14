@@ -97,7 +97,12 @@ def test_runner_claim_contention_with_real_process(tmp_path, recover):
     assert result["error"] == (None if recover else "SQLITE_BUSY")
     summary, = result["summaries"]
     assert summary["processed"] == summary["completed"] == int(recover)
-    assert all(value == 0 for name, value in summary.items() if name not in {"processed", "completed"})
+    assert all(
+        value == 0
+        for name, value in summary.items()
+        if name not in {"processed", "completed", "retry_reasons"}
+    )
+    assert summary["retry_reasons"] == {}
     retries = [event for event in result["events"] if event["event"] == "queue_claim_retry"]
     assert len(retries) == (1 if recover else 2)
     terminal = [event for event in result["events"] if event["event"].startswith("queue_run_")]

@@ -811,6 +811,220 @@ class TestQueueRunSummary:
 
 
 # ---------------------------------------------------------------------------
+# failure transition retry reasons
+# ---------------------------------------------------------------------------
+
+def _queue_item_fail_records(caplog) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.__dict__.get("event") == "queue_item_fail"
+    ]
+
+
+class TestQueueFailureRetryReasons:
+    def test_business_failure_is_terminal_and_reason_is_logged(self, caplog) -> None:
+        logger = logging.getLogger("test.runner.retry_reason.business")
+
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            summary, queue = _run(
+                [_item("a")],
+                step_cls=_BusinessFailStep,
+                logger=logger,
+            )
+
+        assert summary.retry_reasons == {"business_failure": 1}
+        assert summary.terminal_failed == 1
+        assert queue.fail_retries == [False]
+        records = _queue_item_fail_records(caplog)
+        assert [record.retry_reason for record in records] == ["business_failure"]
+
+    def test_business_failure_retries_when_configured(self) -> None:
+        summary, queue = _run(
+            [_item("a")],
+            step_cls=_BusinessFailStep,
+            retry_business_failures=True,
+        )
+
+        assert summary.retry_reasons == {"business_failure": 1}
+        assert summary.retry_scheduled == 1
+        assert queue.fail_retries == [True]
+
+    def test_system_failure_retries_and_reason_is_logged(self, caplog) -> None:
+        logger = logging.getLogger("test.runner.retry_reason.system")
+
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            summary, queue = _run(
+                [_item("a")],
+                step_cls=_SystemFailStep,
+                logger=logger,
+            )
+
+        assert summary.retry_reasons == {"system_failure": 1}
+        assert summary.retry_scheduled == 1
+        assert queue.fail_retries == [True]
+        records = _queue_item_fail_records(caplog)
+        assert [record.retry_reason for record in records] == ["system_failure"]
+
+    def test_checkpoint_retry_is_counted(self, monkeypatch, caplog) -> None:
+        def _fail_save(
+            transaction: Transaction, *, expected_revision: int, **kwargs
+        ) -> int:
+            if transaction.history:
+                raise RuntimeError("write failed")
+            return expected_revision + 1
+
+        monkeypatch.setattr(runner_module, "_save_queue_transaction_fenced", _fail_save)
+        logger = logging.getLogger("test.runner.retry_reason.checkpoint.retry")
+
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            summary, queue = _run(
+                [_item("ok")],
+                transaction_db_path="transactions.db",
+                logger=logger,
+            )
+
+        assert summary.retry_reasons == {"checkpoint_retry": 1}
+        assert summary.terminal_failed == 1
+        assert queue.fail_retries == [True]
+        records = _queue_item_fail_records(caplog)
+        assert [record.retry_reason for record in records] == ["checkpoint_retry"]
+
+    def test_checkpoint_terminal_is_counted(self, monkeypatch, caplog) -> None:
+        def _fail_save(
+            transaction: Transaction, *, expected_revision: int, **kwargs
+        ) -> int:
+            if transaction.steps[0].status is Status.FAILED:
+                raise RuntimeError("write failed")
+            return expected_revision + 1
+
+        monkeypatch.setattr(runner_module, "_save_queue_transaction_fenced", _fail_save)
+        logger = logging.getLogger("test.runner.retry_reason.checkpoint.terminal")
+
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            summary, queue = _run(
+                [_item("bad")],
+                step_cls=_BusinessFailStep,
+                transaction_db_path="transactions.db",
+                logger=logger,
+            )
+
+        assert summary.retry_reasons == {"checkpoint_terminal": 1}
+        assert summary.terminal_failed == 1
+        assert queue.fail_retries == [False]
+        records = _queue_item_fail_records(caplog)
+        assert [record.retry_reason for record in records] == ["checkpoint_terminal"]
+
+    def test_lease_loss_during_fail_transition_records_no_reason(self) -> None:
+        class LeaseLostFailQueue(_FakeQueue):
+            def fail(
+                self,
+                item_id: str,
+                *,
+                retry: bool = True,
+                claimed_by: str,
+                claim_token: str,
+            ) -> QueueAttemptOutcome:
+                raise QueueLeaseLostError("claim lost during fail")
+
+        queue = LeaseLostFailQueue([_item("lost")])
+
+        summary = run_queue_loop(
+            queue=queue,
+            engine=Engine(),
+            build_transaction=lambda item: Transaction(
+                reference=item.reference,
+                steps=[_SystemFailStep("step", 1)],
+            ),
+            config={},
+            credentials=_CREDS,
+            worker_id="worker",
+        )
+
+        assert summary.failed == 1
+        assert summary.lease_lost == 1
+        assert summary.retry_reasons == {}
+
+
+class TestClassifyQueueFailure:
+    @staticmethod
+    def _business_failed_transaction() -> Transaction:
+        transaction = Transaction(reference="T", steps=[_BusinessFailStep("bad", 1)])
+        transaction.steps[0].status = Status.FAILED
+        transaction.steps[0].exceptions.append(BusinessException("bad data"))
+        return transaction
+
+    def test_business_only_failure_defaults_to_terminal(self) -> None:
+        retry, reason = runner_module._classify_queue_failure(
+            self._business_failed_transaction(),
+            None,
+            retry_business_failures=False,
+        )
+
+        assert (retry, reason) == (False, "business_failure")
+
+    def test_business_only_failure_can_retry(self) -> None:
+        retry, reason = runner_module._classify_queue_failure(
+            self._business_failed_transaction(),
+            None,
+            retry_business_failures=True,
+        )
+
+        assert (retry, reason) == (True, "business_failure")
+
+    def test_unknown_error_is_system_failure(self) -> None:
+        retry, reason = runner_module._classify_queue_failure(
+            Transaction(reference="T"),
+            RuntimeError("boom"),
+            retry_business_failures=False,
+        )
+
+        assert (retry, reason) == (True, "system_failure")
+
+    def test_failure_without_failed_steps_is_system_failure(self) -> None:
+        retry, reason = runner_module._classify_queue_failure(
+            Transaction(reference="T"),
+            None,
+            retry_business_failures=False,
+        )
+
+        assert (retry, reason) == (True, "system_failure")
+
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            (ExecutionValidationError("invalid wiring"), (False, "validation_error")),
+            (JsonStateError("not json"), (False, "validation_error")),
+            (runner_module._DurableTransactionBindingError("cannot resume"), (False, "durable_binding")),
+            (runner_module._LeaseRenewalError("renewal failed"), (True, "lease_renewal")),
+        ],
+    )
+    def test_special_error_reasons(self, error: Exception, expected: tuple[bool, str]) -> None:
+        assert runner_module._classify_queue_failure(
+            Transaction(reference="T"),
+            error,
+            retry_business_failures=False,
+        ) == expected
+
+    @pytest.mark.parametrize(
+        ("retry", "expected_reason"),
+        [(True, "checkpoint_retry"), (False, "checkpoint_terminal")],
+    )
+    def test_checkpoint_error_uses_its_retry_policy(
+        self,
+        retry: bool,
+        expected_reason: str,
+    ) -> None:
+        error = runner_module._CheckpointError(RuntimeError("write failed"), retry=retry)
+
+        assert runner_module._classify_queue_failure(
+            Transaction(reference="T"),
+            error,
+            retry_business_failures=False,
+        ) == (retry, expected_reason)
+
+
+# ---------------------------------------------------------------------------
 # after_item callback
 # ---------------------------------------------------------------------------
 
@@ -1266,6 +1480,7 @@ class TestRunnerManagedTransactionPersistence:
             completed=0,
             failed=1,
             terminal_failed=1,
+            retry_reasons={"business_failure": 1},
         )
         assert queue.failed == ["bad"]
         transactions = list_transactions(db_path=db_path)

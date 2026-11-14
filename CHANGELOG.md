@@ -6,6 +6,15 @@ All notable user-facing changes are recorded here.
 
 ### Added
 
+- Queue failure transitions now carry a short, stable reason identifier.
+  `queue_item_fail` logs a `retry_reason` attribute (`rpacore.queue.item.fail`
+  in JSON log v3) on every final failure transition, and
+  `QueueRunSummary.retry_reasons` counts each transition by reason using the
+  closed vocabulary `business_failure`, `system_failure`, `checkpoint_retry`,
+  `checkpoint_terminal`, `validation_error`, `lease_renewal`, and
+  `durable_binding`. Retry decisions, transition order, lease-loss skipping, and
+  `on_finish` timing are unchanged; lease loss records no reason. No schema
+  migration, dependency or examples-repository update is required.
 - `rpacore queue complete` and terminal `queue fail` wrap the existing audited
   overrides, requiring `--reason` and `--confirm` before storage access. They
   reuse queue storage selection and return schema-2 JSON acknowledgements or

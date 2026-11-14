@@ -169,6 +169,7 @@ class TestEndToEndQueueWorkflow:
             failed=1,
             callback_errors=0,
             terminal_failed=1,
+            retry_reasons={"business_failure": 1},
         )
 
         stored_item = queue.get_item(item.id)
@@ -204,6 +205,7 @@ class TestEndToEndQueueWorkflow:
             failed=1,
             callback_errors=0,
             terminal_failed=1,
+            retry_reasons={"system_failure": 1},
         )
 
         stored_item = queue.get_item(item.id)

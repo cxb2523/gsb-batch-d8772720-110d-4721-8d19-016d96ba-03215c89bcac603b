@@ -256,6 +256,11 @@ Normal returns retain the completion event above. See the
 [runner failure policy](durability.md#runner-failure-policy) for the three-call
 SQLite claim budget and the single-call custom-provider boundary.
 
+Final item failures log `queue_item_fail` (`rpacore.queue.item.fail` in JSON v3)
+with a `retry_reason` attribute from the closed reason vocabulary documented in
+the [runner failure policy](durability.md#runner-failure-policy).
+`QueueRunSummary.retry_reasons` counts the same reasons.
+
 `bind_log_context()` temporarily attaches approved scalar correlation fields
 such as transaction, queue-item, worker, step, retry, and attempt identifiers.
 Nested scopes restore the prior context even when execution raises. Context is
@@ -294,7 +299,7 @@ summary prose is for people rather than semantic parsing.
 | `get_queue_item(item_id, db_path)` | Return a persisted `QueueItem`, or `None` if absent. IDs are opaque nonblank strings. | Always read-only; the database path is required. |
 | `QueuePage`, `query_queue_items(db_path, *, statuses=None, cursor=None, limit=100)`, `query_queue_attempts(db_path, *, item_id=None, cursor=None, limit=100)`, `query_queue_poison_events(db_path, *, item_id=None, cursor=None, limit=100)` | One typed page of items, claim attempts or poison events. | Always read-only; never creates, migrates, reclaims or quarantines. Requires existing current-schema storage and refuses WAL before opening SQLite. |
 | `QueueItem`, `QueueStatus`, `QueueLeaseLostError`, `QueueAdminEvent`, `QueueAttempt`, `QueueAttemptOutcome`, `QueuePoisonEvent`, `QueueProvider`, `SqliteQueue` | Queue item model, statuses, claim-loss error, audited overrides, attempt/disposition records, provider contract, and SQLite implementation. | `SqliteQueue` creates/migrates and mutates SQLite queue state. Every claim receives an opaque `claim_token`; claimed-worker mutations require the current token. Its `fail()` returns the durable `retry_scheduled` or `failed` attempt disposition; custom providers may return `None` when they cannot attest it. `list_attempts()` exposes one final outcome per post-v4 claim without fabricating history for older rows. |
-| `QueueRunSummary`, `run_queue_loop` | Process claimed queue items through user factories and `Engine`. Fatal `MemoryError`, `KeyboardInterrupt`, and `SystemExit` signals propagate after deterministic cleanup. | `processed` and `failed` remain compatibility aggregates. Use `retry_scheduled`, `terminal_failed`, `lease_lost`, and `transition_unknown` for disposition truth; unknown is never inferred from a requested retry flag. Mutates queue and transaction SQLite databases; renews leases; checkpoints transactions when `transaction_db_path` is configured. Durable queue checkpoints require `SqliteQueue` and atomically validate its claim token plus transaction revision. Every post-claim exit stops and joins its lease heartbeat. |
+| `QueueRunSummary`, `run_queue_loop` | Process claimed queue items through user factories and `Engine`. Fatal `MemoryError`, `KeyboardInterrupt`, and `SystemExit` signals propagate after deterministic cleanup. | `processed` and `failed` remain compatibility aggregates. Use `retry_scheduled`, `terminal_failed`, `lease_lost`, and `transition_unknown` for disposition truth; unknown is never inferred from a requested retry flag. `retry_reasons` counts each final failure transition by its documented reason (`business_failure`, `system_failure`, `checkpoint_retry`, `checkpoint_terminal`, `validation_error`, `lease_renewal`, `durable_binding`); it is observational and lease loss records none. Mutates queue and transaction SQLite databases; renews leases; checkpoints transactions when `transaction_db_path` is configured. Durable queue checkpoints require `SqliteQueue` and atomically validate its claim token plus transaction revision. Every post-claim exit stops and joins its lease heartbeat. |
 
 `QueueItem.available_at: datetime | None` exposes the persisted next eligible UTC
 instant; `None` means no outstanding delay. The field is appended after existing
