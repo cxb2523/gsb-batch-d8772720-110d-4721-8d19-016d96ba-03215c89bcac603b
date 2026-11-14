@@ -1,0 +1,326 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./*.tsx";
+
+/* shadcn/ui 默认 neutral 主题。换主色只需改 :root 里的 --primary 和 --primary-foreground。 */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, Consolas, "Microsoft YaHei UI", monospace;
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --header-h: 97px;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { scrollbar-gutter: stable; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body { @apply min-h-dvh bg-background text-sm text-foreground antialiased; -webkit-tap-highlight-color: transparent; }
+  :focus-visible { @apply outline-2 outline-offset-2; }
+  a { @apply font-medium text-primary underline underline-offset-4; }
+  pre { @apply my-2 max-h-72 overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed; white-space: pre-wrap; overflow-wrap: anywhere; }
+  dialog { margin: auto; }
+}
+
+/*
+ * 浏览器里没有 React，运行时脚本直接创建原生元素。这里按 shadcn/ui new-york-v4 的样式字符串，
+ * 让原生控件和服务端渲染的组件长得完全一样。对照官方组件名写在每段开头。
+ */
+@layer components {
+  /* Input */
+  input:not([type=checkbox], [type=radio], [type=range], [type=file], [type=hidden]) {
+    @apply h-9 max-w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm;
+    width: 13rem;
+  }
+  input[type=number] { width: 6rem; font-variant-numeric: tabular-nums; }
+
+  /* Textarea */
+  textarea {
+    @apply flex field-sizing-content min-h-16 w-full rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 md:text-sm;
+  }
+
+  /* Native Select；图标画在背景上，运行时创建的 select 不需要外层包裹。 */
+  select {
+    @apply h-9 max-w-full min-w-0 cursor-pointer appearance-none truncate rounded-md border border-input bg-transparent py-0 pr-9 pl-3 text-sm shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1a1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-position: right 0.625rem center;
+    background-repeat: no-repeat;
+    background-size: 1rem;
+  }
+
+  /* 表单控件共用的焦点与校验状态 */
+  :is(input:not([type=checkbox], [type=radio], [type=range], [type=file], [type=hidden]), textarea, select):focus-visible {
+    @apply border-ring ring-[3px] ring-ring/50;
+  }
+  :is(input, textarea, select)[aria-invalid=true] { @apply border-destructive ring-destructive/20; }
+
+  /* Checkbox */
+  input[type=checkbox] {
+    @apply size-4 shrink-0 cursor-pointer appearance-none rounded-[4px] border border-input bg-transparent shadow-xs transition-shadow outline-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  input[type=checkbox]:checked {
+    @apply border-primary bg-primary;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fafafa' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 0.75rem;
+  }
+
+  /* Radio Group */
+  input[type=radio] {
+    @apply aspect-square size-4 shrink-0 cursor-pointer appearance-none rounded-full border border-input bg-transparent shadow-xs transition-[color,box-shadow] outline-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  input[type=radio]:checked { background-image: radial-gradient(circle, var(--primary) 0 0.25rem, transparent 0.28rem); }
+  input:is([type=checkbox], [type=radio]):focus-visible { @apply border-ring ring-[3px] ring-ring/50; }
+
+  /* Slider */
+  input[type=range] {
+    @apply h-4 cursor-pointer appearance-none bg-transparent outline-none;
+    width: 7rem;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    @apply h-1.5 rounded-full;
+    background: linear-gradient(to right, var(--primary) var(--range-fill, 0%), var(--muted) var(--range-fill, 0%));
+  }
+  input[type=range]::-moz-range-track { @apply h-1.5 rounded-full bg-muted; }
+  input[type=range]::-moz-range-progress { @apply h-1.5 rounded-full bg-primary; }
+  input[type=range]::-webkit-slider-thumb {
+    @apply size-4 appearance-none rounded-full border border-primary bg-white shadow-sm transition-[color,box-shadow];
+    margin-top: -0.3125rem;
+  }
+  input[type=range]::-moz-range-thumb { @apply size-4 rounded-full border border-primary bg-white shadow-sm; }
+  input[type=range]:hover::-webkit-slider-thumb,
+  input[type=range]:focus-visible::-webkit-slider-thumb { @apply ring-4 ring-ring/50; }
+
+  /* Label */
+  label { @apply text-sm leading-none font-medium select-none; }
+
+  /* Button（运行时的原生按钮按 outline / sm 处理） */
+  button:where(:not([class])), .config-small-button {
+    @apply inline-flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm font-medium whitespace-nowrap text-foreground shadow-xs transition-all outline-none hover:bg-accent hover:text-accent-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50;
+  }
+  .config-small-button.remove { @apply border-transparent bg-transparent text-destructive shadow-none hover:bg-destructive/10 hover:text-destructive; }
+  .inline-link { @apply cursor-pointer font-medium text-primary underline underline-offset-4 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50; }
+  .idle-module-actions a { @apply inline-flex h-8 items-center rounded-md px-2 text-sm font-medium text-muted-foreground no-underline transition-all hover:bg-accent hover:text-accent-foreground; }
+
+  /* Tabs：默认样式 */
+  :is(.config-tabs, .resource-tabs, .log-filter, .config-subtabs) {
+    @apply inline-flex h-9 w-fit max-w-full items-center justify-start rounded-lg bg-muted p-[3px] text-muted-foreground;
+    overflow-x: auto;
+    scrollbar-width: none;
+    scroll-padding-inline: 3px;
+  }
+  :is(.config-tabs, .resource-tabs, .log-filter, .config-subtabs)::-webkit-scrollbar { display: none; }
+  :is(.config-tabs, .resource-tabs, .log-filter, .config-subtabs, .config-families) > button {
+    @apply relative inline-flex h-[calc(100%-1px)] flex-none cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-medium whitespace-nowrap text-foreground/60 shadow-none transition-all hover:bg-transparent hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50;
+  }
+  :is(.config-tabs, .resource-tabs, .log-filter, .config-subtabs) > button:is([aria-selected=true], [aria-current=page], [aria-pressed=true]) {
+    @apply bg-background text-foreground shadow-sm;
+  }
+
+  /* Tabs：line 样式 */
+  .config-families {
+    @apply inline-flex h-9 w-fit max-w-full items-center justify-start gap-1 bg-transparent text-muted-foreground;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .config-families::-webkit-scrollbar { display: none; }
+  .config-families > button::after {
+    content: "";
+    @apply absolute inset-x-0 bottom-0 h-0.5 bg-foreground opacity-0 transition-opacity;
+  }
+  .config-families > button[aria-selected=true] { @apply text-foreground; }
+  .config-families > button[aria-selected=true]::after { @apply opacity-100; }
+
+  /* Accordion / Collapsible */
+  summary {
+    @apply flex cursor-pointer items-center justify-between gap-4 rounded-md text-left text-sm font-medium transition-all outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50;
+    list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after {
+    content: "";
+    @apply size-4 shrink-0 bg-muted-foreground transition-transform duration-200;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  details[open] > summary::after { @apply rotate-180; }
+  :is(.overview-task-group, .inventory-category, .guild-tech-group) { @apply border-b last:border-b-0; }
+  :is(.overview-task-group, .inventory-category, .guild-tech-group) > summary { @apply py-3; }
+
+  /* Select 触发器样式的多选框 */
+  .config-multi { @apply rounded-md border border-input bg-transparent shadow-xs; }
+  .config-multi > summary { @apply min-h-9 rounded-md px-3 py-2 font-normal hover:no-underline; }
+  .config-multi[open] > summary { @apply rounded-b-none border-b; }
+  .config-multi-panel { @apply rounded-md border bg-popover p-1 text-popover-foreground shadow-md; }
+  .config-option { @apply flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm font-normal hover:bg-accent hover:text-accent-foreground; }
+
+  /* Switch：运行时配置项和 Switch 组件尺寸一致 */
+  .config-switch {
+    @apply inline-flex h-[1.15rem] w-8 shrink-0 cursor-pointer items-center rounded-full border border-transparent bg-input shadow-xs transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .config-switch[data-state=checked] { @apply bg-primary; }
+  .config-switch-track { display: contents; }
+  .config-switch-thumb { @apply pointer-events-none block size-4 rounded-full bg-background ring-0 transition-transform; }
+  .config-switch[data-state=checked] .config-switch-thumb { @apply translate-x-[calc(100%-2px)]; }
+
+  /* Table */
+  table { @apply w-full caption-bottom text-sm; }
+  thead tr { @apply border-b; }
+  tbody tr { @apply border-b transition-colors hover:bg-muted/50; }
+  tbody tr:last-child { @apply border-0; }
+  th { @apply h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-foreground; }
+  td { @apply p-2 align-middle; }
+
+  /* Card */
+  :is(.acct, .pirate-target, .config-sheet, .config-preview) { @apply rounded-xl border bg-card text-card-foreground shadow-sm; }
+  .cell { @apply rounded-lg border bg-card; }
+
+  /* Dialog */
+  dialog {
+    @apply w-full max-w-[calc(100%-2rem)] rounded-lg border bg-background p-6 text-foreground shadow-lg outline-none sm:max-w-lg;
+    max-height: calc(100dvh - 2rem);
+    overflow: auto;
+  }
+  dialog[open] { @apply grid gap-4; animation: dialog-in 0.2s ease-out; }
+  dialog::backdrop { @apply bg-black/50; }
+  dialog[open]::backdrop { animation: backdrop-in 0.2s ease-out; }
+
+  /* Popover */
+  .help-popover { @apply z-50 w-72 rounded-md border bg-popover p-4 text-sm text-popover-foreground shadow-md outline-hidden; }
+
+  /* Alert */
+  .config-message { @apply relative w-full rounded-lg border bg-card px-4 py-3 text-sm text-card-foreground; }
+  .config-message[data-kind=error] { @apply text-destructive; }
+  .config-message[data-kind=success] { @apply border-emerald-200 text-emerald-700; }
+
+  /* 提示图标：lucide circle-help */
+  .help-tip { @apply relative inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50; }
+  .help-tip::before {
+    content: "";
+    @apply block size-4 bg-current;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  /* 视觉 16px，点击范围靠伪元素扩大，不撑高所在行。 */
+  .help-tip::after { content: ""; @apply absolute -inset-2 pointer-coarse:-inset-3.5; }
+  .help-tip[aria-expanded=true] { @apply text-foreground; }
+
+  /* 导航：ghost 按钮样式 */
+  .nav-tab {
+    @apply relative inline-flex h-9 flex-none cursor-pointer items-center gap-2 rounded-md px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-all outline-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50;
+  }
+  .nav-tab[aria-current=page] { @apply bg-accent text-accent-foreground; }
+  .nav-tab svg { @apply pointer-events-none size-4 shrink-0; }
+}
+
+/* 下拉面板：支持的浏览器用 Select 样式，其余浏览器和手机保留系统弹层。 */
+@supports (appearance: base-select) {
+  @media (pointer: fine) {
+    @layer components {
+      select:not([multiple], [size]), select:not([multiple], [size])::picker(select) { appearance: base-select; }
+      select:not([multiple], [size]) { display: inline-flex; align-items: center; white-space: nowrap; overflow: clip; overflow-clip-margin: content-box; }
+      select:not([multiple], [size])::picker-icon { display: none; }
+      select:not([multiple], [size])::picker(select) {
+        @apply rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md;
+        min-width: anchor-size(width);
+        margin-block: 0.25rem;
+      }
+      select:not([multiple], [size]) option {
+        @apply flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-2 text-sm outline-hidden select-none;
+      }
+      select:not([multiple], [size]) option:is(:hover, :focus) { @apply bg-accent text-accent-foreground; }
+      select:not([multiple], [size]) option:disabled { @apply pointer-events-none opacity-50; }
+      select:not([multiple], [size]) option::checkmark { order: 1; margin-left: auto; content: "✓"; }
+      select:not([multiple], [size]) optgroup { @apply text-sm; }
+      select:not([multiple], [size]) optgroup::before { @apply px-2 py-1.5 text-xs font-normal text-muted-foreground; }
+    }
+  }
+}
+
+@keyframes dialog-in { from { opacity: 0; transform: scale(0.95); } }
+@keyframes backdrop-in { from { opacity: 0; } }
+@keyframes status-pulse { 50% { opacity: 0.25; } }
+@keyframes page-progress { from { left: -32%; } to { left: 100%; } }
+
+/* 组件变体：写在 utilities 层才能盖过模板克隆元素上的工具类。 */
+@layer utilities {
+  .chip.ready, .chip.done { @apply border-transparent bg-emerald-50 text-emerald-700; }
+  .chip.paid, .chip.partial, .chip.waiting { @apply border-transparent bg-amber-50 text-amber-700; }
+  .chip.error { @apply border-transparent bg-red-50 text-red-700; }
+  .chip.blocked, .chip.unknown { @apply border-transparent bg-secondary text-muted-foreground; }
+
+  .activity-badge { @apply inline-flex w-fit shrink-0 items-center justify-center rounded-full border border-transparent bg-secondary px-2 py-0.5 text-xs font-medium whitespace-nowrap text-secondary-foreground; }
+  .activity-badge.limited { @apply bg-amber-50 text-amber-700; }
+  .activity-badge.permanent { @apply border-border bg-transparent text-foreground; }
+  .activity-ready { @apply inline-flex w-fit shrink-0 items-center justify-center rounded-full bg-primary px-2 py-0.5 text-xs font-medium whitespace-nowrap text-primary-foreground; }
+
+  .status-pill[data-state=on] { @apply border-transparent bg-emerald-50 text-emerald-700; }
+  .status-pill[data-state=paused] { @apply border-transparent bg-amber-50 text-amber-700; }
+  .status-pill[data-state=busy] { @apply border-transparent bg-secondary text-secondary-foreground; }
+}
+
+/* 四列以上的表格在窄屏变成一行一张卡片，避免内容被挤成竖排。 */
+@container main (max-width: 600px) {
+  .table-stack:not(.activity-statistics-scroll *) thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .table-stack:not(.activity-statistics-scroll *) :is(table, tbody, tr) { display: block; width: 100%; }
+  .table-stack:not(.activity-statistics-scroll *) tr { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+  .table-stack:not(.activity-statistics-scroll *) tr:last-child { border-bottom: 0; }
+  .table-stack:not(.activity-statistics-scroll *) td { display: block; position: relative; min-height: 1.5rem; padding: 0.25rem 0 0.25rem 5.5rem; border: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .table-stack:not(.activity-statistics-scroll *) td::before { content: attr(data-label); position: absolute; left: 0; top: 0.3125rem; width: 5rem; color: var(--muted-foreground); font-size: 0.75rem; font-weight: 400; line-height: 1.4; }
+  .table-stack:not(.activity-statistics-scroll *) td:first-child { padding-left: 0; font-weight: 500; }
+  .table-stack:not(.activity-statistics-scroll *) td:first-child::before { display: none; }
+  .table-stack:not(.activity-statistics-scroll *) td:empty { display: none; }
+}
+
+/* 只放必须盖过工具类的规则。 */
+header .connection #connect:disabled:has(+ #disconnect:enabled),
+header .connection #disconnect:disabled { display: none; }
+#world-map-pan { display: none; }
+@media (any-pointer: coarse) { #world-map-pan { display: inline-flex; } }
+@media (prefers-reduced-motion: reduce) {
+  dialog[open], dialog[open]::backdrop { animation: none; }
+  [data-slot=button], [data-slot=switch], [data-slot=switch-thumb], summary::after { transition: none; }
+}

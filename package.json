@@ -1,0 +1,56 @@
+{
+  "name": "crazywaterworld",
+  "version": "1.0.0",
+  "description": "微信小游戏《疯狂水世界》协议侧挂机工具：直连游戏网关完成日常/任务/英雄/海面循环，附本地网页控制台",
+  "type": "module",
+  "main": "src/app.mjs",
+  "scripts": {
+    "build:ui": "esbuild src/ui/console.tsx --bundle --platform=node --format=esm --packages=external --outfile=src/ui/dist/console.mjs && tailwindcss -i src/ui/theme.css -o src/ui/dist/theme.css --minify",
+    "start": "node src/app.mjs",
+    "test": "npm run test:config && npm run test:core && npm run test:progression && npm run test:extra",
+    "test:core-subset": "node tools/selftest-trial-sweeps.mjs && node tools/selftest-hero-equipment.mjs && node tools/selftest-guild.mjs && node tools/selftest-fleet-formation.mjs && node tools/selftest-pirate-hunt.mjs",
+    "test:capture": "node tools/selftest-raw-capture.mjs && node tools/selftest-douyin-cli.mjs",
+    "test:config": "node tools/selftest-config-cache.mjs && node tools/selftest-resource-updater.mjs",
+    "test:wxapkg": "node tools/selftest-wxapkg.mjs",
+    "test:wechat": "node tools/selftest-wechat-capture.mjs && node tools/selftest-wechat-cli.mjs",
+    "capture": "node tools/capture-credentials.mjs",
+    "capture:douyin": "node tools/capture-douyin-login.mjs",
+    "sync-config": "node tools/sync-config.mjs",
+    "sync-resources": "node tools/sync-resources.mjs",
+    "sync-art": "node tools/sync-art.mjs",
+    "prestart": "npm run build:ui",
+    "pretest": "npm run build:ui",
+    "test:core": "node src/selftest.mjs && node tools/selftest-client-heartbeat.mjs && node tools/selftest-automation.mjs && node tools/selftest-boats.mjs && node tools/selftest-gather-controls.mjs && node tools/selftest-mail.mjs && node tools/selftest-activity-actions.mjs && node tools/selftest-activity-availability.mjs && node tools/selftest-activity-config-ui.mjs && node tools/selftest-activity-config-http.mjs && node tools/selftest-overview-power.mjs && node tools/selftest-free-rewards.mjs && node tools/selftest-pirate-board.mjs && node tools/selftest-hero-show-rewards.mjs && node tools/selftest-daily-schedule.mjs && node tools/selftest-daily-combat.mjs && node tools/selftest-ad-shop.mjs && node tools/selftest-ad-rewards.mjs && npm run test:core-subset && node tools/selftest-equipment-crafting.mjs && node tools/selftest-lineups.mjs && node tools/selftest-phone-login.mjs && node tools/selftest-connection-loss.mjs && node tools/selftest-console-recovery.mjs && node tools/selftest-console-log.mjs && node tools/selftest-console-output.mjs && node tools/selftest-console-background.mjs && node tools/selftest-extra-rewards.mjs && node tools/selftest-idle-growth.mjs",
+    "test:progression": "node tools/selftest-equipment-automation.mjs && node tools/selftest-radar.mjs && node tools/selftest-order-reservations.mjs && node tools/selftest-guild-orders.mjs && node tools/selftest-museum.mjs && node tools/selftest-museum-materials.mjs && node tools/selftest-pet-breeding.mjs && node tools/selftest-antique.mjs && node tools/selftest-progression-budgets.mjs && node tools/selftest-progress-automation.mjs && node tools/selftest-migration.mjs && node tools/selftest-fleet-migration.mjs && node tools/selftest-resource-migration.mjs && node tools/selftest-material-migration.mjs && node tools/selftest-world-resource-migration.mjs && node tools/selftest-farm-planting.mjs && node tools/selftest-spend-settlement.mjs && node tools/selftest-progression-settlement.mjs && node tools/selftest-spend-cancellation.mjs && node tools/selftest-spend-evidence.mjs && node tools/selftest-base-pet-evidence.mjs",
+    "test:extra": "node tools/selftest-activity-rankings.mjs && node tools/selftest-side-rewards.mjs && node tools/selftest-claim-cleanup.mjs && node tools/selftest-console-performance.mjs && node tools/selftest-console-comments.mjs && node tools/selftest-eighteen-comments.mjs && node tools/selftest-extra-automation.mjs && node tools/selftest-fleet-maintenance.mjs && node tools/selftest-fleet-settlement.mjs && node tools/selftest-gift-codes.mjs && node tools/selftest-guild-mutual.mjs && node tools/selftest-hero-recruit-rewards.mjs && node tools/selftest-league-collect.mjs && node tools/selftest-missing-rewards.mjs && node tools/selftest-nine-comments.mjs && node tools/selftest-optimization.mjs && node tools/selftest-orders-controls.mjs && node tools/selftest-pet-queue.mjs && node tools/selftest-pirate-recovery.mjs && node tools/selftest-pirate-sweeps.mjs && node tools/selftest-radar-confirmation.mjs && node tools/selftest-radar-parallel.mjs && node tools/selftest-remediation.mjs && node tools/selftest-rewards-follow.mjs && node tools/selftest-merchant-planner.mjs && node tools/selftest-merchant-speed.mjs && node tools/selftest-merchant-settings.mjs && node tools/selftest-merchant-journal.mjs && node tools/selftest-merchant-upgrade.mjs && node tools/selftest-merchant-monitor.mjs && node tools/selftest-merchant-http.mjs && node tools/selftest-seasonal-suite.mjs && node tools/selftest-settings.mjs && node tools/selftest-settings-persistence.mjs && node tools/selftest-settings-autosave.mjs && node tools/selftest-sixteen-comments.mjs && node tools/selftest-target-limits.mjs && node tools/selftest-treasure-cycle.mjs && node tools/selftest-treasure-loot.mjs && node tools/selftest-treasure-filter.mjs && node tools/selftest-trial-modes.mjs && node tools/selftest-unified-automation.mjs && node tools/selftest-war-forge.mjs && node tools/selftest-week-order-manual.mjs && node tools/selftest-world-live-view.mjs && node tools/selftest-world-map-geometry.mjs && node tools/selftest-trace-log.mjs && node tools/selftest-challenge-automation.mjs && node tools/selftest-alliance-automation.mjs && node tools/selftest-guild-ships.mjs && node tools/selftest-guild-forts.mjs && node tools/selftest-silicon.mjs && node tools/selftest-hero-raid-automation.mjs && node tools/selftest-screenshot-features.mjs && node tools/selftest-extended-loop.mjs"
+  },
+  "keywords": [
+    "wechat",
+    "minigame",
+    "protocol",
+    "protobuf",
+    "websocket"
+  ],
+  "license": "ISC",
+  "private": false,
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "@radix-ui/react-checkbox": "^1.4.1",
+    "@radix-ui/react-slot": "^1.5.0",
+    "@radix-ui/react-switch": "^1.4.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.66.0",
+    "protobufjs": "^7.6.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.3"
+  }
+}

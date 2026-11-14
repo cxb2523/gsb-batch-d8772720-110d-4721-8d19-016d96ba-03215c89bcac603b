@@ -1,0 +1,19 @@
+node_modules/
+work/
+data/
+output/
+.playwright-cli/
+
+# 本地生成的证书、密钥及开发记录
+certificates/
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cer
+*.wxapkg
+*.apk
+*.log
+.planning/
+.impeccable/
