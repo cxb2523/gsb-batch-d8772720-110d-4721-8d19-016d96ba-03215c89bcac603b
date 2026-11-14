@@ -170,6 +170,52 @@
   padding: 40px 0 16px;
 }
 
+/* Preloaded-report probe outcomes, shown above the upload card so a failed or
+   missing build-time report is explainable instead of silently falling back. */
+.preloadNotices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.preloadNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.preloadNotice svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.preloadNoticeText {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fgColor-default);
+}
+
+/* Slimmer variant used inside the content band next to the locked uploaders. */
+.bandPreloadNotices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.bandPreloadNotices .preloadNotice {
+  padding: 8px 12px;
+}
+
+.bandPreloadNotices .preloadNoticeText {
+  font-size: 12px;
+}
+
 .promptCard {
   display: flex;
   flex-direction: row;

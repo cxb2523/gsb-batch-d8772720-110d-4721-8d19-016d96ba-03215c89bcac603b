@@ -19,6 +19,7 @@ Only the aggregate, non-sensitive metadata listed below is captured.
 | Event | When | Properties |
 | --- | --- | --- |
 | `csv_uploaded` | A usage report CSV is successfully parsed and loaded | `report_type` (`summarized` \| `detailed` \| `ai` \| `unknown`), `row_count` (number of rows in the report), `slot` (`primary` \| `comparison` — whether the file is the main report or the previous-month comparison report) |
+| `preloaded_report_probed` | A build-time preloaded report slot finishes probing on page load, whether or not it succeeded | `slot` (`primary` \| `comparison`) and `outcome` (`success` \| `not_found` \| `not_csv` \| `parse_failed` \| `fetch_failed`) — both fixed enums; never the CSV contents, a file name, a URL, or any per-user data |
 | `tool_viewed` | A tool is opened from the sidebar (or via the logo reset), or the active tool first appears when a report is loaded | `tool_id` (`usage-forecast` \| `team-insights` \| `model-breakdown` \| `spike-detection` \| `cost-center-rollup` \| `repository-breakdown` \| `budget-guidance`) |
 | `resource_clicked` | A curated Resources link in the sidebar is opened | `resource_label` (the link's title), `resource_category` (`News` \| `Courses & guides` \| `Videos`) |
 | `github_link_clicked` | An outbound link to the project's GitHub repository is opened | `link_location` (`sidebar-source` \| `sidebar-build` \| `footer-source` \| `footer-issue`) |

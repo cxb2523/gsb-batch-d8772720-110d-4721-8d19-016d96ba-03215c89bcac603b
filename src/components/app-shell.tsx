@@ -15,6 +15,7 @@ import {
 } from "@primer/octicons-react";
 import { Sidebar } from "@/components/sidebar";
 import { CsvUploader } from "@/components/csv-uploader";
+import { PreloadOutcomeNotice } from "@/components/preload-outcome-notice";
 import { ReportProvider, useReport } from "@/components/report-provider";
 import { DEFAULT_TOOL_ID, getTool, getToolColor, toolRequiresReport } from "@/lib/tools";
 import styles from "./app.module.css";
@@ -55,7 +56,7 @@ function useToolHashRouting(): [string, (id: string) => void] {
 function Shell() {
   const [activeId, selectTool] = useToolHashRouting();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { report, loading } = useReport();
+  const { report, loading, preloadOutcomes } = useReport();
   const tool = getTool(activeId);
   const ActiveView = tool?.component;
   const toolColor = getToolColor(activeId);
@@ -166,6 +167,16 @@ function Shell() {
                 <div className={styles.bandUploaders}>
                   <CsvUploader compact />
                   <CsvUploader compact slot="comparison" />
+                  {/* The primary report is loaded (and locked); only the
+                      optional comparison slot can still carry a failure. */}
+                  {preloadOutcomes.comparison && preloadOutcomes.comparison !== "success" && (
+                    <div className={styles.bandPreloadNotices}>
+                      <PreloadOutcomeNotice
+                        slot="comparison"
+                        outcome={preloadOutcomes.comparison}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -234,8 +245,23 @@ function Shell() {
 }
 
 function GlobalUploadPrompt() {
+  const { preloadOutcomes } = useReport();
+  const hasPrimaryOutcome =
+    preloadOutcomes.primary && preloadOutcomes.primary !== "success";
+  const hasComparisonOutcome =
+    preloadOutcomes.comparison && preloadOutcomes.comparison !== "success";
+
   return (
     <div className={styles.promptShell}>
+      {/* Probe outcomes: explain what happened to each preloaded slot in plain
+          language. Renders nothing for a successful load, and the comparison
+          slot only ever appears here if it was probed (primary succeeded). */}
+      {(hasPrimaryOutcome || hasComparisonOutcome) && (
+        <div className={styles.preloadNotices}>
+          <PreloadOutcomeNotice slot="primary" outcome={preloadOutcomes.primary} />
+          <PreloadOutcomeNotice slot="comparison" outcome={preloadOutcomes.comparison} />
+        </div>
+      )}
       <div className={styles.promptCard}>
         <div className={styles.promptCopy}>
           <Text className={styles.promptEyebrow}>Get started</Text>

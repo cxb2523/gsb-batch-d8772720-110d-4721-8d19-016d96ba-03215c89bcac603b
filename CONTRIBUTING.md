@@ -44,6 +44,22 @@ npm run dev
 
 Then open http://localhost:3000 and load a usage report CSV.
 
+### Tests
+
+Unit and component tests run on [Vitest](https://vitest.dev/) with
+[Testing Library](https://testing-library.com/) and jsdom:
+
+```bash
+npm test          # single run
+npm run test:watch
+npm run typecheck # TypeScript, including the tests
+```
+
+Co-locate tests next to the code they cover as `*.test.ts` / `*.test.tsx`.
+Parsing and other pure logic lives in `src/lib/` so it can be tested without a
+DOM; component tests wrap their tree in Primer's `ThemeProvider` and
+`BaseStyles`.
+
 ### Preloading a report (optional)
 
 Drop a usage report CSV at `public/preloaded-report.csv` to ship it with the
@@ -56,6 +72,17 @@ intact: the CSV is served as a static asset and parsed entirely in the browser.
 Optionally drop a second CSV at `public/preloaded-report-previous.csv` to also
 preload the previous-month comparison report. It is fetched and locked only when
 the primary preloaded report is present.
+
+Every preload probe records a classified outcome for its slot so a failure is
+never silent. The outcomes are `not_found` (a non-OK response such as 404),
+`not_csv` (the host returned an HTML fallback page), `parse_failed` (the CSV
+could not be parsed), `fetch_failed` (the request itself failed), or `success`.
+They are surfaced in plain language in the upload prompt and, for the
+comparison slot, in the report header. A primary-slot failure keeps the normal
+upload flow and never locks the app; the comparison slot is only probed after
+the primary report succeeds, so its failure never affects the locked primary
+report. Only the fixed `slot` and `outcome` enums are sent to analytics — never
+CSV contents, file names, URLs, or any per-user data.
 
 ## Development guidelines
 
