@@ -100,6 +100,13 @@ class FetchStats:
     cache_hits: int = 0
     bytes_downloaded: int = 0
     wait_seconds: float = 0.0
+    # The browser tier is not a single, always-healthy resource: Chromium can be
+    # killed under us and we transparently rebuild it. Without these two counters
+    # a successful fetch that only succeeded *because* we swapped browsers is
+    # indistinguishable from one that used the first browser — and a crash loop
+    # looks exactly like a slow search.
+    browser_crashes: int = 0
+    browser_restarts: int = 0
     per_domain: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -115,6 +122,8 @@ class FetchStats:
             "cache_hits": self.cache_hits,
             "bytes_downloaded": self.bytes_downloaded,
             "wait_seconds": round(self.wait_seconds, 2),
+            "browser_crashes": self.browser_crashes,
+            "browser_restarts": self.browser_restarts,
             "per_domain": dict(sorted(self.per_domain.items(), key=lambda kv: -kv[1])[:20]),
         }
 
@@ -180,6 +189,9 @@ class FetchSession:
         self._stealth_unavailable_reason: str | None = None
         self._stealth_slot_held = False
         self._profile_path: Path | None = None
+        # Set when a crashed browser is discarded and a replacement is owed. The
+        # rebuild is lazy (``_ensure_stealth``), so that is where it is counted.
+        self._stealth_restart_pending = False
 
         self._cache: OrderedDict[str, FetchResult] = OrderedDict()
         self._cache_size = cache_size
@@ -614,13 +626,20 @@ class FetchSession:
         except Exception as exc:
             # A dead browser is recoverable; a dead *cached* browser is not, so
             # drop it and let the next attempt build one. Once only — if the
-            # replacement dies the same way the problem is not the session.
+            # replacement dies the same way the problem is not the session, and
+            # retrying again would turn a crash into an unbounded loop.
             if not retried_after_crash and _browser_is_gone(exc):
+                self.stats.browser_crashes += 1
                 logger.log_warning(
                     f"The browser had closed under us ({type(exc).__name__}); starting a new one",
                     broadcast=False,
                 )
                 await self._discard_stealth()
+                # Owed, not yet built: the rebuild only happens if the retry
+                # actually asks for a browser, and an old browser that closes
+                # mid-teardown is not a restart. ``_ensure_stealth`` counts it at
+                # the moment the replacement is entered.
+                self._stealth_restart_pending = True
                 return await self._fetch_stealth(
                     url,
                     timeout_ms=timeout_ms,
@@ -693,7 +712,7 @@ class FetchSession:
                 raise FetchLayerUnavailable(self._stealth_unavailable_reason)
 
             try:
-                from scrapling.fetchers import AsyncStealthySession
+                session_factory = self._stealth_session_factory()
             except Exception as exc:
                 self._stealth_unavailable_reason = (
                     f"Scrapling stealth tier not importable ({exc}). "
@@ -718,8 +737,14 @@ class FetchSession:
             last_exc: Exception | None = None
             for use_real_chrome in (self._real_chrome, False):
                 try:
-                    session = AsyncStealthySession(**self._stealth_kwargs(real_chrome=use_real_chrome))
+                    session = session_factory(**self._stealth_kwargs(real_chrome=use_real_chrome))
                     self._stealth = await session.__aenter__()
+                    # Counted only once the replacement actually entered: a
+                    # browser we failed to start is a `stealth_unavailable`, not
+                    # a restart, and reporting one would misattribute the crash.
+                    if self._stealth_restart_pending:
+                        self._stealth_restart_pending = False
+                        self.stats.browser_restarts += 1
                     return self._stealth
                 except Exception as exc:
                     last_exc = exc
@@ -745,6 +770,20 @@ class FetchSession:
             )
             logger.log_warning(self._stealth_unavailable_reason, broadcast=False)
             raise FetchLayerUnavailable(self._stealth_unavailable_reason) from last_exc
+
+    def _stealth_session_factory(self) -> Any:
+        """The browser class ``_ensure_stealth`` instantiates.
+
+        A method rather than an inline import so tests can substitute a fake
+        browser without scrapling installed — the crash/rebuild bookkeeping in
+        ``_fetch_stealth`` is exactly the behaviour that needs a test, and it
+        must not require a real Chromium to exercise. The import stays local
+        because scrapling is an optional dependency and its absence is a
+        supported runtime state, not an import error at module load.
+        """
+        from scrapling.fetchers import AsyncStealthySession
+
+        return AsyncStealthySession
 
     def _stealth_kwargs(self, *, real_chrome: bool) -> dict[str, Any]:
         """Launch options for the browser tier.
