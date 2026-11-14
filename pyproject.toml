@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copymanga-nasdownloader"
+version = "0.2.0"
+description = "Multi-source sequential manga subscription downloader for NAS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["rich", "python-dotenv", "httpx>=0.27,<1", "natsort", "cbz @ git+https://github.com/misaka10843/cbz.git"]
+
+[project.optional-dependencies]
+copymanga = []
+terra-historicus = []
+antbyw = ["beautifulsoup4"]
+ganganonline = ["beautifulsoup4", "chompjs"]
+bilibili = ["bilibili-api-dev"]
+jm = ["jmcomic>=2.6,<3"]
+yamibo = ["beautifulsoup4"]
+server = ["fastapi", "uvicorn", "apscheduler>=3.10,<4"]
+all = ["beautifulsoup4", "chompjs", "bilibili-api-dev", "jmcomic>=2.6,<3", "fastapi", "uvicorn", "apscheduler>=3.10,<4"]
+
+[project.scripts]
+cmnas = "main:main"
+cmnas-server = "cmnas_cli:serve"
+
+[tool.setuptools]
+py-modules = ["main", "dispatcher", "downloader", "server", "site_registry", "cmnas_cli"]
+
+[tool.setuptools.packages.find]
+include = ["plugins*", "updater*", "utils*"]

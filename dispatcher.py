@@ -1,0 +1,46 @@
+import importlib
+import logging
+from typing import Dict, List, Any
+
+from utils.notify import notifier
+from site_registry import SITE_MODULES
+
+log = logging.getLogger(__name__)
+
+
+class DownloadDispatcher:
+    SITE_MODULES = SITE_MODULES
+
+    @classmethod
+    def download_site(cls, tasks: List[Dict[str, Any]]):
+        """下载指定站点的任务"""
+        site_tasks = {}
+
+        for task in tasks:
+            site = task['site']
+            if site not in site_tasks:
+                site_tasks[site] = []
+            site_tasks[site].append(task)
+
+        for site, tasks in site_tasks.items():
+            if site in cls.SITE_MODULES:
+                module_path = cls.SITE_MODULES[site]
+                try:
+                    module = importlib.import_module(module_path)
+                    log.info(f"开始处理 {site} 的 {len(tasks)} 个下载任务")
+
+                    module.download_batch(tasks)
+
+                    log.info(f"{site} 的所有任务处理完成")
+                except ImportError as e:
+                    err_msg = f"找不到 {site} 站点的下载器: {e}"
+                    log.error(err_msg)
+                    notifier.add_error(site, "调度器", err_msg)
+                except Exception as e:
+                    err_msg = f"处理 {site} 下载任务时出错: {e}"
+                    log.error(err_msg)
+                    notifier.add_error(site, "调度器", str(e))
+            else:
+                err_msg = f"未知站点: {site}, 无法处理下载任务"
+                log.error(err_msg)
+                notifier.add_error(site, "调度器", err_msg)

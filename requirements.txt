@@ -1,0 +1,6 @@
+rich
+python-dotenv
+httpx
+natsort
+git+https://github.com/misaka10843/cbz.git
+beautifulsoup4
