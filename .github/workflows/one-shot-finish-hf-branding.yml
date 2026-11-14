@@ -1,0 +1,117 @@
+name: One-shot finish Hugging Face branding
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-finish-hf-branding.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate embedded brand assets
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const dir = 'hf-space/assets';
+          const clean = value => String(value || '').replace(/\s+/g, '');
+
+          function repairJpeg(data, name, minimum) {
+            if (data.length < minimum || data.length > 800000 || data[0] !== 0xff || data[1] !== 0xd8) {
+              throw new Error(`${name} invalid: ${data.length} bytes`);
+            }
+            let end = -1;
+            for (let i = data.length - 2; i >= 2; i -= 1) {
+              if (data[i] === 0xff && data[i + 1] === 0xd9) {
+                end = i + 2;
+                break;
+              }
+            }
+            if (end >= 0) {
+              const normalized = data.subarray(0, end);
+              console.log(`${name}: ${data.length}B -> ${normalized.length}B; trimmed=${data.length - normalized.length}B`);
+              return normalized;
+            }
+            const repaired = Buffer.concat([data, Buffer.from([0xff, 0xd9])]);
+            console.log(`${name}: terminal JPEG EOI missing; appended 2 bytes (${data.length}B -> ${repaired.length}B)`);
+            return repaired;
+          }
+
+          function dimensions(data) {
+            let i = 2;
+            while (i + 8 < data.length) {
+              if (data[i] !== 0xff) { i += 1; continue; }
+              while (i < data.length && data[i] === 0xff) i += 1;
+              if (i >= data.length) break;
+              const marker = data[i++];
+              if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+              if (i + 1 >= data.length) break;
+              const length = data.readUInt16BE(i);
+              if (length < 2 || i + length > data.length) break;
+              if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker) && length >= 7) {
+                return { height: data.readUInt16BE(i + 3), width: data.readUInt16BE(i + 5) };
+              }
+              if (marker === 0xda) break;
+              i += length;
+            }
+            return null;
+          }
+
+          const logoSource = clean(fs.readFileSync(path.join(dir, 'logo.base64.txt'), 'utf8'));
+          if (!logoSource) throw new Error('Logo base64 source is empty');
+          const logo = repairJpeg(Buffer.from(logoSource, 'base64'), 'logo.jpg', 5000);
+
+          const parts = fs.readdirSync(dir)
+            .filter(n => /^og\.\d+\.b64$/.test(n))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          if (!parts.length) throw new Error('No Open Graph chunks');
+
+          const ogSource = parts
+            .map(name => clean(fs.readFileSync(path.join(dir, name), 'utf8')))
+            .join('');
+          if (!ogSource) throw new Error('Open Graph base64 source is empty');
+          const og = repairJpeg(Buffer.from(ogSource, 'base64'), 'og.jpg', 15000);
+
+          fs.writeFileSync('/tmp/logo.jpg', logo);
+          fs.writeFileSync('/tmp/og.jpg', og);
+          console.log('logo dimensions:', dimensions(logo));
+          console.log('og dimensions:', dimensions(og));
+          console.log(`Validated ${parts.length} Open Graph chunks`);
+          NODE
+
+          file /tmp/logo.jpg /tmp/og.jpg
+
+      - name: Apply branding, SEO and social metadata
+        run: python3 scripts/finish_hf_branding.py
+
+      - name: Verify metadata
+        run: |
+          grep -q '^thumbnail: https://vpicciuolo-url-intelligence-agent.hf.space/assets/og.jpg' hf-space/README.md
+          grep -q 'og:image:width" content="1200"' hf-space/index.html
+          grep -q 'og:image:height" content="630"' hf-space/index.html
+          grep -q 'twitter:card" content="summary_large_image"' hf-space/index.html
+          grep -q 'canonical" href="https://vpicciuolo-url-intelligence-agent.hf.space/' hf-space/index.html
+          grep -q 'fetchpriority="high"' hf-space/index.html
+
+      - name: Commit final page update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add hf-space/README.md hf-space/index.html hf-space/ui-v2.css hf-space/assets/README.txt
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Finish Hugging Face SEO, logo and social preview"
+          git push origin HEAD:main

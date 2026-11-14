@@ -1,0 +1,146 @@
+{
+  "benchmark": "vpicciuolo/url-intelligence-benchmark",
+  "benchmark_cases": 55,
+  "predictions": 55,
+  "missing": [],
+  "generated_at": "2026-09-29T19:11:11Z",
+  "git_sha": "65e1068ef93b38a203c28ed41cb9c01865bdff72",
+  "overall_score": 100.0,
+  "deterministic_score": 100.0,
+  "metrics": {
+    "action": {
+      "ok": 55,
+      "total": 55,
+      "pct": 100.0
+    },
+    "content_kind": {
+      "ok": 26,
+      "total": 26,
+      "pct": 100.0
+    },
+    "overall_assertions": {
+      "ok": 120,
+      "total": 120,
+      "pct": 100.0
+    },
+    "redirects": {
+      "ok": 4,
+      "total": 4,
+      "pct": 100.0
+    },
+    "status_family": {
+      "ok": 35,
+      "total": 35,
+      "pct": 100.0
+    },
+    "case_pass_rate": {
+      "ok": 55,
+      "total": 55,
+      "pct": 100.0
+    },
+    "deterministic_assertions": {
+      "ok": 107,
+      "total": 107,
+      "pct": 100.0
+    },
+    "deterministic_case_pass_rate": {
+      "ok": 50,
+      "total": 50,
+      "pct": 100.0
+    },
+    "security_action_accuracy": {
+      "ok": 18,
+      "total": 18,
+      "pct": 100.0
+    },
+    "full_agent_completion": {
+      "ok": 0,
+      "total": 0,
+      "pct": null
+    }
+  },
+  "groups": {
+    "api_response": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "http_status": {
+      "ok": 12,
+      "total": 12,
+      "pct": 100.0
+    },
+    "image": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "invalid_url": {
+      "ok": 4,
+      "total": 4,
+      "pct": 100.0
+    },
+    "normalization": {
+      "ok": 8,
+      "total": 8,
+      "pct": 100.0
+    },
+    "redirect": {
+      "ok": 4,
+      "total": 4,
+      "pct": 100.0
+    },
+    "repository": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "robots": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "scheme_upgrade": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "space": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "ssrf": {
+      "ok": 10,
+      "total": 10,
+      "pct": 100.0
+    },
+    "structured_document": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "tracking_params": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "unicode": {
+      "ok": 1,
+      "total": 1,
+      "pct": 100.0
+    },
+    "unsupported_scheme": {
+      "ok": 4,
+      "total": 4,
+      "pct": 100.0
+    },
+    "web_page": {
+      "ok": 4,
+      "total": 4,
+      "pct": 100.0
+    }
+  },
+  "average_network_elapsed_ms": 123,
+  "failures": []
+}

@@ -1,0 +1,11 @@
+{
+  "id": "url-metadata",
+  "name": "url-metadata",
+  "version": "5.12.0",
+  "source": "https://github.com/laurengarcia/url-metadata",
+  "package": "https://www.npmjs.com/package/url-metadata",
+  "license": "MIT",
+  "type": "metadata/network library",
+  "adapter": "Native network-only probe (`fields: ['network']`) using the package's built-in request-filtering-agent SSRF protection. HTTP response exceptions carrying a status code are normalized to benchmark action=analyze because a response was successfully obtained.",
+  "generated_at": "2026-09-29T19:11:04.974Z"
+}

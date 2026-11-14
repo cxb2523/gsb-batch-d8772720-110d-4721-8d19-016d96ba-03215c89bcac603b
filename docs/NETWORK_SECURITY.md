@@ -1,0 +1,248 @@
+# Network Security Architecture
+
+URL Intelligence Agent accepts untrusted public URLs, so outbound network collection is a primary security boundary.
+
+Current release: **1.2.0**
+
+## Two separate collection boundaries
+
+v1.2 intentionally distinguishes:
+
+```text
+A. guarded HTTP collector
+B. optional browser renderer
+```
+
+They are not security equivalent.
+
+## A. Guarded HTTP collector
+
+The core collector in `src/net.ts` uses a dedicated Undici dispatcher.
+
+### Request flow
+
+```text
+untrusted URL
+   │
+   ▼
+parse URL
+   │
+   ├─ require http/https
+   ├─ reject embedded credentials
+   └─ reject local/private host labels
+   │
+   ▼
+preflight DNS lookup
+   │
+   ├─ resolve all answers
+   ├─ reject blocked address classes
+   └─ reject mixed public/private answers
+   │
+   ▼
+manual request
+   │
+   ▼
+Undici socket DNS lookup
+   │
+   ├─ resolve again
+   ├─ validate every answer again
+   └─ only then allow connection
+   │
+   ▼
+response
+   │
+   ├─ bounded bytes
+   ├─ bounded time
+   ├─ charset aware decode
+   └─ capture validators
+   │
+   ├─ redirect? → validate next target and repeat
+   │
+   ▼
+caller
+```
+
+## Why two DNS checks
+
+A preflight DNS lookup does not guarantee the same address will be returned when the actual network socket connects.
+
+The socket therefore uses a custom guarded DNS resolver. This closes the normal DNS rebinding / time of check to time of use gap for traffic that passes through `safeFetch()`.
+
+The design avoids long lived DNS pinning while still validating the address selected for each new connection.
+
+## Blocked IPv4 classes
+
+The implementation blocks public unsafe/non routable ranges including categories such as:
+
+- `0.0.0.0/8`;
+- RFC1918 private ranges;
+- carrier/shared private space;
+- loopback;
+- link local;
+- documentation and benchmarking ranges;
+- multicast;
+- reserved/future use.
+
+The authoritative list is the `BLOCKED_V4` policy in `src/net.ts`.
+
+## Blocked IPv6 classes
+
+The policy covers categories including:
+
+- unspecified and loopback;
+- IPv4 mapped ranges;
+- NAT64 translation ranges;
+- discard/reserved ranges;
+- documentation ranges;
+- transition/tunnel ranges selected by policy;
+- unique local;
+- link local;
+- site local/reserved;
+- multicast.
+
+The authoritative list is `BLOCKED_V6` in `src/net.ts`.
+
+## Mixed DNS answers
+
+If a hostname resolves to both a public and a blocked address, URL Intelligence Agent rejects the destination.
+
+It does not select only the public answer because an attacker could otherwise use DNS answer ordering or rebinding behavior to create inconsistent network decisions.
+
+## Redirects
+
+Redirect mode is manual. Each `Location` value is resolved against the current URL and passed through the same public destination validation before the next request.
+
+Redirect count is bounded.
+
+## Request limits
+
+Configurable limits include:
+
+```env
+URL_AGENT_TIMEOUT_MS=10000
+URL_AGENT_MAX_BYTES=3000000
+URL_AGENT_MAX_REDIRECTS=6
+```
+
+Crawl concurrency/page/depth are controlled separately.
+
+## Charset aware decoding
+
+v1.2 decodes response bytes using available hints from:
+
+1. HTTP `Content-Type` charset;
+2. BOM;
+3. HTML charset declarations;
+4. UTF 8 fallback.
+
+This improves evidence accuracy on non UTF 8 websites.
+
+## HTTP validators
+
+The collector records:
+
+```text
+ETag
+Last-Modified
+```
+
+and can send:
+
+```text
+If-None-Match
+If-Modified-Since
+```
+
+when supplied by the caller. This supports lower cost temporal monitoring.
+
+## B. Browser rendering boundary
+
+Optional Playwright rendering executes a real browser engine and must be treated as a separate network boundary.
+
+v1.2 browser defense in depth includes:
+
+- public validation of the initial URL;
+- request interception;
+- destination public address checks;
+- maximum subresource request count;
+- download blocking;
+- service worker blocking;
+- optional font/media blocking;
+- timeout bounds;
+- optional bounded same origin XHR/fetch JSON capture.
+
+These controls reduce risk but do not make browser networking identical to the guarded Undici transport.
+
+## Recommended browser isolation
+
+For production deployments that enable browser rendering, especially multi tenant or internet facing systems:
+
+```text
+API container
+   │
+   ├─ guarded HTTP egress
+   │
+   └─ renderer service
+        │
+        ├─ separate container/VM
+        ├─ no private network routes
+        ├─ cloud metadata blocked
+        ├─ internal DNS/services blocked
+        └─ public internet egress only
+```
+
+Use cloud firewall/security group/Kubernetes NetworkPolicy/eBPF/proxy controls as appropriate.
+
+Application interception should be considered defense in depth.
+
+## Remote renderer
+
+A remote rendering service can be configured. Treat it as a trusted infrastructure component and apply the same network policy there.
+
+Do not expose a renderer endpoint publicly without authentication and request limits.
+
+## Same origin runtime JSON evidence
+
+v1.2 can observe bounded public JSON responses generated by XHR/fetch during a rendered page load.
+
+Constraints are intended to keep this feature focused on public page evidence:
+
+- same origin by default;
+- bounded response size/count;
+- no intentional authentication bypass;
+- no private destination access;
+- no credential harvesting.
+
+## Other outbound boundaries
+
+Separate outbound systems can include:
+
+- external search providers;
+- optional AI provider;
+- webhook destinations;
+- domain/DNS/TLS probes;
+- configured remote renderer.
+
+Operators should apply allowlists, authentication, quotas and network isolation according to their deployment model.
+
+## Tests
+
+The deterministic unit suite includes regression cases for:
+
+- IPv4 private/local/reserved destinations;
+- IPv6 private/local/reserved destinations;
+- IPv4 mapped/translation/transition cases;
+- mixed public/private DNS answers.
+
+Run:
+
+```bash
+npm run typecheck
+npm test
+```
+
+before release.
+
+## Security statement
+
+The HTTP collector is specifically engineered to reduce SSRF and DNS rebinding risk for public URL analysis. No application layer control should be described as absolute network isolation. Operators remain responsible for deployment topology, secrets, firewall policy and optional browser/provider configuration.
