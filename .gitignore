@@ -1,0 +1,6 @@
+.env
+raw/
+thumbs/
+data.js
+geo_cache.json
+__pycache__/

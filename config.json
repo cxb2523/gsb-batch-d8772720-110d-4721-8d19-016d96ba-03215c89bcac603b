@@ -1,0 +1,33 @@
+{
+  "_about": "Everything Deal Radar needs to know about your hunt. Ask Claude to change it for you: 'I'm after X and Y, budget Z, I live in W.'",
+
+  "title": "Deal Radar",
+  "home": { "name": "Perth WA", "lat": -31.9523, "lng": 115.8613 },
+  "radius_km": 200,
+  "price_min": 8000,
+  "price_max": 40000,
+
+  "models": [
+    { "name": "Prado", "match": "prado", "min_year": 2009, "max_year": 2017 },
+    { "name": "Hilux", "match": "hilux", "min_year": 2005, "max_year": 2022 }
+  ],
+
+  "exclude": "\\b4x2\\b|\\b2wd\\b|hi-?rider|hi-?drive|workmate|single cab|wanted|parts only",
+  "require_any": "",
+
+  "facebook": {
+    "city_slug": "perth",
+    "queries": ["toyota prado", "toyota hilux"],
+    "results_per_query": 150
+  },
+  "gumtree": {
+    "enabled": true,
+    "region": "AU",
+    "location_id": "3008303",
+    "category_id": "18320",
+    "keywords": ["toyota prado", "toyota hilux"],
+    "max_items": 200
+  },
+
+  "budget_usd": 4.0
+}
