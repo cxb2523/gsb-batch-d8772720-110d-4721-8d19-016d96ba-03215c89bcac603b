@@ -261,8 +261,13 @@ interface CrawlResult {
   urls: CrawlUrl[];
   scraped?: ScrapeResult;
   metadata: CrawlMetadata;
+  pageOutcomes: CrawlPageOutcome[];
 }
 ```
+
+`pageOutcomes` contains one record for every address actually attempted (or
+explicitly skipped), so no failure is dropped silently. See
+[CrawlPageOutcome](#crawlpageoutcome) below.
 
 #### Example
 
@@ -407,6 +412,29 @@ interface CrawlResult {
   urls: CrawlUrl[];
   scraped?: ScrapeResult;
   metadata: CrawlMetadata;
+  pageOutcomes: CrawlPageOutcome[];
+}
+```
+
+### CrawlPageOutcome
+
+Per-URL record of how an address ended. Every address the crawler attempts
+(or explicitly refuses or leaves unprocessed) gets one entry.
+
+```typescript
+type CrawlPageStatus =
+  | "success" // fetched successfully, present in urls
+  | "robots-blocked" // disallowed by robots.txt, never fetched, not in urls
+  | "failed" // fetch threw or returned empty data; crawl continued
+  | "timeout" // fetch failed because of a timeout; crawl continued
+  | "not-processed"; // still queued when the crawl stopped (e.g. maxPages)
+
+interface CrawlPageOutcome {
+  url: string; // address the outcome belongs to
+  depth: number; // BFS depth (seed = 0)
+  status: CrawlPageStatus;
+  reason: string | null; // reason text for non-success outcomes, null on success
+  delayMs: number; // ms waited for robots.txt crawl-delay before fetching (0 if none)
 }
 ```
 

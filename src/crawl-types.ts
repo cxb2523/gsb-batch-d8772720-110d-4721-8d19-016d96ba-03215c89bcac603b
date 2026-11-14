@@ -111,6 +111,46 @@ export interface CrawlUrl {
 }
 
 /**
+ * Final outcome of a single URL the crawler actually attempted.
+ */
+export type CrawlPageStatus = "success" | "robots-blocked" | "failed" | "timeout" | "not-processed";
+
+/**
+ * Per-URL outcome record.
+ *
+ * Every address the crawler actually attempts (or explicitly refuses to
+ * attempt) gets one entry, so callers can see which addresses were not
+ * collected and why — nothing is dropped silently.
+ */
+export interface CrawlPageOutcome {
+  /** Address the outcome belongs to */
+  url: string;
+
+  /** BFS depth at which the address was queued (seed = 0) */
+  depth: number;
+
+  /**
+   * How the address ended:
+   * - `success`         — fetched successfully, included in `urls`
+   * - `robots-blocked`  — disallowed by robots.txt, never fetched, not in `urls`
+   * - `failed`          — fetch threw or returned empty data; crawl continued
+   * - `timeout`         — fetch failed because of a timeout; crawl continued
+   * - `not-processed`   — still queued when the crawl stopped (e.g. maxPages)
+   */
+  status: CrawlPageStatus;
+
+  /** Human-readable reason text. Present for non-success outcomes, null on success */
+  reason: string | null;
+
+  /**
+   * Milliseconds the crawler waited before fetching this address to honour a
+   * robots.txt crawl-delay (per host). 0 when no waiting was required.
+   * Always 0 for addresses that were never fetched.
+   */
+  delayMs: number;
+}
+
+/**
  * Crawl result interface
  */
 export interface CrawlResult {
@@ -122,6 +162,13 @@ export interface CrawlResult {
 
   /** Crawl operation metadata */
   metadata: CrawlMetadata;
+
+  /**
+   * One outcome record per address actually attempted or explicitly skipped.
+   * Recorded in the order the addresses were handled. `urls`, `scraped` and
+   * `metadata` keep their original meaning.
+   */
+  pageOutcomes: CrawlPageOutcome[];
 }
 
 /**

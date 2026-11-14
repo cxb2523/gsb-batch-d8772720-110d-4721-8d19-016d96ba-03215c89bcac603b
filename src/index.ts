@@ -45,7 +45,14 @@ export type {
   BrowserPoolConfig,
 } from "./types";
 
-export type { CrawlOptions, CrawlResult, CrawlUrl, CrawlMetadata } from "./crawl-types";
+export type {
+  CrawlOptions,
+  CrawlResult,
+  CrawlUrl,
+  CrawlMetadata,
+  CrawlPageOutcome,
+  CrawlPageStatus,
+} from "./crawl-types";
 
 // =============================================================================
 // Formatter exports (for custom formatting)
