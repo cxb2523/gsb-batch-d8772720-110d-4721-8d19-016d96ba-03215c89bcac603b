@@ -39,6 +39,41 @@ export interface ListingFiltersSetupOptions<Ctx extends object, UrlType> {
 
 type ListingFilterController = Pick<ListingPageFilter, 'loadState' | 'nextState' | 'hasNextState' | 'hasState'>; // prettier-ignore
 
+/**
+ * How processing of a single listing page (or a single filter combination) ended:
+ * - `success` - entries were extracted and the page finished normally
+ * - `pagination-failed` - the `onGoToNextPage` hook threw, ending pagination for this URL
+ * - `aborted` - the caller invoked `context.abort()`, stopping early
+ * - `count-only` - `listingCountOnly` mode, entries were counted but not scraped further
+ * - `filters-failed` - loading filters for this filter combination exhausted all retries
+ */
+export type ListingPageOutcomeType =
+  | 'success'
+  | 'pagination-failed'
+  | 'aborted'
+  | 'count-only'
+  | 'filters-failed';
+
+/** Report on how processing of a single listing page (or filter combination) ended */
+export interface ListingPageOutcome<Ctx extends object, UrlType> {
+  context: ListingPageScraperContext<Ctx, UrlType>;
+  /** The start URL being processed when this outcome occurred */
+  startUrl: UrlType;
+  /**
+   * 1-based index of the page within the current startUrl.
+   * Is 0 if no page was processed (eg when filters failed to load).
+   */
+  pageIndex: number;
+  /**
+   * Number of entries returned by `extractEntries` for this page.
+   * Is null if extraction never ran (eg when filters failed to load).
+   */
+  entryCount: number | null;
+  outcome: ListingPageOutcomeType;
+  /** Error that caused the outcome. Present for `pagination-failed` and `filters-failed`. */
+  error?: unknown;
+}
+
 export interface ListingPageScraperContext<Ctx extends object, UrlType> {
   context: Ctx;
   log: ListingLogger;
@@ -109,6 +144,14 @@ export interface ListingPageScraperOptions<Ctx extends object, UrlType> extends 
   ) => MaybePromise<void>;
   /** How long to wait after we've navigated to the next page and before we start extracting? */
   nextPageWait?: number;
+
+  /**
+   * Optional callback invoked once per processed page (and once per filter combination
+   * whose filters failed to load), reporting how it ended. Use it to tell apart
+   * successful pages, pagination failures, aborts, count-only runs and filter-load
+   * failures. When not provided, behaviour is unchanged.
+   */
+  onPageOutcome?: (outcome: ListingPageOutcome<Ctx, UrlType>) => MaybePromise<void>;
 }
 
 /**
@@ -252,6 +295,7 @@ export const scrapeListingEntries = async <Ctx extends object, UrlType>(
 
     onGoToNextPage,
     nextPageWait = 500,
+    onPageOutcome,
   } = options;
 
   /** Collection of ALL urls across all pages and startUrls */
@@ -275,6 +319,18 @@ export const scrapeListingEntries = async <Ctx extends object, UrlType>(
       loadFilterState: filterObj?.loadState ?? (() => {}),
       abort,
     });
+
+    /** Report the outcome of a page (or filter combination). Never interrupts scraping. */
+    const reportOutcome = async (
+      outcome: Omit<ListingPageOutcome<Ctx, UrlType>, 'context' | 'startUrl'>
+    ) => {
+      if (!onPageOutcome) return;
+      try {
+        await onPageOutcome({ context: genCtxArg(), startUrl, ...outcome });
+      } catch (err) {
+        log.error(`onPageOutcome callback threw an error. URL ${logId}`, err);
+      }
+    };
 
     log.debug(`Validating URL ${logId}`);
     validateUrl(startUrl as string);
@@ -302,19 +358,22 @@ export const scrapeListingEntries = async <Ctx extends object, UrlType>(
       // Filter loop
       // Load filters before we start paginating
       log.info(`Setting up filters for URL ${logId}`);
-      await retryAsync(
+      let filtersLoaded = false;
+      const { errors: filterLoadErrors } = await retryAsync(
         async () => {
           if (!filterObj) throw Error(`Filter controller is missing. This should never happen. URL ${logId}`); // prettier-ignore
 
           const filterHasState = await filterObj.hasState();
           if (!isUsingFilters || !filterHasState) {
             log.info(`Not loading filters for URL ${logId}`);
+            filtersLoaded = true;
             return;
           }
 
           log.debug(`Loading filters for URL ${logId}`);
           await filterObj.nextState();
           await filterObj.loadState();
+          filtersLoaded = true;
           log.debug(`Done loading filters for URL ${logId}`);
         },
         {
@@ -323,9 +382,27 @@ export const scrapeListingEntries = async <Ctx extends object, UrlType>(
         }
       );
 
+      // If filters failed to load even after all retries, record the failed
+      // filter combination and move on to the next one (or the next startUrl),
+      // instead of scraping a page with unknown filter state.
+      if (!filtersLoaded) {
+        const error = filterLoadErrors[filterLoadErrors.length - 1];
+        log.error(`Failed to load filters for URL ${logId}. Moving to next filter state.`); // prettier-ignore
+        await reportOutcome({
+          pageIndex: 0,
+          entryCount: null,
+          outcome: 'filters-failed',
+          error,
+        });
+        hasFilterStatesToProcess = isUsingFilters && (await filterObj!.hasNextState());
+        continue;
+      }
+
       let nextPageAvailable = true;
+      let pageIndex = 0;
       while (nextPageAvailable && !userAskedToStop) {
         // Pagination loop
+        pageIndex++;
         let currPageId = 'next page';
         if (pageId) {
           log.debug(`Loading pageId for URL ${logId}`);
@@ -354,7 +431,11 @@ export const scrapeListingEntries = async <Ctx extends object, UrlType>(
           nextPageAvailable = false;
           if (listingCountOnly) {
             log.info(`Debugging mode. Entries are not scraped. Leaving now. URL ${pageLogId}`); // prettier-ignore
-          } else if (userAskedToStop) log.info(`Aborting. URL ${pageLogId}`);
+            await reportOutcome({ pageIndex, entryCount: pageLinks.length, outcome: 'count-only' }); // prettier-ignore
+          } else if (userAskedToStop) {
+            log.info(`Aborting. URL ${pageLogId}`);
+            await reportOutcome({ pageIndex, entryCount: pageLinks.length, outcome: 'aborted' }); // prettier-ignore
+          }
           continue;
         }
 
@@ -368,14 +449,21 @@ export const scrapeListingEntries = async <Ctx extends object, UrlType>(
             log.info(`Navigating to next page from URL ${pageLogId}`);
             await onGoToNextPage(genCtxArg(), pageLinks);
             log.debug(`Done navigating to next page from URL ${pageLogId}`); // prettier-ignore
+            await reportOutcome({ pageIndex, entryCount: pageLinks.length, outcome: 'success' }); // prettier-ignore
           } catch (e) {
             log.info(`Failed navigating to next page from URL ${pageLogId}`); // prettier-ignore
             log.error((e as Error).toString());
             nextPageAvailable = false;
+            await reportOutcome({ pageIndex, entryCount: pageLinks.length, outcome: 'pagination-failed', error: e }); // prettier-ignore
           }
         } else {
           if (userAskedToStop) log.info(`Aborting. URL ${pageLogId}`);
           nextPageAvailable = false;
+          await reportOutcome({
+            pageIndex,
+            entryCount: pageLinks.length,
+            outcome: userAskedToStop ? 'aborted' : 'success',
+          });
         }
 
         // Wait before we start scraping the next page
