@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-bs-theme="light">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+        <meta name="color-scheme" content="light dark" />
+        <title>MiroTalk Admin</title>
+
+        <link rel="apple-touch-icon" sizes="180x180" href="assets/favicon/apple-touch-icon.png" />
+        <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon/favicon-32x32.png" />
+        <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon/favicon-16x16.png" />
+        <link rel="manifest" href="assets/favicon/site.webmanifest" />
+
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" />
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/codemirror.min.css" rel="stylesheet" />
+        <link
+            href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/scroll/simplescrollbars.min.css"
+            rel="stylesheet"
+        />
+        <link
+            href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css"
+            rel="stylesheet"
+        />
+        <link
+            href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/lint/lint.min.css"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+        <link href="css/admin.css" rel="stylesheet" />
+    </head>
+    <body>
+        <!-- Toast Notifications -->
+        <div id="dashboard-toast"></div>
+
+        <!-- Login Section -->
+        <div id="dashboard-login"></div>
+
+        <!-- Dashboard will be loaded here -->
+        <div id="dashboard-container"></div>
+
+        <!-- Bootstrap Confirm Modal -->
+        <div id="dashboard-modal"></div>
+
+        <!-- Loader (visible by default, hidden by JS when ready) -->
+        <div id="dashboard-loader" aria-busy="true">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <div class="loading-text">Loading</div>
+            <div class="loading-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+
+        <!-- Cdn -->
+        <script defer src="/socket.io/socket.io.js"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/js/all.min.js"></script>
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/codemirror.min.js"></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/mode/javascript/javascript.min.js"
+        ></script>
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/mode/shell/shell.min.js"></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/edit/matchbrackets.min.js"
+        ></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/edit/closebrackets.min.js"
+        ></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/selection/active-line.min.js"
+        ></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/scroll/simplescrollbars.min.js"
+        ></script>
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/lint/lint.min.js"></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.9/addon/lint/javascript-lint.min.js"
+        ></script>
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jshint/2.13.6/jshint.min.js"></script>
+        <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        <script
+            defer
+            src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/javascript.min.js"
+        ></script>
+
+        <!-- Theme -->
+        <script defer src="js/core/theme.js"></script>
+
+        <!-- Core utilities -->
+        <script defer src="js/core/dom.js"></script>
+        <script defer src="js/core/utils.js"></script>
+        <script defer src="js/core/tooltip.js"></script>
+        <script defer src="js/core/api.js"></script>
+        <script defer src="js/core/auth.js"></script>
+        <script defer src="js/core/socket.js"></script>
+        <script defer src="js/core/terminal.js"></script>
+
+        <!-- Dashboard modules (order matters) -->
+        <script defer src="js/dashboard/system.js"></script>
+        <script defer src="js/dashboard/env.js"></script>
+        <script defer src="js/dashboard/config.js"></script>
+        <script defer src="js/dashboard/logs.js"></script>
+        <script defer src="js/dashboard/status.js"></script>
+        <script defer src="js/dashboard/instance.js"></script>
+        <script defer src="js/dashboard/installations.js"></script>
+        <script defer src="js/dashboard/server.js"></script>
+        <script defer src="js/dashboard/editors.js"></script>
+        <script defer src="js/dashboard/projects.js"></script>
+        <script defer src="js/dashboard/views.js"></script>
+        <script defer src="js/dashboard/events.js"></script>
+        <script defer src="js/dashboard/terminal.js"></script>
+        <script defer src="js/dashboard/sections.js"></script>
+        <script defer src="js/dashboard/sectionLoaders.js"></script>
+        <script defer src="js/dashboard/main.js"></script>
+
+        <!-- Main entry point (should be last) -->
+        <script defer src="js/main.js"></script>
+    </body>
+</html>

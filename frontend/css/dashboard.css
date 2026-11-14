@@ -1,0 +1,394 @@
+/* =====================================================================
+   SECTION-SPECIFIC STYLES
+   Sizing for full-height tools is derived from the viewport minus the
+   app header, the section header, and the content padding.
+   ===================================================================== */
+:root {
+    --section-chrome: 212px;
+    --workspace-height: calc(100vh - var(--header-height) - var(--section-chrome));
+    --workspace-height: calc(100dvh - var(--header-height) - var(--section-chrome));
+}
+
+/* ===== SYSTEM ===== */
+#systemInfoTabs {
+    margin-bottom: var(--space-5);
+}
+
+.info-card {
+    height: 100%;
+}
+
+.info-card .panel-title {
+    margin-bottom: var(--space-4);
+}
+
+/* ===== STATUS PANELS (server + updates) ===== */
+.status-panel {
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-surface-alt);
+}
+
+.status-panel .info-list > div {
+    grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
+}
+
+#server-update-status,
+#status-text {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-weight: 600;
+}
+
+/* ===== EDITORS ===== */
+.editor-shell {
+    overflow: hidden;
+    border: 1px solid var(--border-terminal);
+    border-radius: var(--radius-md);
+    background: #1a1a23;
+}
+
+.CodeMirror {
+    width: 100%;
+    height: max(360px, var(--workspace-height));
+    border: 0;
+    border-radius: 0;
+    font-size: var(--text-sm);
+    line-height: 1.7;
+}
+
+.CodeMirror-scroll {
+    padding-bottom: 0;
+}
+
+.CodeMirror-overlayscroll-horizontal div,
+.CodeMirror-overlayscroll-vertical div {
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.CodeMirror-overlayscroll-horizontal div:hover,
+.CodeMirror-overlayscroll-vertical div:hover {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+#config-warning-alert,
+#config-env-warning-alert {
+    margin-bottom: var(--space-4);
+}
+
+/* ===== LOGS ===== */
+#logs,
+#server-logs {
+    height: max(320px, var(--workspace-height));
+}
+
+#logs {
+    height: max(320px, calc(var(--workspace-height) - 54px));
+}
+
+#server-logs {
+    height: max(280px, calc(var(--workspace-height) - 110px));
+}
+
+.log-search-group {
+    max-width: 420px;
+}
+
+.log-realtime-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--control-height);
+    margin: 0;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    box-shadow: var(--shadow-xs);
+}
+
+.log-realtime-toggle .form-check-input {
+    float: none;
+    flex-shrink: 0;
+    margin: 0;
+    font-size: 1.125rem;
+}
+
+.log-realtime-toggle .form-check-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.log-realtime-toggle:has(.form-check-input:checked) .live-dot {
+    background: var(--success-solid);
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.5);
+    animation: pulse 1.6s ease-out infinite;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.5);
+    }
+    100% {
+        box-shadow: 0 0 0 8px rgba(22, 163, 74, 0);
+    }
+}
+
+/* ===== UPDATES ===== */
+#update-realtime-logs {
+    max-height: max(280px, calc(var(--workspace-height) - 200px));
+    margin-top: var(--space-4);
+}
+
+/* ===== INSTALLATIONS ===== */
+.installation-form {
+    display: grid;
+    gap: var(--space-5);
+}
+
+.installation-status-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 32px;
+    margin-top: var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+}
+
+.installation-status-refresh {
+    width: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+}
+
+.installation-status-refresh:hover {
+    background: var(--bg-hover);
+    color: var(--accent);
+}
+
+.installation-product-fields {
+    padding: var(--space-5);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--bg-surface-alt);
+}
+
+.installation-product-fields .panel-title {
+    margin-bottom: var(--space-4);
+}
+
+#installations-section .installation-password-control {
+    flex: 0 0 42px;
+    width: 42px;
+    border-color: var(--border-strong);
+    background: var(--bg-input);
+}
+
+.installation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding-top: var(--space-5);
+    border-top: 1px solid var(--border-color);
+}
+
+.installation-actions .action-hint {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+}
+
+.command-output {
+    min-height: 18rem;
+    max-height: max(320px, calc(var(--workspace-height) - 120px));
+    margin-top: var(--space-5);
+}
+
+/* ===== TERMINAL ===== */
+#terminal-section .card-body {
+    padding: var(--space-4);
+}
+
+/* The frame owns padding/border so the container measures only the usable terminal area */
+.terminal-frame {
+    height: max(320px, calc(var(--workspace-height) + 24px));
+    padding: var(--space-3);
+    border: 1px solid var(--border-terminal);
+    border-radius: var(--radius-md);
+    background: var(--bg-terminal);
+}
+
+.terminal-frame:focus-within {
+    border-color: rgba(var(--accent-rgb), 0.6);
+}
+
+#terminal-container {
+    width: 100% !important;
+    height: 100% !important;
+    padding: 0;
+    overflow: hidden;
+    background: var(--bg-terminal);
+}
+
+#terminal-container:focus-visible {
+    outline: none;
+}
+
+#terminal-container .xterm-viewport {
+    background-color: transparent !important;
+}
+
+/* ===== SELF-HOSTING ===== */
+#self-hosting-section .alert {
+    margin: var(--space-4) var(--space-4) 0;
+}
+
+#self-hosting-frame-container {
+    position: relative;
+    height: max(560px, calc(var(--workspace-height) - 40px));
+    margin: var(--space-4);
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: #ffffff;
+}
+
+#self-hosting-iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #ffffff;
+}
+
+/* =====================================================================
+   RESPONSIVE
+   ===================================================================== */
+@media (max-width: 768px) {
+    :root {
+        --section-chrome: 228px;
+    }
+
+    .card {
+        --bs-card-cap-padding-x: var(--space-4);
+        --bs-card-cap-padding-y: var(--space-4);
+        --bs-card-spacer-x: var(--space-4);
+        --bs-card-spacer-y: var(--space-4);
+    }
+
+    .section-heading h4,
+    .section-title {
+        font-size: var(--text-lg);
+    }
+
+    .section-actions {
+        width: 100%;
+    }
+
+    .section-actions > .btn,
+    .section-actions > a.btn {
+        flex: 1 1 auto;
+    }
+
+    .info-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .panel {
+        padding: var(--space-4);
+    }
+
+    .table thead th,
+    .table td {
+        padding: var(--space-2) var(--space-3);
+    }
+
+    .log-search-group {
+        max-width: none;
+    }
+
+    .installation-actions .action-hint {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    /* Avoid iOS zoom-on-focus */
+    .form-control,
+    .form-select {
+        font-size: 16px;
+    }
+
+    #project-select {
+        font-size: var(--text-base);
+    }
+}
+
+@media (max-width: 576px) {
+    :root {
+        --section-chrome: 260px;
+    }
+
+    .section-heading .icon-chip {
+        display: none;
+    }
+
+    .section-subtitle {
+        font-size: var(--text-xs);
+    }
+
+    .section-actions > .btn,
+    .toolbar > .btn,
+    .installation-actions > .btn {
+        flex: 1 1 calc(50% - var(--space-2));
+    }
+
+    .status-panel .info-list > div,
+    .info-list > div {
+        grid-template-columns: 1fr;
+        gap: 2px;
+    }
+
+    .stat-card {
+        padding: var(--space-4);
+    }
+
+    .stat-card .icon-chip {
+        width: 36px;
+        height: 36px;
+    }
+
+    #terminal-section .card-body {
+        padding: var(--space-2);
+    }
+
+    .terminal-frame {
+        padding: var(--space-2);
+    }
+
+    #self-hosting-frame-container {
+        margin: var(--space-3);
+    }
+
+    #self-hosting-section .alert {
+        margin: var(--space-3) var(--space-3) 0;
+    }
+}
