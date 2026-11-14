@@ -8,6 +8,19 @@ from PIL import Image
 from view import View
 
 
+class ScreenshotError(Exception):
+    """A screenshot or the final character image could not be captured.
+
+    Callers can catch this to tell the user the round was interrupted instead of
+    letting the failure bubble up and silently abandon the message. ``stage`` is
+    the stage the session had reached (0-based) when the failure happened.
+    """
+
+    def __init__(self, message="Could not capture the site's image.", stage=None):
+        super().__init__(message)
+        self.stage = stage
+
+
 class ScreenshotHandler:
     """Handles the screenshotting and sending of the screenshot."""
 
@@ -19,34 +32,32 @@ class ScreenshotHandler:
 
     async def save_send_screenshot(self, session_id, original_message):
         """saves a screenshot of the current page and sends it to the user."""
-        await self.navi.wait_for_not_load_screen()
+        stage = View.stage.get(session_id, 0)
 
-        (
-            selector,
-            crop,
-            self.view,
-            b64_string,
-        ) = await self._get_screenshot_info_by_stage(View.stage[session_id], session_id)
+        try:
+            await self.navi.wait_for_not_load_screen()
+            (
+                selector,
+                crop,
+                self.view,
+                b64_string,
+            ) = await self._get_screenshot_info_by_stage(stage, session_id)
+            image_bytes = await self._read_image_bytes(selector, b64_string)
+            file_bytes = self._convert_image(image_bytes, crop)
+        except ScreenshotError as error:
+            self._mark_site_error()
+            if error.stage is None:
+                error.stage = stage
+            raise
+        except Exception as error:
+            self._mark_site_error()
+            raise ScreenshotError(f"Could not capture the image for stage {stage}.", stage) from error
 
-        if not b64_string:  # For intermediate stages
-            image_bytes = await self.navi.screenshot(selector)
-        else:  # For the final stage, the image is a base64 string that needs decoding.
-            image_bytes = b64.b64decode(b64_string)
-
-        with Image.open(BytesIO(image_bytes)) as pil_image:
-            if crop:
-                width, height = pil_image.size
-                pil_image = pil_image.crop((0, height - 630, width, height))
-
-            with BytesIO() as byte_arr:
-                pil_image.save(byte_arr, format="WEBP")
-                byte_arr.seek(0)
-
-                file = nextcord.File(byte_arr, filename="image.webp")
-                await original_message.edit(
-                    file=file,
-                    view=self.view if self.view else None,
-                )
+        file = nextcord.File(BytesIO(file_bytes), filename="image.webp")
+        await original_message.edit(
+            file=file,
+            view=self.view if self.view else None,
+        )
 
         original_message = await original_message.fetch()
 
@@ -54,6 +65,40 @@ class ScreenshotHandler:
         if self.view:
             await self.view.wait()
             asyncio.create_task(self.add_reaction(original_message))
+
+    async def _read_image_bytes(self, selector, b64_string):
+        """Returns the raw image bytes for a grid screenshot or the final image."""
+        if b64_string:
+            try:
+                return b64.b64decode(b64_string)
+            except (TypeError, ValueError) as error:
+                raise ScreenshotError("The final image data could not be decoded.") from error
+
+        image_bytes = await self.navi.screenshot(selector)
+        if not image_bytes:
+            raise ScreenshotError(f"The screenshot for '{selector}' came back empty.")
+        return image_bytes
+
+    @staticmethod
+    def _convert_image(image_bytes, crop):
+        """Decodes the image and returns WEBP bytes, cropping the stage container if needed."""
+        try:
+            with Image.open(BytesIO(image_bytes)) as pil_image:
+                if crop:
+                    width, height = pil_image.size
+                    pil_image = pil_image.crop((0, height - 630, width, height))
+
+                with BytesIO() as byte_arr:
+                    pil_image.save(byte_arr, format="WEBP")
+                    return byte_arr.getvalue()
+        except Exception as error:
+            raise ScreenshotError("The captured image could not be processed.") from error
+
+    def _mark_site_error(self):
+        """Records on the navigator that this session failed because of the site."""
+        marker = getattr(self.navi, "mark_site_error", None)
+        if callable(marker):
+            marker()
 
     def _is_message_reactable(self, message: nextcord.Message) -> bool:
         """

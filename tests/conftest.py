@@ -14,6 +14,19 @@ _import_config = Path(tempfile.mkdtemp()) / "config.json"
 _import_config.write_text(json.dumps(DEFAULT_CONFIG))
 config_manager.CONFIG_PATH = str(_import_config)
 
+# main.py reads <repo>/config.json at import time too. config.json is local
+# configuration and not part of the repository, so give a clean checkout one to
+# import against (and remove it again afterwards if we created it).
+_repo_config = Path(__file__).resolve().parent.parent / "config.json"
+_created_repo_config = not _repo_config.exists()
+if _created_repo_config:
+    _repo_config.write_text(json.dumps(DEFAULT_CONFIG))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _created_repo_config and _repo_config.exists():
+        _repo_config.unlink()
+
 
 @pytest.fixture(autouse=True)
 def config_file(tmp_path, monkeypatch):

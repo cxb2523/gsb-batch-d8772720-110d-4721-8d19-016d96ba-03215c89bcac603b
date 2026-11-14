@@ -1,4 +1,5 @@
 import asyncio
+from enum import Enum
 from random import randint
 
 from pyppeteer import launch
@@ -13,12 +14,65 @@ MAX_GRID_CHOICES = 15
 REFRESH_BUTTON_INDEX = 15  # The 16th element is the refresh button
 
 
+class SessionEndReason(str, Enum):
+    """How a collecting session ended.
+
+    The value is kept on the navigator after the browser page is gone so callers
+    can tell the user what actually happened instead of leaving the message
+    stuck on an old progress grid. Being a ``str`` enum it also compares equal
+    to its plain string value (e.g. ``"site_error"``).
+    """
+
+    USER_EXIT = "user_exit"  # the user pressed ❌
+    PAGE_TIMEOUT = "page_timeout"  # the view expired without an answer
+    SITE_ERROR = "site_error"  # screenshots/selectors failed, session aborted
+
+    # Alias for readers that think of this as the timeout state.
+    TIMEOUT = "page_timeout"
+
+
 class PageNavigator:
     browser = None
+    SessionEndReason = SessionEndReason
 
     def __init__(self):
         self.page = None
-        self.timed_out = False
+        # None while the session is still running; one SessionEndReason once it
+        # is over. Kept after the page is closed so the end cause stays readable.
+        self.end_reason = None
+
+    @property
+    def timed_out(self):
+        """True when the session ended because the view timed out."""
+        return self.end_reason is SessionEndReason.PAGE_TIMEOUT
+
+    @timed_out.setter
+    def timed_out(self, value):
+        if value:
+            self.end_reason = SessionEndReason.PAGE_TIMEOUT
+        elif self.end_reason is SessionEndReason.PAGE_TIMEOUT:
+            self.end_reason = None
+
+    @property
+    def user_exited(self):
+        """True when the user ended the session by pressing ❌."""
+        return self.end_reason is SessionEndReason.USER_EXIT
+
+    @property
+    def site_error(self):
+        """True when the session was aborted because the site stopped cooperating."""
+        return self.end_reason is SessionEndReason.SITE_ERROR
+
+    def mark_site_error(self):
+        """Records that the site (selectors/screenshots) broke this session.
+
+        A user exit or a page timeout that was already recorded wins: a browser
+        page closing mid-capture is an expected consequence of those, not a new
+        site fault. Returns True when the session is considered a site error.
+        """
+        if self.end_reason is None:
+            self.end_reason = SessionEndReason.SITE_ERROR
+        return self.end_reason is SessionEndReason.SITE_ERROR
 
     @staticmethod
     async def _initialize_browser():
@@ -47,6 +101,10 @@ class PageNavigator:
         await girls[index - 1].click()
 
     async def exit(self):
+        # A user pressing ❌ is the only caller of this, so record it unless a more
+        # specific reason (e.g. a page timeout) has already been set.
+        if self.end_reason is None:
+            self.end_reason = SessionEndReason.USER_EXIT
         if self.page and not self.page.isClosed():
             await self.page.close()
 

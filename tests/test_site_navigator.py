@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import site_navigator
-from site_navigator import MAX_GRID_CHOICES, REFRESH_BUTTON_INDEX, PageNavigator
+from site_navigator import MAX_GRID_CHOICES, REFRESH_BUTTON_INDEX, PageNavigator, SessionEndReason
 
 
 @pytest.fixture
@@ -48,4 +48,64 @@ async def test_exit_skips_already_closed_page(navi):
 async def test_page_timeout_marks_timed_out_and_closes(navi):
     await navi.page_timeout()
     assert navi.timed_out
+    assert navi.end_reason is SessionEndReason.PAGE_TIMEOUT
     navi.page.close.assert_awaited_once()
+
+
+async def test_user_exit_keeps_reason_after_page_closes(navi):
+    await navi.exit()
+
+    assert navi.end_reason is SessionEndReason.USER_EXIT
+    assert navi.user_exited
+    assert not navi.timed_out
+    assert not navi.site_error
+
+
+async def test_page_timeout_is_not_overwritten_by_exit(navi):
+    # page_timeout() calls exit(); the timeout must stay the recorded cause.
+    await navi.page_timeout()
+
+    assert navi.end_reason is SessionEndReason.PAGE_TIMEOUT
+    assert not navi.user_exited
+    # A later capture error caused by the page having closed must not override it.
+    assert navi.mark_site_error() is False
+
+
+async def test_site_error_reason_is_kept(navi):
+    assert navi.mark_site_error() is True
+
+    assert navi.end_reason is SessionEndReason.SITE_ERROR
+    assert navi.site_error
+    assert not navi.user_exited
+
+
+async def test_site_error_does_not_replace_a_finished_or_user_chosen_reason(navi):
+    navi.end_reason = SessionEndReason.USER_EXIT
+
+    assert navi.mark_site_error() is False
+    assert navi.end_reason is SessionEndReason.USER_EXIT
+
+
+async def test_end_reason_survives_after_page_is_closed(navi):
+    navi.end_reason = None
+    navi.mark_site_error()
+    navi.page.isClosed.return_value = True
+
+    assert navi.end_reason is SessionEndReason.SITE_ERROR
+
+
+def test_session_end_reasons_are_distinct():
+    reasons = {
+        SessionEndReason.USER_EXIT,
+        SessionEndReason.PAGE_TIMEOUT,
+        SessionEndReason.SITE_ERROR,
+    }
+    assert len(reasons) == 3
+    assert {reason.value for reason in reasons} == {"user_exit", "page_timeout", "site_error"}
+    # The alias points at the same member instead of adding a new reason.
+    assert SessionEndReason.TIMEOUT is SessionEndReason.PAGE_TIMEOUT
+
+
+def test_end_reason_values_read_as_plain_strings():
+    assert SessionEndReason.SITE_ERROR == "site_error"
+    assert SessionEndReason.USER_EXIT == "user_exit"
