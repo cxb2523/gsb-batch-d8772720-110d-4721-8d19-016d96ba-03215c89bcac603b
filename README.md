@@ -451,6 +451,52 @@ Reviews carry an author name as the reviewer chose to publish it, along with a v
 
 Other HasData MCP servers: [Google Search](https://github.com/HasData/google-search-mcp), [Google Maps](https://github.com/HasData/google-maps-mcp), [Google Trends](https://github.com/HasData/google-trends-mcp), [Google Flights](https://github.com/HasData/google-flights-mcp), [DuckDuckGo](https://github.com/HasData/duckduckgo-mcp), [YouTube](https://github.com/HasData/youtube-mcp), [TikTok](https://github.com/HasData/tiktok-mcp), [Instagram](https://github.com/HasData/instagram-mcp), [Amazon](https://github.com/HasData/amazon-mcp), [Shopify](https://github.com/HasData/shopify-mcp), [Yelp](https://github.com/HasData/yelp-mcp), [Zillow](https://github.com/HasData/zillow-mcp), [Redfin](https://github.com/HasData/redfin-mcp), [Airbnb](https://github.com/HasData/airbnb-mcp), [Booking.com](https://github.com/HasData/booking-mcp), [Indeed](https://github.com/HasData/indeed-mcp).
 
+## Client-side review collection
+
+Filtering reviews by star rating, topic (`aspectId`) or verified purchase only works with values the item actually supports, so the package ships a small collection flow in `lib/reviews.mjs` instead of leaving that chore to the caller. It never guesses an aspect id.
+
+1. It sends one **unfiltered** review request and keeps the returned `filters` block verbatim — every filter's `parameter` and each value's `value`, `name` and `count`.
+2. The caller's selectors are resolved against that block. An unknown parameter or value throws before any filtered call is spent. Selectors use `{ parameter, value }` or `{ parameter, name }`; the values sent back are the ones read from the block.
+3. It pages with `pagination.nextPage`, ten reviews a page, until `maxPages` is reached or there is no next page.
+
+Each page ends with a distinct outcome so an empty feed is never confused with a throttle:
+
+| Outcome | Meaning |
+| :--- | :--- |
+| `ok` | HTTP 200 with reviews (an unfiltered probe of an item with no reviews is still `ok`) |
+| `empty_no_matches` | HTTP 200 with zero reviews while a filter was applied — the filter matched nothing |
+| `rate_limited` | HTTP 429 on every attempt; the retry count and error stay on the page record |
+| `error` | Any other non-200, transport or tool failure |
+
+A 429 is retried with exponential backoff (`baseBackoffMs * 2^n`), honouring a server `Retry-After` header when present. Only 429s are retried; any other failure ends the request immediately. The result carries `requestsBilled` (every 200, including a successful empty page), `requestsFailed` (every non-200 attempt, including 429s that a later retry recovered from) and the full per-attempt `attempts` trail. A non-200 request is not billed.
+
+`totalRatings` and `totalReviews` are reported separately — ratings are not written reviews, and paging covers the reviews. Review dates are `M/D/YYYY` strings parsed strictly against that format (`"8/1/2026"` is August 1st), with a `dateParsed` ISO field added per review; no date library guesses the order. Reviewer identity fields (`author` and friends) are stripped unless `includeAuthor: true` is passed.
+
+```js
+import { createMcpClient } from './lib/mcp-client.mjs';
+import { collectReviews } from './lib/reviews.mjs';
+
+const client = createMcpClient({
+  endpoint: 'https://mcp.hasdata.com/mcp?apis=walmart',
+  apiKey: process.env.HASDATA_API_KEY,
+});
+
+const result = await collectReviews({
+  callTool: client.callTool,
+  itemId: '18493462688',
+  // Resolved against the probe's filters block; no aspect id is typed by hand.
+  filters: [{ parameter: 'aspectId', name: 'Battery Life' }],
+  maxPages: 3,      // at most three collected review pages
+  maxRetries: 3,    // 429 retries per request
+});
+
+result.pages.forEach((page) => {
+  // page.outcome is one of ok | empty_no_matches | rate_limited | error
+});
+```
+
+`lib/mcp-client.mjs` is the zero-dependency streamable-HTTP JSON-RPC transport underneath it: it accepts both plain JSON and server-sent-event bodies, matches responses by request id, and raises a typed `McpHttpError` (with `isRateLimited` and `retryAfterMs`) on non-200 answers.
+
 ## Development
 
 The launcher is a thin stdio bridge to the remote server, so there is nothing to build.
@@ -461,6 +507,8 @@ HASDATA_API_KEY=your_key_here npm test
 ```
 
 The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=walmart` returns the expected tool count, that no name changed, that every tool still carries a description, that the either/or parameters this README documents are still in the schema, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason.
+
+The review collection flow and the JSON-RPC transport are covered by offline tests that need no key: `test/reviews.test.mjs` and `test/mcp-client.test.mjs` run against self-made response samples and an injected fake transport. They cover a normal two-page run, filter values taken from the `filters` block, an empty filter match, a 429 retried to success and retried to exhaustion, the three-way page outcome distinction, billing accounting, reviewer-field stripping and strict `M/D/YYYY` date parsing.
 
 None of the three tools declares a required parameter, because each accepts one of two inputs. The suite pins the alternatives instead of the `required` array, which would pass while the schema said nothing.
 
