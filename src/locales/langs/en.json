@@ -510,7 +510,8 @@
       "noteId": "Note ID",
       "noteIdPlaceholder": "Please enter Note ID",
       "noteUrl": "Note URL",
-      "noteUrlPlaceholder": "Please enter full note URL (optional)",
+      "noteUrlPlaceholder": "Please enter full note URL",
+      "noteUrlInvalid": "Cannot parse a note ID from the URL. Please enter a valid note URL containing /explore/ or /discovery/item/",
       "maxCount": "Max Count",
       "maxDuration": "Max Duration (s)",
       "unlimited": "0 for unlimited",
@@ -599,6 +600,10 @@
       "taskInfo": "Task Details",
       "collectedNotes": "Collected Notes",
       "collectedComments": "Collected Comments",
+      "collectedPrefix": "Collected",
+      "failed": "Failed",
+      "stopped": "Stopped",
+      "defaultStopReason": "The task stopped without a specific reason",
       "noImage": "No Image",
       "drawer": {
         "collectedNotesList": "Collected Notes List",
@@ -626,7 +631,9 @@
         "notesCollected": "Notes Collected",
         "commentsCollected": "Comments Collected",
         "consecutiveFailures": "Consecutive Failures",
-        "params": "Params"
+        "params": "Params",
+        "loadFailed": "Failed to load results. The table has been cleared. Please retry.",
+        "retry": "Retry"
       }
     }
   },

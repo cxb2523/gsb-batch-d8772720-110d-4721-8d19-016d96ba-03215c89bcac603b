@@ -438,7 +438,8 @@
       "noteId": "笔记 ID",
       "noteIdPlaceholder": "请输入笔记 ID",
       "noteUrl": "笔记链接",
-      "noteUrlPlaceholder": "请输入笔记完整链接 (可选)",
+      "noteUrlPlaceholder": "请输入笔记完整链接",
+      "noteUrlInvalid": "无法从链接中解析出笔记 ID，请输入包含 /explore/ 或 /discovery/item/ 的有效笔记链接",
       "maxCount": "最大采集数",
       "maxDuration": "最大时长(秒)",
       "unlimited": "0为不限",
@@ -543,6 +544,10 @@
       "taskInfo": "任务详情",
       "collectedNotes": "采集笔记",
       "collectedComments": "采集评论",
+      "collectedPrefix": "已采",
+      "failed": "失败",
+      "stopped": "已停止",
+      "defaultStopReason": "任务已停止，未提供具体原因",
       "noImage": "无图片",
       "drawer": {
         "collectedNotesList": "采集笔记列表",
@@ -570,7 +575,9 @@
         "notesCollected": "采集笔记数",
         "commentsCollected": "采集评论数",
         "consecutiveFailures": "连续失败次数",
-        "params": "参数"
+        "params": "参数",
+        "loadFailed": "结果加载失败，表格已清空，请重试",
+        "retry": "重试"
       }
     }
   },

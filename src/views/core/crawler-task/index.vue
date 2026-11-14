@@ -73,8 +73,9 @@
 <script setup lang="ts">
   import { ref, reactive, computed } from 'vue'
   import { useI18n } from 'vue-i18n'
-  import { ElMessage, type FormInstance } from 'element-plus'
+  import { ElMessage, type FormInstance, type FormItemRule } from 'element-plus'
   import { createCommentTask } from '@/api/automation/task'
+  import { extractNoteId, isValidNoteUrl } from '@/utils/automation/noteLink'
   import TaskStatusMonitor from '@/components/TaskStatusMonitor.vue'
   import TipsPanel from '@/components/core/widget/tips-panel/index.vue'
 
@@ -93,43 +94,52 @@
     max_consecutive_failures: 3
   })
 
-  const rules = computed(() => ({
-    note_url: [{ required: true, message: t('core.crawlerTask.noteUrlPlaceholder'), trigger: 'blur' }]
+  const rules = computed<Record<string, FormItemRule[]>>(() => ({
+    note_url: [
+      { required: true, message: t('core.crawlerTask.noteUrlPlaceholder'), trigger: 'blur' },
+      {
+        validator: (_rule, value: string, callback: (error?: Error) => void) => {
+          if (value && !isValidNoteUrl(value)) {
+            callback(new Error(t('core.crawlerTask.noteUrlInvalid')))
+            return
+          }
+          callback()
+        },
+        trigger: 'blur'
+      }
+    ]
   }))
-
-  const extractNoteId = (url: string): string => {
-    try {
-      const match =
-        url.match(/\/explore\/([a-zA-Z0-9]+)/) || url.match(/\/discovery\/item\/([a-zA-Z0-9]+)/)
-      return match ? match[1] : ''
-    } catch (e) {
-      return ''
-    }
-  }
 
   const handleSubmit = async () => {
     if (!formRef.value) return
 
     await formRef.value.validate(async (valid) => {
-      if (valid) {
-        loading.value = true
-        try {
-          const noteId = extractNoteId(formData.note_url)
-          const res = await createCommentTask({
-            note_id: noteId,
-            note_url: formData.note_url,
-            max_count: formData.max_count,
-            max_duration: formData.max_duration,
-            max_consecutive_failures: formData.max_consecutive_failures
-          })
-          currentTaskId.value = res.task_id
-          ElMessage.success(t('core.crawlerTask.createSuccess'))
-          resetForm()
-        } catch (error) {
-          console.error(error)
-        } finally {
-          loading.value = false
-        }
+      if (!valid) return
+
+      // 防御性兜底：表单校验通过后再次确认能解析出笔记 ID，
+      // 任何情况下都不得发出空 note_id 的请求
+      const noteId = extractNoteId(formData.note_url)
+      if (!noteId) {
+        formRef.value?.validateField('note_url')
+        return
+      }
+
+      loading.value = true
+      try {
+        const res = await createCommentTask({
+          note_id: noteId,
+          note_url: formData.note_url,
+          max_count: formData.max_count,
+          max_duration: formData.max_duration,
+          max_consecutive_failures: formData.max_consecutive_failures
+        })
+        currentTaskId.value = res.task_id
+        ElMessage.success(t('core.crawlerTask.createSuccess'))
+        resetForm()
+      } catch (error) {
+        console.error(error)
+      } finally {
+        loading.value = false
       }
     })
   }

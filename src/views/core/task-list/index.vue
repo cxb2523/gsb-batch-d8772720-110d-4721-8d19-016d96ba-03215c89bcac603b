@@ -32,10 +32,26 @@
               {{ row.current_count }} / {{ row.target_count }}
             </div>
           </div>
+          <div v-else-if="(row.current_count || 0) > 0" class="text-xs">
+            <span class="text-gray-500">{{ t('core.taskList.collectedPrefix') }}</span>
+            <span class="font-medium text-gray-700">{{ row.current_count }}</span>
+          </div>
           <span v-else>-</span>
         </template>
         <template #message="{ row }">
-          <el-tooltip :content="row.message || '-'" placement="top">
+          <div v-if="isProblemRow(row)" class="flex items-center gap-1">
+            <el-tag
+              :type="row.status === 'failed' ? 'danger' : 'warning'"
+              size="small"
+              effect="light"
+            >
+              {{ row.status === 'failed' ? t('core.taskList.failed') : t('core.taskList.stopped') }}
+            </el-tag>
+            <el-tooltip :content="stopReasonOf(row)" placement="top">
+              <span class="truncate max-w-[220px] text-gray-600">{{ stopReasonOf(row) }}</span>
+            </el-tooltip>
+          </div>
+          <el-tooltip v-else :content="row.message || '-'" placement="top">
             <span>{{ row.message || '-' }}</span>
           </el-tooltip>
         </template>
@@ -86,6 +102,11 @@
   import { useI18n } from 'vue-i18n'
   import { ElMessage } from 'element-plus'
   import { getTasks, stopTask, deleteTask, type Task } from '@/api/automation/task'
+  import {
+    isProblemStatus,
+    resolveStopReason,
+    shouldShowViewButton
+  } from '@/utils/automation/taskOutcome'
   import TaskResultDrawer from './components/TaskResultDrawer.vue'
   import TipsPanel from '@/components/core/widget/tips-panel/index.vue'
   import ArtTable from '@/components/core/tables/table/index.vue'
@@ -157,14 +178,11 @@
     resultDrawerVisible.value = true
   }
 
-  const shouldShowViewButton = (row: Task) => {
-    // Collection tasks need items to view
-    if (['collect_notes', 'collect_comments'].includes(row.type)) {
-      return (row.current_count || 0) > 0
-    }
-    // Agent browse tasks can always be viewed (for logs/details)
-    return row.type === 'browse_agent'
-  }
+  // 判定口径统一收敛到 utils/automation/taskOutcome，
+  // collect_comments 失败但已采数 > 0 时仍展示“查看结果”（模板直接调用导入函数）
+  const isProblemRow = (row: Task) => isProblemStatus(row.status)
+
+  const stopReasonOf = (row: Task) => resolveStopReason(row, t('core.taskList.defaultStopReason'))
 
   const formatTaskType = (type: string) => {
     const map: Record<string, string> = {

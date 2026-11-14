@@ -81,6 +81,7 @@
     "lint:all": "tsx scripts/lint-all.ts",
     "lint:fix": "tsx scripts/lint-fix.ts",
     "preview": "node scripts/run-with-version.js vite preview",
+    "test:unit": "node --test tests/unit/*.test.ts",
     "tauri": "node scripts/run-with-version.js tauri"
   },
   "type": "module",

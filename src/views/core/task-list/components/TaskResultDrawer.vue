@@ -12,6 +12,24 @@
       </el-radio-group>
     </div>
 
+    <el-alert
+      v-if="loadError"
+      class="mb-3"
+      type="error"
+      show-icon
+      :closable="false"
+      :title="t('core.taskList.drawer.loadFailed')"
+    >
+      <template #default>
+        <div class="flex items-center justify-between gap-3">
+          <span class="break-all">{{ loadError }}</span>
+          <el-button type="primary" size="small" :loading="loading" @click="fetchData">
+            {{ t('core.taskList.drawer.retry') }}
+          </el-button>
+        </div>
+      </template>
+    </el-alert>
+
     <ArtTable
       ref="tableRef"
       :loading="loading"
@@ -89,6 +107,8 @@
   const visible = ref(props.modelValue)
   const loading = ref(false)
   const tableData = ref([])
+  // 接口报错时的错误信息；非空时展示错误提示与重试按钮
+  const loadError = ref('')
   const title = ref(t('core.taskList.resultTitle'))
   const columns = ref<ColumnOption[]>([])
   const viewType = ref('info')
@@ -257,6 +277,7 @@
 
   const fetchData = async () => {
     loading.value = true
+    loadError.value = ''
     try {
       let res: any = null
       const params = {
@@ -354,7 +375,10 @@
       }
     } catch (error) {
       console.error('Failed to fetch task results:', error)
+      // 清空表格但不崩溃；保留 pagination.current / size，用户可在原页码重试
       tableData.value = []
+      loadError.value =
+        error instanceof Error ? error.message : t('core.taskList.drawer.loadFailed')
     } finally {
       loading.value = false
     }

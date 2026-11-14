@@ -16,6 +16,7 @@ declare module 'vue' {
     Breadcrumb: typeof import('./../components/core/layouts/breadcrumb/index.vue')['default']
     ColorSettings: typeof import('./../components/core/layouts/settings-panel/widget/ColorSettings.vue')['default']
     ContainerSettings: typeof import('./../components/core/layouts/settings-panel/widget/ContainerSettings.vue')['default']
+    ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCalendar: typeof import('element-plus/es')['ElCalendar']
     ElCard: typeof import('element-plus/es')['ElCard']
