@@ -1,0 +1,40 @@
+export const strings = {
+    faceMatch: {
+        unverified: 'UNVERIFIED',
+        highConfidence: 'HIGH CONFIDENCE',
+        partialMatch: 'PARTIAL MATCH',
+        photosAnalyzed: (count: number) => `${count} platform photos cross-analyzed.`,
+        pairwiseTitle: 'Pairwise DeepFace Analysis',
+        noComparison: 'No successful comparison could be made.',
+    },
+    versionHistory: {
+        changeReport: 'Change Report',
+        scanRecords: (count: number) => `${count} scan records`,
+        versionHistory: 'Version History',
+        noChanges: 'No changes detected — Profile data is identical to previous scan.',
+    },
+    securityScan: {
+        title: 'DEEP WEB THREAT ANALYSIS',
+        identifiersScanned: (count: number) => `${count} identifier(s) scanned across Dark Nodes.`,
+        breachCount: (count: number) => `${count} breach(es)`,
+        pasteCount: (count: number) => `+ ${count} paste(s) detected.`,
+        statusSecure: 'SECURE',
+        statusCompromised: 'COMPROMISED',
+        badgeVerified: 'VERIFIED',
+        badgeSpamList: 'SPAM LIST',
+        breachSectionTitle: (count: number) => `Data Breaches — ${count} found`,
+        pasteSectionTitle: (count: number) => `Paste-Site Exposures — ${count} found`,
+        targetIdentityLabel: 'Target Identity:',
+        compromisedNodesLabel: 'Compromised Data Nodes:',
+        emailsInPaste: (count: number) => `• ${count.toLocaleString()} emails in paste`,
+        noLeaksTitle: 'No intelligence leaks detected in known databases.',
+        noLeaksBody: (count: number) =>
+            `Cross-referenced ${count} identifier(s) against known public breaches and dark web paste dumps. The target's digital footprint remains uncompromised.`,
+    },
+    chatInput: {
+        switchToSearch: 'Switch to Search Mode',
+        switchToAgent: 'Switch to Agent Mode',
+        placeholderAgent: 'Ask the agent anything...',
+        placeholderSearch: "Enter name or username (use '/' to separate)...",
+    },
+} as const;

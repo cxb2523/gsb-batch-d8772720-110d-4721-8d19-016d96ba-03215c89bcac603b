@@ -1,0 +1,591 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --jarvis-cyan: #00ffff;
+  --jarvis-cyan-muted: rgba(0, 255, 255, 0.5);
+  --jarvis-cyan-glow: rgba(0, 255, 255, 0.3);
+  --jarvis-blue: #0A66FF;
+  --jarvis-blue-glow: rgba(10, 102, 255, 0.4);
+  --jarvis-dark: #0a0e17;
+  --jarvis-darker: #05070a;
+  --jarvis-glass: rgba(10, 14, 23, 0.65);
+  --jarvis-glass-strong: rgba(10, 14, 23, 0.85);
+  --jarvis-border: rgba(0, 255, 255, 0.4);
+  --jarvis-text-primary: #ffffff;
+  --jarvis-text-secondary: #a5b4fc;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Rajdhani', sans-serif;
+  background: var(--jarvis-darker);
+  color: var(--jarvis-text-primary);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.font-orbitron {
+  font-family: 'Orbitron', 'sans-serif';
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Custom Ultra-Sleek Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--jarvis-cyan-muted);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--jarvis-cyan);
+}
+
+/* Typography & Glow Effects */
+.glow-cyan {
+  color: var(--jarvis-cyan);
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.6),
+    0 0 20px rgba(0, 255, 255, 0.4);
+}
+
+.glow-blue {
+  color: var(--jarvis-blue);
+  text-shadow: 0 0 12px rgba(10, 102, 255, 0.7);
+}
+
+.glow-white {
+  color: #ffffff;
+  text-shadow: 0 0 15px rgba(255, 255, 255, 0.8),
+    0 0 30px rgba(0, 255, 255, 0.4);
+}
+
+.text-gradient {
+  background: linear-gradient(to right, #ffffff 20%, var(--jarvis-cyan) 80%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glow-border {
+  border: 1px solid var(--jarvis-border);
+  box-shadow: 0 0 20px var(--jarvis-cyan-glow),
+    inset 0 0 15px var(--jarvis-cyan-glow);
+}
+
+/* Advanced Glassmorphism */
+.glass {
+  background: var(--jarvis-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 255, 255, 0.25);
+  border-radius: 16px;
+}
+
+.glass-strong {
+  background: var(--jarvis-glass-strong);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border: 1px solid var(--jarvis-border);
+  border-radius: 20px;
+  box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.7),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* Complex Backgrounds */
+.grid-background {
+  background-image:
+    linear-gradient(rgba(0, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 50px 50px;
+  background-position: center center;
+}
+
+.data-stream {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(10, 102, 255, 0.1) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
+  }
+
+  50% {
+    box-shadow: 0 0 40px rgba(0, 255, 255, 0.8);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 rgba(0, 255, 255, 0.7);
+  }
+
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(0, 255, 255, 0);
+  }
+
+  100% {
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 rgba(0, 255, 255, 0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-150%) skewX(-15deg);
+  }
+
+  100% {
+    transform: translateX(150%) skewX(-15deg);
+  }
+}
+
+@keyframes scan-line {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+
+  10% {
+    opacity: 0.8;
+  }
+
+  90% {
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: translateY(100vh);
+    opacity: 0;
+  }
+}
+
+@keyframes rotate-slow {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes data-flow {
+  0% {
+    background-position: 0% 0%;
+  }
+
+  100% {
+    background-position: 0% 100%;
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-rotate-slow {
+  animation: rotate-slow 12s linear infinite;
+}
+
+/* Scan Line Effect */
+.scan-line {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 15vh;
+  background: linear-gradient(to bottom,
+      transparent,
+      rgba(0, 255, 255, 0.15),
+      transparent);
+  animation: scan-line 7s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 50;
+  mix-blend-mode: screen;
+}
+
+/* Interactive Elements */
+.btn-jarvis {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--jarvis-text-primary);
+  background: rgba(0, 255, 255, 0.1);
+  border: 1px solid var(--jarvis-cyan);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  overflow: hidden;
+  backdrop-filter: blur(12px);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+.btn-jarvis:hover:not(:disabled) {
+  background: rgba(0, 255, 255, 0.25);
+  box-shadow: 0 0 25px rgba(0, 255, 255, 0.5), inset 0 0 10px rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+  color: #fff;
+}
+
+.btn-jarvis:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.4);
+}
+
+.input-jarvis {
+  background: rgba(5, 7, 10, 0.8);
+  border: 1px solid rgba(0, 255, 255, 0.3);
+  color: #ffffff;
+  font-family: 'Orbitron', 'Rajdhani', sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(16px);
+}
+
+.input-jarvis:focus {
+  outline: none;
+  border-color: var(--jarvis-cyan);
+  box-shadow: 0 0 0 2px rgba(0, 255, 255, 0.3), 0 0 25px rgba(0, 255, 255, 0.25);
+  background: rgba(5, 7, 10, 0.95);
+}
+
+.input-jarvis::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+  font-weight: 400;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid transparent;
+  border-top-color: var(--jarvis-cyan);
+  border-right-color: var(--jarvis-blue);
+  border-radius: 50%;
+  animation: rotate-slow 0.8s linear infinite;
+}
+
+/* Custom Message Layouts */
+.message-bubble {
+  position: relative;
+  padding: 1.25rem 1.5rem;
+  font-size: 1.1rem;
+  line-height: 1.7;
+}
+
+.message-ai {
+  background: linear-gradient(135deg, rgba(0, 255, 255, 0.08) 0%, rgba(10, 102, 255, 0.03) 100%);
+  border-left: 3px solid var(--jarvis-cyan);
+  border-radius: 0 16px 16px 0;
+  box-shadow: inset 2px 0 10px rgba(0, 255, 255, 0.1);
+}
+
+.message-user {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ── 3D Effects ─────────────────────────────────────────────────────────── */
+
+@keyframes float-3d {
+  0%, 100% {
+    transform: translateY(0px);
+    filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.4));
+  }
+  50% {
+    transform: translateY(-10px);
+    filter: drop-shadow(0 20px 32px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 24px rgba(0, 255, 255, 0.12));
+  }
+}
+
+@keyframes depth-breathe {
+  0%, 100% {
+    box-shadow:
+      0 4px 8px rgba(0, 0, 0, 0.35),
+      0 10px 24px rgba(0, 0, 0, 0.45),
+      0 0 40px rgba(0, 255, 255, 0.04);
+  }
+  50% {
+    box-shadow:
+      0 10px 20px rgba(0, 0, 0, 0.45),
+      0 24px 48px rgba(0, 0, 0, 0.55),
+      0 0 70px rgba(0, 255, 255, 0.1),
+      0 0 120px rgba(10, 102, 255, 0.05);
+  }
+}
+
+.animate-float-3d {
+  animation: float-3d 5s ease-in-out infinite;
+}
+
+.animate-depth-breathe {
+  animation: depth-breathe 4s ease-in-out infinite;
+}
+
+/* Glass panel with layered depth shadows */
+.glass-3d {
+  background: var(--jarvis-glass-strong);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border: 1px solid var(--jarvis-border);
+  border-radius: 20px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.18),
+    0 4px 8px rgba(0, 0, 0, 0.28),
+    0 10px 20px rgba(0, 0, 0, 0.38),
+    0 20px 40px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 0 1px rgba(0, 255, 255, 0.05);
+  transition: box-shadow 0.4s ease;
+}
+
+.glass-3d:hover {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.22),
+    0 8px 16px rgba(0, 0, 0, 0.38),
+    0 20px 40px rgba(0, 255, 255, 0.08),
+    0 36px 72px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(0, 255, 255, 0.1);
+}
+
+/* 3D disc tilt for gauge SVG containers */
+.gauge-disc-3d {
+  transform: perspective(280px) rotateX(18deg);
+  filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.7));
+  transition: transform 0.4s ease, filter 0.4s ease;
+}
+
+.gauge-disc-3d:hover {
+  transform: perspective(280px) rotateX(8deg) scale(1.04);
+  filter: drop-shadow(0 20px 32px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 18px rgba(0, 255, 255, 0.2));
+}
+
+/* Top-lit surface sheen (simulates light hitting top of a panel) */
+.surface-lit {
+  position: relative;
+}
+.surface-lit::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.065) 0%,
+    rgba(255, 255, 255, 0.015) 35%,
+    transparent 60%,
+    rgba(0, 0, 0, 0.08) 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 3D lift on hover for list cards */
+.card-lift {
+  transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+              box-shadow 0.25s ease;
+}
+.card-lift:hover {
+  transform: translateY(-3px) translateZ(8px) scale(1.01);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5), 0 0 20px rgba(0, 255, 255, 0.06);
+}
+
+/* ── Glitch Effect ───────────────────────────────────────────────────────── */
+
+@keyframes glitch {
+  0%   { clip-path: inset(0 0 95% 0); transform: translateX(-3px); }
+  20%  { clip-path: inset(40% 0 50% 0); transform: translateX(3px); }
+  40%  { clip-path: inset(80% 0 5% 0); transform: translateX(-2px); }
+  60%  { clip-path: inset(20% 0 70% 0); transform: translateX(2px); }
+  80%  { clip-path: inset(60% 0 30% 0); transform: translateX(-3px); }
+  100% { clip-path: inset(0 0 0 0); transform: translateX(0); }
+}
+
+.animate-glitch::before,
+.animate-glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  opacity: 0.8;
+}
+
+.animate-glitch::before {
+  color: #00ffff;
+  animation: glitch 0.4s steps(1) forwards;
+  left: 2px;
+}
+
+.animate-glitch::after {
+  color: #ff00ff;
+  animation: glitch 0.4s steps(1) reverse forwards;
+  left: -2px;
+}
+
+/* ── Command Center App Shell ────────────────────────────────────────────── */
+
+/* 3-column grid shell: [ nav rail | workspace | intel dock ] */
+.jarvis-shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  height: 100vh;
+  width: 100%;
+  position: relative;
+  z-index: 10;
+}
+
+/* Thin themed scrollbar for dock / drawer / panels */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--jarvis-cyan-glow);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--jarvis-cyan-muted);
+}
+
+/* Arc reactor ambient orb (referenced by Background.tsx — previously undefined) */
+.arc-reactor {
+  width: 180px;
+  height: 180px;
+  border-radius: 9999px;
+  background: radial-gradient(circle,
+      rgba(0, 255, 255, 0.22) 0%,
+      rgba(10, 102, 255, 0.12) 42%,
+      transparent 70%);
+  border: 1px solid rgba(0, 255, 255, 0.12);
+  box-shadow:
+    0 0 60px rgba(0, 255, 255, 0.14),
+    inset 0 0 50px rgba(0, 255, 255, 0.08);
+}
+.arc-reactor::after {
+  content: '';
+  position: absolute;
+  inset: 38%;
+  border-radius: 9999px;
+  border: 1px solid rgba(0, 255, 255, 0.25);
+  box-shadow: 0 0 18px rgba(0, 255, 255, 0.3);
+}
+
+/* Nav rail item — collapsed icon → expands label on hover/active */
+.nav-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.85rem;
+  color: rgba(0, 255, 255, 0.45);
+  border: 1px solid transparent;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+.nav-rail-item:hover {
+  color: var(--jarvis-cyan);
+  background: rgba(0, 255, 255, 0.06);
+  border-color: rgba(0, 255, 255, 0.18);
+}
+.nav-rail-item[data-active="true"] {
+  color: var(--jarvis-cyan);
+  background: rgba(0, 255, 255, 0.1);
+  border-color: rgba(0, 255, 255, 0.4);
+  box-shadow: inset 0 0 14px rgba(0, 255, 255, 0.12), 0 0 14px rgba(0, 255, 255, 0.08);
+}
+.nav-rail-item[data-active="true"]::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 18%;
+  bottom: 18%;
+  width: 3px;
+  border-radius: 4px;
+  background: var(--jarvis-cyan);
+  box-shadow: 0 0 10px var(--jarvis-cyan);
+}
+
+/* Welcome capability card */
+.capability-card {
+  position: relative;
+  border-radius: 1rem;
+  border: 1px solid rgba(0, 255, 255, 0.14);
+  background: linear-gradient(150deg, rgba(0, 255, 255, 0.05) 0%, rgba(10, 102, 255, 0.02) 100%);
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), border-color 0.3s ease, box-shadow 0.3s ease;
+  overflow: hidden;
+}
+.capability-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(0, 255, 255, 0.4);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45), 0 0 22px rgba(0, 255, 255, 0.1);
+}
+.capability-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top right, rgba(0, 255, 255, 0.1), transparent 60%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.capability-card:hover::after {
+  opacity: 1;
+}
+
+/* Example search chip */
+.example-chip {
+  border: 1px solid rgba(0, 255, 255, 0.2);
+  background: rgba(0, 255, 255, 0.04);
+  transition: all 0.2s ease;
+}
+.example-chip:hover {
+  background: rgba(0, 255, 255, 0.14);
+  border-color: rgba(0, 255, 255, 0.5);
+  box-shadow: 0 0 16px rgba(0, 255, 255, 0.15);
+}

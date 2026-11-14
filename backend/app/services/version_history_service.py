@@ -1,0 +1,390 @@
+import json
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy.orm import Session
+
+from app.discovery.analysis.diff import DiscoveryDiff, diff_snapshots
+from app.models.snapshot import ProfileSnapshot
+from app.schemas.snapshot import ChangeReport, FieldChange
+from app.services.discovery_integration import profile_snapshot
+from app.utils.logger import logger
+
+# Where the flat discovery profile snapshot lives inside `snapshot_data`. It is
+# deliberately NOT in TRACKED_SNAPSHOT_KEYS: the legacy field-by-field diff must
+# keep ignoring it, while `generate_discovery_diff` reads it through
+# `app.discovery.analysis.diff`.
+DISCOVERY_SNAPSHOT_KEY = "discovery_profiles"
+
+# Garbage collection settings
+MAX_SNAPSHOTS_PER_QUERY = 10
+RETENTION_DAYS = 90
+
+# Fields to track with their human-readable labels
+TRACKED_FIELDS = {
+    "github_url": "GitHub URL",
+    "instagram_url": "Instagram URL",
+    "twitter_url": "Twitter / X URL",
+    "linkedin_url": "LinkedIn URL",
+    "spotify_url": "Spotify URL",
+    "tiktok_url": "TikTok URL",
+    "description": "Bio / Profile Description",
+}
+
+# Dynamic fields stored inside snapshot_data JSON
+TRACKED_SNAPSHOT_KEYS = {
+    "location_country": "Estimated Country",
+    "location_city": "Estimated City",
+    "social_media_score": "Social Media Score",
+    "last_activity_summary": "Last Activity Summary",
+    "snapchat_url": "Snapchat URL",
+    "tumblr_url": "Tumblr URL",
+    "youtube_url": "YouTube URL",
+    "reddit_url": "Reddit URL",
+    "facebook_url": "Facebook URL",
+    "pinterest_url": "Pinterest URL",
+    "threads_url": "Threads URL",
+    "steam_url": "Steam URL",
+    "tinder_mention": "Tinder Mention",
+    "bumble_mention": "Bumble Mention",
+    "discord_mention": "Discord Mention",
+}
+
+# Computed, timestamp-free intel signatures (Faz 3.3). Stored in snapshot_data and
+# diffed like dynamic fields, but exclude `retrieved_at` so re-scans surface only
+# meaningful changes (new domain / sanction hit / relationship), not timestamp churn.
+TRACKED_INTEL_SIGS = {
+    "domain_intel_sig": "Domain Intelligence",
+    "sanctions_sig": "Sanction Matches",
+    "scholarly_sig": "Scholarly Records",
+    "archive_sig": "Archive Snapshots",
+    "relationships_sig": "Relationship Network",
+    "subject_confidence_sig": "Subject Confidence Score",
+}
+
+
+def _normalize_query(query: str) -> str:
+    """Normalize a query string for consistent matching."""
+    # Strip, lowercase, collapse whitespace
+    return " ".join(query.lower().strip().split())
+
+
+def _val_to_str(value) -> str | None:
+    """Convert a value to a comparable string, or None if empty."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s else None
+
+
+def _intel_signatures(get) -> dict[str, str | None]:
+    """Build timestamp-free, stable signatures for the new intel fields so the
+    version diff surfaces *meaningful* changes (a new domain / sanction hit /
+    relationship) instead of churning on `retrieved_at`, which changes on every
+    scan (Faz 3.3). `get` is an accessor that works on a model or dict.
+    """
+
+    def _items(field) -> list:
+        v = get(field)
+        return v if isinstance(v, list) else []
+
+    domains = sorted(d.get("domain", "") for d in _items("domain_intel") if isinstance(d, dict))
+    sanctions = sorted(
+        f"{h.get('name', '')}|{h.get('list_name', '')}" for h in _items("sanctions_hits") if isinstance(h, dict)
+    )
+    scholarly = sorted(str(r.get("title", "")) for r in _items("scholarly_records") if isinstance(r, dict))
+    relationships = sorted(
+        f"{r.get('from', '')}>{r.get('to', '')}:{r.get('type', '')}"
+        for r in _items("relationships")
+        if isinstance(r, dict)
+    )
+    archive_count = len(_items("archive_snapshots"))
+    subj = get("subject_confidence")
+
+    domains = [d for d in domains if d]
+    sanctions = [s for s in sanctions if s.strip("|")]
+    relationships = [r for r in relationships if r.strip(">:")]
+
+    return {
+        "domain_intel_sig": ", ".join(domains) or None,
+        "sanctions_sig": ", ".join(sanctions) or None,
+        "scholarly_sig": (f"{len(scholarly)} records: " + "; ".join(scholarly[:10])) if scholarly else None,
+        "archive_sig": f"{archive_count} snapshots" if archive_count else None,
+        "relationships_sig": ", ".join(relationships) or None,
+        "subject_confidence_sig": str(round(subj, 2)) if isinstance(subj, (int, float)) else None,
+    }
+
+
+def save_snapshot(db: Session, query_name: str, search_response) -> ProfileSnapshot:
+    """
+    Save a snapshot of the current search results for version tracking.
+    `search_response` can be a dict or a Pydantic model with the standard fields.
+    """
+    normalized = _normalize_query(query_name)
+
+    def _get(field):
+        if hasattr(search_response, field):
+            return getattr(search_response, field)
+        elif isinstance(search_response, dict):
+            return search_response.get(field)
+        return None
+
+    # Build snapshot_data with dynamic fields + timestamp-free intel signatures
+    snapshot_data = {key: _get(key) for key in TRACKED_SNAPSHOT_KEYS}
+    snapshot_data.update(_intel_signatures(_get))
+
+    # New profile shape, stored alongside the legacy fields. Empty when the
+    # response predates the discovery pipeline, so old callers are unaffected.
+    snapshot_data[DISCOVERY_SNAPSHOT_KEY] = profile_snapshot(_get("social_profiles") or [])
+
+    additional_info = _get("additional_info")
+
+    snapshot = ProfileSnapshot(
+        query_name=normalized,
+        github_url=_get("github_url"),
+        instagram_url=_get("instagram_url"),
+        twitter_url=_get("twitter_url"),
+        linkedin_url=_get("linkedin_url"),
+        spotify_url=_get("spotify_url"),
+        tiktok_url=_get("tiktok_url"),
+        description=_get("description"),
+        additional_info=additional_info,
+        snapshot_data=snapshot_data,
+    )
+
+    db.add(snapshot)
+    db.flush()
+    db.refresh(snapshot)
+
+    logger.log_success(f"Version snapshot #{snapshot.id} saved for '{normalized}'")
+
+    # Run garbage collection after saving
+    try:
+        cleanup_old_snapshots(db, query_name)
+    except Exception as e:
+        logger.log_warning(f"Snapshot GC failed (non-critical): {e}")
+
+    return snapshot
+
+
+def get_snapshots(db: Session, query_name: str) -> list[ProfileSnapshot]:
+    """Get all snapshots for a given query name, ordered oldest → newest."""
+    normalized = _normalize_query(query_name)
+    return (
+        db.query(ProfileSnapshot)
+        .filter(ProfileSnapshot.query_name == normalized)
+        .order_by(ProfileSnapshot.captured_at.asc())
+        .all()
+    )
+
+
+def get_snapshot_count(db: Session, query_name: str) -> int:
+    """Get total snapshot count for a query name."""
+    normalized = _normalize_query(query_name)
+    return db.query(ProfileSnapshot).filter(ProfileSnapshot.query_name == normalized).count()
+
+
+def generate_change_report(db: Session, query_name: str) -> ChangeReport | None:
+    """
+    Compare the two most recent snapshots and produce a change report.
+    Returns None if there are fewer than 2 snapshots.
+    """
+    normalized = _normalize_query(query_name)
+
+    # Get the last two snapshots (newest first). `id` breaks the tie: two
+    # snapshots saved inside the same clock tick share a `captured_at`, and
+    # without a stable second key the "previous" and "current" rows can come back
+    # swapped, inverting every added/removed verdict. Same fix as
+    # `generate_discovery_diff` below.
+    snapshots = (
+        db.query(ProfileSnapshot)
+        .filter(ProfileSnapshot.query_name == normalized)
+        .order_by(ProfileSnapshot.captured_at.desc(), ProfileSnapshot.id.desc())
+        .limit(2)
+        .all()
+    )
+
+    total_count = get_snapshot_count(db, query_name)
+
+    if len(snapshots) < 2:
+        # Not enough data to compare — return empty report
+        if len(snapshots) == 1:
+            return ChangeReport(
+                query_name=normalized,
+                previous_captured_at=None,
+                current_captured_at=snapshots[0].captured_at,
+                changes=[],
+                snapshot_count=total_count,
+                has_changes=False,
+            )
+        return None
+
+    current = snapshots[0]  # Newest
+    previous = snapshots[1]  # Previous
+
+    changes: list[FieldChange] = []
+
+    # Compare standard tracked fields (columns on the model)
+    for field, label in TRACKED_FIELDS.items():
+        old_val = _val_to_str(getattr(previous, field, None))
+        new_val = _val_to_str(getattr(current, field, None))
+
+        if old_val != new_val:
+            changes.append(
+                FieldChange(
+                    field=field,
+                    field_label=label,
+                    old_value=old_val,
+                    new_value=new_val,
+                )
+            )
+
+    # Compare dynamic snapshot_data fields
+    prev_data = previous.snapshot_data or {}
+    curr_data = current.snapshot_data or {}
+
+    for key, label in TRACKED_SNAPSHOT_KEYS.items():
+        old_val = _val_to_str(prev_data.get(key))
+        new_val = _val_to_str(curr_data.get(key))
+
+        if old_val != new_val:
+            changes.append(
+                FieldChange(
+                    field=key,
+                    field_label=label,
+                    old_value=old_val,
+                    new_value=new_val,
+                )
+            )
+
+    # Compare computed intel signatures (Faz 3.3) — new domains/sanctions/etc.
+    for key, label in TRACKED_INTEL_SIGS.items():
+        old_val = _val_to_str(prev_data.get(key))
+        new_val = _val_to_str(curr_data.get(key))
+
+        if old_val != new_val:
+            changes.append(
+                FieldChange(
+                    field=key,
+                    field_label=label,
+                    old_value=old_val,
+                    new_value=new_val,
+                )
+            )
+
+    # Compare additional_info (deep JSON diff — top-level keys only)
+    prev_info = previous.additional_info or {}
+    curr_info = current.additional_info or {}
+
+    all_info_keys = set(list(prev_info.keys()) + list(curr_info.keys()))
+    for key in sorted(all_info_keys):
+        old_raw = prev_info.get(key)
+        new_raw = curr_info.get(key)
+
+        old_val = _val_to_str(json.dumps(old_raw, ensure_ascii=False)) if old_raw is not None else None
+        new_val = _val_to_str(json.dumps(new_raw, ensure_ascii=False)) if new_raw is not None else None
+
+        if old_val != new_val:
+            changes.append(
+                FieldChange(
+                    field=f"additional_info.{key}",
+                    field_label=f"Additional Info: {key}",
+                    old_value=old_val,
+                    new_value=new_val,
+                )
+            )
+
+    logger.log_action(
+        f"Version diff for '{normalized}': {len(changes)} change(s) detected across {total_count} snapshots"
+    )
+
+    return ChangeReport(
+        query_name=normalized,
+        previous_captured_at=previous.captured_at,
+        current_captured_at=current.captured_at,
+        changes=changes,
+        snapshot_count=total_count,
+        has_changes=len(changes) > 0,
+    )
+
+
+def generate_discovery_diff(db: Session, query_name: str) -> DiscoveryDiff | None:
+    """What changed in the profile set since the previous search of this name.
+
+    Runs on the new profile shape via `app.discovery.analysis.diff`, which keys on
+    `platform:username` and detects avatar changes on `avatar_sha256` rather than
+    on the URL. `generate_change_report` above is untouched and keeps diffing the
+    legacy flat columns for callers that still use them.
+
+    Returns None when there is nothing to compare against yet.
+    """
+    normalized = _normalize_query(query_name)
+    # `id` breaks the tie: two snapshots saved inside the same clock tick share a
+    # `captured_at`, and without a stable second key the "previous" and "current"
+    # rows can come back swapped, inverting every added/removed verdict.
+    snapshots = (
+        db.query(ProfileSnapshot)
+        .filter(ProfileSnapshot.query_name == normalized)
+        .order_by(ProfileSnapshot.captured_at.desc(), ProfileSnapshot.id.desc())
+        .limit(2)
+        .all()
+    )
+    if len(snapshots) < 2:
+        return None
+
+    current, previous = snapshots[0], snapshots[1]
+    since = previous.captured_at.date().isoformat() if previous.captured_at else None
+    diff = diff_snapshots(
+        (previous.snapshot_data or {}).get(DISCOVERY_SNAPSHOT_KEY) or {},
+        (current.snapshot_data or {}).get(DISCOVERY_SNAPSHOT_KEY) or {},
+        since=since,
+    )
+    logger.log_action(f"Discovery diff for '{normalized}': {diff.summary}")
+    return diff
+
+
+# ---------------------------------------------------------------------------
+# Garbage collection
+# ---------------------------------------------------------------------------
+
+
+def cleanup_old_snapshots(
+    db: Session,
+    query_name: str,
+    max_snapshots: int = MAX_SNAPSHOTS_PER_QUERY,
+    retention_days: int = RETENTION_DAYS,
+) -> int:
+    """Remove excess and expired snapshots for a query. Returns count deleted."""
+    normalized = _normalize_query(query_name)
+    deleted = 0
+
+    # 1. Delete snapshots older than retention_days
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    old_count = (
+        db.query(ProfileSnapshot)
+        .filter(
+            ProfileSnapshot.query_name == normalized,
+            ProfileSnapshot.captured_at < cutoff,
+        )
+        .delete(synchronize_session="fetch")
+    )
+    deleted += old_count
+
+    # 2. Keep only the newest max_snapshots (delete the rest)
+    all_ids = (
+        db.query(ProfileSnapshot.id)
+        .filter(ProfileSnapshot.query_name == normalized)
+        .order_by(ProfileSnapshot.captured_at.desc())
+        .all()
+    )
+    if len(all_ids) > max_snapshots:
+        excess_ids = [row[0] for row in all_ids[max_snapshots:]]
+        excess_count = (
+            db.query(ProfileSnapshot).filter(ProfileSnapshot.id.in_(excess_ids)).delete(synchronize_session="fetch")
+        )
+        deleted += excess_count
+
+    if deleted:
+        db.flush()
+        logger.log_action(f"Snapshot GC: pruned {deleted} old snapshot(s) for '{normalized}'")
+
+    return deleted

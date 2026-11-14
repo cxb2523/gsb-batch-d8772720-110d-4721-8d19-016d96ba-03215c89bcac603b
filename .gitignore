@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+backend/data/
+
+# Node & Next.js
+node_modules/
+.next/
+out/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+/coverage
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+# Yarn
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Claude project rules (local only, not pushed)
+CLAUDE.local.md
+*.swp
+*.swo
+*~
+docs/
+
+# OS & Misc
+.DS_Store
+Thumbs.db
+*.pem
+
+# Python Testing & Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# ChromaDB
+chroma_db/
+
+# Docker
+*.pid
+
+# OS Ek
+desktop.ini
+ehthumbs.db
+
+# Logs
+logs/
+
+# Spatial console assets — 42 MB of MediaPipe WASM and .task models.
+# Restored by `npm run spatial:assets` in frontend/; the console reports them
+# as missing rather than starting without them.
+frontend/public/mediapipe/
+frontend/public/models/

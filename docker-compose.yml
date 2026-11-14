@@ -1,0 +1,49 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      # Build the stage that ships a browser. Without it the discovery pipeline's
+      # stealth tier cannot start in the container and every platform that needs
+      # a browser reports `blocked` — silently, which is how it went unnoticed.
+      # Switch to `runtime` for a much smaller image if the HTTP tier is enough.
+      target: runtime-stealth
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+    env_file: ./backend/.env
+    environment:
+      # Ollama runs on the host (already serving qwen3.5:9b), not as a container.
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - HOST=0.0.0.0
+      - PORT=8000
+    extra_hosts:
+      # Required on Linux; harmless on Docker Desktop where it already resolves.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health')
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # The relay runs inside this container, not in the browser, so the backend
+      # is reached over the compose network — the published port is no longer on
+      # the path. The key stays here and never reaches a client bundle.
+      - BACKEND_URL=http://backend:8000
+      - API_KEY=${API_KEY:?Set API_KEY in the root .env file (copy .env.example) and match backend/.env}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
