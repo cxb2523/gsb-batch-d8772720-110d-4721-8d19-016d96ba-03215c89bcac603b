@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="59 35 180.66469 129.29295"
+   width="180.66469"
+   height="129.29295"
+   role="img"
+   aria-label="Black double-headed axe symbol"
+   version="1.1"
+   id="svg2"
+   sodipodi:docname="axuselogo.svg"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs2" />
+  <sodipodi:namedview
+     id="namedview2"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.3202743"
+     inkscape:cx="-24.237388"
+     inkscape:cy="-17.041914"
+     inkscape:window-width="1920"
+     inkscape:window-height="991"
+     inkscape:window-x="-9"
+     inkscape:window-y="-9"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg2" />
+  <path
+     fill="#000000"
+     fill-rule="evenodd"
+     d="m 86.457262,35.000498 c -14.000005,15 -26.000005,37.999992 -27.000005,54.999992 -3,31.00001 9,57.00001 29.000009,74.00001 2.999987,-19 13.999994,-36 30.999994,-54 l 30,-29.00001 h 1 l 13,13 13,-13 -26,-25.999992 h -2 l -32,30.999992 c -16,-15 -25.000007,-33.999992 -27.999994,-49.999992 z M 83.457257,75.00049 c -5,10 -6,23 -5,33.00001 1,6 3,12 5,16 l 19.000003,-24 z"
+     id="path1" />
+  <path
+     id="path2"
+     d="m 212.45718,35 c -3,13 -10,27.000001 -20,40 l -43,43.99999 -15,-13 -11,11 v 3 l 17,17 v 27.29297 h 19 v -28.29297 l 22,-22 c 17,13 29,31 31,50 22,-22 32,-52.99999 25,-84.99999 -3,-13 -14,-32 -25,-44 z m 3,40 c 5,11 6,22.99998 5,32.99999 0,6 -2,12 -5,16 l -19,-24 z" />
+</svg>

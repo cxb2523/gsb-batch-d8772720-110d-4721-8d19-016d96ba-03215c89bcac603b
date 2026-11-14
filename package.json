@@ -1,0 +1,28 @@
+{
+  "name": "axuse",
+  "version": "0.1.0",
+  "description": "Accessibility-first browser & computer use for agent harnesses (Codex, Claude Code, OpenCode, Antigravity, ...). Instrument, don't photograph. MCP-native, zero dependencies.",
+  "type": "module",
+  "bin": {
+    "axuse": "./src/cli.js"
+  },
+  "main": "./src/core/controller.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --import ./test/setup.js --test --test-timeout=90000 test/*.test.js",
+    "doctor": "node src/cli.js doctor"
+  },
+  "keywords": [
+    "mcp",
+    "browser-use",
+    "computer-use",
+    "cua",
+    "cdp",
+    "accessibility",
+    "agent",
+    "automation"
+  ],
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

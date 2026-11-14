@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Generated benchmark output
+bench/results-*.jsonl
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Coverage / build
+coverage/
+dist/
+*.tgz
+
+# Generated suite output (regenerate: see bench/suite/README.md)
+bench/suite/out/
+bench/suite/results/
+bench/suite/browser-use-SKILL.md
+
+# Solver plugin install target (this directory holds PAID, separately
+# licensed solver packages — never part of the open-source repo).
+# Only the README below is tracked; everything else stays local.
+
+# plugins/*
+!plugins/README.md
+
+# Premium plugin artifacts (specs: 01/03) — local-only outputs.
+vaults/
+captures/
+plugins/licenses/
+*.bdic
+
+# agent-harness session state (never repo content)
+.opencode/

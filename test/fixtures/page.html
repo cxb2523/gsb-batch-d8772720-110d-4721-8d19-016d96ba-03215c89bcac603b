@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>axuse test page</title>
+  <style>
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>axuse fixture</h1>
+  <nav><a id="link" href="#end">jump to end</a></nav>
+  <main>
+    <p id="para">Static paragraph text for the snapshot.</p>
+    <button id="add" onclick="addItem()">Add item</button>
+    <button id="toggle" onclick="toggleHidden()">Toggle hidden text</button>
+    <ul id="list"></ul>
+    <form onsubmit="event.preventDefault(); document.getElementById('echo').textContent = document.getElementById('field').value;">
+      <label for="field">Name</label>
+      <input id="field" type="text" value="" placeholder="type here" />
+      <select id="combo">
+        <option value="a">Alpha</option>
+        <option value="b">Beta</option>
+        <option value="c">Gamma</option>
+      </select>
+      <button id="submit" type="submit">Echo</button>
+    </form>
+    <div id="echo" style="min-height:1em"></div>
+    <section id="sliders">
+      <label for="rng">Volume</label>
+      <input id="rng" type="range" min="0" max="50" step="5" value="10" aria-label="Volume" />
+      <div id="aslider" role="slider" tabindex="0" aria-label="aria slider" aria-valuemin="0" aria-valuemax="20" aria-valuenow="4">aria slider</div>
+    </section>
+    <div class="hidden" id="secret" aria-hidden="false">hidden text</div>
+    <script>
+      function addItem() {
+        const ul = document.getElementById('list');
+        const li = document.createElement('li');
+        li.textContent = 'item ' + (ul.children.length + 1);
+        ul.appendChild(li);
+      }
+      function toggleHidden() {
+        const s = document.getElementById('secret');
+        s.classList.toggle('hidden');
+      }
+      (function () {
+        var el = document.getElementById('aslider');
+        el.addEventListener('keydown', function (e) {
+          var now = parseFloat(el.getAttribute('aria-valuenow')) || 0;
+          if (e.key === 'ArrowUp' || e.key === 'ArrowRight') el.setAttribute('aria-valuenow', String(Math.min(20, now + 2)));
+          else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') el.setAttribute('aria-valuenow', String(Math.max(0, now - 2)));
+        });
+      })();
+    </script>
+  </main>
+  <div id="end" style="height:2000px">end of page</div>
+</body>
+</html>

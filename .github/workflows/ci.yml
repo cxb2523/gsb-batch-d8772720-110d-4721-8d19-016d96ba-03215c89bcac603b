@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ---------------------------------------------------------------- macOS
+  # Lane coverage: two supported macOS versions on Apple Silicon, plus the
+  # Intel build of the oldest supported version (macos-15-intel is the
+  # successor of the retired macos-13 image; macos-14 is deprecated).
+  macos:
+    name: macOS (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15, macos-15-intel]
+        node: [22]
+        include:
+          - os: macos-26
+            node: 24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install Chrome for Testing (extension-bridge + browser coverage)
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) platform="mac-arm64" ;;
+            x86_64) platform="mac-x64" ;;
+            *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          metadata="$RUNNER_TEMP/chrome-for-testing.json"
+          curl --fail --silent --show-error --location \
+            https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            --output "$metadata"
+          url="$(node -e 'const fs=require("node:fs"); const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const hit=d.channels.Stable.downloads.chrome.find((x)=>x.platform===process.argv[2]); if(!hit) process.exit(2); process.stdout.write(hit.url);' "$metadata" "$platform")"
+          archive="$RUNNER_TEMP/chrome-for-testing.zip"
+          curl --fail --silent --show-error --location "$url" --output "$archive"
+          install_root="$RUNNER_TEMP/axuse-chrome-for-testing"
+          mkdir -p "$install_root"
+          ditto -x -k "$archive" "$install_root"
+          browser="$install_root/chrome-mac${platform#mac}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+          test -x "$browser"
+          echo "AXUSE_BROWSER=$browser" >> "$GITHUB_ENV"
+      - name: Full suite (capability gates on, TAP for the skip audit)
+        env:
+          AXUSE_ENABLE_MACOS_CUA: "1"
+          AXUSE_TEST_MACOS_DESKTOP: "1"
+        run: |
+          set -o pipefail
+          node --test --test-timeout=90000 --test-reporter=tap test/*.test.js | tee "$RUNNER_TEMP/tap.txt"
+      - name: Skip audit (every skip explicit, typed, CI-visible)
+        run: node tools/skip-audit.mjs "$RUNNER_TEMP/tap.txt"
+      - name: Doctor smoke
+        env:
+          AXUSE_ENABLE_MACOS_CUA: "1"
+        run: node src/cli.js doctor
+      - name: Bridge security check (token file owner-only)
+        run: |
+          node - <<'EOF'
+          // Start a hub in an isolated dir and assert the info file's mode.
+          import("node:fs").then(async (fs) => {
+            const os = await import("node:os");
+            const dir = fs.mkdtempSync(await import("node:path").then((p) => p.join(os.tmpdir(), "axuse-sec-")));
+            process.env.AXUSE_BRIDGE_DIR = dir;
+            const { BridgeHub } = await import("./src/bridge/hub.js");
+            const hub = await new BridgeHub().start();
+            const st = fs.statSync(await import("./src/bridge/hub.js").then((h) => h.infoPath()));
+            const mode = st.mode & 0o777;
+            hub.stop();
+            fs.rmSync(dir, { recursive: true, force: true });
+            if (process.platform !== "win32" && (mode & 0o077) !== 0) {
+              console.error(`bridge.json mode ${mode.toString(8)} is broader than 0600`);
+              process.exit(1);
+            }
+            console.log(`bridge.json mode ${mode.toString(8)} OK`);
+          });
+          EOF
+
+  # -------------------------------------------------------------- Windows
+  # The Windows desktop driver is the resident PowerShell one — exercised
+  # live here (screen info + screenshots only; no pointer movement).
+  windows:
+    name: Windows (windows-latest, Node 22)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Full suite (TAP for the skip audit)
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap "test/*.test.js" | tee "$RUNNER_TEMP/tap.txt"
+      - name: Skip audit
+        run: node tools/skip-audit.mjs "$RUNNER_TEMP/tap.txt"
+      - name: Doctor smoke
+        run: node src/cli.js doctor
+
+  # ---------------------------------------------------------------- Linux
+  # Browser tools are platform-free; this lane pins Chrome for Testing so the
+  # browser suite runs for real (no desktop driver on Linux by design).
+  linux:
+    name: Linux (ubuntu-latest, Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Chrome for Testing
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/cft.json"
+          curl --fail --silent --show-error --location \
+            https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            --output "$metadata"
+          url="$(node -e 'const fs=require("node:fs"); const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const hit=d.channels.Stable.downloads.chrome.find((x)=>x.platform==="linux64"); if(!hit) process.exit(2); process.stdout.write(hit.url);' "$metadata")"
+          curl --fail --silent --show-error --location "$url" --output "$RUNNER_TEMP/cft.zip"
+          unzip -q "$RUNNER_TEMP/cft.zip" -d "$RUNNER_TEMP/cft"
+          echo "AXUSE_BROWSER=$RUNNER_TEMP/cft/chrome-linux64/chrome" >> "$GITHUB_ENV"
+      - name: Install AT-SPI sandbox deps (GTK app for the structure-layer E2E)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-gi gir1.2-gtk-3.0
+      - name: Full suite (TAP for the skip audit)
+        env:
+          DISPLAY: ":99"
+        run: |
+          set -o pipefail
+          # A REAL X server on :99: the Linux desktop driver mounts against it
+          # (input synthesis is verified on the suite's own private Xvfb
+          # displays; :99 only lets the MCP layer mount the live tools).
+          Xvfb :99 -screen 0 1280x800x24 -ac -nolisten tcp &
+          sleep 2
+          node --test --test-timeout=90000 --test-reporter=tap test/*.test.js | tee "$RUNNER_TEMP/tap.txt"
+      - name: Skip audit
+        run: node tools/skip-audit.mjs "$RUNNER_TEMP/tap.txt"
+      - name: Doctor smoke
+        run: node src/cli.js doctor
+
+  # ---------------------------------------------------------- Linux server
+  # The production server lane: NO desktop session and NO DISPLAY — the
+  # exact deployment shape for agent CLIs (codex, claude code, opencode) on
+  # Ubuntu servers. Challenge/anti-bot pages detect --headless Chrome as
+  # their first step, so the supported lane is HEADED Chrome on an
+  # auto-booted private Xvfb (server mode). test/server-mode.test.js asserts
+  # the anti-bot posture live (no Headless UA, navigator.webdriver false,
+  # desktop viewport, WebGL) with a forced dead DISPLAY — hermetic.
+  linux-server:
+    name: Linux server (ubuntu-latest, no display, Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Chrome for Testing + Xvfb + fonts
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/cft.json"
+          curl --fail --silent --show-error --location \
+            https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            --output "$metadata"
+          url="$(node -e 'const fs=require("node:fs"); const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const hit=d.channels.Stable.downloads.chrome.find((x)=>x.platform==="linux64"); if(!hit) process.exit(2); process.stdout.write(hit.url);' "$metadata")"
+          curl --fail --silent --show-error --location "$url" --output "$RUNNER_TEMP/cft.zip"
+          unzip -q "$RUNNER_TEMP/cft.zip" -d "$RUNNER_TEMP/cft"
+          echo "AXUSE_BROWSER=$RUNNER_TEMP/cft/chrome-linux64/chrome" >> "$GITHUB_ENV"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb fonts-liberation fonts-dejavu-core fontconfig
+      - name: Full suite with DISPLAY unset (server mode auto-boots Xvfb)
+        run: |
+          set -o pipefail
+          env -u DISPLAY node --test --test-timeout=90000 --test-reporter=tap test/*.test.js | tee "$RUNNER_TEMP/tap.txt"
+      - name: Skip audit
+        run: node tools/skip-audit.mjs "$RUNNER_TEMP/tap.txt"
+      - name: Doctor smoke (server mode: headed Chrome on an auto-booted Xvfb)
+        run: env -u DISPLAY node src/cli.js doctor
+      - name: Posture audit (the full lane, machine-checked; exit 1 on failures)
+        run: env -u DISPLAY node src/cli.js posture --json
+      - name: Posture egress verification (the exit IP's geo vs the persona; INFO-safe on network gaps)
+        run: env -u DISPLAY node src/cli.js posture --verify-egress | tail -4
+      - name: Egress mismatch detector (a Tokyo persona through a US runner exit must WARN)
+        run: |
+          set -euo pipefail
+          env -u DISPLAY AXUSE_TIMEZONE=Asia/Tokyo node src/cli.js posture --verify-egress > /tmp/posture-mismatch.txt || true
+          # The check MUST run: either the mismatch warning (geo answered)
+          # or the honest unreachable/info line (network gap). Never silent.
+          grep -qE "egress: (exit IP|echo unreachable)" /tmp/posture-mismatch.txt
+          # When geo answers (the common case), the mismatch must be CALLED OUT.
+          if grep -q "exit IP" /tmp/posture-mismatch.txt; then
+            grep -q "does not match the exit" /tmp/posture-mismatch.txt
+            echo "detector fired:" $(grep "does not match the exit" /tmp/posture-mismatch.txt)
+          fi

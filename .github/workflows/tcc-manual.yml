@@ -1,0 +1,64 @@
+name: Manual TCC validation (self-hosted macOS)
+
+# This lane is SEPARATE from CI on purpose. GitHub-hosted runners cannot be
+# granted Accessibility or Screen Recording, so the granted side of the TCC
+# matrix can only be validated on a machine a human prepared. The tests
+# capture a 200x120 corner slice, post one zero-delta scroll event (a real
+# event that moves nothing), and — the LIVE scroll-direction pin — briefly
+# open an axuse-owned Chrome window, scroll IT with a real wheel event, and
+# assert the direction via scrollY read-back. Nothing outside axuse's own
+# window is ever scrolled or captured.
+#
+# One-time runner setup (documented in docs/macos-support.md):
+#   1. A dedicated Mac (not your daily driver) registered as a self-hosted
+#      runner with labels: self-hosted, macOS, axuse-tcc
+#   2. System Settings → Privacy & Security → Accessibility: add the exact
+#      binary that runs the tests (the runner's node, e.g. via a Terminal
+#      window owned by the runner user).
+#   3. Same for Screen Recording, then restart that binary.
+#   4. Verify: AXUSE_TEST_MACOS_TCC_MANUAL=1 node --test
+#      test/desktop-tcc-manual.test.js — the first test fails with typed
+#      instructions if the lane is misconfigured.
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "What this validation run covers (recorded in the summary)"
+        required: false
+        default: "monthly TCC-granted validation"
+
+jobs:
+  tcc-manual:
+    name: TCC-granted desktop validation
+    runs-on: [self-hosted, macOS, axuse-tcc]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment fingerprint (evidence)
+        run: |
+          sw_vers
+          uname -m
+          node --version
+          echo "runner: $(whoami)"
+      - name: TCC-manual suite (fails closed when grants are missing)
+        env:
+          AXUSE_ENABLE_MACOS_CUA: "1"
+          AXUSE_TEST_MACOS_TCC_MANUAL: "1"
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap test/desktop-tcc-manual.test.js | tee "$RUNNER_TEMP/tcc-tap.txt"
+          # The manual suite must produce ZERO skips: every test in it is
+          # mandatory in this lane.
+          if grep -q "# SKIP" "$RUNNER_TEMP/tcc-tap.txt"; then
+            echo "::error::TCC-manual lane produced skips — the runner is misconfigured or the gate is wrong."
+            exit 1
+          fi
+      - name: Denied-state regression (same machine, subshell without grants is NOT possible — informational)
+        run: |
+          echo "Denied-state coverage runs automatically in CI lanes (typed-error paths) and on any un-granted host."
+      - name: Full suite passive desktop paths (screen info, windows, probe)
+        env:
+          AXUSE_ENABLE_MACOS_CUA: "1"
+          AXUSE_TEST_MACOS_DESKTOP: "1"
+        run: node --test test/desktop.test.js

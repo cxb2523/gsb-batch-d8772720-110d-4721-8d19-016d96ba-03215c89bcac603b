@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "axuse bridge",
+  "version": "1.1.0",
+  "description": "Bridge your real Chrome to the axuse agent MCP server. Lets an agent harness control this browser through trusted CDP (chrome.debugger) while you watch.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAytFe+1ptPXR/EbCQTzxq01OsH1QShTl0eWmSf2Esjp6eIYKdsL8s6wMBjn21GLA9cC/R9tgyvebqp84DMV+QIFs+RWBwnrbaJzSNBZuB+x00gZxj5Du+TUsllPI9J3NV28MlY6vUS9TVcqlS0KbFVYSC1nZQpuzphlL1cgLs+K0nkfGSIjrhmrTRbXtP1cygbHoZRAO1S6CZX9ZK/Ru7z6084IDA2HYgIwzE9zlf21D4VxXSb1zGsUIxONJ2SB8ToyZxjVxZKtasZRoD1MX8NXIm7l+7FIlREhXdwL0IRfcwCOGAIV7vZAvpzMQLSas0yOCoZtXKwWEp+H4C+CIyvwIDAQAB",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["nativeMessaging", "tabs", "debugger"]
+}
