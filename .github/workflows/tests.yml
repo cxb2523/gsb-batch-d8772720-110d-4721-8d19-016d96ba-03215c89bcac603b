@@ -1,0 +1,79 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        # https://github.com/actions/python-versions/blob/main/versions-manifest.json
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15-dev"]
+        include:
+        # other OS version necessary
+        - os: macos-latest
+          python-version: "3.13"
+        - os: windows-latest
+          python-version: "3.13"
+    steps:
+    - uses: actions/checkout@v7
+
+    # Python and uv setup
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v10.3.2
+      with:
+        enable-cache: true
+        cache-dependency-glob: pyproject.toml
+
+    - name: Install dependencies
+      run: uv pip install --system -e ".[dev]"
+
+    # tests
+    - name: Lint, format check and type checking
+      if: ${{ matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest' }}
+      run: |
+        ruff check courlan tests
+        ruff format --check --diff courlan tests
+        mypy -p courlan
+        mypy tests
+
+    - name: Test with pytest
+      run: |
+        python -m pytest --cov=courlan --cov-report=xml
+
+    - name: Test docs
+      # version matches .readthedocs.yml
+      if: ${{ matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest' }}
+      run: |
+        uv pip install --system -e ".[docs]"
+        pytest docs/test_docs.py
+
+    # coverage
+    - name: Upload coverage to Codecov
+      if: ${{ matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest' }}
+      uses: codecov/codecov-action@v7
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      with:
+        fail_ci_if_error: true
+        files: ./coverage.xml
+        verbose: true
