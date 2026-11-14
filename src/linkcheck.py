@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
 log = logging.getLogger(__name__)
+
+# Checking stored links is network-bound; a small pool hides most of the
+# latency without hammering driveseed (which tarpits/blocks aggressive
+# clients). Kept deliberately low per host.
+DEFAULT_MAX_WORKERS = 4
 
 # Dead driveseed pages return HTTP 200 with this marker in the body, e.g.:
 #   <h3>404! Page Not Found</h3>
@@ -54,13 +60,60 @@ def check_link(url: str, timeout: int = 15) -> str:
     return "alive"
 
 
-def partition_alive(urls: list[str], timeout: int = 15) -> tuple[list[str], list[str], list[str]]:
-    """Split urls into (alive, dead, unknown), logging each verdict."""
+def _check_one(url: str, timeout: int) -> tuple[str, str | None]:
+    """Return (verdict, reason) for one url; never raises.
+
+    Unexpected errors degrade to 'unknown' so one bad link cannot abort
+    the whole batch.
+    """
+    try:
+        return check_link(url, timeout=timeout), None
+    except Exception as e:  # noqa: BLE001 - batch must survive any single failure
+        return "unknown", f"{type(e).__name__}: {e}"
+
+
+def partition_alive(
+    urls: list[str],
+    timeout: int = 15,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+) -> tuple[list[str], list[str], list[str]]:
+    """Split urls into (alive, dead, unknown), logging each verdict.
+
+    Links are checked concurrently with at most ``max_workers`` requests in
+    flight; each verdict is logged as soon as it lands. Grouping happens
+    afterwards in input order, so the lists never reflect completion order.
+    """
     alive, dead, unknown = [], [], []
-    for url in urls:
-        verdict = check_link(url, timeout=timeout)
-        if verdict != "unknown":
-            log.info("%s %s", verdict.upper(), url[:80])
+    if not urls:
+        log.info("Link check: 0 alive, 0 dead, 0 unknown of 0")
+        return alive, dead, unknown
+
+    workers = max(1, min(max_workers, len(urls)))
+    verdicts: list[str] = ["unknown"] * len(urls)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="linkcheck") as pool:
+        futures = {
+            pool.submit(_check_one, url, timeout): index
+            for index, url in enumerate(urls)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                verdict, reason = future.result()
+            except Exception as e:  # noqa: BLE001 - e.g. cancelled future
+                verdict, reason = "unknown", f"{type(e).__name__}: {e}"
+            if verdict not in ("alive", "dead", "unknown"):
+                reason = f"unexpected verdict {verdict!r}"
+                verdict = "unknown"
+            verdicts[index] = verdict
+            if verdict == "unknown":
+                # check_link already logs its own ambiguous verdicts; only
+                # exceptions/unexpected values need a line from here.
+                if reason:
+                    log.info("UNKNOWN %s (%s)", urls[index][:80], reason)
+            else:
+                log.info("%s %s", verdict.upper(), urls[index][:80])
+
+    for url, verdict in zip(urls, verdicts, strict=True):
         {"alive": alive, "dead": dead, "unknown": unknown}[verdict].append(url)
     log.info(
         "Link check: %d alive, %d dead, %d unknown of %d",
