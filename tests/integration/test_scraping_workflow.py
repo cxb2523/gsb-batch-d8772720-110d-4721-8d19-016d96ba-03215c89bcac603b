@@ -7,7 +7,12 @@ import pandas as pd
 import pytest
 from sqlmodel import select
 from src.database_models import JobSQL
-from src.models.job_models import JobPosting, JobScrapeRequest, JobSite
+from src.models.job_models import (
+    JobPosting,
+    JobScrapeRequest,
+    JobSite,
+    ScrapeFailureReason,
+)
 from src.scraping.job_scraper import JobSpyScraper
 from src.services.job_service import JobService
 
@@ -124,6 +129,7 @@ def test_sync_scrape_returns_explicit_failed_result_on_provider_error():
         "valid_rows": 0,
         "invalid_rows": 0,
         "error": "Scraping operation failed",
+        "failure_reason": ScrapeFailureReason.PROVIDER_ERROR,
     }
 
 

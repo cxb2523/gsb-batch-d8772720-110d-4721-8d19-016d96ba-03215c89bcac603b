@@ -101,6 +101,19 @@ class SavedSearchRunStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ScrapeFailureReason(StrEnum):
+    """Machine-readable reasons a scrape result is not fully successful.
+
+    Stored under ``JobScrapeResult.metadata["failure_reason"]`` so runners can
+    branch on outcomes without parsing human-readable English messages. The
+    field is ``None`` for successful runs, including provider responses with
+    zero rows.
+    """
+
+    PROVIDER_ERROR = "provider_error"
+    VALIDATION_FAILED = "validation_failed"
+
+
 class ApplicationStage(StrEnum):
     """Canonical job-search workflow."""
 

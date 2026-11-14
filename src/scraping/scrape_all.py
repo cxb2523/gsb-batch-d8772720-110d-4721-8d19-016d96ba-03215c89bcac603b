@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 
 from src.database import db_session
-from src.models.job_models import SavedSearchRunStatus
+from src.models.job_models import SavedSearchRunStatus, ScrapeFailureReason
 from src.schemas import SavedSearch, SavedSearchRunHealth
 from src.services.job_service import job_service
 from src.services.saved_search_service import saved_search_service
@@ -67,12 +67,21 @@ async def run_saved_search(search_id: int) -> SavedSearch | None:
         )
         raw_found = int(result.metadata.get("raw_found", result.total_found))
         invalid_rows = int(result.metadata.get("invalid_rows", 0))
+        failure_reason = result.metadata.get("failure_reason")
         if not result.metadata.get("success", False):
+            # failure_reason is the machine-readable contract; the English
+            # message is only the human-facing detail carried in last_error.
+            if failure_reason == ScrapeFailureReason.VALIDATION_FAILED:
+                fallback = (
+                    f"{invalid_rows} of {raw_found} provider rows failed validation"
+                )
+            else:
+                fallback = "Scrape failed"
             health = _health(
                 SavedSearchRunStatus.FAILED,
                 started_clock,
                 jobs_seen=raw_found,
-                error=str(result.metadata.get("error", "Scrape failed")),
+                error=str(result.metadata.get("error") or fallback),
             )
         else:
             status = (

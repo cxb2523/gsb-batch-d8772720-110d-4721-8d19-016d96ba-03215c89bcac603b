@@ -17,6 +17,7 @@ from src.models.job_models import (
     JobScrapeRequest,
     JobScrapeResult,
     JobSite,
+    ScrapeFailureReason,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,12 +78,16 @@ class JobSpyScraper:
             # Convert DataFrame to Pydantic models
             jobs, invalid_rows = self._dataframe_to_models(jobs_df, request.site_name)
             raw_found = len(jobs_df)
+            all_invalid = invalid_rows and not jobs
             metadata: dict[str, Any] = {
                 "scraping_method": "jobspy",
                 "success": bool(jobs),
                 "raw_found": raw_found,
                 "valid_rows": len(jobs),
                 "invalid_rows": invalid_rows,
+                "failure_reason": (
+                    ScrapeFailureReason.VALIDATION_FAILED if all_invalid else None
+                ),
             }
             if invalid_rows:
                 row_label = "row" if raw_found == 1 else "rows"
@@ -224,6 +229,7 @@ class JobSpyScraper:
             "raw_found": 0,
             "valid_rows": 0,
             "invalid_rows": 0,
+            "failure_reason": (ScrapeFailureReason.PROVIDER_ERROR if error else None),
         }
         if error:
             metadata["error"] = error

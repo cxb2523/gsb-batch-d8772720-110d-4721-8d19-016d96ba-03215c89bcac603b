@@ -13,6 +13,7 @@ from src.models.job_models import (
     JobScrapeResult,
     JobSite,
     SavedSearchRunStatus,
+    ScrapeFailureReason,
 )
 from src.schemas import SavedSearchCreate
 from src.scraping.scrape_all import (
@@ -41,19 +42,38 @@ def _result(
     inserted: int = 0,
     invalid: int = 0,
     success: bool = True,
+    failure_reason: ScrapeFailureReason | None = None,
 ):
     request = JobScrapeRequest(site_name=JobSite.LINKEDIN, search_term="AI")
     valid = max(found - invalid, 0)
     distinct = max(min(inserted, valid), 1)
     jobs = [_posting(index % distinct) for index in range(valid)] if success else []
+    all_invalid = bool(found) and not valid
+    if success:
+        reason = None
+    elif failure_reason is not None:
+        reason = failure_reason
+    else:
+        reason = (
+            ScrapeFailureReason.VALIDATION_FAILED
+            if all_invalid
+            else ScrapeFailureReason.PROVIDER_ERROR
+        )
     metadata = {
         "success": success,
         "raw_found": found,
         "valid_rows": len(jobs),
         "invalid_rows": invalid,
+        "failure_reason": reason,
     }
     if not success:
-        metadata["error"] = "provider unavailable"
+        if all_invalid:
+            row_label = "row" if found == 1 else "rows"
+            metadata["error"] = (
+                f"{invalid} of {found} provider {row_label} failed validation"
+            )
+        else:
+            metadata["error"] = "provider unavailable"
     elif invalid:
         metadata["warning"] = f"{invalid} of {found} provider rows failed validation"
     return JobScrapeResult(
@@ -161,6 +181,84 @@ async def test_run_saved_search_records_partial_validation_loss(session, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_all_invalid_rows_fail_without_persisting_jobs(session, monkeypatch):
+    search = _searches().create(
+        SavedSearchCreate(name="AI", query="AI", sites=[JobSite.LINKEDIN])
+    )
+    result = _result(found=3, invalid=3, success=False)
+    assert result.metadata["failure_reason"] is ScrapeFailureReason.VALIDATION_FAILED
+    monkeypatch.setattr(
+        job_service,
+        "search_and_save_jobs",
+        AsyncMock(return_value=result),
+    )
+    save_mock = AsyncMock()
+    monkeypatch.setattr(job_service, "_save_jobs_to_database", save_mock)
+
+    completed = await run_saved_search(search.id)
+
+    assert completed is not None
+    assert completed.last_run_status is SavedSearchRunStatus.FAILED
+    assert completed.jobs_seen == 3
+    assert completed.jobs_new == 0
+    assert completed.last_error == "3 of 3 provider rows failed validation"
+    save_mock.assert_not_called()
+    session.expire_all()
+    assert session.exec(select(JobSQL)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_empty_provider_result_is_succeeded_zero_result(session, monkeypatch):
+    search = _searches().create(
+        SavedSearchCreate(name="AI", query="AI", sites=[JobSite.LINKEDIN])
+    )
+    empty = _result(found=0, success=True)
+    assert empty.metadata["failure_reason"] is None
+    monkeypatch.setattr(
+        job_service,
+        "search_and_save_jobs",
+        AsyncMock(return_value=empty),
+    )
+
+    completed = await run_saved_search(search.id)
+
+    assert completed is not None
+    assert completed.last_run_status is SavedSearchRunStatus.SUCCEEDED
+    assert completed.jobs_seen == 0
+    assert completed.jobs_new == 0
+    assert completed.last_error is None
+    session.expire_all()
+    assert session.exec(select(JobSQL)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_provider_error_failure_reason_marks_run_failed(session, monkeypatch):
+    search = _searches().create(
+        SavedSearchCreate(name="AI", query="AI", sites=[JobSite.LINKEDIN])
+    )
+    result = _result(success=False)
+    assert result.metadata["failure_reason"] is ScrapeFailureReason.PROVIDER_ERROR
+    monkeypatch.setattr(
+        job_service,
+        "search_and_save_jobs",
+        AsyncMock(return_value=result),
+    )
+    save_mock = AsyncMock()
+    monkeypatch.setattr(job_service, "_save_jobs_to_database", save_mock)
+
+    completed = await run_saved_search(search.id)
+
+    assert completed is not None
+    assert completed.last_run_status is SavedSearchRunStatus.FAILED
+    assert completed.jobs_seen == 0
+    assert completed.jobs_new == 0
+    assert completed.last_error == "provider unavailable"
+    save_mock.assert_not_called()
+    session.expire_all()
+    assert session.exec(select(JobSQL)).all() == []
+
+
+@pytest.mark.asyncio
 async def test_job_persistence_rolls_back_if_terminal_health_cannot_commit(
     session,
     monkeypatch,
@@ -203,6 +301,55 @@ async def test_job_persistence_rolls_back_if_terminal_health_cannot_commit(
     assert completed is not None
     assert completed.last_run_status is SavedSearchRunStatus.FAILED
     assert completed.jobs_seen == 1
+    assert completed.jobs_new == 0
+    assert completed.last_error == "terminal write failed"
+    session.expire_all()
+    assert session.exec(select(JobSQL)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_partial_run_rolls_back_jobs_when_terminal_health_cannot_commit(
+    session,
+    monkeypatch,
+):
+    search = _searches().create(
+        SavedSearchCreate(name="AI", query="AI", sites=[JobSite.LINKEDIN])
+    )
+    monkeypatch.setattr(
+        job_service,
+        "search_and_save_jobs",
+        AsyncMock(return_value=_result(found=3, inserted=2, invalid=1)),
+    )
+    original_record_run = SavedSearchService.record_run
+    failed_once = False
+
+    def fail_terminal_once(
+        service,
+        search_id,
+        health,
+        *,
+        expected_started_at=None,
+        session=None,
+    ):
+        nonlocal failed_once
+        if session is not None and not failed_once:
+            failed_once = True
+            raise RuntimeError("terminal write failed")
+        return original_record_run(
+            service,
+            search_id,
+            health,
+            expected_started_at=expected_started_at,
+            session=session,
+        )
+
+    monkeypatch.setattr(SavedSearchService, "record_run", fail_terminal_once)
+
+    completed = await run_saved_search(search.id)
+
+    assert completed is not None
+    assert completed.last_run_status is SavedSearchRunStatus.FAILED
+    assert completed.jobs_seen == 3
     assert completed.jobs_new == 0
     assert completed.last_error == "terminal write failed"
     session.expire_all()

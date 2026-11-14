@@ -88,6 +88,16 @@ A posting requires `id`, `site`, `title`, `company`, and a direct or listing URL
 
 The result contains validated jobs, `total_found`, the request, and metadata. JobService adds exact persistence counts under `metadata["persistence"]`.
 
+Scrape metadata always carries `scraping_method`, `success`, `raw_found`, `valid_rows`, `invalid_rows`, and a machine-readable `failure_reason`:
+
+| `failure_reason` value | When |
+| --- | --- |
+| `None` | Successful run, including a provider response with zero rows |
+| `"provider_error"` | The provider raised an exception or returned an explicit failed result |
+| `"validation_failed"` | The provider returned rows but every row failed `JobPosting` validation |
+
+A `None` or empty DataFrame is a successful zero-result run with `failure_reason=None`. A nonempty all-invalid response sets `success=False`, an `error` explaining how many rows failed, and `failure_reason="validation_failed"`. A mixed response keeps the valid jobs, stays successful, and adds a `warning` plus `invalid_rows`. The runner branches on `failure_reason` and never parses the English `error` or `warning` text.
+
 ## Database API
 
 `src/database.py` owns every application connection.

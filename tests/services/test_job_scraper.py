@@ -11,6 +11,7 @@ from src.models.job_models import (
     JobSite,
     JobType,
     LocationType,
+    ScrapeFailureReason,
 )
 from src.scraping.job_scraper import JobSpyScraper, job_scraper
 
@@ -121,6 +122,7 @@ def test_sync_scrape_converts_valid_rows_and_reports_raw_count():
         "valid_rows": 1,
         "invalid_rows": 1,
         "warning": "1 of 2 provider rows failed validation",
+        "failure_reason": None,
     }
 
 
@@ -137,6 +139,7 @@ def test_empty_provider_result_is_a_successful_zero_result(provider_value):
         "raw_found": 0,
         "valid_rows": 0,
         "invalid_rows": 0,
+        "failure_reason": None,
     }
 
 
@@ -156,6 +159,7 @@ def test_provider_exception_returns_failed_result():
         "valid_rows": 0,
         "invalid_rows": 0,
         "error": "Scraping operation failed",
+        "failure_reason": ScrapeFailureReason.PROVIDER_ERROR,
     }
 
 
@@ -182,6 +186,7 @@ def test_all_invalid_provider_rows_are_an_explicit_failure():
         "valid_rows": 0,
         "invalid_rows": 1,
         "error": "1 of 1 provider row failed validation",
+        "failure_reason": ScrapeFailureReason.VALIDATION_FAILED,
     }
 
 

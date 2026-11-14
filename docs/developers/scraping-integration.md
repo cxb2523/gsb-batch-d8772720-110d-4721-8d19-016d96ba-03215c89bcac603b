@@ -35,6 +35,8 @@ The runner records `running` and its lease start before calling the provider. A 
 
 An empty provider response is successful when no provider error exists. A mixed response stores valid jobs and reports `partial` with raw, valid, and invalid row counts. A nonempty response with no valid rows reports `failed`. A database failure rolls back both the provider result and terminal run health.
 
+The adapter marks every result with a machine-readable `metadata["failure_reason"]` so the runner does not parse English messages. The value is `None` for a successful run (including a zero-row provider response), `"provider_error"` when the provider raises or returns a failed result, and `"validation_failed"` when a nonempty response has no valid rows. A mixed response keeps `failure_reason=None` and carries a `warning` instead.
+
 ## Persistence behavior
 
 The job URL identifies a repeated posting. Existing jobs receive nonempty provider-owned updates while preserving richer stored values when a repeated response omits optional fields. Stage, star, notes, and archive state always remain user-owned.
