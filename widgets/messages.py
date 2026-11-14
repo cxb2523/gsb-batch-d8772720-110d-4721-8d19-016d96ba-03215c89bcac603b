@@ -6,6 +6,49 @@ These widgets display status messages, warnings, and errors.
 
 import streamlit as st
 
+from models.paginator import STOP_REASON_LABELS, StopReason
+
+
+def build_incomplete_collection_message(
+    fetched_count: int,
+    stop_page: int,
+    stop_reason: StopReason,
+    total_count: int | None = None,
+) -> str:
+    """
+    Build the human-readable warning shown when a collection run is incomplete.
+
+    Pure string assembly (no Streamlit calls) so the wording can be unit tested
+    directly. Always states how many films were collected and on which page the
+    run stopped, plus the underlying reason and the requested URL context.
+    """
+    reason_label = STOP_REASON_LABELS.get(stop_reason, stop_reason.value)
+    of_total = f" of **{total_count}**" if total_count else ""
+    return (
+        f"Collection is incomplete: **{fetched_count}**{of_total} movies collected, "
+        f"stopped on page **{stop_page}** — {reason_label}. "
+        "Retry later or relax the filters/sort to collect the remaining pages."
+    )
+
+
+def incomplete_collection_warning(result, total_count: int | None = None):
+    """
+    Display a visible warning for a partial/aborted pagination run.
+
+    Args:
+        result: A ``PaginationResult`` (or compatible object) carrying the
+            collected count, stop page and stop reason.
+        total_count: Optional expected total, when known.
+    """
+    st.warning(
+        build_incomplete_collection_message(
+            fetched_count=result.items_collected,
+            stop_page=result.stop_page,
+            stop_reason=result.stop_reason,
+            total_count=total_count,
+        )
+    )
+
 
 def user_not_found(username):
     """Display user not found error message"""
@@ -102,14 +145,6 @@ def partial_lists_warning(username, fetched_count, expected_pages):
         f"Only the first **{fetched_count}** lists (Page 1 of {expected_pages}) could be loaded "
         "because Letterboxd blocked deeper list pagination from the cloud server IP. "
         f"To download any other list, paste its direct URL or **`{username}/list-slug`** in the input box above."
-    )
-
-
-def partial_movies_warning(fetched_count, total_count):
-    """Display warning when Cloudflare blocks page 2+ of movie pagination."""
-    st.warning(
-        f"Only the first **{fetched_count}** of **{total_count}** movies could be loaded "
-        "because Letterboxd blocked deeper pagination from the cloud server IP."
     )
 
 

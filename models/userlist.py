@@ -1,10 +1,13 @@
 from collections.abc import Callable
 
 from letterboxdpy.list import List
-from letterboxdpy.utils.movies_extractor import extract_movies_from_vertical_list
-from letterboxdpy.utils.utils_url import apply_sort_by_to_url
 
-from models.paginator import paginate_ranked_movies
+from models.collection_url import build_list_url
+from models.paginator import (
+    PaginationResult,
+    paginate_vertical_collection,
+    pagination_metadata,
+)
 
 
 class UserList(List):
@@ -18,21 +21,23 @@ class UserList(List):
         sort_by: str | None = None,
     ):
         super().__init__(username, slug, sort_by=sort_by)
-        self.filters = ""
-        if filters:
-            clean_filters = filters.strip("/")
-            self.filters = clean_filters
-            base_url = (
-                f"https://letterboxd.com/{self.username}/list/"
-                f"{self.slug}/{clean_filters}/"
-            )
-            self.url = (
-                apply_sort_by_to_url(base_url, self.sort_by)
-                if self.sort_by
-                else base_url
-            )
-            self.pages.list.url = self.url
-            self._movies = None
+        # The shared builder is the single place that joins filter and sort
+        # segments, covering both the filtered and the unfiltered cases.
+        request = build_list_url(
+            self.username, slug, filters=filters, sort_by=self.sort_by
+        )
+        self.filters = request.filters
+        self.sort_by = request.sort_by
+        self.url = request.base_url
+        self.pages.list.url = self.url
+        # The parent class already fetched page 1 for the unfiltered URL; with
+        # active filters that DOM represents a different address and must not
+        # be reused, so the paginator re-requests page 1.
+        self._initial_dom = None if self.filters else self.pages.list.dom
+        # Filtered pages report no total, so progress is count-less there.
+        self.total_count = None if self.filters else self.count
+        self.fetch_result: PaginationResult | None = None
+        self._movies = None
 
     def fetch_movies(
         self,
@@ -41,20 +46,25 @@ class UserList(List):
     ) -> list:
         """Scrape list movies with progress callback and initial DOM reuse."""
         if self._movies is None:
-            initial_dom = None if self.filters else self.pages.list.dom
-            total_count = None if self.filters else self.count
-            self._movies = paginate_ranked_movies(
-                base_url=self.url,
+            self.fetch_result = paginate_vertical_collection(
+                url=self.url,
                 items_per_page=self.pages.list.FILMS_PER_PAGE,
-                extractor_fn=extract_movies_from_vertical_list,
-                initial_dom=initial_dom,
-                total_count=total_count,
+                initial_dom=self._initial_dom,
+                total_count=self.total_count,
                 on_progress=on_progress,
                 max_pages=max_pages,
             )
+            self._movies = self.fetch_result.movies
         return self._movies
 
     @property
     def movies(self) -> list:
         """Get list movies formatted for dataframe display."""
         return self.fetch_movies()
+
+    def jsonify(self) -> dict:
+        """Serialize list metadata plus the last pagination outcome."""
+        data = super().jsonify()
+        if self.fetch_result is not None:
+            data["pagination"] = pagination_metadata(self.fetch_result)
+        return data

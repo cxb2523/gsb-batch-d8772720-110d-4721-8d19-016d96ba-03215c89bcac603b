@@ -53,6 +53,11 @@ def watchlist_mode(
 
     def display_movies(movies, watchlist, user_instance, username):
         """Display watchlist movies or appropriate message"""
+        result = getattr(watchlist, "fetch_result", None)
+        if result is not None and not result.complete:
+            messages.incomplete_collection_warning(
+                result, total_count=watchlist.count if not watchlist.filters else None
+            )
         if movies and len(movies) > 0:
             # Display movies with format from session state
             csv_format = st.session_state.get("csv_format", "Letterboxd")
@@ -293,12 +298,14 @@ def _render_movie_collection(collection_instance, spinner_text):
             else None
         )
         movies = _fetch_with_progress(collection_instance, spinner_text, total=total)
-        if (
-            isinstance(collection_instance, UserFilms)
-            and collection_instance.count
-            and 0 < len(movies) < collection_instance.count
-        ):
-            messages.partial_movies_warning(len(movies), collection_instance.count)
+        result = getattr(collection_instance, "fetch_result", None)
+        if result is not None and not result.complete:
+            known_total = (
+                collection_instance.count
+                if isinstance(collection_instance, UserFilms)
+                else None
+            )
+            messages.incomplete_collection_warning(result, total_count=known_total)
         if not movies and getattr(collection_instance, "filters", None):
             messages.no_filtered_movies()
         else:
