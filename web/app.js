@@ -1,0 +1,2461 @@
+'use strict';
+/* ---------------------------------------------------------------------------
+   Vanilla. No framework, no build step, no dependencies — a panel that measures
+   RAM cannot load 300 kB of runtime to do it.
+--------------------------------------------------------------------------- */
+
+const { card, legendOf, tableOf, bars, stackedBar, groupedBars, steps,
+  scatter, treemap, areaChart, donut, meter, pie, columns, stackedColumns,
+  indexedLine, gauge, h: el } = window.G;
+
+const $ = (s, r = document) => r.querySelector(s);
+const gb = (n) => (n == null ? '—' : n >= 10 ? n.toFixed(1) : n.toFixed(2));
+const kb2gb = (kb) => (kb || 0) / 1048576;
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const short = (p) => String(p).replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+// A failed call carries the server's own message forward. `GET /api/light 500`
+// tells a person nothing they can act on or send to anybody; the reason the
+// scan threw is the whole content of the failure.
+// The server writes a fresh token into this page on every launch and refuses
+// any POST that does not carry it back.
+const TOKEN = (document.querySelector('meta[name="reckon-token"]') || {}).content || '';
+const authed = (headers = {}) => ({ ...headers, 'x-reckon-token': TOKEN });
+const get = async (u, opts) => {
+  let r;
+  try { r = await fetch(u, opts); }
+  catch (e) { throw new Error(`${u} — the panel's own server did not answer (${e.message}). It may have stopped.`); }
+  if (!r.ok && r.status !== 409) {
+    let detail = '';
+    try { const b = await r.json(); if (b && b.error) detail = ': ' + b.error; } catch {}
+    throw new Error(`${u} returned ${r.status}${detail}`);
+  }
+  return r.json();
+};
+
+const state = { done: null, watch: null, memHist: null, triage: null, openers: [], cache: null, light: null, dns: null, blocklist: null, network: null, pressure: null, tab: 'overview' };
+const TABS = ['overview', 'memory', 'pressure', 'disk', 'internet', 'checks', 'done', 'watch', 'dns'];
+
+const grid = (...f) => el('div', { class: 'grid' }, ...f.filter(Boolean));
+const at = (cls, node) => { node.classList.add(cls); return node; };
+const tile = (label, value, unit, foot) => el('div', { class: 'g-card' },
+  el('div', { class: 'tile' },
+    el('div', { class: 'lab' }, label),
+    el('div', { class: 'val' }, value, unit ? el('small', {}, unit) : null),
+    foot ? el('div', { class: 'foot', html: foot }) : null));
+
+/* --------------------------------------------------------------- open-only */
+/* Buttons that OPEN something and change nothing: Finder on a measured path, Activity
+   Monitor, a Settings pane, the Terminal app (opened empty, never typed into). The
+   server holds the fixed table and refuses any path the last scan did not measure.
+   Where the platform has no openers the list is empty and no button is drawn. */
+function openBtn(id, label, target) {
+  if (!state.openers.includes(id)) return null;
+  const btn = el('button', { class: 'copy', onclick: async () => {
+    try {
+      const r = await fetch('/api/open', { method: 'POST', headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify(target ? { id, target } : { id }) });
+      const j = await r.json().catch(() => ({}));
+      btn.textContent = j.ok ? 'opened' : (j.error || 'could not open');
+    } catch { btn.textContent = 'could not open'; }
+    setTimeout(() => (btn.textContent = label), 1800);
+  } }, label);
+  return btn;
+}
+
+async function loadOpeners() {
+  try { state.openers = (await get('/api/open')).available || []; } catch { state.openers = []; }
+}
+
+/* ------------------------------------------------------------------ small helpers */
+/* Local storage can be missing, full or blocked (private window, site data off).
+   The panel must read the same without it, so every access is guarded. */
+const store = {
+  get(k) { try { return localStorage.getItem('reckon.' + k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem('reckon.' + k, v); } catch { /* the preference is not worth an error */ } },
+};
+
+/* A long section the person can fold away. Native <details>, so it works from the
+   keyboard and with a screen reader; open or closed is remembered. */
+function fold(id, title, ...body) {
+  const d = el('details', { class: 'fold' },
+    el('summary', {}, el('h2', {}, title)), ...body.filter(Boolean));
+  d.open = store.get('fold.' + id) !== 'closed';
+  d.addEventListener('toggle', () => store.set('fold.' + id, d.open ? 'open' : 'closed'));
+  return d;
+}
+
+/* Filter a list of decisions by their kind. The count says how many are showing, the
+   buttons say which kind is chosen by pressed state and weight, never by colour alone. */
+function kindFilter(items, draw) {
+  const kinds = new Map();
+  for (const d of items) kinds.set(d.kindLabel, (kinds.get(d.kindLabel) || 0) + 1);
+  const list = el('div', { class: 'kindlist' });
+  const count = el('span', { class: 'kindcount', 'aria-live': 'polite' });
+  const bar = el('div', { class: 'kindbar', role: 'group', 'aria-label': 'Filter by kind' });
+  let chosen = null;
+  const buttons = [];
+  const paint = () => {
+    const shown = items.filter((d) => !chosen || d.kindLabel === chosen);
+    list.textContent = '';
+    for (const d of shown) list.append(draw(d));
+    count.textContent = `showing ${shown.length} of ${items.length}`;
+    for (const b of buttons) b.setAttribute('aria-pressed', String((b.dataset.kind || null) === chosen));
+  };
+  const btn = (kind, label) => {
+    const b = el('button', { type: 'button', class: 'kindbtn' }, label);
+    if (kind) b.dataset.kind = kind;
+    b.addEventListener('click', () => { chosen = kind; paint(); });
+    buttons.push(b);
+    return b;
+  };
+  bar.append(btn(null, `All (${items.length})`));
+  if (kinds.size > 1) for (const [k, n] of kinds) bar.append(btn(k, `${k} (${n})`));
+  paint();
+  return el('div', {}, kinds.size > 1 ? el('div', { class: 'kindrow' }, bar, count) : null, list);
+}
+
+/* ------------------------------------------------------------------ command */
+/* WHERE TO PASTE IT. This is not decoration.
+
+   Somebody pasted a command from this panel into Command Prompt — which is
+   what Windows offers when you search for "prompt" — and got back
+   "'Remove-Item' is not recognized as an internal or external command". The
+   command was right. The panel had never said which shell it was written for,
+   and that error does not hint at the answer.
+
+   A panel whose entire contract is "I print the command, you run it" has to
+   say where to run it, and has to name the symptom of getting it wrong so the
+   error itself becomes the answer. */
+function shellNote() {
+  const sh = state.light?.shell || state.cache?.shell;
+  if (!sh || !sh.notThis) return null;
+  return el('div', { class: 'shell-note' },
+    el('b', {}, `Paste this into ${sh.name}`), ` — not ${sh.notThis}. ${sh.open}`);
+}
+
+function commandBlock(text, note) {
+  if (!text) return null;
+  const html = esc(text).split('\n')
+    .map((l) => (l.trimStart().startsWith('#') ? `<span class="c">${l}</span>` : l)).join('\n');
+  const pre = el('pre', { html });
+  const btn = el('button', { class: 'copy', onclick: async () => {
+    try { await navigator.clipboard.writeText(text); btn.textContent = 'copied'; setTimeout(() => (btn.textContent = 'copy'), 1400); }
+    catch { btn.textContent = 'select and copy'; }
+  } }, 'copy');
+  return el('div', { class: 'command' }, pre, shellNote(),
+    el('div', { class: 'command-bar' }, btn, /\bsudo\b/.test(text) ? openBtn('terminal', 'open Terminal') : null, el('span', { class: 'note' }, note || 'this panel runs nothing. you run it.')));
+}
+
+/* ============================================================== OVERVIEW */
+function overview(c) {
+  const root = $('#tab-overview');
+  root.textContent = '';
+
+  if (!c || !c.hasCache) {
+    root.append(
+      el('div', { class: 'verdict' },
+        el('p', { class: 'headline' }, 'I have not looked at this machine yet.'),
+        el('p', { class: 'summary' }, 'The first scan reads the disk folder by folder, opens the Docker VM and runs git in every repository. It takes about two minutes and only happens when you ask.')),
+      el('button', { class: 'action', onclick: runScan }, 'Scan this machine'));
+    return;
+  }
+
+  const p = c.panel;
+  const out = p.out.filter((d) => d.kb > 0);
+  const top = out.slice(0, 3);
+
+  // The verdict: what to do first. The number is the proof, not the content.
+  const summary = el('p', { class: 'summary' });
+  summary.append(...top.flatMap((d, i) => [
+    i ? ' · ' : '',
+    el('b', {}, `${gb(d.gb)} GB`),
+    ` ${d.title}`,
+  ]), out.length > 3 ? ` · and ${out.length - 3} smaller items.` : '.');
+
+  const staying = p.stay.filter((f) => f.kb > 0).slice(0, 2);
+  const stayLine = el('p', { class: 'summary', style: 'margin-top:8px' },
+    el('b', {}, 'Staying put: '),
+    staying.map((f) => `${f.title} (${gb(f.gb)} GB)`).join(' and '),
+    staying.length ? ` — plus ${p.stay.length - staying.length} more, each with its reason written below.` : '');
+
+  const age = Math.round((Date.now() - c.at) / 60000);
+  const nothing = !out.length;
+  // Said once, at the top, before any command is reached. The exact error
+  // Windows prints is quoted so that somebody who has already hit it
+  // recognises their own screen here instead of wondering what they broke.
+  const sh = c.shell || state.light?.shell;
+  if (sh && sh.notThis) {
+    root.append(el('div', { class: 'warn-box' },
+      el('h3', {}, `Every command here is ${sh.name}`),
+      el('ul', {},
+        el('li', {}, el('b', {}, `Not ${sh.notThis}. `), sh.open),
+        el('li', {}, `If you paste one and see `, el('b', {}, '"is not recognized as an internal or external command"'),
+          ` — or, in Portuguese, `, el('b', {}, '"não é reconhecido como um comando interno ou externo"'),
+          `, nothing is wrong with the command and nothing happened to your machine. You are in ${sh.notThis}. Open ${sh.name} and paste it again.`),
+        el('li', {}, `A few commands below say they need an administrator. For those: ${sh.openAdmin || sh.open}`))));
+  }
+  root.append(el('div', { class: 'verdict' },
+    nothing
+      ? el('p', { class: 'headline' }, 'Nothing here is worth deleting.')
+      : el('p', { class: 'headline' }, 'You can free ', el('em', {}, `${gb(p.totalGB)} GB`), '.'),
+    nothing
+      ? el('p', { class: 'summary' }, `Everything this scan measured is either in use or too small to matter. ${gb(kb2gb(c.volume.freeKB))} GB is already free. That is an answer, not a failure to find anything — a tidy machine is allowed to be tidy.`)
+      : summary,
+    nothing ? null : stayLine,
+    el('div', { class: 'stamp' },
+      el('span', {}, age < 1 ? 'measured just now' : `measured ${age} min ago`),
+      el('span', {}, `the scan took ${Math.round(c.ms / 1000)}s`),
+      p.uncertainKB > 0 ? el('span', {}, `${gb(kb2gb(p.uncertainKB))} GB depend on a condition`) : null,
+      el('button', { class: 'copy', onclick: runScan }, 'scan again'))));
+
+  // WHAT MOVED SINCE LAST TIME. The closing question this panel was built to
+  // answer is not "how much is here" — it is "did doing that actually free
+  // anything". One reading cannot answer it; two can.
+  //
+  // The wording is careful on purpose. Free space is stated as two
+  // measurements, not as a claim about who caused the change: a download
+  // finishing, a snapshot expiring or an app updating itself all move that
+  // number, and a panel that took credit for them would be doing the thing it
+  // exists to stop. What it DOES attribute is the list — an item that was here
+  // and is gone was acted on, and its size is the one measured when it was
+  // last seen.
+  const ch = c.changed;
+  if (ch && (ch.gone.length || Math.abs(ch.freedKB) > 102400)) {
+    const when = ch.days >= 1 ? `${ch.days} ${ch.days === 1 ? 'day' : 'days'} ago`
+      : ch.hours >= 1 ? `${ch.hours} ${ch.hours === 1 ? 'hour' : 'hours'} ago` : 'earlier today';
+    const up = ch.freedKB > 0;
+    const box = el('div', { class: 'sinceScan' });
+    box.append(el('p', { class: 'head' },
+      ch.gone.length
+        ? `${ch.gone.length} ${ch.gone.length === 1 ? 'item is' : 'items are'} gone since the scan ${when}`
+        : `Since the scan ${when}`));
+    box.append(el('p', { class: 'body' },
+      `Free space read ${gb(kb2gb(ch.freeBeforeKB))} GB then and ${gb(kb2gb(ch.freeNowKB))} GB now — `,
+      el('b', {}, `${up ? '+' : ''}${gb(kb2gb(ch.freedKB))} GB`),
+      '. Those are two measurements of the volume, not a claim about what caused the difference: a finished download, an expired snapshot or an app updating itself all move that number too.'));
+    if (ch.gone.length) {
+      box.append(el('p', { class: 'body' },
+        el('b', {}, 'Gone from the list: '),
+        ch.gone.slice(0, 5).map((g) => `${g.title} (${gb(kb2gb(g.kb))} GB)`).join(', '),
+        ch.gone.length > 5 ? `, and ${ch.gone.length - 5} more` : '',
+        `. That is ${gb(kb2gb(ch.goneKB))} GB the previous scan measured and this one cannot find — the part of the change this panel can actually account for.`));
+    }
+    if (ch.appeared.length) {
+      box.append(el('p', { class: 'body' },
+        el('b', {}, 'New since then: '),
+        ch.appeared.slice(0, 4).map((g) => `${g.title} (${gb(kb2gb(g.kb))} GB)`).join(', '),
+        ch.appeared.length > 4 ? `, and ${ch.appeared.length - 4} more` : '', '.'));
+    }
+    root.append(box);
+  }
+
+  // The disk donut is true on any machine: it is the whole volume, and "can be
+  // freed" is simply zero. The other two describe a list, so with no list they
+  // have nothing to say and are left out rather than drawn empty.
+  root.append(grid(at(nothing ? 'c12' : 'c8', nothing ? chartDiskDonut(c) : chartSteps(c)),
+    nothing ? null : at('c4', chartDiskDonut(c))));
+  if (!nothing) root.append(grid(at('c4', chartKinds(c)), at('c8', chartColumns(c))));
+  root.append(grid(at('c12', chartDocker(c))));
+
+  root.append(fold('go', `What can go (${p.out.length})`,
+    el('p', { class: 'foldnote' }, 'Ordered by how much it frees. Every item carries the proof of its number and what you lose if the verdict is wrong.'),
+    kindFilter(p.out, decisionCard)));
+
+  // THE BOUNDARY. The rules change here, and the screen says so.
+  root.append(el('div', { class: 'boundary' }, 'below this line, nothing goes'));
+  const zero = p.stay.filter((x) => !(x.kb > 0 || x.critical));
+  root.append(fold('stay', `What stays (${p.stay.length})`,
+    el('p', { class: 'foldnote' }, 'Large things a generic tool would call garbage. Each one has a reason to stay, and the reason is checkable.'),
+    ...p.stay.filter((x) => x.kb > 0 || x.critical).map(stayCard),
+    zero.length ? el('details', { style: 'margin-top:10px' },
+      el('summary', { style: 'color:var(--ink3);font-size:13px;cursor:pointer' },
+        `${zero.length} more that stay without taking meaningful space`),
+      el('div', { style: 'margin-top:11px' }, ...zero.map(stayCard))) : null));
+}
+
+/* The chart that ties the list of decisions to the number at the top: applying
+   them in the recommended order, free space goes from here to there. */
+function chartSteps(c) {
+  // volumeUsage() returns null when the platform cannot read it, and the whole
+  // Overview used to die dereferencing it — a white screen instead of the row
+  // that says the reading did not happen.
+  if (!c.volume) return card({ title: 'The whole disk', sub: 'Could not read how full this volume is.',
+    shape: el('p', { class: 'empty' }, 'no reading') });
+  const free = kb2gb(c.volume.freeKB);
+  const list = c.panel.out.filter((d) => d.kb > 0).map((d) => ({ name: d.title, value: d.gb }));
+  return card({
+    title: 'If you work through them in order',
+    sub: `Free space goes from ${gb(free)} GB to ${gb(free + c.panel.totalGB)} GB. Every step is an item from the list below.`,
+    shape: steps({ base: free, stepList: list }),
+    table: tableOf(['Step', 'Frees (GB)', 'Free afterwards (GB)'],
+      list.map((s, i) => [`${i + 1}. ${s.name}`, gb(s.value),
+        gb(free + list.slice(0, i + 1).reduce((a, x) => a + x.value, 0))])),
+  });
+}
+
+function chartDiskDonut(c) {
+  if (!c.volume) return card({ title: 'The whole disk', sub: 'Could not read how full this volume is.',
+    shape: el('p', { class: 'empty' }, 'no reading') });
+  const used = kb2gb(c.volume.usedKB), free = kb2gb(c.volume.freeKB);
+  const total = kb2gb(c.volume.totalKB);
+  const lib = c.panel.totalGB;
+  // used + free does not add up to total: the rest is APFS reserve (snapshots
+  // and metadata). Naming that slice is more honest than summing wrong.
+  const reserve = Math.max(0, total - used - free);
+  // Emphasis: the slice that matters is the only one with colour; the others
+  // recede in steps of the same neutral.
+  const parts = [
+    { name: 'Occupied, staying', value: Math.max(0, used - lib), color: 'var(--n2)' },
+    reserve > 1 ? { name: 'Reserved by APFS', value: reserve, color: 'var(--n3)' } : null,
+    { name: 'Can be freed', value: lib, color: 'var(--s1)' },
+    { name: 'Already free', value: free, color: 'var(--n1)' },
+  ].filter(Boolean);
+  return card({
+    title: 'The whole disk',
+    sub: `${gb(total)} GB on the data volume.`,
+    legend: legendOf(parts.map((p) => ({ name: `${p.name} · ${gb(p.value)} GB`, color: p.color }))),
+    shape: donut({ parts, center: gb(lib) + ' GB', sub: 'can be freed' }),
+    table: tableOf(['Slice', 'GB', '%'], parts.map((p) => [p.name, gb(p.value), ((p.value / total) * 100).toFixed(1) + '%'])),
+  });
+}
+
+/* Pie: what KIND the leftovers are. It answers a question the ranked list
+   cannot — if half of it is package cache, the problem is a habit, not a mess. */
+function chartKinds(c) {
+  const out = c.panel.out.filter((d) => d.kb > 0);
+  const by = new Map();
+  for (const d of out) {
+    const t = by.get(d.kindLabel) || { name: d.kindLabel, value: 0, items: 0 };
+    t.value += d.gb; t.items++; by.set(d.kindLabel, t);
+  }
+  // Six slices at most. Past that, adjacent classes blur and the legend wraps to
+  // three lines — so the tail folds into one "Other" rather than inventing a
+  // seventh hue. The folded kinds are named in its tooltip and the table keeps
+  // every one of them, so nothing is hidden, only grouped.
+  const MAX_SLICES = 6;
+  const ranked = [...by.values()].sort((a, b) => b.value - a.value);
+  const head = ranked.slice(0, MAX_SLICES - 1);
+  const tail = ranked.slice(MAX_SLICES - 1);
+  const shown = tail.length > 1
+    ? [...head, {
+        name: `Other (${tail.length} kinds)`,
+        value: tail.reduce((a2, t) => a2 + t.value, 0),
+        items: tail.reduce((a2, t) => a2 + t.items, 0),
+        folded: tail.map((t) => t.name),
+      }]
+    : ranked;
+  const parts = shown.map((t, i) => ({ ...t, value: +t.value.toFixed(2), color: `var(--s${i + 1})`,
+    note: t.folded ? t.folded.join(', ') : `${t.items} ${t.items === 1 ? 'item' : 'items'}` }));
+  const biggest = parts[0];
+  // A machine with nothing to clean is a valid machine, and it is the first
+  // screen somebody with a tidy computer sees. Reading parts[0] of an empty
+  // list crashed the whole Overview tab on exactly that machine.
+  if (!biggest) {
+    return card({
+      title: 'What kind of leftovers these are',
+      sub: 'Nothing was found that is safe to remove, so there is nothing to break down.',
+      shape: el('p', { class: 'empty' }, 'no leftovers to classify'),
+    });
+  }
+  return card({
+    title: 'What kind of leftovers these are',
+    sub: `${gb(biggest.value)} GB — ${((biggest.value / c.panel.totalGB) * 100).toFixed(0)}% of the total — is ${biggest.name.toLowerCase()}: it comes back on its own unless the habit changes.`,
+    legend: legendOf(parts.map((p) => ({ name: p.name, color: p.color }))),
+    shape: pie({ parts }),
+    // The table keeps every kind, unfolded: the pie groups for legibility, it
+    // does not decide what you are allowed to see.
+    table: tableOf(['Kind', 'GB', 'Items'], ranked.map((p) => [p.name, gb(p.value), p.items])),
+  });
+}
+
+/* Columns: the biggest ones upright, to judge the difference by height alone. */
+function chartColumns(c) {
+  const out = c.panel.out.filter((d) => d.kb > 0).slice(0, 8);
+  const shorten = (t) => t
+    .replace(/^Log of container /, 'log ')
+    .replace(/^node_modules of /, '')
+    .replace(/ cache$/, '').replace(/^Packages downloaded by /, '')
+    .replace(/^HuggingFace download cache \(xet\)$/, 'HF xet')
+    .replace(/^Claude Desktop local VM$/, 'Claude VM')
+    .replace(/^Slack trapped in the Docker virtual disk$/, 'Docker slack');
+  return card({
+    title: 'The eight biggest, side by side',
+    sub: 'Hover to read the full name and what you lose if the verdict is wrong.',
+    shape: columns({
+      data: out.map((d) => {
+        const n = shorten(d.title);
+        return {
+          name: n.length > 13 ? n.slice(0, 12) + '…' : n,
+          sub: d.kindLabel.split(' ')[0].toLowerCase(),
+          value: d.gb,
+          note: d.confidence !== 'high' ? 'has a condition: ' + (d.warning || '') : d.lose.slice(0, 90),
+        };
+      }), unit: 'GB', height: 270,
+    }),
+    table: tableOf(['Item', 'GB', 'Kind', 'Confidence'], out.map((d) => [d.title, gb(d.gb), d.kindLabel, d.confidence])),
+  });
+}
+
+/* The blind spot, measured: docker measures Docker objects; the disk measures the disk. */
+function chartDocker(c) {
+  const d = c.docker;
+  if (!d || !d.running || !d.folders) {
+    return card({ title: 'Docker', sub: 'Not responding right now.', shape: el('p', { class: 'empty' }, '—') });
+  }
+  const folder = (n) => (d.folders.find((p) => p.path.endsWith('/' + n)) || { kb: 0 }).kb;
+  const counted = (t) => (d.counted.find((x) => new RegExp(t, 'i').test(x.type)) || { kb: 0 }).kb;
+  const groups = [
+    { name: 'Image layers', values: [kb2gb(counted('image')), kb2gb(folder('overlay2'))] },
+    { name: 'Containers', values: [kb2gb(counted('container')), kb2gb(folder('containers'))] },
+    { name: 'Volumes', values: [kb2gb(counted('volume')), kb2gb(folder('volumes'))] },
+    { name: 'Build cache', values: [kb2gb(counted('build')), kb2gb(folder('buildkit'))] },
+  ];
+  const series = [{ name: '`docker system df` reports', color: 'var(--s3)' }, { name: 'actually on disk in the VM', color: 'var(--s2)' }];
+  const blind = groups[1].values[1] - groups[1].values[0];
+  return card({
+    title: 'What Docker counts, and what Docker occupies',
+    sub: `Under "Containers" the gap is ${gb(blind)} GB: the command measures the writable layer and never the log file.`,
+    legend: legendOf(series),
+    shape: groupedBars({ groups, series }),
+    table: tableOf(['Category', 'df reports (GB)', 'on disk (GB)', 'gap'],
+      groups.map((g) => [g.name, gb(g.values[0]), gb(g.values[1]), gb(g.values[1] - g.values[0])])),
+  });
+}
+
+function decisionCard(d) {
+  const c = el('div', { class: 'card' });
+  c.append(el('div', { class: 'row' },
+    el('div', { class: 'weight' }, d.kb > 0 ? gb(d.gb) : '—', d.kb > 0 ? el('small', {}, 'GB') : null),
+    el('div', {}, el('p', { class: 'title' }, d.title,
+      d.confidence !== 'high' ? el('span', { class: 'tag' }, 'has a condition') : null))));
+  c.append(el('div', { class: 'proof' }, d.proof, el('span', { class: 'src' }, 'measured by: ' + d.source)));
+  c.append(el('div', { class: 'lose' }, el('b', {}, 'If I am wrong, you lose: '), d.lose));
+  if (d.warning) c.append(el('div', { class: 'alert' }, d.warning));
+  const cmd = commandBlock(d.command);
+  if (cmd) c.append(cmd);
+  const act = diskActButton(d);   // phase 3
+  if (act) c.append(act);
+  return c;
+}
+
+function stayCard(f) {
+  return el('div', { class: 'card stays' },
+    el('div', { class: 'row' },
+      el('div', { class: 'weight' }, f.kb > 0 ? gb(f.gb) : '—', f.kb > 0 ? el('small', {}, 'GB') : null),
+      el('div', {}, el('p', { class: 'title' }, f.title,
+        el('span', { class: 'tag' }, f.verdict === 'unknown' ? 'cannot judge' : f.verdict === 'yours' ? 'yours' : 'in use'),
+        f.critical ? el('span', { class: 'tag' }, 'only copy') : null))),
+    el('div', { class: 'why' }, f.why),
+    diskActButton(f));   // phase 3: only the rows the server gave an action (iOS backups, simulators)
+}
+
+/* ------------------------------------------------------------------ scan */
+/* The scan takes about two minutes, and for most of that the page used to show
+   one frozen sentence. Two minutes of nothing is where somebody decides the
+   tool has hung and closes it — which is what happened to the first person who
+   ran this on Windows. The server was already computing the steps; now they
+   reach the screen.
+
+   The asking stops the moment the scan does, and nothing asks unless the button
+   was pressed. "Collects on demand" survives intact. */
+const SCAN_STEPS = 8;
+async function runScan() {
+  const root = $(`#tab-${state.tab}`);
+  const before = root.innerHTML;
+  root.textContent = '';
+  const line = el('p', { class: 'summary loading' }, 'starting');
+  const bar = el('div', { class: 'scanbar' }, el('i', { style: 'width:2%' }));
+  const done = el('div', { class: 'stamp' },
+    el('span', {}, 'about two minutes · nothing is deleted, nothing leaves this machine'));
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, 'Looking.'), line, bar, done));
+
+  let watching = true;
+  (async function watch() {
+    // The first poll fires before the server has even received the request that
+    // starts the scan, so the honest answer to it is "nothing is running". An
+    // earlier version treated that as "the scan finished" and stopped after one
+    // turn — the bar then sat at 'starting' for the entire two minutes, which
+    // is worse than the frozen sentence it replaced.
+    //
+    // So: `running: false` only ends the watch once the scan has been SEEN
+    // running. Before that it means "not yet", and there is a ceiling on how
+    // long "not yet" is allowed to last so a request that never arrives does
+    // not leave a loop turning forever.
+    let started = false;
+    let waited = 0;
+    while (watching) {
+      try {
+        const p = await get('/api/deep/progress');
+        if (p.running) started = true;
+        else if (started) break;
+        else if ((waited += 700) > 20000) break;
+        if (!p.running) { await new Promise((r) => setTimeout(r, 700)); continue; }
+        // The seconds matter as much as the name. The last step — walking the
+        // top of the home folder — can hold for a minute on a full disk, and a
+        // step name that does not change for a minute reads as frozen no matter
+        // how accurate it is. A number that keeps moving proves it is alive.
+        const secs = Math.max(0, Math.round((Date.now() - p.at) / 1000));
+        line.textContent = secs >= 4 ? `${p.step} · ${secs}s` : p.step;
+        // The step count is what the scan actually reports, so the bar can
+        // only ever be an approximation — it is capped below 100 so it never
+        // claims to be finished before the answer is here.
+        const pct = Math.min(94, Math.round((p.n / SCAN_STEPS) * 100));
+        bar.firstChild.style.width = Math.max(2, pct) + '%';
+      } catch { break; }
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  })();
+
+  try {
+    const d = await get('/api/deep', { method: 'POST', headers: authed() });
+
+    // A scan was ALREADY running — started from another tab, from the command
+    // line, or by a second click. The old behaviour put the previous screen
+    // back and said nothing: you pressed a button and the panel appeared to
+    // ignore you, which is the same silent no-op this whole panel is built
+    // against. Follow the scan that IS running instead. It is the same scan
+    // you asked for.
+    if (d.alreadyRunning) {
+      done.textContent = '';
+      done.append(el('span', {}, 'a scan was already running — following that one'));
+      while (watching) {
+        await new Promise((r) => setTimeout(r, 700));
+        let p;
+        try { p = await get('/api/deep/progress'); } catch { break; }
+        if (!p.running) break;
+      }
+      watching = false;
+      state.cache = await get('/api/cache');
+      render();
+      return;
+    }
+
+    state.cache = { hasCache: true, ...d };
+    render();
+  } catch (e) {
+    root.textContent = '';
+    root.append(el('p', { class: 'empty' }, 'the scan failed: ' + e.message));
+  } finally {
+    watching = false;
+  }
+}
+
+/* =============================================================== MEMORY */
+function memory(d) {
+  const root = $('#tab-memory');
+  root.textContent = '';
+  if (!d) { root.append(el('p', { class: 'loading' }, 'measuring')); return; }
+
+  const m = d.memory, total = m.totalBytes / 1073741824;
+  const base = new Map((d.opened?.groups || []).map((g) => [g.name, g.rssKB]));
+  // The first group is usually the operating system itself, and you cannot quit
+  // the system. The headline names the biggest thing you can actually act on.
+  // Matching the label by shape rather than by the literal 'macOS (system)':
+  // on Windows the same group is 'Windows (system)', and the hardcoded string
+  // made the panel tell a Windows user to quit Windows.
+  const isSystem = (g) => /\(system\)$/.test(g.name);
+  const yours = m.groups.find((g) => !isSystem(g)) || m.groups[0];
+  const system = m.groups.find(isSystem);
+
+  const memOpen = [openBtn('activity', 'Activity Monitor'), openBtn('login', 'Login Items settings')].filter(Boolean);
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, yours.name, ' is using ', el('em', {}, gb(kb2gb(yours.rssKB)) + ' GB'), '.'),
+    el('p', { class: 'summary' },
+      `That is ${yours.n} processes under one name — quitting the app quits all of them. `,
+      system ? `${system.name.replace(/\s*\(system\)$/, '')} takes another ${gb(kb2gb(system.rssKB))} GB across ${system.n} processes, and those are not yours to quit. ` : '',
+      m.note),
+    memOpen.length ? el('div', { class: 'command-bar' }, ...memOpen) : null));
+
+  const g = m.vm;
+  // Categorical slots validated in this ring order (worst adjacent pair ΔE 8.0
+  // under deuteranopia, 16.4 for normal vision). 'Free' is neutral — it is not
+  // a state, it is an absence — and still needs a visible swatch in the legend.
+  const parts = [
+    { name: 'Wired (the system will not release it)', value: g.wired / 1073741824, color: 'var(--s3)' },
+    { name: 'Active', value: g.active / 1073741824, color: 'var(--s1)' },
+    { name: 'Compressed', value: g.compressed / 1073741824, color: 'var(--s2)' },
+    { name: 'Inactive', value: g.inactive / 1073741824, color: 'var(--s7)' },
+    { name: 'Free', value: g.free / 1073741824, color: 'var(--line2)' },
+  ];
+  const hist = d.history || [];
+  // Swap is measured against this machine's RAM, like lib/watch.js: the swap file's
+  // own size is a number macOS changes on demand, so a share of it says little.
+  const swapPct = m.swap ? Math.min(100, Math.round((m.swap.usedMB / (m.totalBytes / 1048576)) * 100)) : 0;
+
+  root.append(grid(
+    at('c8', chartGroups(m, base)),
+    at('c4', card({
+      title: `How the ${total.toFixed(0)} GB sit right now`,
+      sub: 'Compressing is macOS squeezing what does not fit — the symptom that arrives before swap.',
+      legend: legendOf(parts.map((p) => ({ name: p.name, color: p.color }))),
+      shape: donut({ parts, center: gb(g.compressed / 1073741824) + ' GB', sub: 'compressed' }),
+      table: tableOf(['State', 'GB', '%'], parts.map((p) => [p.name, gb(p.value), ((p.value / total) * 100).toFixed(1) + '%'])),
+    })),
+  ));
+
+  // How many PROCESSES each app opens — a different measure from how much RAM
+  // it eats. A browser with 50 processes tells the same story another way.
+  root.append(grid(
+    at('c6', card({
+      title: 'How many processes each app opens',
+      sub: 'A modern browser opens one process per tab. Each one carries a fixed cost before it holds any content at all.',
+      shape: columns({
+        data: m.groups.filter((x) => x.n > 1).slice(0, 8).map((x) => ({
+          name: x.name.length > 12 ? x.name.slice(0, 11) + '…' : x.name,
+          sub: gb(kb2gb(x.rssKB)) + ' GB', value: x.n,
+          note: `${gb(kb2gb(x.rssKB))} GB in total — about ${(kb2gb(x.rssKB) / x.n * 1024).toFixed(0)} MB per process`,
+        })), unit: 'processes', height: 240,
+      }),
+      table: tableOf(['Group', 'Processes', 'GB'], m.groups.map((x) => [x.name, x.n, gb(kb2gb(x.rssKB))])),
+    })),
+    at('c6', hist.length > 1 ? card({
+      title: 'Swap and compression since you opened this',
+      sub: 'Two measures on different scales in one chart, both turned into index 100 at the first point. Two axes would invent a correlation that is not in the data.',
+      legend: legendOf([{ name: 'swap', color: 'var(--s1)' }, { name: 'compressed memory', color: 'var(--s2)' }]),
+      shape: indexedLine({
+        series: [
+          { name: 'swap', vals: hist.map((x) => x.swap?.usedMB || 0), color: 'var(--s1)' },
+          { name: 'compressed', vals: hist.map((x) => x.vm.compressed / 1073741824), color: 'var(--s2)' },
+        ], xLabel: `${hist.length} readings this session — one for every time you looked`,
+      }),
+      table: tableOf(['Reading', 'Swap (MB)', 'Compressed (GB)'],
+        hist.map((x, i) => [i + 1, gb(x.swap?.usedMB || 0), gb(x.vm.compressed / 1073741824)])),
+    }) : card({ title: 'Swap and compression', sub: 'Come back to this tab to produce a second point — the panel only measures when you look.',
+      shape: el('p', { class: 'empty' }, 'one reading so far') })),
+  ));
+
+  if (hist.length > 1) {
+    root.append(grid(
+      at('c4', card({ title: 'Swap in use', sub: 'Disk pretending to be memory.',
+        shape: areaChart({ vals: hist.map((x) => x.swap?.usedMB || 0), rot: 'Swap', unit: 'MB' }),
+        table: tableOf(['Reading', 'MB'], hist.map((x, i) => [i + 1, gb(x.swap?.usedMB || 0)])) })),
+      at('c4', card({ title: 'Compressed memory', sub: 'Rises before swap does.',
+        shape: areaChart({ vals: hist.map((x) => x.vm.compressed / 1073741824), rot: 'Compressed', unit: 'GB', color: 'var(--s2)' }),
+        table: tableOf(['Reading', 'GB'], hist.map((x, i) => [i + 1, gb(x.vm.compressed / 1073741824)])) })),
+      at('c4', card({ title: 'Swap used', sub: m.swap ? `${gb(m.swap.usedMB / 1024)} GB of ${gb(m.swap.totalMB / 1024)} GB` : '—',
+        shape: gauge({ pct: swapPct, center: swapPct + '%', sub: 'of RAM, held in swap' }) })),
+    ));
+  }
+
+  // A counter the platform could not read is null, and null is the seam saying
+  // "could not find out". Calling .toLocaleString() on it crashed the Memory
+  // tab on Windows, which publishes no compression counter at all. A tile with
+  // no number says so, and says which counter is missing — the absence is a
+  // fact about the machine, not a blank to be filled with a zero. A zero here
+  // would read as "this machine has never been under memory pressure".
+  memoryPast(root);   // phase 4
+  const count = (n) => (n == null ? null : n.toLocaleString('en-US'));
+  const trips = g.swapins == null || g.swapouts == null ? null : count(g.swapins + g.swapouts);
+  root.append(el('div', { class: 'section' }, el('h2', {}, 'Since this machine booted')));
+  root.append(grid(
+    at('c4', tile('Trips to the disk', trips ?? 'not measured', null,
+      trips
+        ? 'Each one is the machine stopping to fetch memory from the SSD.'
+        : 'This system does not publish a page-in/page-out counter, so nothing is claimed here.')),
+    at('c4', tile('Compressions', count(g.compressions) ?? 'not measured', null,
+      count(g.compressions)
+        ? 'The system squeezed memory this many times to avoid touching the disk.'
+        : 'This system compresses memory but publishes no counter for how often. A zero here would read as a machine that has never been under pressure, so the tile stays empty instead.')),
+    at('c4', tile('Total RAM', total.toFixed(0), 'GB',
+      'Soldered. On Apple Silicon it cannot be increased — only fitted into better.')),
+  ));
+  memoryActable(root, d);   // phase 2: pressure headline, per-group proof/lose/action
+}
+
+function chartGroups(m, base) {
+  const data = m.groups.slice(0, 12).map((x) => {
+    const before = base.get(x.name);
+    const delta = before != null ? (x.rssKB - before) / 1024 : null;
+    return {
+      name: `${x.name}  (${x.n}x)`, value: kb2gb(x.rssKB),
+      note: delta != null && Math.abs(delta) > 20
+        ? `${delta > 0 ? 'grew' : 'shrank'} ${Math.abs(delta).toFixed(0)} MB since you opened this` : null,
+    };
+  });
+  return card({
+    title: 'What is using RAM right now',
+    sub: 'Grouped by what the processes actually are: fourteen processes named "node" are one thing to the person looking.',
+    shape: bars({ data, directLabels: 3 }),
+    table: tableOf(['Group', 'GB', 'Processes'], m.groups.map((x) => [x.name, gb(kb2gb(x.rssKB)), x.n])),
+  });
+}
+
+/* ================================================================== DISK */
+function disk(c) {
+  const root = $('#tab-disk');
+  root.textContent = '';
+  if (!c || !c.hasCache) { root.append(el('p', { class: 'empty' }, 'Run the scan on the Overview tab first.')); return; }
+
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, 'Where the space went.'),
+    el('p', { class: 'summary' }, 'Every folder with a verdict. ',
+      el('b', {}, '"cannot judge"'), ' is an honest answer: this tool only calls something disposable when it can prove the machine rebuilds it.')));
+
+  const COLORS = { disposable: 'var(--s1)', yours: 'var(--s3)', unknown: 'var(--s2)' };
+  const LABEL = { disposable: 'disposable', yours: 'yours', unknown: 'cannot judge' };
+  const targets = c.targets || [];
+
+  root.append(grid(
+    at('c12', card({
+      title: 'The folders this tool can name',
+      shape: treemap({ items: targets.map((t) => ({ name: t.label, value: kb2gb(t.kb), color: COLORS[t.verdict], label: t.lose })) }),
+      sub: 'Area is size. Colour is the verdict. Hover to read what you lose.',
+      // Only verdicts that actually appear go in the legend: announcing a colour
+      // that is not in the chart sends the reader hunting for nothing.
+      legend: legendOf([...new Set(targets.map((t) => t.verdict))].map((k) => ({ name: LABEL[k], color: COLORS[k] }))),
+      table: tableOf(['Folder', 'GB', 'Verdict'], targets.map((t) => [t.label, gb(kb2gb(t.kb)), LABEL[t.verdict]])),
+      tall: true,
+    })),
+  ));
+
+  // Pie of verdicts: how much of what was measured this tool can judge, and how
+  // much it admits it cannot. A distribution of CONFIDENCE, not of size.
+  const byVerdict = new Map();
+  for (const t of targets) {
+    const v = byVerdict.get(t.verdict) || { name: LABEL[t.verdict], value: 0, items: 0, color: COLORS[t.verdict] };
+    v.value += kb2gb(t.kb); v.items++; byVerdict.set(t.verdict, v);
+  }
+  const verdictParts = [...byVerdict.values()].sort((a, b) => b.value - a.value)
+    .map((t) => ({ ...t, value: +t.value.toFixed(2), note: `${t.items} folders` }));
+
+  const top = c.homeTop || [];
+  root.append(grid(
+    at('c4', card({
+      title: 'How much of it this tool can judge',
+      sub: `Of ${gb(targets.reduce((a, x) => a + kb2gb(x.kb), 0))} GB it can name, ${gb((byVerdict.get('disposable') || { value: 0 }).value)} GB is provably rebuildable. The rest is "cannot judge", and it stays.`,
+      legend: legendOf(verdictParts.map((f) => ({ name: f.name, color: f.color }))),
+      shape: pie({ parts: verdictParts }),
+      table: tableOf(['Verdict', 'GB', 'Folders'], verdictParts.map((f) => [f.name, gb(f.value), f.items])),
+    })),
+    at('c8', chartHidden(c)),
+  ));
+
+  root.append(grid(
+    at('c6', chartRepos(c)),
+    at('c6', card({
+      title: 'The top of your home folder',
+      sub: 'The ten largest, hidden folders included.',
+      shape: bars({ data: top.slice(0, 10).map((t) => ({
+        name: short(t.path), value: kb2gb(t.kb), color: t.hidden ? 'var(--edge)' : 'var(--s1)',
+        note: t.hidden ? 'hidden — out of reach of a plain `du ~/*`' : null })), directLabels: 2 }),
+      table: tableOf(['Folder', 'GB'], top.map((t) => [short(t.path), gb(kb2gb(t.kb))])),
+    })),
+  ));
+
+  root.append(el('div', { class: 'section' }, el('h2', {}, 'Targets, with the verdict spelled out')));
+  const tb = el('table', { class: 'wide' },
+    el('thead', {}, el('tr', {}, el('th', {}, 'Folder'), el('th', { class: 'num' }, 'Size'),
+      el('th', {}, 'Verdict'), el('th', {}, 'What you lose'), el('th', {}, 'Do'))));
+  const body = el('tbody');
+  const rowFor = diskRowLookup(c);   // phase 3
+  for (const t of targets) {
+    body.append(el('tr', {},
+      el('td', { class: 'name' }, el('div', {}, t.label),
+        el('div', { style: 'font:11.5px var(--mono);color:var(--ink3);margin-top:2px' }, short(t.path)),
+        openBtn('reveal', 'show in Finder', t.path)),
+      el('td', { class: 'num' }, gb(kb2gb(t.kb)), ' GB'),
+      el('td', {}, el('span', { class: 'tag' }, LABEL[t.verdict])),
+      el('td', { style: 'color:var(--ink2);max-width:40ch' }, t.lose),
+      el('td', {}, diskTableCell(rowFor, t))));
+  }
+  tb.append(body);
+  root.append(el('div', { class: 'scrollable' }, tb));
+  root.append(repoVerdicts(c));   // phase 4
+}
+
+/* A plain `du -sh ~/*` cannot see a folder starting with a dot — the shell does
+   not expand the glob. That is how tens of GB stay out of every hand count. */
+function chartHidden(c) {
+  const top = c.homeTop || [];
+  const hidden = top.filter((t) => t.hidden);
+  const hiddenSum = hidden.reduce((s, t) => s + t.kb, 0);
+  const visibleSum = top.filter((t) => !t.hidden).reduce((s, t) => s + t.kb, 0);
+  return card({
+    title: 'What `du -sh ~/*` does not show',
+    sub: 'The shell does not expand names that begin with a dot.',
+    legend: legendOf([{ name: 'visible', color: 'var(--line2)' }, { name: 'hidden', color: 'var(--edge)' }]),
+    shape: stackedBar({ parts: [
+      { name: 'Visible folders', value: kb2gb(visibleSum), color: 'var(--line2)', dark: true },
+      { name: 'Hidden folders (starting with a dot)', value: kb2gb(hiddenSum), color: 'var(--edge)' },
+    ], height: 42 }),
+    table: tableOf(['Hidden folder', 'GB'], hidden.map((t) => [short(t.path), gb(kb2gb(t.kb))])),
+  });
+}
+
+/* Two measures per repository. An all-pairs shape: only two categories. */
+function chartRepos(c) {
+  const repos = (c.repos?.repos || []).filter((r) => r.git && (r.nodeModulesKB || 0) > 51200);
+  const points = repos.map((r) => ({
+    name: r.name, x: r.days, y: kb2gb(r.nodeModulesKB),
+    color: r.stale ? 'var(--s2)' : 'var(--s1)',
+    marked: r.off > 0 || !r.hasRemote,
+    note: !r.hasRemote ? 'no remote at all — this machine is the only copy'
+      : `${r.off} commit(s) off ${r.base} — the repo itself is not disposable`,
+  }));
+  return card({
+    title: 'Projects: age against weight',
+    sub: 'The amber ring marks anything with commits off the main branch, or no remote at all. Those repos are not disposable, however long they have sat still.',
+    legend: legendOf([{ name: 'quiet for over 60 days', color: 'var(--s2)' }, { name: 'active', color: 'var(--s1)' }]),
+    shape: scatter({ points, xLabel2: 'days since last commit', yLabel: 'node_modules (GB)', xUnit: ' days', yUnit: ' GB' }),
+    table: tableOf(['Project', 'Days', 'GB', 'Off main', 'Remote'],
+      repos.map((r) => [r.name, r.days, gb(kb2gb(r.nodeModulesKB)), r.off || 0, r.hasRemote ? 'yes' : 'none'])),
+    tall: true,
+  });
+}
+
+/* ================================================================ CHECKS */
+function checks(c) {
+  const root = $('#tab-checks');
+  root.textContent = '';
+  if (!c || !c.hasCache) { root.append(el('p', { class: 'empty' }, 'Run the scan on the Overview tab first.')); return; }
+  const items = c.checks?.items || [];
+  const serious = items.filter((i) => i.serious);
+
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, serious.length, serious.length === 1 ? ' thing is broken' : ' things are broken', el('em', {}, '.')),
+    el('p', { class: 'summary' }, 'Nothing gets a row here unless it has a fix. A diagnosis with no action is noise.')));
+
+  const v = c.volume, m = c.memory;
+  // volumeUsage() is null when the platform cannot read it (see chartSteps).
+  const diskPct = v ? Math.round((v.usedKB / (v.usedKB + v.freeKB)) * 100) : null;
+  // Swap against RAM, as lib/watch.js does, so this gauge agrees with the watcher.
+  const swapPct = m.swap ? Math.min(100, Math.round((m.swap.usedMB / (m.totalBytes / 1048576)) * 100)) : 0;
+  const memPct = Math.round(((m.vm.active + m.vm.wired + m.vm.compressed) / m.totalBytes) * 100);
+  root.append(grid(
+    at('c4', v
+      ? card({ title: 'Disk used', sub: `${gb(kb2gb(v.freeKB))} GB free`,
+        shape: gauge({ pct: diskPct, center: diskPct + '%', sub: 'of the data volume' }) })
+      : card({ title: 'Disk used', sub: 'Could not read how full this volume is.',
+        shape: el('p', { class: 'empty' }, 'no reading') })),
+    at('c4', card({ title: 'Swap used', sub: 'Disk standing in for RAM.',
+      shape: gauge({ pct: swapPct, center: swapPct + '%', sub: 'of RAM, held in swap' }) })),
+    at('c4', card({ title: 'RAM committed', sub: 'Wired, active and compressed — what is not available right now.',
+      shape: gauge({ pct: memPct, center: memPct + '%', sub: 'of total RAM' }) })),
+  ));
+
+  // ONE measure, several entities: the log size of each container. Plotting GB
+  // and a restart count on one axis, dividing one by 100 so it "fits", is a
+  // dual axis in disguise — the alignment would be arbitrary. The restart count
+  // lives in the label.
+  const logs = (c.docker?.logs || []).slice(0, 8);
+  const looping = logs.find((l) => l.restarts >= 5);
+  if (logs.length) {
+    root.append(grid(at('c12', card({
+      title: 'Container log, per container',
+      sub: looping
+        ? `${looping.name} leads because it has restarted ${looping.restarts} times under policy '${looping.policy}': every cycle writes the startup log again. \`docker system df\` shows none of this.`
+        : '`docker system df` measures a container\'s writable layer and never this file.',
+      shape: columns({
+        data: logs.map((l) => ({
+          name: l.name.length > 13 ? l.name.slice(0, 12) + '…' : l.name,
+          sub: l.restarts >= 5 ? `${l.restarts} restarts` : (l.noRotation ? 'no limit' : ''),
+          value: +(l.bytes / 1073741824).toFixed(3),
+          note: `${l.restarts} restarts · policy '${l.policy}'` + (l.noRotation ? ' · no rotation limit' : ''),
+        })), unit: 'GB', height: 230,
+      }),
+      table: tableOf(['Container', 'Log (GB)', 'Restarts', 'Rotation'],
+        logs.map((l) => [l.name, gb(l.bytes / 1073741824), l.restarts, l.noRotation ? 'none' : 'configured'])),
+    }))));
+  }
+
+  for (const i of items) {
+    const c2 = el('div', { class: 'card' + (i.serious ? '' : ' stays') });
+    // Urgency is a word and a position, never a traffic light.
+    c2.append(el('div', { class: 'row' },
+      el('div', { class: 'weight', style: 'font-size:14px' }, i.serious ? 'now' : 'later'),
+      el('div', {}, el('p', { class: 'title' }, i.title))));
+    c2.append(el('div', { class: 'proof' }, i.found));
+    if (i.cost) c2.append(el('div', { class: 'lose' }, el('b', {}, 'Cost of acting: '), i.cost));
+    const cmd = commandBlock(i.fix, 'paste it yourself. this panel does not execute.');
+    if (cmd) c2.append(cmd);
+    const settings = i.id === 'backup' ? openBtn('backup', 'Time Machine settings')
+      : i.id === 'space' ? openBtn('storage', 'Storage settings') : null;
+    if (settings) c2.append(el('div', { class: 'command-bar' }, settings));
+    root.append(c2);
+  }
+}
+
+/* ============================================================== INTERNET */
+/* THE RULE THIS TAB HOLDS, restated where somebody reads it: every packet it
+   sends goes to a machine this computer was ALREADY configured to use — the
+   router it routes through, and the resolvers it already asks. It never picks
+   an address of its own, and the screen lists what it touched before it charts
+   anything.
+
+   The two readings that cost something — throughput, and the radio — sit
+   behind their own buttons with the price written above each one. Nothing here
+   calls them on open, on load, or on a timer. The speed test moves real data,
+   so it is two clicks: the second one is the consent. */
+
+const roleWord = (a) => {
+  const router = /router/.test(a.role), res = /resolver/.test(a.role);
+  if (router && res) return 'router + resolver';
+  if (router) return 'your router';
+  if (/outside/.test(a.role)) return 'outside';
+  return 'resolver';
+};
+const msTxt = (n) => (n == null ? '—' : n >= 100 ? n.toFixed(0) : n.toFixed(1));
+
+function internet(d) {
+  const root = $('#tab-internet');
+  root.textContent = '';
+  if (!d) { root.append(el('p', { class: 'loading' }, 'timing the first hops — about four seconds')); return; }
+
+  const alive = d.anchors.filter((a) => a.ran && a.received > 0);
+  const outside = d.anchors.find((a) => /outside/.test(a.role)) || null;
+  const gate = d.anchors.find((a) => /router/.test(a.role)) || null;
+
+  /* --- a decision, not a grid of gauges -------------------------------- */
+  const v = d.verdict;
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, v.headline),
+    el('p', { class: 'summary' }, v.summary),
+    el('p', { class: 'summary' }, v.more)));
+
+  if (d.problems.length || d.resolverError) {
+    root.append(el('div', { class: 'warn-box' },
+      el('h3', {}, 'Some of this could not be read'),
+      el('ul', {}, ...[...d.problems, d.resolverError].filter(Boolean).map((p) => el('li', {}, p)))));
+  }
+
+  /* --- what left the machine, printed before any chart of it ----------- */
+  root.append(el('div', { class: 'warn-box' },
+    el('h3', {}, 'Everything this tab contacted'),
+    el('ul', {},
+      ...d.anchors.map((a) => el('li', {},
+        el('b', {}, a.ip), ` — ${a.role}. `,
+        a.ran ? `${a.sent} ICMP packets, ${a.received} back.` : 'the ping could not run at all.')),
+      d.noOffNetworkHost
+        ? el('li', {}, 'Nothing past your router was contacted. Every resolver this machine is configured to use lives on your own network, and reckon will not choose an outside address on your behalf.')
+        : null,
+      el('li', {}, el('b', {}, 'That is the entire list. '),
+        'reckon only ever sends a packet to a machine your computer was already configured to use. It contacts no address picked by this tool, and it sends nothing about you anywhere.'))));
+
+  /* --- four numbers, each with what it is a measurement of -------------- */
+  const kind = d.route
+    ? (d.route.kind === 'wi-fi' ? 'Wi-Fi' : d.route.kind === 'wired' ? 'Cable'
+      : d.route.kind === 'tunnel' ? 'Tunnel' : 'Unknown')
+    : '—';
+  const sent = d.anchors.reduce((a, x) => a + (x.sent || 0), 0);
+  const back = d.anchors.reduce((a, x) => a + (x.received || 0), 0);
+  root.append(grid(
+    at('c3', tile('Carrying traffic', kind, d.route ? d.route.interface : '',
+      d.route
+        ? `gateway ${d.route.gateway || 'none'}${d.route.hardwarePort && d.route.kind !== 'unknown' ? ' · ' + esc(d.route.hardwarePort) : ''}`
+        : 'no default route — nothing is')),
+    at('c3', tile('Past your router', outside && outside.received ? msTxt(outside.avgMs) : '—',
+      outside && outside.received ? 'ms' : '',
+      outside && outside.received
+        ? `to ${outside.ip}, ${d.pingCount} packets`
+        : 'not measured — <b>by design</b>, see above')),
+    at('c3', tile('To your router', gate && gate.received ? msTxt(gate.avgMs) : '—',
+      gate && gate.received ? 'ms' : '',
+      gate ? `${gate.ip} — the leg you can act on` : 'no gateway in the routing table')),
+    at('c3', tile('Packets back', `${back}/${sent}`, '',
+      back === sent ? 'none lost, on this many packets' : `${sent - back} never came back`)),
+  ));
+
+  /* --- round trip per address. One colour: these are names, not ranks.
+         A host that did not reply gets the boundary colour and reads
+         "no reply" — a full bar with a number on it would state a
+         measurement nobody took. ------------------------------------- */
+  const worstMs = Math.max(...alive.map((a) => a.avgMs), 1);
+  const ordered = d.anchors.slice().sort((a, b) => (b.avgMs || Infinity) - (a.avgMs || Infinity));
+  const anyDead = d.anchors.some((a) => !a.ran || a.received === 0);
+  root.append(grid(
+    at('c7', card({
+      title: 'Round trip, per address',
+      sub: `${d.pingCount} packets each, sent just now. Your router isolates the leg inside your home — the part you can do something about. Anything past it is the part you can only report.`,
+      shape: bars({
+        data: ordered.map((a) => ({
+          name: `${a.ip}  ·  ${roleWord(a)}`,
+          value: a.ran && a.received > 0 ? a.avgMs : worstMs,
+          labelText: !a.ran ? 'could not run' : a.received > 0 ? `${msTxt(a.avgMs)} ms` : 'no reply',
+          color: a.ran && a.received > 0 ? 'var(--s1)' : 'var(--edge)',
+          note: a.ran && a.received > 0
+            ? `${a.received} of ${a.sent} back · best ${msTxt(a.minMs)} ms, worst ${msTxt(a.maxMs)} ms`
+            : 'nothing came back. some networks drop ICMP on purpose, and then this reads as dead while the web works.',
+        })), unit: 'ms', directLabels: ordered.length,
+      }),
+      legend: legendOf([
+        { name: 'answered', color: 'var(--s1)' },
+        ...(anyDead ? [{ name: 'no reply — the bar is a placeholder, not a time', color: 'var(--edge)' }] : []),
+      ]),
+      table: tableOf(['Address', 'What it is', 'Best', 'Typical', 'Worst', 'Back'],
+        ordered.map((a) => [a.ip, roleWord(a),
+          a.received > 0 ? msTxt(a.minMs) + ' ms' : '—',
+          a.received > 0 ? msTxt(a.avgMs) + ' ms' : '—',
+          a.received > 0 ? msTxt(a.maxMs) + ' ms' : '—',
+          a.ran ? `${a.received}/${a.sent}` : 'did not run'])),
+    })),
+    at('c5', card({
+      title: 'Packets that came back',
+      sub: `${d.pingCount} packets to each of ${d.anchors.length} ${d.anchors.length === 1 ? 'address' : 'addresses'}. Enough to see a path that is broken, not enough to measure a small loss rate — ${sent - back === 0 ? 'and none went missing' : `${sent - back} missing out of ${sent} is a reason to look again, not a percentage`}.`,
+      shape: donut({
+        parts: [
+          { name: 'replied', value: back, color: 'var(--s1)' },
+          { name: 'never came back', value: sent - back, color: 'var(--edge)' },
+        ].filter((p) => p.value > 0),
+        center: sent ? `${Math.round((back / sent) * 100)}%` : '—',
+        sub: 'came back', unit: 'packets', size: 190,
+      }),
+      legend: legendOf([{ name: 'replied', color: 'var(--s1)' },
+        ...(sent - back > 0 ? [{ name: 'lost', color: 'var(--edge)' }] : [])]),
+      table: tableOf(['Address', 'Sent', 'Back', 'Lost'],
+        d.anchors.map((a) => [a.ip, a.sent ?? '—', a.received ?? '—', a.ran ? a.sent - a.received : '—'])),
+    })),
+  ));
+
+  /* --- best / typical / worst: one measure, one axis, three readings of
+         it. This is the chart that shows jitter, which is what a call
+         breaking up actually looks like. ---------------------------- */
+  if (alive.length) {
+    const series = [
+      { name: 'best', color: 'var(--s1)' },
+      { name: 'typical', color: 'var(--s3)' },
+      { name: 'worst', color: 'var(--s2)' },
+    ];
+    const spread = alive.map((a) => a.maxMs - a.minMs);
+    const widest = alive[spread.indexOf(Math.max(...spread))];
+    root.append(grid(at('c12', card({
+      title: 'Best, typical and worst of the same packets',
+      sub: widest && widest.maxMs - widest.minMs > widest.avgMs
+        ? `${widest.ip} swings from ${msTxt(widest.minMs)} ms to ${msTxt(widest.maxMs)} ms across ${d.pingCount} packets. That spread, not the average, is what a call breaking up sounds like.`
+        : 'A wide gap between best and worst on the same address is jitter: the average can look fine while every other packet arrives late.',
+      legend: legendOf(series),
+      shape: groupedBars({
+        groups: alive.map((a) => ({ name: `${a.ip} · ${roleWord(a)}`, values: [a.minMs, a.avgMs, a.maxMs] })),
+        series, unit: 'ms',
+      }),
+      table: tableOf(['Address', 'Best (ms)', 'Typical (ms)', 'Worst (ms)', 'Spread (ms)'],
+        alive.map((a) => [a.ip, msTxt(a.minMs), msTxt(a.avgMs), msTxt(a.maxMs), msTxt(a.maxMs - a.minMs)])),
+    }))));
+  }
+
+  /* --- the session's own history. A point exists because somebody looked;
+         it is not a poller, and the axis label says exactly that. ----- */
+  const hist = d.history || [];
+  if (hist.length >= 2) {
+    const withGate = hist.filter((x) => x.gatewayMs != null);
+    root.append(grid(
+      at('c6', card({
+        title: 'Round trip past your router, over this session',
+        sub: `${hist.length} readings — one for every time you opened this tab. Nothing polls in between.`,
+        shape: areaChart({ vals: hist.map((x) => x.outsideMs), rot: 'Past the router', unit: 'ms' }),
+        table: tableOf(['Reading', 'ms'], hist.map((x, i) => [i + 1, msTxt(x.outsideMs)])),
+      })),
+      withGate.length >= 2 ? at('c6', card({
+        title: 'Which half moved',
+        // Numbers in this sentence are the reading it sits above. An earlier
+        // draft used two invented ones to explain the idea, and on screen an
+        // invented number is indistinguishable from a measured one.
+        sub: `Both legs indexed to their own first reading, so the ${msTxt(withGate[withGate.length - 1].gatewayMs)} ms hop to your router and the ${msTxt(withGate[withGate.length - 1].outsideMs)} ms path past it share one axis honestly. The line that climbs is the half that got worse.`,
+        legend: legendOf([{ name: 'to your router', color: 'var(--s1)' }, { name: 'past it', color: 'var(--s2)' }]),
+        shape: indexedLine({
+          series: [
+            { name: 'to your router', vals: withGate.map((x) => x.gatewayMs), color: 'var(--s1)' },
+            { name: 'past it', vals: withGate.map((x) => x.outsideMs), color: 'var(--s2)' },
+          ], xLabel: `${withGate.length} readings this session · 100 = the first one`,
+        }),
+        table: tableOf(['Reading', 'To router (ms)', 'Past it (ms)'],
+          withGate.map((x, i) => [i + 1, msTxt(x.gatewayMs), msTxt(x.outsideMs)])),
+      })) : null,
+    ));
+  }
+
+  root.append(paidSection(d));
+  root.append(radioSection(d));
+
+  /* --- the findings: nothing gets a row without a fix ------------------- */
+  if (d.findings.length) {
+    root.append(el('div', { class: 'section' },
+      el('h2', {}, 'What to do about it'),
+      el('p', {}, 'Same rule as the Checks tab: no row without a fix, and every row carries the measurement it came from and what it costs to be wrong.')));
+    for (const f of d.findings) {
+      const c = el('div', { class: 'card' + (f.serious ? '' : ' stays') });
+      c.append(el('div', { class: 'row' },
+        el('div', { class: 'weight', style: 'font-size:14px' }, f.serious ? 'now' : 'later'),
+        el('div', {}, el('p', { class: 'title' }, f.title))));
+      c.append(el('div', { class: 'proof' }, f.found));
+      c.append(el('div', { class: 'lose' }, el('b', {}, 'Measured by: '), f.measure));
+      if (f.fix) {
+        // Prose stays a sentence; a command (multi-line, or starting with one) gets
+        // the copy block, like the Checks tab. The panel still runs nothing.
+        const isCmd = f.fix.includes('\n') || /^(#|sudo |networksetup |dscacheutil |killall |tmutil |defaults )/.test(f.fix);
+        if (isCmd) c.append(el('div', { class: 'lose' }, el('b', {}, 'Fix:')), commandBlock(f.fix, 'paste it yourself. this panel does not execute.'));
+        else c.append(el('div', { class: 'lose' }, el('b', {}, 'Fix: '), f.fix));
+      }
+      if (f.cost) c.append(el('div', { class: 'lose' }, el('b', {}, 'Cost of acting: '), f.cost));
+      root.append(c);
+    }
+  }
+
+  /* --- and what is deliberately not on this page ------------------------ */
+  if (d.unmeasured.length) {
+    root.append(el('div', { class: 'section' },
+      el('h2', {}, 'Not measured'),
+      el('p', {}, 'Listed rather than left blank, so nothing here reads as "fine" when it was never looked at.')));
+    root.append(el('div', { class: 'warn-box' }, el('h3', {}, 'What this page does not know'),
+      el('ul', {}, ...d.unmeasured.map((u) => el('li', {}, u)))));
+  }
+
+  root.append(el('div', { class: 'command-bar', style: 'margin-top:18px' },
+    el('button', { class: 'copy', onclick: () => loadNetwork(true) }, 'measure again'),
+    el('span', { class: 'note' }, `read ${new Date(d.at).toLocaleTimeString()} · ${d.pingCount} packets per address, nothing since`)));
+}
+
+/* ---------------------------------------------------------------- paid: speed */
+/* Two clicks. The first one reveals the price in full; the second one is the
+   consent. On a hotspot this test costs money, and a single button next to a
+   sentence somebody scrolled past is not consent. */
+function paidSection(d) {
+  const box = el('div', { class: 'provider' });
+  const s = d.speed;
+  box.append(el('div', { class: 'head' },
+    el('span', { class: 'name' }, 'Throughput, and how the link behaves while it is busy'),
+    el('span', { class: 'ips' }, s ? `measured ${new Date(s.at).toLocaleTimeString()}` : 'not measured')));
+  box.append(el('div', { class: 'blocks' }, el('b', {}, 'What it costs: '),
+    `${d.cost.speed.seconds}. ${d.cost.speed.data}`));
+  if (d.cost.speed.warning) box.append(el('div', { class: 'note', style: 'color:var(--edge)' }, d.cost.speed.warning));
+
+  if (d.speedError) box.append(el('div', { class: 'note' }, el('b', {}, 'Last attempt: '), d.speedError));
+
+  const run = el('button', { class: 'copy', style: 'margin-top:12px' }, s ? 'measure again' : 'measure throughput');
+  const arm = () => {
+    run.remove();
+    const go = el('button', { class: 'copy' }, 'yes — run it now');
+    const no = el('button', { class: 'copy' }, 'cancel');
+    const bar = el('div', { class: 'command-bar', style: 'margin-top:12px' }, go, no,
+      el('span', { class: 'note' }, 'this is the click that spends the data'));
+    no.addEventListener('click', () => { bar.remove(); box.append(run); run.textContent = s ? 'measure again' : 'measure throughput'; });
+    go.addEventListener('click', async () => {
+      bar.textContent = '';
+      bar.append(el('span', { class: 'loading' }, 'saturating the link in both directions'));
+      const r = await postNetwork('/api/network/speed');
+      if (r) { state.network = r; internet(r); }
+      else { bar.textContent = ''; bar.append(el('span', { class: 'note' }, 'the request failed. nothing was measured.'), run); }
+    });
+    box.append(bar);
+  };
+  run.addEventListener('click', arm);
+  box.append(run);
+
+  if (s) {
+    const down = s.downBps == null ? null : +(s.downBps / 1e6).toFixed(1);
+    const up = s.upBps == null ? null : +(s.upBps / 1e6).toFixed(1);
+    const rpm = s.responsivenessRpm > 0 ? Math.round(s.responsivenessRpm) : null;
+    const g = grid(
+      down != null && up != null ? at('c6', card({
+        title: 'Down and up',
+        sub: `One axis, one unit. ${s.dataMB != null ? (s.dataMeasured ? `This run moved ${s.dataMB} MB — counted, not estimated.` : `About ${s.dataMB} MB moved, estimated from throughput times duration.`) : ''}`,
+        // Two values, one unit — the same shape the radio card below uses for
+        // exactly the same kind of comparison. Two columns in a 600-unit field
+        // read as a chart with most of its data missing.
+        shape: bars({
+          data: [
+            { name: 'download', value: down, labelText: `${down} Mbps`,
+              note: 'what pages, video and downloads arrive at' },
+            { name: 'upload', value: up, labelText: `${up} Mbps`,
+              note: 'what calls, backups and uploads leave at' },
+          ], unit: 'Mbps', directLabels: 2,
+        }),
+        table: tableOf(['Direction', 'Mbps'], [['download', down], ['upload', up]]),
+      })) : null,
+      rpm ? at('c6', card({
+        title: 'Responsiveness under load',
+        sub: `Round trips per minute achieved while the link was saturated — ${Math.round(60000 / rpm)} ms each. This is the number that answers "it is fast and everything still feels slow". 800 is where the lag stops being noticeable; the arc is capped there, and it is a threshold, not a maximum.`,
+        shape: gauge({ pct: Math.min(100, (rpm / 800) * 100), center: String(rpm), sub: 'RPM of the 800 mark' }),
+        table: tableOf(['Reading', 'Value'], [
+          ['responsiveness', rpm + ' RPM'],
+          ['one round trip, loaded', Math.round(60000 / rpm) + ' ms'],
+          ['one round trip, idle', s.baseRttMs != null ? Math.round(s.baseRttMs) + ' ms' : 'not reported'],
+          ['measured from', s.responsivenessFrom || 'both directions at once'],
+        ]),
+      })) : null,
+    );
+    if (g.childNodes.length) box.append(g);
+  }
+  return box;
+}
+
+/* ---------------------------------------------------------------- paid: radio */
+function radioSection(d) {
+  if (!d.route || d.route.kind === 'wired') return null;
+  const box = el('div', { class: 'provider' });
+  const r = d.radio;
+  box.append(el('div', { class: 'head' },
+    el('span', { class: 'name' }, 'The Wi-Fi link itself'),
+    el('span', { class: 'ips' }, r ? `read ${new Date(r.at).toLocaleTimeString()}` : 'not read')));
+  box.append(el('div', { class: 'blocks' }, el('b', {}, 'What it costs: '),
+    `${d.cost.radio.seconds}. ${d.cost.radio.data}`));
+  if (d.radioError) box.append(el('div', { class: 'note' }, el('b', {}, 'Last attempt: '), d.radioError));
+
+  const run = el('button', { class: 'copy', style: 'margin-top:12px' }, r ? 'read it again' : 'read the radio');
+  run.addEventListener('click', async () => {
+    const wait = el('span', { class: 'loading' }, 'asking the Wi-Fi card — twelve seconds');
+    run.replaceWith(wait);
+    const out = await postNetwork('/api/network/radio');
+    if (out && !out.error) { state.network = out; internet(out); return; }
+    // Failure or a reading already in flight: say so and give the button back.
+    const msg = el('span', { class: 'note' }, postNetwork.alreadyRunning
+      ? 'a radio reading is already running. wait for it, then open this tab again.'
+      : 'the request failed. nothing was read.');
+    wait.replaceWith(msg);
+    msg.after(run);
+  });
+  box.append(run);
+
+  if (r) {
+    box.append(grid(
+      r.rateMbps ? at('c7', card({
+        title: 'Negotiated rate against what the standard allows',
+        sub: r.ceilingMbps
+          ? `The ceiling is ${r.phyMode}'s number at ${r.widthMHz} MHz with ${r.streams === 1 ? 'one spatial stream' : `${r.streams} spatial streams` } — the specification's figure, not a reading of this link, and the stream count is inferred from the rate and the MCS index rather than reported by anything.`
+          : `Only the negotiated rate is shown: ${r.ceilingUnknown || 'the standard\'s ceiling could not be derived for this mode.'}`,
+        // The ceiling bar wears an ordinal neutral, NOT a series colour, on
+        // purpose: it is the specification's number, not a reading of this
+        // link, and a full series hue would assert it as an equal
+        // measurement. It fails the categorical checks because it is not a
+        // category; the contrast WARN is discharged the way the rule allows,
+        // with a direct label on both bars and a table view.
+        legend: r.ceilingMbps ? legendOf([
+          { name: 'negotiated now — measured', color: 'var(--s1)' },
+          { name: 'the standard\'s ceiling — a reference, not a reading', color: 'var(--n1)' },
+        ]) : null,
+        shape: bars({
+          data: [
+            { name: 'negotiated now', value: r.rateMbps, color: 'var(--s1)',
+              note: `channel ${r.channel} · ${r.bandGHz} GHz · ${r.widthMHz} MHz · ${r.phyMode}` },
+            ...(r.ceilingMbps ? [{ name: 'the standard allows', value: r.ceilingMbps, color: 'var(--n1)',
+              note: 'from the specification, not from this link' }] : []),
+          ], unit: 'Mbps', directLabels: 2,
+        }),
+        table: tableOf(['Reading', 'Value'], [
+          ['negotiated rate', r.rateMbps + ' Mbps'],
+          ['the standard allows', r.ceilingMbps ? r.ceilingMbps + ' Mbps' : 'not derivable'],
+          ['channel', `${r.channel} (${r.bandGHz} GHz, ${r.widthMHz} MHz)`],
+          ['mode', r.phyMode || '—'],
+          ['spatial streams', r.streams != null ? r.streams + ' (inferred)' : 'unknown'],
+        ]),
+      })) : null,
+      r.snrDb != null ? at('c5', card({
+        title: 'Signal over noise',
+        sub: `${r.rssiDbm} dBm of signal against ${r.noiseDbm} dBm of noise leaves ${r.snrDb} dB of headroom. Under 20 dB the card steps down to slower modulations on purpose — it would rather be slow than lose packets. The bar is scaled to 40 dB, which is a comfortable link, not a maximum.`,
+        shape: el('div', { style: 'padding:14px 0 4px' },
+          meter({ pct: Math.max(0, Math.min(100, (r.snrDb / 40) * 100)), rot: 'headroom', note: `${r.snrDb} dB over the noise floor` }),
+          el('div', { class: 'foot', style: 'margin-top:9px' },
+            `${r.snrDb} dB — ${r.snrDb < 20 ? 'below the 20 dB line where rate starts falling' : 'above the 20 dB line'}`)),
+        table: tableOf(['Reading', 'Value'], [
+          ['signal', r.rssiDbm + ' dBm'], ['noise', r.noiseDbm + ' dBm'], ['headroom', r.snrDb + ' dB'],
+        ]),
+      })) : null,
+    ));
+  }
+  return box;
+}
+
+async function postNetwork(route) {
+  try {
+    const res = await fetch(route, { method: 'POST', headers: authed() });
+    const out = await res.json();
+    postNetwork.alreadyRunning = !!(out && out.alreadyRunning);
+    if (postNetwork.alreadyRunning) return null;
+    return out;
+  } catch { postNetwork.alreadyRunning = false; return null; }
+}
+
+async function loadNetwork(force) {
+  if (state.network && !force) { internet(state.network); return; }
+  internet(null);
+  try { state.network = await get('/api/network'); } catch (e) { state.network = null; }
+  internet(state.network);
+  const n = state.network?.findings?.filter((f) => f.serious).length;
+  $('#count-internet').textContent = n || '';
+}
+
+/* =================================================================== DNS */
+/* A separate tab on purpose: a bug in the monitor shows a wrong number, a bug
+   here leaves the machine without internet. Nothing runs from here. Ever. */
+function dns(d) {
+  const root = $('#tab-dns');
+  root.textContent = '';
+  if (!d) { root.append(el('p', { class: 'loading' }, 'reading the network configuration')); return; }
+
+  const wifi = d.services.find((s) => /wi-?fi/i.test(s.service)) || d.services[0];
+  const current = wifi ? wifi.ips : [];
+
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, 'Block ads and dangerous sites.'),
+    el('p', { class: 'summary' }, 'Two halves: a blocklist you build, and the resolver your machine asks. ',
+      el('b', {}, 'This tab never executes anything.'), ' It writes the command and the undo; you are the one who types them.')));
+
+  root.append(el('div', { class: 'warn-box' },
+    el('h3', {}, 'Read this before changing anything'),
+    el('ul', {}, ...d.warnings.map((a) => el('li', {}, a)))));
+
+  root.append(el('div', { class: 'section' },
+    el('h2', {}, 'How it stands now'), el('p', {}, 'What the system actually queries, in order.')));
+  const t = el('table', { class: 'wide' }, el('thead', {}, el('tr', {}, el('th', {}, 'Service'), el('th', {}, 'Configured DNS'))));
+  const tb = el('tbody');
+  tb.append(el('tr', {}, el('td', { class: 'name' }, el('b', {}, 'what actually answers')),
+    el('td', { style: 'font:12.5px var(--mono)' }, d.effective.ips.join('  ·  '))));
+  for (const s of d.services) {
+    tb.append(el('tr', {}, el('td', { class: 'name' }, s.service),
+      el('td', { style: 'font:12.5px var(--mono);color:var(--ink2)' }, s.inherited ? 'inherited from the router' : s.ips.join('  ·  '))));
+  }
+  t.append(tb); root.append(el('div', { class: 'scrollable' }, t));
+
+  if (d.health && d.health.length) root.append(resolverHealth(d));
+
+  if (state.blocklist) root.append(blocklistSection(state.blocklist));
+
+  root.append(el('div', { class: 'section' },
+    el('h2', {}, 'Change the resolver'),
+    el('p', {}, 'Filters against a list somebody else maintains, and it catches subdomains — which the list above does not. Each option ships with the undo built from what is configured right now.')));
+
+  for (const p of d.providers.filter((x) => x.ips.length)) {
+    const c = el('div', { class: 'provider' });
+    c.append(el('div', { class: 'head' }, el('span', { class: 'name' }, p.name), el('span', { class: 'ips' }, p.ips.join('  ·  '))));
+    c.append(el('div', { class: 'blocks' }, el('b', {}, 'Blocks: '), p.blocks));
+    c.append(el('div', { class: 'note' }, p.note));
+    const open = el('button', { class: 'copy', style: 'margin-top:11px', onclick: async () => {
+      let r;
+      try {
+        r = await get(`/api/dns/recipe?service=${encodeURIComponent(wifi.service)}&provider=${p.id}&current=${current.join(',')}`);
+        if (!r || r.error) throw new Error(r && r.error ? r.error : 'no answer');
+      } catch (e) {
+        // The button stays, with the reason beside it, so it can be pressed again.
+        c.querySelector('[data-recipe-error]')?.remove();
+        open.after(el('span', { class: 'note', 'data-recipe-error': '1', style: 'margin-left:10px' }, 'could not build the commands: ' + e.message));
+        return;
+      }
+      c.querySelector('[data-recipe-error]')?.remove();
+      open.remove();
+      // THE UNDO COMES FIRST. On purpose: if DNS breaks, you cannot search for
+      // how to fix it.
+      c.append(
+        el('div', { class: 'undo-first' },
+          el('span', { class: 'step' }, '1. keep the undo — before applying anything'),
+          commandBlock(r.undo, r.undoExplained)),
+        el('div', { style: 'margin-top:15px' },
+          el('span', { class: 'step' }, '2. apply'),
+          commandBlock(r.apply, 'it will ask for your password. this panel does not type sudo for you.')),
+        el('div', { style: 'margin-top:15px' },
+          el('span', { class: 'step' }, '3. check that it took'),
+          commandBlock(r.verify, r.ifItBreaks)));
+    } }, 'build the commands for ' + p.name);
+    c.append(open);
+    root.append(c);
+  }
+}
+
+/* Every resolver the machine is configured to use, asked a real question and
+   timed. This exists because a dead entry in the list is invisible from the
+   outside: the internet still works, pages still open, and only the things
+   pulled from a second hostname — stylesheets, fonts — quietly time out. */
+function resolverHealth(d) {
+  const box = el('div', {});
+  const dead = d.dead || [], slow = d.slow || [];
+
+  box.append(el('div', { class: 'section' },
+    el('h2', {}, 'Is each one actually answering?'),
+    el('p', {}, dead.length
+      ? `${dead.length} of the ${d.health.length} addresses configured here did not answer. A resolver list is failover: every lookup that lands on a dead entry stalls until it gives up.`
+      : `All ${d.health.length} addresses answered. Timings are from one query each, just now.`)));
+
+  const fastest = Math.max(...d.health.filter((h) => h.answered).map((h) => h.ms), 1);
+  box.append(grid(at('c12', card({
+    title: 'Response time per resolver',
+    sub: 'Measured against the machine, one query each. A bar at the far right, or none at all, is the one to remove.',
+    shape: bars({
+      data: d.health.map((h) => ({
+        name: h.ip + (h.owner ? `  (${h.owner})` : ''),
+        // A dead resolver has no time to plot. It gets the full bar and the
+        // boundary colour, because "no answer" is not "slow" — it is a
+        // different kind of thing, and the chart should not imply an ordering.
+        value: h.answered ? h.ms : fastest,
+        // The bar is full width to be impossible to miss, but the label says
+        // what actually happened. Printing "53 ms" next to a server that never
+        // replied would be the chart asserting a measurement nobody took.
+        labelText: h.answered ? `${h.ms} ms` : 'no answer',
+        color: h.answered ? (h.slow ? 'var(--s2)' : 'var(--s1)') : 'var(--edge)',
+        note: h.answered
+          ? `answered in ${h.ms} ms${h.slow ? ' — slow enough to feel on a page with several hostnames' : ''}`
+          : 'did not answer at all. every lookup that lands here stalls.',
+      })), unit: 'ms', directLabels: d.health.length,
+    }),
+    legend: legendOf([
+      { name: 'answering', color: 'var(--s1)' },
+      ...(slow.length ? [{ name: 'slow (over 250 ms)', color: 'var(--s2)' }] : []),
+      ...(dead.length ? [{ name: 'no answer — remove it', color: 'var(--edge)' }] : []),
+    ]),
+    table: tableOf(['Resolver', 'Provider', 'Response'],
+      d.health.map((h) => [h.ip, h.owner || 'unknown', h.answered ? `${h.ms} ms` : 'no answer'])),
+  }))));
+
+  // The fix, built from what was actually measured rather than from a template.
+  // The repair comes from the server, which knows the platform. Building the
+  // command here shipped `sudo networksetup ...` to every Windows user — an
+  // instruction they cannot run, sitting next to a number that was correct.
+  const fix = d.repair;
+  if (fix) {
+    box.append(el('div', { class: 'provider' },
+      el('div', { class: 'head' },
+        el('span', { class: 'name' }, 'Reduce the list to one working provider'),
+        el('span', { class: 'ips' }, `${d.health.length} configured now · ${fix.keepIps.length} is the right number`)),
+      el('div', { class: 'blocks' },
+        el('b', {}, 'Why: '),
+        dead.length
+          ? `${dead.map((x) => x.ip).join(', ')} never answers, and one dead entry slows down every lookup on this machine. `
+          : '',
+        d.stacked
+          ? 'Several providers are stacked on one interface. The system asks whichever answers first, so this does not combine their filters — it picks one of them at random.'
+          : ''),
+      el('div', { class: 'note' },
+        `The command below keeps ${fix.keep} — two addresses from one provider, a primary and a secondary, which is exactly what a resolver list is for. `,
+        fix.others && fix.others.length
+          ? `You also have ${fix.others.join(' and ')} configured and answering; to keep one of those instead, swap in its two addresses. `
+          : '',
+        'What matters is that it is one provider, not which.'),
+      el('div', { class: 'undo-first' },
+        el('span', { class: 'step' }, '1. keep the undo — it puts back exactly what is set now'),
+        commandBlock(fix.undo, fix.undoNote)),
+      el('div', { style: 'margin-top:15px' },
+        el('span', { class: 'step' }, '2. apply'),
+        commandBlock(fix.apply, fix.applyNote)),
+      el('div', { style: 'margin-top:15px' },
+        el('span', { class: 'step' }, '3. check that it took'),
+        commandBlock(fix.verify, fix.verifyNote || 'come back to this tab afterwards and every bar should be short.'))));
+  }
+  return box;
+}
+
+/* A blocklist applied through /etc/hosts. This tool keeps the list, generates
+   the snippet and shows the command — and writes not one line to /etc/hosts. */
+function blocklistSection(b) {
+  const box = el('div', {});
+  const total = b.domains.length;
+
+  box.append(el('div', { class: 'section' },
+    el('h2', {}, 'Your blocklist'),
+    el('p', {}, total
+      ? `${total} ${total === 1 ? 'domain' : 'domains'} on the list. ${b.state.hasBlock ? `${b.state.activeNow} are already in effect in /etc/hosts.` : 'None are in effect yet — they still have to be applied.'}`
+      : 'Empty. Add a ready-made set, or type a domain.')));
+
+  // THE LIMIT, above any button: whoever misses this will think the block
+  // failed when in truth it never covered the subdomain.
+  box.append(el('div', { class: 'warn-box' },
+    el('h3', {}, 'What this list does, and what it does not'),
+    el('ul', {},
+      el('li', {}, b.limit),
+      el('li', {}, 'This tool writes only to a file of its own. You are the one editing /etc/hosts, with the command shown below.'))));
+
+  const setsRow = el('div', { class: 'sets' });
+  for (const s of b.sets) {
+    const already = s.domains.every((d) => b.domains.some((x) => x.name === d));
+    setsRow.append(el('button', {
+      class: 'set' + (already ? ' inside' : ''),
+      onclick: () => sendBlocklist('/api/blocklist/add', { set: s.id }),
+      title: s.description,
+    }, el('b', {}, s.label), el('span', {}, `${s.count} domains`),
+       el('i', {}, already ? 'already on the list' : s.description)));
+  }
+  box.append(setsRow);
+
+  const field = el('input', { type: 'text', placeholder: 'example.com', class: 'field',
+    onkeydown: (e) => { if (e.key === 'Enter') submit(); } });
+  const err = el('span', { class: 'field-error' });
+  function submit() {
+    const v = field.value.trim();
+    if (!v) return;
+    sendBlocklist('/api/blocklist/add', { domain: v }, (r) => {
+      if (r && r.error) { err.textContent = r.error; return; }
+      field.value = ''; err.textContent = '';
+    });
+  }
+  box.append(el('div', { class: 'add-row' },
+    field, el('button', { class: 'action', onclick: submit }, 'Add to list'), err));
+
+  if (total) {
+    const cats = Object.entries(b.byCategory).sort((a, b2) => b2[1] - a[1]);
+    box.append(grid(
+      at('c5', card({
+        title: 'The list by category',
+        sub: `${total} domains in total.`,
+        shape: columns({
+          data: cats.map(([name, n], i) => ({ name, value: n, color: `var(--s${i + 1})`, sub: 'domains' })),
+          unit: 'domains', height: 200, labelAll: true,
+        }),
+        table: tableOf(['Category', 'Domains'], cats),
+      })),
+      at('c7', card({
+        title: 'The domains',
+        sub: 'Click the x to drop one. None of this takes effect until you apply it.',
+        shape: el('div', { class: 'chips' }, ...b.domains.map((d) =>
+          el('span', { class: 'chip' }, d.name,
+            el('button', { title: 'remove from list',
+              onclick: () => sendBlocklist('/api/blocklist/remove', { domain: d.name }) }, '×')))),
+      })),
+    ));
+
+    const stepsBox = el('div', { class: 'provider' });
+    stepsBox.append(el('div', { class: 'head' },
+      el('span', { class: 'name' }, 'Apply the list to /etc/hosts'),
+      el('span', { class: 'ips' }, `${total} domains · ${b.snippet.lines} lines`)));
+    stepsBox.append(el('div', { class: 'undo-first' },
+      el('span', { class: 'step' }, '1. keep the undo — before applying anything'),
+      commandBlock(b.recipe.undo, b.recipe.undoExplained)));
+    stepsBox.append(el('div', { style: 'margin-top:15px' },
+      el('span', { class: 'step' }, '2. apply'),
+      commandBlock(b.recipe.apply, 'it will ask for your password. this panel does not type sudo for you.')));
+    stepsBox.append(el('div', { style: 'margin-top:15px' },
+      el('span', { class: 'step' }, '3. check that it took'),
+      commandBlock(b.recipe.verify, b.recipe.ifItBreaks)));
+    box.append(stepsBox);
+  }
+  return box;
+}
+
+async function sendBlocklist(route, body, after) {
+  try {
+    const r = await fetch(route, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { if (after) after(d); return; }
+    state.blocklist = d;
+    if (after) after(null);
+    if (state.dns) dns(state.dns);
+  } catch (e) { if (after) after({ error: e.message }); }
+}
+
+/* ----------------------------------------------------------------- footer */
+async function measureSelf() {
+  try {
+    const e = await get('/api/self');
+    $('#self-rss').textContent = e.rssMB + ' MB';
+    $('#self-share').textContent = e.shareOfRam != null ? `(${e.shareOfRam}% of the machine)` : '';
+    $('#self-cpu').textContent = (e.cpuPct ?? 0).toFixed(1) + '%';
+    $('#self-policy').textContent = `${e.scans} ${e.scans === 1 ? 'scan' : 'scans'} · no polling between them`;
+    const freeable = state.cache?.panel?.totalGB;
+    if (freeable != null) {
+      const costGB = e.rssMB / 1024;
+      // If the cost ever exceeds the benefit, the screen says so rather than hiding it.
+      $('#balance').innerHTML = costGB >= freeable
+        ? `costs <b>more</b> than it finds: ${gb(costGB)} GB to find ${gb(freeable)} GB`
+        : `points at <b>${gb(freeable)} GB</b> while using ${e.rssMB.toFixed(0)} MB`;
+    }
+  } catch {}
+}
+
+/* --------------------------------------------------------------- pressure */
+/* The tab that answers a question no other tab here can: not "what is big?"
+   but "what is stealing the machine right now?".
+
+   The two are not the same question and the difference is the reason this tab
+   exists. The afternoon it was written for had 365 orphaned processes holding
+   171 MB between them — invisible to every byte-ranked screen in this panel —
+   and the machine was running at a twentieth of its own speed. */
+function pressure(d) {
+  const root = $('#tab-pressure');
+  if (!root) return;
+  root.textContent = '';
+  if (!d) {
+    root.append(el('p', { class: 'empty' }, 'measuring…'));
+    return;
+  }
+
+  const f = d.probe.factor;
+  const swapPct = d.swap ? Math.min(100, Math.round(d.swap.ofRam * 100)) : null;
+
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' },
+      d.probe.fresh
+        ? 'First reading. This becomes the baseline every later one is measured against.'
+        : f >= 2
+          ? `This machine is running at ${f}x the time it takes at its best.`
+          : 'This machine is running at its own normal speed.'),
+    el('p', {},
+      `A fixed piece of arithmetic took ${d.probe.nowMs} ms just now. `
+      + (d.probe.fresh ? 'Nothing to compare it against yet — open this tab again later.'
+        : `The fastest this machine has ever done it is ${d.probe.bestMs} ms. `)
+      + (d.rows.length
+        ? `${d.rows.length} thing${d.rows.length > 1 ? 's are' : ' is'} worth acting on, below.`
+        : 'Nothing here is worth acting on — the machine is not fighting itself.'))));
+
+  root.append(grid(
+    at('c4', card({
+      title: 'Slowdown against this machine at its best',
+      sub: 'Earned, never configured: the baseline is the fastest reading this machine has ever produced.',
+      shape: gauge({ pct: Math.min(100, Math.round((1 - d.probe.bestMs / d.probe.nowMs) * 100)),
+        center: f + 'x', sub: 'of its best time' }),
+    })),
+    at('c4', card({
+      title: 'Swap in use',
+      sub: d.swap ? `${gb(d.swap.usedMB / 1024)} GB of ${gb(d.swap.totalMB / 1024)} GB`
+        : 'Swap could not be read, which is not the same as a machine with no swap.',
+      shape: d.swap ? gauge({ pct: swapPct, center: swapPct + '%', sub: 'of swap in use' })
+        : el('p', { class: 'empty' }, '—'),
+      table: d.swap && d.swap.note ? tableOf(['What that means'], [[d.swap.note]]) : null,
+    })),
+    at('c4', card({
+      title: 'What is running',
+      sub: d.portsKnown ? 'Every process on the machine, and who is holding a port.'
+        // null and empty are different answers, and saying which one this is
+        // keeps an empty list from reading as good news.
+        : 'Listening ports could not be read, so an orphaned server would not appear below.',
+      shape: tile('processes', String(d.processCount), '', null),
+    })),
+  ));
+
+  if (!d.rows.length) return;
+
+  for (const r of d.rows) {
+    root.append(grid(at('c12', card({
+      title: r.title,
+      sub: `${r.costPct}% of a core · ${r.mb} MB · confidence: ${r.confidence}`,
+      shape: el('div', {},
+        el('p', {}, el('b', {}, 'Proof. '), r.proof),
+        el('p', {}, el('b', {}, 'What you lose if this is wrong. '), r.lose),
+        commandBlock(r.command, r.confidence === 'low'
+          ? 'read the first line before you run the second — this panel runs nothing for it'
+          : 'or copy it and run it yourself'),
+        actButton(r)),
+    }))));
+  }
+}
+
+async function loadPressure() {
+  try {
+    state.pressure = await get('/api/pressure', { method: 'POST', headers: authed() });
+    pressure(state.pressure);
+    $('#count-pressure').textContent = state.pressure.rows.length || '';
+  } catch (e) {
+    startupFailure('measuring pressure (/api/pressure)', e);
+  }
+}
+
+/* ============================================================ ACTIONS (phase 2)
+   The only place on this page that can make the machine change, and only through
+   lib/act.js on the server. The page sends { action, id } — never a path, never a
+   command — and every step is a separate click:
+
+     Do  ->  preview, measured again on the server just now (what, how much, the
+             proof, what you lose, whether it can be undone, the exact command)
+         ->  Confirm  ->  five seconds with Cancel  ->  before and after.
+
+   The server refuses a run that did not have a preview, or that comes sooner than
+   five seconds after it, so the countdown is a rule and not a decoration. */
+
+async function actPost(route, body) {
+  const r = await fetch(route, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) });
+  if (r.status === 403) throw new Error(`${route} was refused (${await r.text()})`);
+  if (!r.ok) throw new Error(`${route} returned ${r.status}`);
+  return r.json();
+}
+
+// The Do button for a row, or nothing. Only rows the server gave an `action` get one,
+// and the server only gives one to `high` and `medium` rows.
+function actButton(row) {
+  if (!row || !row.action || row.confidence === 'low') return null;
+  const slot = el('div', { class: 'act-slot' });
+  const btn = el('button', { class: 'act-do', onclick: () => actPreview(slot, row.action.id, row.id) },
+    'Do: ' + row.action.label);
+  return el('div', { class: 'act' }, btn, slot);
+}
+
+async function actPreview(slot, action, id) {
+  slot.textContent = '';
+  slot.append(el('p', { class: 'loading' }, 'measuring it again before anything happens'));
+  let p;
+  try { p = await actPost('/api/act/preview', { action, id }); }
+  catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+  slot.textContent = '';
+  if (!p.ok) { slot.append(el('p', { class: 'act-refused' }, 'Nothing will be done. ', p.refused)); return; }
+
+  const cancel = el('button', { class: 'copy', onclick: () => { slot.textContent = ''; } }, 'cancel');
+  const confirm = el('button', { class: 'act-do', onclick: () => actCountdown(slot, p) }, 'Confirm');
+  slot.append(el('div', { class: 'act-card' },
+    el('h4', {}, p.confirm),
+    el('p', {}, el('b', {}, 'What. '), p.what),
+    p.mb != null ? el('p', {}, el('b', {}, 'How much. '), `about ${p.mb} MB of resident memory, measured just now`) : null,
+    el('p', {}, el('b', {}, 'Proof, measured now. '), p.proof),
+    el('p', {}, el('b', {}, 'What you lose. '), p.lose),
+    el('p', {}, el('b', {}, p.reversible ? 'Can be undone. ' : 'Cannot be undone. '), p.undo),
+    el('pre', { class: 'act-argv' }, p.command),
+    el('div', { class: 'act-actions' }, confirm, cancel)));
+}
+
+function actCountdown(slot, p) {
+  slot.textContent = '';
+  let left = p.countdownS || 5;
+  const n = el('b', {}, String(left));
+  const line = el('p', { class: 'act-count' }, 'Running in ', n, ' s. ');
+  let timer = null;
+  const cancel = el('button', { class: 'copy', onclick: () => {
+    clearInterval(timer); slot.textContent = '';
+    slot.append(el('p', { class: 'act-refused' }, 'Cancelled. Nothing was done.'));
+  } }, 'cancel');
+  slot.append(el('div', { class: 'act-card' }, line, el('div', { class: 'act-actions' }, cancel)));
+  timer = setInterval(() => {
+    left -= 1;
+    n.textContent = String(Math.max(0, left));
+    if (left > 0) return;
+    clearInterval(timer);
+    actRun(slot, p);
+  }, 1000);
+}
+
+async function actRun(slot, p) {
+  slot.textContent = '';
+  slot.append(el('p', { class: 'loading' }, 'running, then measuring again'));
+  let r;
+  try { r = await actPost('/api/act/run', { action: p.action, id: p.id, nonce: p.nonce }); }
+  catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+  slot.textContent = '';
+  actResult(slot, p, r);
+}
+
+function actResult(slot, p, r) {
+  if (!r.ok && r.refused) { slot.append(el('p', { class: 'act-refused' }, 'Nothing was done. ', r.refused)); return; }
+  if (r.kind === 'disk') return diskResult(slot, p, r);   // phase 3
+  if (r.unit === 'model') return modelResult(slot, r);     // AI tools: a model, not processes
+  const fmt = (s) => (s ? `pressure ${s.pressure ?? 'not read'} · ${s.availableMB ?? '?'} MB free or reclaimable · ${s.compressedMB ?? '?'} MB compressed` : 'not measured');
+  const card = el('div', { class: 'act-card act-result' },
+    el('h4', {}, r.dryRun ? 'Dry run: nothing was run' : r.ok ? 'Done' : 'It did not take'),
+    el('pre', { class: 'act-argv' }, (r.ran || r.argv || []).join(' ')),
+    r.message ? el('p', {}, r.message) : null,
+    r.dryRun ? null : el('p', {}, `${r.gone} process(es) gone, ${(r.stillAlive || []).length} still running. `
+      + (r.freedKB ? `They held about ${Math.round(r.freedKB / 1024)} MB.` : '')),
+    el('p', {}, el('b', {}, 'Before. '), fmt(r.before)),
+    r.after ? el('p', {}, el('b', {}, 'After. '), fmt(r.after)) : null,
+    el('p', { class: 'act-note' }, 'Two readings, side by side. Memory moves for other reasons too, so this is not a claim about what caused the difference.'),
+    r.logged === false ? el('p', { class: 'act-refused' }, 'The result could not be written to ~/.cache/reckon/actions.log.') : null);
+  slot.append(card);
+
+  // SIGKILL is never automatic: it is offered, after ten seconds, as its own click.
+  if (r.killOffer) {
+    const wait = el('p', { class: 'act-note' }, `${r.killOffer.count} process(es) ignored the polite stop. A forced stop is offered in ${r.killOffer.inS} s, as a separate click.`);
+    card.append(wait);
+    setTimeout(() => {
+      wait.replaceWith(el('div', { class: 'act-actions' }, el('button', { class: 'act-do',
+        onclick: () => actPreview(slot, 'kill-processes', r.killOffer.id) }, `Force stop the ${r.killOffer.count} still running (SIGKILL)`)));
+    }, r.killOffer.inS * 1000);
+  }
+  card.append(el('div', { class: 'act-actions' }, el('button', { class: 'copy',
+    onclick: () => goTo(state.tab, true) }, 'measure again')));
+}
+
+/* ============================================================ AI TOOLS
+   An idle AI session and orphaned tool servers end as processes, and actResult
+   draws them. A local model is not a process: Ollama keeps running and drops the
+   model, so the result is "still loaded or not", measured from Ollama's own list. */
+function modelResult(slot, r) {
+  const fmt = (s) => (s ? `pressure ${s.pressure ?? 'not read'} · ${s.availableMB ?? '?'} MB free or reclaimable` : 'not measured');
+  slot.append(el('div', { class: 'act-card act-result' },
+    el('h4', {}, r.dryRun ? 'Dry run: nothing was run' : r.ok ? 'Unloaded' : 'It did not take'),
+    el('pre', { class: 'act-argv' }, (r.ran || r.argv || []).join(' ')),
+    r.message ? el('p', {}, r.message) : null,
+    r.dryRun ? null : el('p', {}, r.gone
+      ? `Ollama no longer lists the model as loaded.${r.freedKB ? ` It reported about ${Math.round(r.freedKB / 1048576 * 10) / 10} GB for it.` : ''}`
+      : 'Ollama still lists the model as loaded.'),
+    el('p', {}, el('b', {}, 'Before. '), fmt(r.before)),
+    r.after ? el('p', {}, el('b', {}, 'After. '), fmt(r.after)) : null,
+    r.logged === false ? el('p', { class: 'act-refused' }, 'The result could not be written to ~/.cache/reckon/actions.log.') : null,
+    el('div', { class: 'act-actions' }, el('button', { class: 'copy', onclick: () => goTo(state.tab, true) }, 'measure again'))));
+}
+
+/* ======================================================= DISK ACTIONS (phase 3)
+   Same engine, same rule: the page sends { action, id } and the id is the row's
+   `action.ref`, which the server finds in the scan IT read. Every row says what
+   kind of removal it is, before the click and on the preview:
+     regenerable -> removed for good; the tool that made it rebuilds it
+     trash       -> goes to the Trash, you can put it back
+     irreversible-> removed for good (the Trash itself): confirmed twice
+   Rows can also be ticked into the queue, which is previewed and confirmed once
+   with the summed total, then run one by one, stopping at the first refusal. */
+
+const REMOVAL_TAG = {
+  regenerable: 'regenerable · removed for good',
+  trash: 'goes to the Trash · you can put it back',
+  irreversible: 'cannot be undone',
+  git: 'git worktree remove · never --force',
+  docker: 'removed from Docker for good',
+};
+const QUEUE = new Map();   // ref -> { action, id, title, kb }
+
+function diskActButton(row) {
+  if (!row || !row.action || !row.action.ref || row.confidence === 'low') return null;
+  const a = row.action;
+  const slot = el('div', { class: 'act-slot' });
+  const btn = el('button', { class: 'act-do', onclick: () => diskPreview(slot, a.id, a.ref) }, 'Do: ' + a.label);
+  const tag = el('span', { class: 'tag act-removal' }, REMOVAL_TAG[a.removal] || a.removal || '');
+  let tick = null;
+  if (a.queue) {
+    const box = el('input', { type: 'checkbox', class: 'act-tick', 'aria-label': 'add to the queue' });
+    box.checked = QUEUE.has(a.ref);
+    box.addEventListener('change', () => {
+      if (box.checked) QUEUE.set(a.ref, { action: a.id, id: a.ref, title: row.title, kb: row.kb || 0 });
+      else QUEUE.delete(a.ref);
+      queueBar();
+    });
+    tick = el('label', { class: 'act-queue' }, box, ' queue');
+  }
+  return el('div', { class: 'act' }, el('div', { class: 'act-actions' }, btn, tag, tick), slot);
+}
+
+// The Disk tab lists the folders one by one; a group of folders (one browser's
+// caches) is one row on the Overview, so its button is drawn once, on its first folder.
+function diskRowLookup(c) {
+  const rows = new Map();
+  for (const r of [...((c.panel && c.panel.out) || []), ...((c.panel && c.panel.stay) || [])]) if (r.action) rows.set(r.id, r);
+  const drawn = new Set();
+  return (t) => {
+    const r = rows.get(`disk-${t.id}`) || (t.group ? rows.get(`disk-${t.group}`) : null);
+    if (!r) return { row: null };
+    if (drawn.has(r.id)) return { row: null, with: r.title };
+    drawn.add(r.id);
+    return { row: r, group: r.id !== `disk-${t.id}` };
+  };
+}
+
+function diskTableCell(rowFor, t) {
+  const { row, group, with: w } = rowFor(t);
+  if (w) return el('span', { class: 'act-note' }, `with "${w}" above`);
+  if (!row) return null;
+  return el('div', {}, group ? el('p', { class: 'act-note' }, `acts on the whole group: ${row.title}`) : null, diskActButton(row));
+}
+
+async function diskPreview(slot, action, id, nonce) {
+  slot.textContent = '';
+  slot.append(el('p', { class: 'loading' }, 'measuring it again before anything happens'));
+  let p;
+  try { p = await actPost('/api/act/preview', nonce ? { action, id, nonce } : { action, id }); }
+  catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+  slot.textContent = '';
+  if (!p.ok) { slot.append(el('p', { class: 'act-refused' }, 'Nothing will be done. ', p.refused)); return; }
+
+  const cancel = el('button', { class: 'copy', onclick: () => { slot.textContent = ''; } }, 'cancel');
+  // The Trash is emptied only after a second, separate confirmation; the server
+  // will not run the first one's nonce.
+  const next = p.stage === 1
+    ? el('button', { class: 'act-do', onclick: () => diskPreview(slot, action, id, p.nonce) }, 'Yes, continue')
+    : el('button', { class: 'act-do', onclick: () => actCountdown(slot, p) }, p.stage === 2 ? 'Empty it for good' : 'Confirm');
+  slot.append(el('div', { class: 'act-card' },
+    el('h4', {}, p.stage === 2 ? p.confirm.replace(/\?.*$/, '? Last confirmation.') : p.confirm),
+    p.removalLabel ? el('p', {}, el('span', { class: 'tag act-removal' }, p.removalLabel)) : null,
+    p.again ? el('p', { class: 'act-refused' }, p.again) : null,
+    el('p', {}, el('b', {}, 'What. '), p.what),
+    p.kb != null ? el('p', {}, el('b', {}, 'How much. '), `${gb(kb2gb(p.kb))} GB on disk, measured just now`) : null,
+    el('p', {}, el('b', {}, 'Proof, measured now. '), p.proof),
+    el('p', {}, el('b', {}, 'What you lose. '), p.lose),
+    p.warning ? el('p', { class: 'act-refused' }, p.warning) : null,
+    el('p', {}, el('b', {}, p.reversible ? 'Can be undone. ' : 'Cannot be undone. '), p.undo),
+    el('pre', { class: 'act-argv' }, p.command),
+    el('div', { class: 'act-actions' }, next, cancel)));
+}
+
+const freeLine = (s) => (s && s.freeKB != null ? `${gb(kb2gb(s.freeKB))} GB free on the disk` : 'free space not read');
+
+// Before and after, the way the Overview compares two scans: two readings of the
+// volume (a light df, not a new scan), never a claim about what caused the change.
+function diskResult(slot, p, r) {
+  const delta = r.before && r.after && r.before.freeKB != null && r.after.freeKB != null ? r.after.freeKB - r.before.freeKB : null;
+  slot.append(el('div', { class: 'act-card act-result' },
+    el('h4', {}, r.dryRun ? 'Dry run: nothing was run' : r.ok ? 'Done' : 'It did not take'),
+    el('pre', { class: 'act-argv' }, (r.ran || r.argv || []).join(' ')),
+    r.message ? el('p', { class: r.ok ? '' : 'act-refused' }, r.message) : null,
+    r.trashedTo ? el('p', {}, el('b', {}, 'In the Trash. '), short(r.trashedTo), '. Finder, Trash, select it, File > Put Back.') : null,
+    el('p', {}, el('b', {}, 'Before. '), freeLine(r.before)),
+    r.after ? el('p', {}, el('b', {}, 'After. '), freeLine(r.after),
+      delta != null ? ` (${delta >= 0 ? '+' : ''}${gb(kb2gb(delta))} GB)` : '') : null,
+    el('p', { class: 'act-note' }, 'Two readings of the volume, side by side. Free space moves for other reasons too (a download, a snapshot), and Docker gives space back to macOS only after it trims its disk.'),
+    r.logged === false ? el('p', { class: 'act-refused' }, 'The result could not be written to ~/.cache/reckon/actions.log.') : null,
+    el('div', { class: 'act-actions' }, el('button', { class: 'copy', onclick: runScan }, 'scan again to see the list change'))));
+}
+
+/* -------- the queue bar: fixed at the bottom while something is ticked */
+function queueBar() {
+  let bar = document.getElementById('act-queue-bar');   // made here, not in index.html: it exists only while something is ticked
+  if (!QUEUE.size) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = el('div', { id: 'act-queue-bar', class: 'act-queue-bar' }); document.body.append(bar); }
+  bar.textContent = '';
+  const total = [...QUEUE.values()].reduce((s, q) => s + (q.kb || 0), 0);
+  const slot = el('div', { class: 'act-slot' });
+  bar.append(el('div', { class: 'act-actions' },
+    el('b', {}, `${QUEUE.size} queued`), ` · about ${gb(kb2gb(total))} GB by the scan`,
+    el('button', { class: 'act-do', onclick: () => queuePreview(slot) }, 'Review and do'),
+    el('button', { class: 'copy', onclick: () => { QUEUE.clear(); document.querySelectorAll('.act-tick').forEach((b) => { b.checked = false; }); queueBar(); } }, 'clear')),
+  slot);
+}
+
+async function queuePreview(slot) {
+  slot.textContent = '';
+  slot.append(el('p', { class: 'loading' }, 'measuring every row again before anything happens'));
+  let q;
+  try { q = await actPost('/api/act/queue/preview', { items: [...QUEUE.values()].map(({ action, id }) => ({ action, id })) }); }
+  catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+  slot.textContent = '';
+  if (!q.ok) { slot.append(el('p', { class: 'act-refused' }, 'Nothing will be done. ', q.refused)); return; }
+  const list = el('ol', { class: 'act-queue-list' }, ...q.items.map((i) => el('li', {},
+    el('b', {}, i.title), ` · ${i.kb != null ? gb(kb2gb(i.kb)) + ' GB' : 'size not read'} · `,
+    el('span', { class: 'tag act-removal' }, REMOVAL_TAG[i.removal] || i.removal),
+    el('details', {}, el('summary', {}, 'proof, what you lose, the command'),
+      el('p', {}, el('b', {}, 'Proof. '), i.proof), el('p', {}, el('b', {}, 'What you lose. '), i.lose),
+      el('pre', { class: 'act-argv' }, i.command)))));
+  const go = el('button', { class: 'act-do', onclick: () => queueCountdown(slot, q) }, `Confirm all ${q.items.length}`);
+  slot.append(el('div', { class: 'act-card' },
+    el('h4', {}, `Do ${q.items.length} thing(s), about ${gb(kb2gb(q.totalKB))} GB measured just now${q.unmeasured ? ` (+${q.unmeasured} not measurable)` : ''}?`),
+    el('p', {}, 'One by one, in this order. Each is measured again right before it runs, and the queue stops at the first one that is refused or fails.'),
+    list, el('div', { class: 'act-actions' }, go, el('button', { class: 'copy', onclick: () => { slot.textContent = ''; } }, 'cancel'))));
+}
+
+function queueCountdown(slot, q, onResult) {
+  slot.textContent = '';
+  let left = q.countdownS || 5;
+  const n = el('b', {}, String(left));
+  let timer = null;
+  const cancel = el('button', { class: 'copy', onclick: () => {
+    clearInterval(timer); slot.textContent = '';
+    slot.append(el('p', { class: 'act-refused' }, 'Cancelled. Nothing was done.'));
+  } }, 'cancel');
+  slot.append(el('div', { class: 'act-card' }, el('p', { class: 'act-count' }, 'Running in ', n, ' s. '), el('div', { class: 'act-actions' }, cancel)));
+  timer = setInterval(async () => {
+    left -= 1;
+    n.textContent = String(Math.max(0, left));
+    if (left > 0) return;
+    clearInterval(timer);
+    slot.textContent = '';
+    slot.append(el('p', { class: 'loading' }, 'running one by one, then measuring again'));
+    let r;
+    try { r = await actPost('/api/act/queue/run', { nonce: q.nonce }); }
+    catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+    slot.textContent = '';
+    if (r.refused && !r.results) { slot.append(el('p', { class: 'act-refused' }, 'Nothing was done. ', r.refused)); return; }
+    if (onResult) return onResult(slot, r);
+    for (const one of r.results) {
+      if (one.ok) QUEUE.delete(one.id);
+      slot.append(el('p', { class: one.ok ? '' : 'act-refused' }, el('b', {}, one.title), ': ',
+        one.dryRun ? 'dry run, nothing ran' : one.ok ? 'done' : (one.refused || one.message || 'did not take')));
+    }
+    if (r.skipped) slot.append(el('p', { class: 'act-refused' }, `Stopped. ${r.skipped} more were not started.`));
+    diskResult(slot, null, { ...r, ran: [], message: null });
+  }, 1000);
+}
+
+/* ============================================================ "I NEED X GB"
+   A plan, not a button. The server reads the rows that already have an action and returns an
+   ordered list: what comes back without a loss first, apps that ask to save last. Each line says
+   "up to" what that row held when it was measured. The list goes to the SAME queue as the disk
+   rows: one summed preview, one Confirm, five seconds with Cancel, one by one, each measured again
+   at the click, stopping at the first refusal and as soon as the real available memory is enough. */
+const mbShown = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : `${Math.round(mb)} MB`);
+
+function planCard() {
+  const slot = el('div', { class: 'act-slot' });
+  const input = el('input', { type: 'number', min: '0.25', max: '256', step: '0.25', value: '4', class: 'plan-need', 'aria-label': 'GB of memory you need' });
+  const ask = (n) => (n > 0 ? planAsk(slot, Math.round(n * 1024)) : null);
+  const presets = [2, 4, 8].map((n) => el('button', { class: 'copy', onclick: () => { input.value = String(n); ask(n); } }, `${n} GB`));
+  return grid(at('c12', card({
+    title: 'I need X GB',
+    sub: 'Builds a plan from the rows below that already have a button. It runs nothing until you confirm.',
+    shape: el('div', {},
+      el('div', { class: 'act-actions' }, ...presets, input, el('span', { class: 'act-note' }, 'GB available'),
+        el('button', { class: 'act-do', onclick: () => ask(parseFloat(input.value)) }, 'Build a plan')),
+      slot),
+  })));
+}
+
+async function planAsk(slot, needMB) {
+  slot.textContent = '';
+  slot.append(el('p', { class: 'loading' }, 'reading the rows again and building the list'));
+  let p;
+  try { p = await actPost('/api/act/plan', { needMB }); }
+  catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+  slot.textContent = '';
+  if (!p.ok) { slot.append(el('p', { class: 'act-refused' }, p.refused)); return; }
+  if (!p.items.length) { slot.append(el('div', { class: 'act-card' }, el('p', {}, p.message))); return; }
+  const list = el('ol', { class: 'act-queue-list' }, ...p.items.map((i) => el('li', {},
+    el('b', {}, i.title), ` · up to ${mbShown(i.upToMB)} · running total ${mbShown(i.runningTotalMB)} `,
+    el('span', { class: 'tag act-removal' }, i.tierLabel),
+    i.asksToSave ? el('span', { class: 'tag act-removal' }, 'asks to save first') : null,
+    el('details', {}, el('summary', {}, 'what you lose'),
+      el('p', {}, i.lose), i.resume ? el('p', {}, el('b', {}, 'Come back with. '), el('code', {}, i.resume)) : null,
+      el('p', {}, el('b', {}, i.reversible ? 'Can be undone. ' : 'Cannot be undone. '), i.undo)))));
+  slot.append(el('div', { class: 'act-card' },
+    el('h4', {}, `${p.items.length} step(s), up to ${mbShown(p.totalMB)}, for ${mbShown(p.needMB)} available`),
+    el('p', { class: p.reaches ? '' : 'act-refused' }, p.message),
+    list,
+    el('div', { class: 'act-actions' },
+      el('button', { class: 'act-do', onclick: () => planPreview(slot, p) }, 'Review and do'),
+      el('button', { class: 'copy', onclick: () => { slot.textContent = ''; } }, 'cancel'))));
+}
+
+async function planPreview(slot, p) {
+  slot.textContent = '';
+  slot.append(el('p', { class: 'loading' }, 'measuring every row again before anything happens'));
+  let q;
+  try { q = await actPost('/api/act/queue/preview', { items: p.items.map(({ action, id }) => ({ action, id })), needMB: p.needMB }); }
+  catch (e) { slot.textContent = ''; slot.append(el('p', { class: 'act-refused' }, e.message)); return; }
+  slot.textContent = '';
+  if (!q.ok) { slot.append(el('p', { class: 'act-refused' }, 'Nothing will be done. ', q.refused)); return; }
+  const list = el('ol', { class: 'act-queue-list' }, ...q.items.map((i) => el('li', {},
+    el('b', {}, i.title), ` · ${i.mb != null ? 'up to ' + mbShown(i.mb) : 'size not read'} `,
+    i.asksToSave ? el('span', { class: 'tag act-removal' }, 'asks to save first') : null,
+    el('details', {}, el('summary', {}, 'proof, what you lose, the command'),
+      el('p', {}, el('b', {}, 'Proof. '), i.proof), el('p', {}, el('b', {}, 'What you lose. '), i.lose),
+      el('pre', { class: 'act-argv' }, i.command)))));
+  slot.append(el('div', { class: 'act-card' },
+    el('h4', {}, `Do ${q.items.length} thing(s), up to ${mbShown(Math.floor(q.totalKB / 1024))} measured just now, until ${mbShown(q.needMB)} is available?`),
+    el('p', {}, 'One by one, in this order. Each is measured again right before it runs. The available memory is read after every step and the rest are skipped as soon as it is enough. It stops at the first one that is refused or fails.'),
+    list,
+    el('div', { class: 'act-actions' },
+      el('button', { class: 'act-do', onclick: () => queueCountdown(slot, q, planResult) }, `Confirm all ${q.items.length}`),
+      el('button', { class: 'copy', onclick: () => { slot.textContent = ''; } }, 'cancel'))));
+}
+
+function planResult(slot, r) {
+  const pl = r.plan || {};
+  const avail = (v) => (v == null ? 'not read' : mbShown(v));
+  slot.append(el('div', { class: 'act-card act-result' },
+    el('h4', {}, r.dryRun ? 'Dry run: nothing was run' : pl.metNeed ? 'Enough is available now' : r.ok ? 'Done, and it is still short of the need' : 'Stopped'),
+    ...r.results.map((one) => el('p', { class: one.ok ? '' : 'act-refused' }, el('b', {}, one.title), ': ',
+      one.dryRun ? 'dry run, nothing ran' : one.ok ? `done${one.freedKB ? `, it held about ${mbShown(Math.round(one.freedKB / 1024))}` : ''}` : (one.refused || one.message || 'did not take'))),
+    ...(r.skippedItems || []).map((s) => el('p', { class: 'act-note' }, el('b', {}, s.title), `: skipped (${s.why})`)),
+    el('p', {}, el('b', {}, 'Available before. '), avail(pl.availableBefore)),
+    el('p', {}, el('b', {}, 'Available after. '), avail(pl.availableAfter), ` · you asked for ${mbShown(pl.needMB)}`),
+    el('p', { class: 'act-note' }, 'Two readings of the same number (free plus inactive and purgeable pages, as lib/headroom.js counts them), side by side. Memory moves for other reasons too, so this is not a claim about what caused the difference.'),
+    el('div', { class: 'act-actions' }, el('button', { class: 'copy', onclick: () => goTo(state.tab, true) }, 'measure again'))));
+}
+
+// Docker Desktop's memory limit, as text. No button: the setting lives in Docker Desktop's own window.
+function dockerCard(dk) {
+  const row = (k, v) => el('p', {}, el('b', {}, k + ' '), v);
+  return grid(at('c12', card({
+    title: dk.title, sub: `${dk.vmMB} MB held by the VM right now · text only, no button`,
+    shape: el('div', {},
+      row('Limit.', dk.limitMiB != null ? `${mbShown(dk.limitMiB)}${dk.limitPct != null ? `, ${dk.limitPct}% of this machine's ${mbShown(dk.totalMiB)}` : ''}` : 'not found in Docker Desktop\'s settings file'),
+      row('Containers running.', dk.containers != null ? String(dk.containers) : dk.asleep ? 'not asked (Docker is asleep, and asking would wake it)' : 'Docker did not answer'),
+      el('p', {}, dk.advice),
+      row('Change it at.', dk.changeAt),
+      el('p', { class: 'act-note' }, dk.file ? `Read from ${dk.file} (read-only).` : 'Docker Desktop\'s settings file was not found (read-only lookup in your home folder).')),
+  })));
+}
+
+// The Memory tab, made actionable: the kernel's own pressure level as the headline,
+// then every group and every extra row with its proof, what you lose, and a button
+// where the confidence earns one.
+const PRESSURE_WORDS = {
+  normal: 'The system has room. Nothing here needs doing.',
+  warning: 'macOS is compressing memory and may be swapping. Quitting the biggest app you are not using is what helps.',
+  critical: 'macOS is about to ask you to quit apps. Every second here is spent moving memory around.',
+};
+
+function memoryActable(root, d) {
+  const m = d.memory;
+  const level = m.pressure;
+  root.prepend(el('div', { class: 'verdict mem-level' },
+    el('p', { class: 'headline' }, 'Memory pressure: ', el('em', {}, level ? level.label : 'not read')),
+    el('p', { class: 'summary' }, level
+      ? `${PRESSURE_WORDS[level.label] || ''} This is the kernel's own verdict (kern.memorystatus_vm_pressure_level = ${level.level}), the number macOS itself acts on.`
+      : 'This system did not say how pressed its memory is, so no verdict is claimed. The groups below are still measured.')));
+
+  root.append(planCard());
+  const rows = (m.rows || []);
+  root.append(el('div', { class: 'section' }, el('h2', {}, 'What you can give back')));
+  for (const r of rows) {
+    root.append(grid(at('c12', card({
+      title: r.title, sub: `${r.mb} MB · confidence: ${r.confidence}`,
+      shape: el('div', {},
+        el('p', {}, el('b', {}, 'Proof. '), r.proof),
+        el('p', {}, el('b', {}, 'What you lose if this is wrong. '), r.lose),
+        commandBlock(r.command, 'or copy it and run it yourself'),
+        actButton(r)),
+    }))));
+  }
+
+  const list = el('div', { class: 'act-groups' });
+  for (const g of (m.groups || []).slice(0, 12)) {
+    if (g.proof == null) continue;
+    // Helpers are shown under their app, as one row. Only the app row has a button: no helper has one.
+    const procs = (g.procs || []).map((p) => [p.pid, p.helper ? 'helper' : 'app', Math.round(p.rssKB / 1024), (p.cpu ?? 0).toFixed(1), short(p.comm)]);
+    list.append(el('details', { class: 'act-group' },
+      el('summary', {}, el('b', {}, g.name), `: ${g.n} process${g.n > 1 ? 'es' : ''}, ${Math.round(g.rssKB / 1024)} MB`,
+        g.helpers ? ` (${g.helpers} helper${g.helpers > 1 ? 's' : ''})` : '',
+        g.action ? ` · can ${g.action.label.toLowerCase()}` : ''),
+      el('p', {}, el('b', {}, 'Proof. '), g.proof),
+      el('p', {}, el('b', {}, 'What you lose if this is wrong. '), g.lose),
+      procs.length ? tableOf(['pid', 'role', 'MB', 'cpu %', 'executable'], procs) : null,
+      g.command ? commandBlock(g.command, g.action ? 'or copy it and run it yourself' : 'shown for reference; there is no button for this group') : null,
+      actButton(g)));
+  }
+  root.append(list);
+  if (m.docker) root.append(dockerCard(m.docker));
+  root.append(freeRamCard());
+}
+
+// Fixed, on purpose: the button every memory app has, and the reason this one does not.
+function freeRamCard() {
+  return grid(at('c12', card({
+    title: 'Why there is no "free RAM" button',
+    sub: 'The button other memory tools sell is a placebo, and this panel will not draw one.',
+    shape: el('div', {},
+      el('p', {}, 'Those buttons run `purge` or something like it. It throws away the file cache: copies of files macOS kept in memory because they were read recently. That memory was already free in every sense that matters — the system hands it to any app that asks, instantly — and the cache refills the moment apps read their files again, so the next minute is slower, not faster. `purge` also needs sudo, which this panel never uses.'),
+      el('p', {}, 'Memory comes back for real only when whatever holds it lets go: quitting the app that holds it, stopping orphaned processes, shutting simulators down, quitting a Docker VM with nothing running. Those are the buttons above, each with its proof and what you lose.')),
+  })));
+}
+
+/* ============================================================ PHASE 4
+   History, the watcher, and the remembered verdict. Everything here READS what
+   reckon already wrote inside ~/.cache/reckon/ (GET routes), except the three
+   verdict buttons, which write one small file there. Nothing on these tabs changes
+   the machine, and the watcher is never started from here: the panel shows the
+   command and you run it. */
+const when = (t) => (t ? new Date(t).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+const mbText = (mb) => (mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`);
+
+/* ---------------------------------------------------------------- DONE */
+async function loadDone() {
+  const root = $('#tab-done');
+  try { state.done = await get('/api/done'); doneTab(state.done); }
+  catch (e) { root.textContent = ''; root.append(el('p', { class: 'empty' }, 'could not read the action log: ' + e.message)); }
+}
+
+function beforeAfter(r) {
+  const b = r.before, a = r.after;
+  if (!b || !a) return '—';
+  const parts = [];
+  if (b.availableMB != null && a.availableMB != null) parts.push(`available ${mbText(b.availableMB)} → ${mbText(a.availableMB)}`);
+  if (b.compressedMB != null && a.compressedMB != null) parts.push(`compressed ${mbText(b.compressedMB)} → ${mbText(a.compressedMB)}`);
+  if (b.pressure || a.pressure) parts.push(`pressure ${b.pressure || '?'} → ${a.pressure || '?'}`);
+  return parts.join(' · ') || '—';
+}
+
+function doneTab(d) {
+  const root = $('#tab-done');
+  root.textContent = '';
+  const rows = d.rows || [];
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, rows.length ? 'What was done, and what it really freed.' : 'Nothing has been done from this panel yet.'),
+    el('p', { class: 'summary' }, 'Read from ', el('b', {}, short(d.file || 'actions.log')), '. Refused actions are listed too: a refusal is an answer. ',
+      '"Freed" is only a number the action measured itself; when it did not, this says so.')));
+  if (!rows.length) return;
+
+  const tb = el('table', { class: 'wide' });
+  tb.append(el('thead', {}, el('tr', {}, ...['When', 'Action', 'Outcome', 'Before / after', 'Freed', ''].map((h) => el('th', {}, h)))));
+  const body = el('tbody');
+  for (const r of rows) {
+    const out = el('div', { class: 'act-note', 'aria-live': 'polite' });
+    const checkBtn = r.outcome === 'refused' || r.outcome === 'dry-run' ? null : el('button', { class: 'copy', onclick: async () => {
+      out.textContent = 'measuring that target again…';
+      try {
+        const c = await get(`/api/done/check?at=${encodeURIComponent(r.at)}`);
+        out.textContent = c.kind === 'path' && c.exists
+          ? `${c.kb == null ? 'present, size unknown' : gb(kb2gb(c.kb)) + ' GB there now'}. ${c.note}`
+          : c.note;
+      } catch (e) { out.textContent = e.message; }
+    } }, 'check it');
+    body.append(el('tr', {},
+      el('td', { class: 'num' }, when(r.at)),
+      el('td', { class: 'name' }, el('div', {}, r.title || r.action || '—'),
+        el('div', { style: 'font:11.5px var(--mono);color:var(--ink3);margin-top:2px' }, r.target ? short(r.target) : (r.action || ''))),
+      el('td', {}, el('span', { class: 'tag' }, r.outcome), r.refused ? el('div', { class: 'act-note' }, r.refused) : null,
+        r.message ? el('div', { class: 'act-note' }, r.message) : null),
+      el('td', { style: 'color:var(--ink2);max-width:36ch' }, beforeAfter(r)),
+      el('td', { class: 'num' }, r.freedKB != null ? `${gb(kb2gb(r.freedKB))} GB` : (r.gone != null ? `${r.gone} process(es) gone` : '—')),
+      el('td', {}, r.trashed ? openBtn('trash', 'Open Trash') : null, checkBtn, out)));
+  }
+  tb.append(body);
+  root.append(el('div', { class: 'scrollable' }, tb));
+}
+
+/* --------------------------------------------------------------- WATCH */
+async function loadWatch() {
+  const root = $('#tab-watch');
+  try { state.watch = await get('/api/watchstate'); watchTab(state.watch); }
+  catch (e) { root.textContent = ''; root.append(el('p', { class: 'empty' }, 'could not read the watcher state: ' + e.message)); }
+}
+
+function watchTab(w) {
+  const root = $('#tab-watch');
+  root.textContent = '';
+  const s = w.snapshot;
+  const head = w.running ? 'reckon watch is running.' : w.status === 'never' ? 'reckon watch has never run here.' : 'reckon watch is not running.';
+  root.append(el('div', { class: 'verdict' },
+    el('p', { class: 'headline' }, head),
+    el('p', { class: 'summary' }, w.why, ' ',
+      w.running && s ? `Level ${Math.round((s.level || 0) * 100)} of 100, state "${s.state || '—'}"${s.active.length ? `, watching: ${s.active.join(', ')}` : ', nothing crossed a line'}. ` : '',
+      s && s.headline ? el('span', {}, el('b', {}, s.headline.title), ' ', s.headline.cost || '') : null)));
+
+  if (!w.running) {
+    root.append(el('div', { class: 'section' }, el('h2', {}, 'How to start it')),
+      el('p', { class: 'summary' }, 'The panel does not start it. Run this in your own terminal, from the reckon folder. ', w.startNote),
+      commandBlock(w.startWith, 'this panel does not start the watcher. you do.'));
+  }
+
+  if (s && w.running) {
+    root.append(grid(
+      tile('Last reading', `${Math.round(w.ageMs / 1000)}`, 's ago', `every ${Math.round((s.intervalMs || 30000) / 1000)} s; counted stopped after ${Math.round(w.staleAfterMs / 1000)} s of silence`),
+      s.reading && s.reading.swapOfRam != null ? tile('Swap', `${Math.round(s.reading.swapOfRam * 100)}`, '% of RAM', 'measured against the machine’s RAM, not the swap file') : null,
+      swapActivityTile(s.reading),
+      s.cost ? tile('The watcher itself', `${s.cost.rssMB}`, 'MB', `${s.cost.cpuPct}% of a core`) : null));
+  }
+
+  root.append(el('div', { class: 'section' }, el('h2', {}, 'The last events')));
+  if (!w.events.length) { root.append(el('p', { class: 'empty' }, 'No events yet. The watcher only writes one when something crosses a line or clears.')); return; }
+  const list = el('div', { class: 'act-groups' });
+  for (const e of w.events.slice(0, 15)) {
+    list.append(el('details', { class: 'act-group' },
+      el('summary', {}, el('b', {}, e.title || e.kind || 'event'), ` · ${e.type || ''} · ${when(e.at)}`),
+      e.cost ? el('p', {}, el('b', {}, 'Cost. '), e.cost) : null,
+      e.proof ? el('p', {}, el('b', {}, 'Proof. '), e.proof) : null,
+      e.lose ? el('p', {}, el('b', {}, 'What you lose. '), e.lose) : null,
+      e.command ? commandBlock(e.command) : null));
+  }
+  root.append(list);
+}
+
+/* The line "swap: resting / moving N pages/s". Swap SIZE alone is resting; what the watcher
+   alerts on is pages going out. null when the watcher has not yet compared two readings. */
+function swapActivityTile(r) {
+  if (!r || r.swapOfRam == null) return null;
+  const rate = r.swapOutPerSec;
+  const word = rate == null ? 'not measured yet' : r.swapMoving ? `moving ${Math.round(rate).toLocaleString()} pages/s` : 'resting';
+  const foot = rate == null
+    ? 'the watcher needs two readings to see whether pages are moving'
+    : `${Math.round(rate).toLocaleString()} pages/s out, ${Math.round(r.swapInPerSec || 0).toLocaleString()} in. Swap that only sits there is resting.`;
+  return tile('swap', word, null, foot);
+}
+
+/* ----------------------------------------------------- MEMORY, REMEMBERED */
+function memoryPast(root) {
+  const h = state.memHist;
+  const pts = (h && h.points) || [];
+  if (pts.length < 2) return;
+  const span = (pts[pts.length - 1].t - pts[0].t) / 3600000;
+  root.append(grid(at('c12', card({
+    title: 'Swap since the watcher started recording',
+    sub: `${pts.length} readings over ${span < 1 ? Math.round(span * 60) + ' min' : span.toFixed(1) + ' h'}, kept by reckon watch in ~/.cache/reckon/ so they survive a restart. The panel only reads them.`,
+    shape: areaChart({ vals: pts.map((p) => p.swapMB), rot: 'Swap', unit: 'MB' }),
+    table: tableOf(['When', 'Swap (MB)'], pts.filter((_, i) => i % Math.max(1, Math.floor(pts.length / 40)) === 0).map((p) => [when(p.t), p.swapMB])),
+  }))));
+}
+
+/* --------------------------------------------- REMEMBERED VERDICT, per repo */
+async function loadTriage() {
+  try { state.triage = await get('/api/triage'); } catch { state.triage = null; }
+  if (state.cache && state.cache.hasCache) { try { disk(state.cache); } catch { /* the tab draws itself again on render() */ } }
+}
+
+async function markRepo(path_, verdict) {
+  try {
+    const r = await fetch('/api/triage/mark', { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ path: path_, verdict }) });
+    if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).error) || `refused (${r.status})`);
+  } catch (e) { alert('Not saved: ' + e.message); }
+  await loadTriage();
+}
+
+function repoVerdicts(c) {
+  const repos = (c.repos?.repos || []).filter((r) => r.git && (!r.hasRemote || r.dirtyCount > 0 || r.onlyHere > 0));
+  const box = el('div', { class: 'triage' }, el('div', { class: 'section' }, el('h2', {}, 'Repositories that exist only here')));
+  if (!repos.length) { box.append(el('p', { class: 'empty' }, 'Every repository has a remote, nothing uncommitted and nothing unpushed.')); return box; }
+  box.append(el('p', { class: 'summary' }, 'Say once what each one is. The answer is remembered in ~/.cache/reckon/triage.json ',
+    'and expires by itself the moment the repo’s HEAD or its uncommitted files change. Marking deletes nothing.'));
+  const V = (state.triage && state.triage.verdicts) || {};
+  const tb = el('table', { class: 'wide' });
+  tb.append(el('thead', {}, el('tr', {}, ...['Repository', 'Why it is on this list', 'Your verdict', ''].map((h) => el('th', {}, h)))));
+  const body = el('tbody');
+  for (const r of repos) {
+    const why = [!r.hasRemote ? 'no remote: the only copy' : null, r.onlyHere > 0 ? `${r.onlyHere} commit(s) on no remote` : null,
+      r.dirtyCount > 0 ? `${r.dirtyCount} uncommitted file(s)` : null].filter(Boolean).join(' · ');
+    const v = V[r.path];
+    const verdictCell = !v ? el('span', { class: 'tag' }, 'unanswered')
+      : v.expired ? el('span', {}, el('span', { class: 'tag' }, `was ${v.verdict}: expired`), el('div', { class: 'act-note' }, v.why, ' Asking again.'))
+      : el('span', {}, el('span', { class: 'tag' }, v.verdict), el('div', { class: 'act-note' }, 'marked ', when(v.at)));
+    body.append(el('tr', {},
+      el('td', { class: 'name' }, el('div', {}, r.name), el('div', { style: 'font:11.5px var(--mono);color:var(--ink3);margin-top:2px' }, short(r.path))),
+      el('td', { style: 'color:var(--ink2);max-width:36ch' }, why),
+      el('td', {}, verdictCell),
+      el('td', {}, ...['keep', 'trash', 'maybe'].map((k) => el('button', { class: 'copy', onclick: () => markRepo(r.path, k) }, k)))));
+  }
+  tb.append(body);
+  box.append(el('div', { class: 'scrollable' }, tb));
+  box.append(el('p', { class: 'act-note' }, 'Archiving a repo as a git bundle before it is removed comes with the disk actions. Nothing here does it yet.'));
+  return box;
+}
+
+/* ------------------------------------------------------------------ tabs */
+function render() {
+  // Each tab draws inside its own try: a payload that breaks one of them used
+  // to leave all five blank, and four of them had nothing wrong with them.
+  const draw = (name, fn, arg) => {
+    try { fn(arg); }
+    catch (e) {
+      const sec = $(`#tab-${name}`);
+      if (sec) { sec.textContent = ''; sec.append(el('div', { class: 'warn-box' },
+        el('h3', {}, `The ${name} tab could not be drawn`),
+        commandBlock(`${name}: ${(e && e.message) || e}`, 'copy this and send it to whoever set the panel up'))); }
+    }
+  };
+  draw('overview', overview, state.cache);
+  draw('memory', memory, state.light);
+  draw('disk', disk, state.cache);
+  draw('checks', checks, state.cache);
+  draw('dns', dns, state.dns);
+  if (state.network) draw('internet', internet, state.network);
+  const n = state.cache?.panel?.out?.filter((d) => d.kb > 0).length;
+  $('#count-overview').textContent = n || '';
+  const g = state.cache?.checks?.items?.filter((i) => i.serious).length;
+  $('#count-checks').textContent = g || '';
+  measureSelf();
+}
+
+function goTo(tab, noHash) {
+  if (!TABS.includes(tab)) tab = 'overview';
+  state.tab = tab;
+  // The tab lives in the URL: reload without losing your place, and bookmark
+  // the one you actually use.
+  if (!noHash && location.hash.slice(1) !== tab) location.hash = tab;
+  for (const b of document.querySelectorAll('#tabs button')) {
+    b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    b.tabIndex = b.dataset.tab === tab ? 0 : -1;
+  }
+  for (const s of document.querySelectorAll('main section')) s.hidden = s.id !== `tab-${tab}`;
+  if (tab === 'memory') refreshLight().catch((e) => startupFailure('measuring memory (/api/light)', e));
+  // Re-measured on every visit, deliberately. A saved reading of "how fast is
+  // this machine right now" is a reading of a moment that has passed.
+  if (tab === 'pressure') { pressure(null); loadPressure(); }
+  // Cheap on purpose: configuration plus five packets to machines this
+  // computer already uses. The two paid readings live behind their buttons.
+  if (tab === 'internet') loadNetwork(false);
+  if (tab === 'done') loadDone();
+  if (tab === 'watch') loadWatch();
+  if (tab === 'disk') loadTriage();
+  if (tab === 'dns' && !state.dns) {
+    Promise.all([get('/api/dns'), get('/api/blocklist')]).then(([d, b]) => {
+      state.dns = d; state.blocklist = b; dns(d);
+    }).catch((e) => startupFailure('reading the DNS configuration (/api/dns)', e));
+  }
+  measureSelf();
+}
+
+async function refreshLight() {
+  state.light = await get('/api/light');
+  state.memHist = await get('/api/memory/history').catch(() => null);   // phase 4: read-only
+  try { memory(state.light); }
+  catch (e) { startupFailure('drawing the Memory tab', e); throw e; }
+  const m = state.light.memory;
+  $('#machine-sub').textContent =
+    `${(m.totalBytes / 1073741824).toFixed(0)} GB of RAM · ${m.swap ? gb(m.swap.usedMB / 1024) : '?'} GB in swap`;
+}
+
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('#tabs button');
+  if (b) goTo(b.dataset.tab);
+});
+addEventListener('hashchange', () => goTo(location.hash.slice(1), true));
+
+/* Tabs as the platform expects them: roles, arrow keys, Home and End. The markup in
+   index.html already carries the roles; this also covers any tab added later. */
+function setupTabs() {
+  for (const b of document.querySelectorAll('#tabs button[data-tab]')) {
+    const t = b.dataset.tab;
+    b.setAttribute('role', 'tab');
+    if (!b.id) b.id = `tabbtn-${t}`;
+    b.setAttribute('aria-controls', `tab-${t}`);
+    const panel = $(`#tab-${t}`);
+    if (panel) { panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', b.id); }
+  }
+}
+setupTabs();
+document.addEventListener('keydown', (e) => {
+  const b = e.target.closest && e.target.closest('#tabs button[role="tab"]');
+  if (!b || e.altKey || e.ctrlKey || e.metaKey) return;
+  const all = [...document.querySelectorAll('#tabs button[role="tab"]')];
+  const i = all.indexOf(b);
+  const to = { ArrowRight: (i + 1) % all.length, ArrowLeft: (i - 1 + all.length) % all.length, Home: 0, End: all.length - 1 }[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  all[to].focus();
+  goTo(all[to].dataset.tab);
+});
+
+/* Theme: auto follows the system, light and dark pin one. Remembered, never required. */
+const THEMES = ['auto', 'light', 'dark'];
+function applyTheme(t) {
+  if (!document.documentElement) return;
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  const b = $('#theme');
+  if (b) b.textContent = `theme: ${t}`;
+}
+{
+  let theme = THEMES.includes(store.get('theme')) ? store.get('theme') : 'auto';
+  applyTheme(theme);
+  const b = $('#theme');
+  if (b) b.addEventListener('click', () => {
+    theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+    store.set('theme', theme);
+    applyTheme(theme);
+  });
+}
+
+/* A diagnostic tool that fails silently is worse than no tool: the screen stops
+   at "reading…" and the person has nothing to act on and nothing to send to
+   anybody who could help. This happened for real, on Windows — a blank page
+   with three tabs and a footer of dashes.
+
+   So: every call stands on its own, a failure is printed where the data would
+   have been, and the rest of the panel still comes up. */
+const REPORTED = new Set();
+// THE REPORTER MUST NOT BE ABLE TO FAIL. It is the last thing standing between
+// a problem and a blank page, so every line in it is either guarded or cannot
+// throw. An earlier version read navigator.platform directly and died where
+// that was not defined — which would have put the screen back exactly where
+// this function exists to stop it being.
+function startupFailure(where, e) {
+  try { report(where, e); } catch { /* nothing left to try, and nothing worth throwing */ }
+}
+
+function report(where, e) {
+  const msg = (e && e.message) || String(e);
+  // One failure retried is still one failure. Three identical boxes stacked on
+  // a screen is the panel shouting the same sentence and burying the tabs that
+  // did come up.
+  const key = where + '|' + msg;
+  if (REPORTED.has(key)) return;
+  REPORTED.add(key);
+
+  const box = document.querySelector('#tab-overview');
+  let where2 = '';
+  try { where2 = (typeof navigator !== 'undefined' && (navigator.platform || navigator.userAgent)) || ''; } catch {}
+  const text = `${where}\n${msg}${where2 ? `\n\nreckon on ${where2}` : ''}`.trim();
+  box.prepend(el('div', { class: 'warn-box' },
+    el('h3', {}, 'This part did not come up'),
+    el('p', { style: 'color:var(--ink2);font-size:13.8px;margin:0 0 10px' },
+      'The rest of the panel still works. Nothing was changed on the machine — reckon only reads.'),
+    commandBlock(text, 'copy this and send it to whoever set the panel up')));
+  // Only claim the machine could not be read when it actually could not. The
+  // footer was measuring RAM and scans correctly under a header that said the
+  // opposite.
+  if (!state.light) $('#machine-sub').textContent = 'could not read the machine';
+}
+
+(async function start() {
+  try { state.cache = await get('/api/cache'); }
+  catch (e) { state.cache = { hasCache: false }; startupFailure('reading the saved scan (/api/cache)', e); }
+
+  await loadOpeners();
+
+  try { await refreshLight(); }
+  catch (e) { startupFailure('measuring memory and disk (/api/light)', e); }
+
+  try { render(); }
+  catch (e) { startupFailure('drawing the panel', e); }
+
+  if (location.hash.slice(1)) goTo(location.hash.slice(1), true);
+})();
+
+// Anything that still gets through lands on the screen instead of in a console
+// nobody opens.
+addEventListener('error', (e) => { try { startupFailure('a script error', e.error || e.message); } catch {} });
+addEventListener('unhandledrejection', (e) => { try { startupFailure('a request that was never answered', e.reason); } catch {} });

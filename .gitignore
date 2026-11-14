@@ -1,0 +1,31 @@
+# Your machine's configuration. This file names the directories you keep code
+# in and the vaults you use — it is yours, and it never belongs in a commit.
+reckon.config.json
+
+# Scan results, blocklist and generated snippets live outside the repo, in
+# ~/.cache/reckon/. Listed here anyway in case anyone moves them.
+*.local.json
+scan.json
+blocklist.json
+hosts-block.txt
+
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+
+# build/build-sea.js output: a downloaded Node binary per platform (~80-110MB
+# each), the generated single-file bundle, and the SEA blob. None of this is
+# source — it's rebuilt from server.js + lib/ + web/ on demand, and release.yml
+# builds it fresh for every tagged release rather than committing it here.
+build/.cache/
+build/.gen/
+build/dist/
+
+# Output of `reckon report`: it describes the machine of whoever ran it and never belongs in a commit.
+reckon-report.txt
+
+# Local session briefs written by developer tooling. They describe one machine and one afternoon,
+# so they never belong in a public commit.
+.pgdk/
