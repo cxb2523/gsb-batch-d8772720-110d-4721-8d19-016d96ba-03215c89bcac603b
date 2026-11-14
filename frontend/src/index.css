@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Markdown content styling */
+.md-body {
+  @apply text-slate-200 leading-relaxed;
+}
+.md-body h1 {
+  @apply text-2xl font-semibold mt-6 mb-3 text-slate-100;
+}
+.md-body h2 {
+  @apply text-xl font-semibold mt-5 mb-2 text-slate-100;
+}
+.md-body h3 {
+  @apply text-lg font-semibold mt-4 mb-2 text-slate-100;
+}
+.md-body p {
+  @apply my-3;
+}
+.md-body a {
+  @apply text-accent-400 hover:text-accent-500 underline;
+}
+.md-body ul,
+.md-body ol {
+  @apply ml-6 my-3;
+}
+.md-body ul {
+  @apply list-disc;
+}
+.md-body ol {
+  @apply list-decimal;
+}
+.md-body li {
+  @apply my-1;
+}
+.md-body code {
+  @apply bg-base-800 px-1.5 py-0.5 rounded text-sm font-mono text-slate-100;
+}
+.md-body pre {
+  @apply bg-base-800 p-4 rounded-lg overflow-x-auto my-4;
+}
+.md-body pre code {
+  @apply bg-transparent p-0;
+}
+.md-body table {
+  @apply my-4 border-collapse w-full;
+}
+.md-body th,
+.md-body td {
+  @apply border border-base-600 px-3 py-2 text-left;
+}
+.md-body th {
+  @apply bg-base-800 font-semibold;
+}
+.md-body blockquote {
+  @apply border-l-4 border-base-600 pl-4 my-4 italic text-slate-400;
+}
+.md-body hr {
+  @apply my-6 border-base-700;
+}
+
+/* Keep monospace font smooth for log pane */
+.log-pane {
+  font-feature-settings: "calt" 0;
+  @apply whitespace-pre-wrap break-words;
+}
+
+/* Compact markdown styling for sub-agent summary cards — smaller than
+   .md-body but keeps basic structure (bullets, bold, code, links). */
+.subagent-md p { @apply my-1.5; }
+.subagent-md strong { @apply text-slate-100; }
+.subagent-md ul, .subagent-md ol { @apply ml-4 my-1.5; }
+.subagent-md ul { @apply list-disc; }
+.subagent-md ol { @apply list-decimal; }
+.subagent-md li { @apply my-0.5; }
+.subagent-md a { @apply text-accent-400 hover:text-accent-500 underline break-all; }
+.subagent-md code { @apply bg-base-800 px-1 py-0.5 rounded font-mono text-[11px] text-slate-100; }
+.subagent-md h1, .subagent-md h2, .subagent-md h3, .subagent-md h4 {
+  @apply font-semibold text-slate-100 mt-2 mb-1;
+}
+.subagent-md h3 { @apply text-xs; }
+.subagent-md h4 { @apply text-xs; }
+.subagent-md blockquote { @apply border-l-2 border-base-600 pl-2 italic text-slate-400 my-1.5; }

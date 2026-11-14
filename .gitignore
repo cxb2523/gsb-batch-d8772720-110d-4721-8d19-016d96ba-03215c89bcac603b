@@ -1,0 +1,72 @@
+# Конфигурационные файлы с чувствительными данными
+config.yaml
+# Rendered by search-admin: SearXNG settings (with the secret key), proxies
+search-settings/
+
+# SearXNG данные
+searxng-data/
+valkey-data2/
+
+# Docker volumes
+volumes/
+
+# Логи
+*.log
+logs/
+
+# Временные файлы
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables
+.env.local
+.env.production
+
+# Hermes agent runtime state — ignore everything under hermes-data/ except
+# the SOUL.md persona config we want under version control.
+# (Pattern "dir/" excludes the directory itself and nullifies any
+#  `!dir/file` negation that follows — use "dir/*" instead.)
+hermes-data/*
+!hermes-data/SOUL.md
+# Researcher tuning: max_tokens + delegation.max_concurrent_children knobs
+# that the upstream Hermes template would otherwise overwrite. Versioning
+# the whole file so clones get identical behaviour.
+!hermes-data/config.yaml
+jobs/
+.env.hermes
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/package-lock.json
+*.tsbuildinfo
+
+# Playwright MCP scratch + debug screenshots
+.playwright-mcp/
+acp-*.png
+
+# SimpleQA and other datasets are downloaded, not committed (bench/simpleqa.py)
+bench/data/
+state/

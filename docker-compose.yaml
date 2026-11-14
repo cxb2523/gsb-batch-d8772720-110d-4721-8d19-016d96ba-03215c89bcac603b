@@ -1,0 +1,205 @@
+services:
+  redis:
+    container_name: redis
+    image: docker.io/valkey/valkey:8-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    networks:
+      - searxng
+    volumes:
+      - valkey-data2:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  searxng:
+    container_name: searxng
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      # Local only: SearXNG runs with limiter off, so a public port is an open
+      # search proxy for anyone. Put a reverse proxy with auth in front if needed.
+      - "127.0.0.1:8999:8080"
+    networks:
+      - searxng
+      - admin
+    volumes:
+      # Settings rendered by search-admin from config.yaml plus what the web
+      # Settings page changed. A directory, not a file: a rewritten file gets a
+      # new inode that a single-file bind mount would never see.
+      - ./search-settings/searxng:/etc/searxng-rendered:ro
+      - searxng-data:/var/cache/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8999/
+      - BIND_ADDRESS=[::]:8080
+      - SEARXNG_SETTINGS_PATH=/etc/searxng-rendered/settings.yml
+    depends_on:
+      search-admin:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # Single container that serves the HTTP API *and* hosts the `hermes` CLI
+  # (inherited from nousresearch/hermes-agent). Per /research request, the
+  # adapter spawns `hermes acp` as a subprocess and speaks ACP JSON-RPC over
+  # stdio — no docker-in-docker, no socket-proxy.
+  tavily-adapter:
+    image: ghcr.io/vakovalskii/searcharvester:latest
+    build: ./simple_tavily_adapter
+    container_name: tavily-adapter
+    # tini as PID 1: reaps the orphans agents' shell commands leave behind
+    # (uvicorn as PID 1 does not, zombies piled up) and forwards signals.
+    init: true
+    restart: unless-stopped
+    networks:
+      - searxng
+    ports:
+      # Local only: /research runs an agent with a shell. ADAPTER_PORT if 8000 is taken.
+      - "127.0.0.1:${ADAPTER_PORT:-8000}:8000"
+    volumes:
+      - ./config.yaml:/srv/searxng-docker/config.yaml:ro
+      # Per-job workspaces (plan.md, notes.md, report.md, hermes.log,
+      # events.jsonl). Exposed on the host for inspection / post-mortem.
+      - ./jobs:/srv/searxng-docker/jobs:rw
+      - ./state:/srv/searxng-docker/state:rw
+      # HERMES_HOME — config.yaml, SOUL.md, skills. Bundled skills get
+      # synced on boot; our 3 custom skills ship alongside in skills/.
+      - ./hermes-data:/opt/data:rw
+      # Settings page values the adapter applies live (search_settings.py);
+      # read-only, so the agents in this container cannot rewrite them.
+      - ./search-settings/adapter:/srv/search-settings:ro
+      # Source of truth for our skills; synced into /opt/data/skills on boot.
+      - ./hermes_skills:/opt/searcharvester-skills:ro
+    environment:
+      - JOBS_DIR=/srv/searxng-docker/jobs
+      # Adapter-owned job state (job.json, events.jsonl, final report): outlives
+      # container recreation, the job list and old jobs are read from here.
+      - STATE_DIR=/srv/searxng-docker/state
+      - HERMES_HOME=/opt/data
+      - ADAPTER_URL_FOR_HERMES=http://localhost:8000
+      # Thinking models are slow: Qwen3.8 took 284 s for one call and a deep job
+      # ran past 1200 s (30.09). The job, the idle guard and the lead's wrap-up
+      # turn all scale with the slowest call; keep stall > one call.
+      - RESEARCH_TIMEOUT_SEC=${RESEARCH_TIMEOUT_SEC:-3600}
+      # Hermes drops a call with no response after this (its own default for a
+      # reasoning model is 180 s, else 90 s); then retries up to 3 times.
+      - HERMES_API_CALL_STALE_TIMEOUT=${HERMES_API_CALL_STALE_TIMEOUT:-600}
+      - GUARD_STALL_S=${GUARD_STALL_S:-900}
+      - GUARD_WRAPUP_S=${GUARD_WRAPUP_S:-600}
+      # Hermes processes at once; the rest wait as "queued". ~200 MB each at
+      # start: 16 fits a 6 GB Docker VM, raise it on a real server.
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-16}
+      # Match the UID of the repo owner so mounted files stay owned by
+      # the right user. macOS: 501:20 is typical; override in .env if needed.
+      - HERMES_UID=${HERMES_UID:-501}
+      - HERMES_GID=${HERMES_GID:-20}
+      # LLM credentials — pass-through from the invoking shell / .env.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      # Read cascade (/extract): neuraldeep reader and the gate's LLM judge.
+      # Without a key /extract is fast path only (see read_backends.py).
+      - NEURALDEEP_API_KEY=${NEURALDEEP_API_KEY:-}
+      - NEURALDEEP_BASE_URL=${NEURALDEEP_BASE_URL:-https://api.neuraldeep.ru}
+      - JUDGE_LLM_MODEL=${JUDGE_LLM_MODEL:-qwen3.6-35b-a3b-noreason}
+      - PROXY_URL=${PROXY_URL:-}
+      - PLAYWRIGHT_URL=${PLAYWRIGHT_URL:-}
+      - READ_LOG_DB=/srv/searxng-docker/jobs/page_read_log.sqlite3
+    depends_on:
+      - searxng
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # Optional exit through Cloudflare WARP (userspace sing-box, no NET_ADMIN).
+  # Off by default: `docker compose --profile warp up -d`, then put
+  # socks5h://warp:9091 into Settings (reader proxy and/or SearXNG proxies).
+  # Some networks (seen on RU home and office lines, 2026-09-30) cut the WARP
+  # registration API or its tunnel; the container then exits, check its log.
+  warp:
+    image: ghcr.io/mon-ius/docker-warp-socks:v7
+    container_name: warp
+    profiles: ["warp"]
+    restart: unless-stopped
+    networks:
+      - searxng
+    healthcheck:
+      test: ["CMD", "curl", "-x", "socks5h://127.0.0.1:9091", "-fsSL", "https://www.cloudflare.com/cdn-cgi/trace"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  # React + Tailwind + Vite UI over the /research API.
+  # Backend of the web Settings page for SearXNG (search_admin/server.py): the
+  # only service with the Docker socket, used for one container. It is NOT on the
+  # adapter's network and every call needs SEARCH_ADMIN_TOKEN (random per start
+  # and printed to its log when unset), so a research agent cannot reach it.
+  search-admin:
+    build: ./search_admin
+    container_name: search-admin
+    restart: unless-stopped
+    networks:
+      - admin
+    ports:
+      - "127.0.0.1:${SEARCH_ADMIN_PORT:-8011}:8011"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config.yaml:/srv/base/config.yaml:ro
+      - ./search-settings:/srv/search-settings:rw
+    environment:
+      - SEARCH_ADMIN_TOKEN=${SEARCH_ADMIN_TOKEN:-}
+      - SEARXNG_CONTAINER=searxng
+      - SEARXNG_URL=http://searxng:8080
+      - ALLOWED_ORIGINS=http://localhost:9762,http://127.0.0.1:9762
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_ADMIN_URL: ${VITE_ADMIN_URL:-http://localhost:8011}
+    container_name: searcharvester-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9762:9762"
+    depends_on:
+      - tavily-adapter
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+networks:
+  searxng:
+  # search-admin and SearXNG only: the adapter (and its agents) is not on it.
+  admin:
+
+volumes:
+  valkey-data2:
+  searxng-data:
