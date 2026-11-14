@@ -1,0 +1,67 @@
+{
+  "name": "website-scraper",
+  "version": "6.0.0",
+  "description": "Download website to a local directory (including all css, images, js, etc.)",
+  "readmeFilename": "README.md",
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./defaultOptions": "./lib/config/defaults.js"
+  },
+  "scripts": {
+    "test": "c8 --all --reporter=text --reporter=lcov mocha --recursive --timeout 7000 ./test/unit/ ./test/functional",
+    "test-e2e": "mocha --timeout 300000 ./test/e2e/*-test.js",
+    "eslint": "eslint lib index.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/website-scraper/node-website-scraper.git"
+  },
+  "keywords": [
+    "scrape",
+    "scraper",
+    "download",
+    "web",
+    "url",
+    "page",
+    "site",
+    "html",
+    "css",
+    "image",
+    "js"
+  ],
+  "author": "Sofiia Antypenko <sofiia@antypenko.dev>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/website-scraper/node-website-scraper/issues"
+  },
+  "homepage": "https://github.com/website-scraper/node-website-scraper",
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "css-url-parser": "^1.0.0",
+    "debug": "^4.3.1",
+    "filenamify": "^7.0.0",
+    "got": "^16.1.0",
+    "normalize-url": "^10.0.0",
+    "p-queue": "^10.0.0",
+    "srcset": "^5.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "c8": "^12.0.0",
+    "chai": "^6.2.0",
+    "eslint": "^10.5.0",
+    "globals": "^17.7.0",
+    "mocha": "^12.0.3",
+    "nock": "^15.0.2",
+    "sinon": "^22.0.0"
+  },
+  "files": [
+    "index.mjs",
+    "lib"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
