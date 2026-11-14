@@ -1,0 +1,27 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+scrapy = "==2.11.2"
+city-scrapers-core = {ref = "main", git = "https://github.com/City-Bureau/city-scrapers-core.git", extras = ["azure"]}
+scrapy-wayback-middleware = "*"
+python-dateutil = "*"
+pdfminer-six = "*"
+scrapy-sentry-errors = "1.0.0"
+pytz = "*"
+scrapy-playwright = "*"
+harambe-sdk = "<0.77"
+playwright = "*"
+
+[dev-packages]
+freezegun = "*"
+pytest = "*"
+pytest-asyncio = "*"
+"flake8" = "*"
+isort = "*"
+black = "*"
+
+[requires]
+python_version = "3.12"
