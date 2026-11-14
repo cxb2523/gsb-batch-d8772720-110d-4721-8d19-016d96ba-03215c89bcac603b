@@ -195,6 +195,48 @@ for drop in drops:
     print(f"📉 Deal! {drop['title']}: {drop['initial_price']:,} -> {drop['current_price']:,} ₽ (-{diff:,} ₽)")
 ```
 
+#### Tracking → filtering contract
+
+For **every item parsed from a page** (sync `AvitoClient.search` / `scrape_url` and
+async `AsyncAvitoClient.search`) the price is recorded **before** any ad filter runs.
+Filtering never clears or rewrites that history, so:
+
+* an item rejected this round because of price / keyword / region limits keeps its
+  price history and is recognised as a **price drop** on a later round instead of
+  looking like a first sighting;
+* only items that pass the filters reach the returned results, Excel export,
+  Telegram/VK notifications and progress counters;
+* a duplicate parse of the same id at the same price (e.g. the item appears on
+  several pages) never adds a duplicate history row and never reports a drop.
+
+`PriceTracker.record_price(item)` returns a `PriceUpdate` with one of four
+outcomes: `first_record`, `unchanged`, `price_up`, `price_down`.
+`Item.price_drop` is positive only for a genuine decrease.
+
+#### Batch summary — why was an item not returned?
+
+```python
+from avito_sdk import PriceOutcome
+
+items = list(client.search("iPhone 15", max_price=60000, limit=50))
+summary = client.last_batch_summary  # or client.get_batch_summary(-1)
+
+entry = summary.get(123456)          # also summary[123456], 123456 in summary
+if entry is not None:
+    print(entry.passed, entry.rejection_reason)   # False, 'price_above_max'
+    print(entry.outcome)                          # PriceOutcome.PRICE_DOWN
+    print(entry.current_price, entry.initial_price)
+    print(entry.explain())  # item 123456: rejected (price_above_max), price_down, current 55000 (initial 60000)
+
+print(summary.stats)  # {'parsed': 120, 'occurrences': 132, 'passed': 8, 'rejected': 112, ...}
+```
+
+The summary covers parsed items that were filtered out as well as returned ones.
+`rejection_reason` is one of `price_below_min`, `price_above_max`, `black_keyword`,
+`missing_white_keyword`, `geo_mismatch`, `seller_blacklisted`, `too_old`, `reserved`,
+`promotion`, `not_new_or_changed`, or `limit_reached` (tracked but trimmed by `limit`
+before filtering).
+
 ---
 
 ### 5. Export to Excel, JSON & Pandas

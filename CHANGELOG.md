@@ -2,6 +2,25 @@
 
 All notable changes to `avito-sdk` will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Explicit tracking → filtering contract** on both `AvitoClient` (`search`, `scrape_url`)
+  and `AsyncAvitoClient.search`: every parsed item is recorded by `PriceTracker` before
+  ad filters run, so items rejected by price/keyword/region filters keep their history and
+  are later recognised as price drops. Only filter-passing items reach results, Excel
+  export, Telegram/VK notifications and progress counters.
+- `PriceTracker.record_price()` returning a `PriceUpdate` with four outcomes:
+  `first_record`, `unchanged`, `price_up`, `price_down`. `Item.price_drop` is now positive
+  only for a real decrease (a price increase sets `old_price` but leaves `price_drop` `None`).
+- Same-price duplicate parses of one id no longer write duplicate `price_history` rows or
+  report a drop.
+- `BatchSummary` / `BatchItemSummary` and `client.last_batch_summary` /
+  `client.get_batch_summary()` — queryable per-call summary keyed by item id covering
+  returned *and* filtered-out items (outcome, current/initial price, rejection reason).
+- `AdsFilter.reject_reason()` returning stable machine-readable rejection codes.
+- `PriceTracker.get_initial_price()` and `get_history()` now ordered by insertion order.
+
 ## [0.1.0] - 2026-10-05
 
 ### Added

@@ -49,41 +49,49 @@ class AdsFilter:
         self.ignore_promotion = ignore_promotion
         self.only_new_or_changed = only_new_or_changed
 
-    def matches(self, item: Item) -> bool:
-        """Return True if a single Item passes all configured filters."""
+    def reject_reason(self, item: Item) -> Optional[str]:
+        """
+        Return the reason an item would be rejected, or ``None`` if it passes.
+
+        Reasons are stable machine-readable codes (``price_below_min``,
+        ``black_keyword``, ``geo_mismatch``, ...) so a batch summary can explain
+        why an item never appeared in the results.
+        """
         # 1. Viewed / price-change filter
         if self.only_new_or_changed:
             if not getattr(item, "is_new", True) and not item.has_price_changed:
-                return False
+                return "not_new_or_changed"
 
         # 2. Price range
         price = item.price or 0
         if self.min_price is not None and self.min_price > 0 and price < self.min_price:
-            return False
+            return "price_below_min"
         if self.max_price is not None and self.max_price > 0 and price > self.max_price:
-            return False
+            return "price_above_max"
 
         # 3 & 4. Keywords (title + description + params)
         if self.black_keywords or self.white_keywords:
             params_text = " ".join(f"{k} {v}" for k, v in (item.params or {}).items())
             full_text = f"{item.title or ''} {item.description or ''} {params_text}".lower()
-            if self.black_keywords and any(phrase in full_text for phrase in self.black_keywords):
-                return False
+            if self.black_keywords:
+                for phrase in self.black_keywords:
+                    if phrase in full_text:
+                        return "black_keyword"
             if self.white_keywords and not any(phrase in full_text for phrase in self.white_keywords):
-                return False
+                return "missing_white_keyword"
 
         # 5. Geo / Address filter
         if self.geo:
             addr_text = f"{item.address or ''} {item.location_name or ''}".lower()
             if self.geo not in addr_text:
-                return False
+                return "geo_mismatch"
 
         # 6. Seller blacklist (matches seller_id or seller_name)
         if self.seller_blacklist:
             sid = (item.seller_id or "").strip().lower()
             sname = (item.seller_name or "").strip().lower()
             if (sid and sid in self.seller_blacklist) or (sname and sname in self.seller_blacklist):
-                return False
+                return "seller_blacklisted"
 
         # 7. Max age (in seconds)
         if self.max_age and item.published_at is not None:
@@ -92,17 +100,21 @@ class AdsFilter:
             if pub.tzinfo is None:
                 pub = pub.replace(tzinfo=timezone.utc)
             if (now - pub) > timedelta(seconds=self.max_age):
-                return False
+                return "too_old"
 
         # 8. Ignore reserved
         if self.ignore_reserved and getattr(item, "is_reserved", False):
-            return False
+            return "reserved"
 
         # 9. Ignore promotion
         if self.ignore_promotion and getattr(item, "is_promotion", False):
-            return False
+            return "promotion"
 
-        return True
+        return None
+
+    def matches(self, item: Item) -> bool:
+        """Return True if a single Item passes all configured filters."""
+        return self.reject_reason(item) is None
 
     def apply(self, items: Iterable[Item]) -> List[Item]:
         """Filter an iterable of Item objects and return the matching list."""

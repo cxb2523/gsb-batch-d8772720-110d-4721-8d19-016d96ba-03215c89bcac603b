@@ -24,7 +24,7 @@ from avito_sdk.extractors import (
 )
 from avito_sdk.http import AsyncHttpTransport
 from avito_sdk.models import Item, SearchFilter
-from avito_sdk.tracker import PriceTracker
+from avito_sdk.tracker import BatchSummary, PriceTracker, PriceUpdate
 from avito_sdk.url import (
     build_item_web_url,
     build_search_url,
@@ -59,12 +59,42 @@ class AsyncAvitoClient:
             max_retries=max_retries,
         )
         self.tracker = PriceTracker(db_path=tracker_db) if (enable_tracking and tracker_db) else None
+        self._batch_summaries: List[BatchSummary] = []
         if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
             try:
                 from avito_sdk.logging_utils import setup_logging
                 setup_logging(log_file="storage/logs/avito_sdk.log")
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Collection contract helpers: tracking -> filtering -> summary
+    # ------------------------------------------------------------------
+    def _start_batch(self, query: str = "", url: Optional[str] = None) -> BatchSummary:
+        """Create and register a batch summary for one collection call."""
+        batch = BatchSummary(query=query, url=url)
+        self._batch_summaries.append(batch)
+        if len(self._batch_summaries) > 100:
+            del self._batch_summaries[:-100]
+        return batch
+
+    def _track_item(self, item: Item) -> Optional[PriceUpdate]:
+        """Run price tracking for a parsed item (no-op when tracking is disabled)."""
+        if not self.tracker:
+            return None
+        return self.tracker.record_price(item)
+
+    @property
+    def last_batch_summary(self) -> Optional[BatchSummary]:
+        """Summary of the most recent search call (covers filtered-out items)."""
+        return self._batch_summaries[-1] if self._batch_summaries else None
+
+    def get_batch_summary(self, index: int = -1) -> Optional[BatchSummary]:
+        """Return a batch summary by position (newest by default)."""
+        try:
+            return self._batch_summaries[index]
+        except IndexError:
+            return None
 
     async def search(
         self,
@@ -75,6 +105,14 @@ class AsyncAvitoClient:
         sort: str = "date",
         category: Optional[str] = None,
         with_delivery: bool = False,
+        white_keywords: Optional[List[str]] = None,
+        black_keywords: Optional[List[str]] = None,
+        seller_blacklist: Optional[List[str]] = None,
+        geo: Optional[str] = None,
+        max_age: Optional[int] = None,
+        ignore_reserved: bool = False,
+        ignore_promotion: bool = False,
+        only_new_or_changed: bool = False,
         enrich_details: bool = False,
         concurrency: int = 1,
         limit: Optional[int] = None,
@@ -82,10 +120,18 @@ class AsyncAvitoClient:
     ) -> AsyncGenerator[Item, None]:
         """
         Asynchronously search Avito and stream items.
+
+        Collection contract: every item parsed from a page is passed through price
+        tracking *before* any ad filter runs. Only items that pass the filters are
+        yielded to the caller. The outcome of every parsed item (including rejected
+        ones) is recorded in :attr:`last_batch_summary`.
+
         Note: When using concurrency > 1 or enrich_details=True, a mobile proxy
         (proxy + proxy_change_url) is strongly recommended to prevent IP bans.
         """
         import asyncio
+        from avito_sdk.filters import AdsFilter
+
         if limit:
             needed_pages = max(1, (limit + 29) // 30)
             if max_pages == 5 or max_pages < needed_pages:
@@ -101,6 +147,20 @@ class AsyncAvitoClient:
             with_delivery=with_delivery,
             page=1,
         )
+        ads_filter = AdsFilter(
+            min_price=min_price,
+            max_price=max_price,
+            white_keywords=white_keywords,
+            black_keywords=black_keywords,
+            seller_blacklist=seller_blacklist,
+            geo=geo,
+            max_age=max_age,
+            ignore_reserved=ignore_reserved,
+            ignore_promotion=ignore_promotion,
+            only_new_or_changed=only_new_or_changed,
+        )
+
+        batch = self._start_batch(query=query or region or "Avito")
 
         yielded_count = 0
         for page_num in range(1, max_pages + 1):
@@ -111,9 +171,27 @@ class AsyncAvitoClient:
             if not items:
                 break
 
+            # Track every parsed item before slicing/filtering so trimmed items
+            # still keep a complete price history.
+            parsed_items = items
+            updates = [self._track_item(it) for it in parsed_items]
+
             if limit:
-                remaining = limit - yielded_count
-                items = items[:remaining]
+                remaining = max(0, limit - yielded_count)
+                items = parsed_items[:remaining]
+            else:
+                remaining = len(parsed_items)
+                items = parsed_items
+
+            # Items trimmed by the limit never reached filtering; record them so the
+            # batch summary explains why they are absent from the results.
+            for trimmed, trimmed_update in zip(parsed_items[remaining:], updates[remaining:]):
+                batch.record(
+                    trimmed,
+                    passed=False,
+                    update=trimmed_update,
+                    rejection_reason="limit_reached",
+                )
 
             enriched_in_parallel = False
             if enrich_details and concurrency > 1 and len(items) > 1:
@@ -126,13 +204,20 @@ class AsyncAvitoClient:
                 await asyncio.gather(*(_enrich(it) for it in items))
                 enriched_in_parallel = True
 
-            for item in items:
-                if self.tracker:
-                    self.tracker.check_and_update(item)
-
+            for index, item in enumerate(items):
                 if enrich_details and not enriched_in_parallel:
                     await self.enrich_item(item)
 
+                # Contract: price tracking already ran above, before filtering,
+                # for every parsed item, so rejected items keep a complete history.
+                update = updates[index]
+
+                rejection_reason = ads_filter.reject_reason(item)
+                if rejection_reason is not None:
+                    batch.record(item, passed=False, update=update, rejection_reason=rejection_reason)
+                    continue
+
+                batch.record(item, passed=True, update=update, returned=True)
                 yield item
                 yielded_count += 1
                 if limit and yielded_count >= limit:

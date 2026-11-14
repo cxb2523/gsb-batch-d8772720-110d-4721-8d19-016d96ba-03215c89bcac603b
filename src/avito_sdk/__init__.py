@@ -52,7 +52,13 @@ from avito_sdk.telegram import (
     render_progress_bar,
     render_telegram_progress_bar,
 )
-from avito_sdk.tracker import PriceTracker
+from avito_sdk.tracker import (
+    BatchItemSummary,
+    BatchSummary,
+    PriceOutcome,
+    PriceTracker,
+    PriceUpdate,
+)
 from avito_sdk.url import (
     build_item_api_url,
     build_item_web_url,
@@ -105,6 +111,10 @@ __all__ = [
     "SearchPage",
     "PriceRecord",
     "PriceTracker",
+    "PriceUpdate",
+    "PriceOutcome",
+    "BatchSummary",
+    "BatchItemSummary",
     "extract_params",
     "extract_seller_name",
     "extract_seller_id",

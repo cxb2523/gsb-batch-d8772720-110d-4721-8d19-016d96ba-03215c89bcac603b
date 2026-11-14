@@ -146,7 +146,10 @@ def main(argv=None) -> int:
         for idx, item in enumerate(items, 1):
             price_str = f"{item.price:,} ₽"
             if item.old_price:
-                price_str += f" (было: {item.old_price:,} ₽, снижение на {item.price_drop:,} ₽)"
+                if item.price_drop:
+                    price_str += f" (было: {item.old_price:,} ₽, снижение на {item.price_drop:,} ₽)"
+                else:
+                    price_str += f" (было: {item.old_price:,} ₽)"
             seller_str = f" | {item.seller_name}" if item.seller_name else ""
             print(f" {idx:2d}. [{item.id}] {item.title[:45]} - {price_str}{seller_str}")
 

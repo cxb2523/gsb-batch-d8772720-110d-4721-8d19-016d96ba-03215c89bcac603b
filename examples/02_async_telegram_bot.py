@@ -19,7 +19,7 @@ async def monitor_avito_query(query: str, max_price: int, region: str = "moskva"
             max_price=max_price,
             limit=5,
         ):
-            if item.has_price_changed:
+            if item.price_drop:
                 msg = (
                     f"🔥 СКИДКА НА ТОВАР!\n"
                     f"📦 {item.title}\n"

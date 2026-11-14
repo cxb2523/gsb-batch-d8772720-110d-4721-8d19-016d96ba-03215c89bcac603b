@@ -30,7 +30,7 @@ from avito_sdk.extractors import (
 from avito_sdk.http import SyncHttpTransport
 from avito_sdk.models import Item, SearchFilter
 from avito_sdk.telegram import TelegramNotifier
-from avito_sdk.tracker import PriceTracker
+from avito_sdk.tracker import BatchSummary, PriceTracker, PriceUpdate
 from avito_sdk.url import (
     build_item_web_url,
     build_page_url,
@@ -81,6 +81,7 @@ class AvitoClient:
             max_retries=max_retries,
         )
         self.tracker = PriceTracker(db_path=tracker_db) if (enable_tracking and tracker_db) else None
+        self._batch_summaries: List[BatchSummary] = []
         if telegram_notifier is not None:
             self.notifier: Optional[TelegramNotifier] = telegram_notifier
         elif tg_token and tg_chat_id:
@@ -282,6 +283,8 @@ class AvitoClient:
         total_expected = limit or (max_pages * 30)
         use_mob_proxy = bool(self.transport.proxy)
 
+        batch = self._start_batch(query=query or region or "Avito")
+
         progress_ids = {}
         if telegram_progress and self.notifier:
             progress_ids = self.notifier.start_progress(
@@ -328,9 +331,27 @@ class AvitoClient:
                     continue
                 consecutive_empty = 0
 
+                # Track every parsed item before any slicing/filtering so that items
+                # trimmed by `limit` still keep a complete price history.
+                parsed_items = items
+                updates = [self._track_item(it) for it in parsed_items]
+
                 if limit:
-                    remaining = limit - yielded_count
-                    items = items[:remaining]
+                    remaining = max(0, limit - yielded_count)
+                    items = parsed_items[:remaining]
+                else:
+                    remaining = len(parsed_items)
+                    items = parsed_items
+
+                # Anything trimmed by the limit never reached filtering; record it
+                # so the batch summary can explain why it is absent from the results.
+                for trimmed, trimmed_update in zip(parsed_items[remaining:], updates[remaining:]):
+                    batch.record(
+                        trimmed,
+                        passed=False,
+                        update=trimmed_update,
+                        rejection_reason="limit_reached",
+                    )
 
                 enriched_in_parallel = False
                 if enrich_details and safe_workers > 1 and len(items) > 1:
@@ -340,15 +361,20 @@ class AvitoClient:
                         list(pool.map(self.enrich_item, items))
                     enriched_in_parallel = True
 
-                for item in items:
-                    if self.tracker:
-                        self.tracker.check_and_update(item)
+                for index, item in enumerate(items):
+                    # Contract: price tracking always runs before filtering, for every
+                    # parsed item, so rejected items keep a complete price history.
+                    update = updates[index]
 
                     if enrich_details and not enriched_in_parallel:
                         self.enrich_item(item)
 
-                    if not ads_filter.matches(item):
+                    rejection_reason = ads_filter.reject_reason(item)
+                    if rejection_reason is not None:
+                        batch.record(item, passed=False, update=update, rejection_reason=rejection_reason)
                         continue
+
+                    batch.record(item, passed=True, update=update, returned=True)
 
                     if item.price_drop and item.price_drop > 0:
                         drops_count += 1
@@ -462,6 +488,7 @@ class AvitoClient:
         results: List[Item] = []
         drops_count = 0
         use_mob_proxy = bool(self.transport.proxy)
+        batch = self._start_batch(query=url[:50], url=url)
 
         if limit:
             needed_pages = max(1, (limit + 29) // 30)
@@ -515,9 +542,25 @@ class AvitoClient:
                     continue
                 consecutive_empty = 0
 
+                # Track every parsed item before slicing/filtering so trimmed items
+                # still keep a complete price history.
+                parsed_items = page_items
+                updates = [self._track_item(it) for it in parsed_items]
+
                 if limit:
-                    remaining = limit - len(results)
-                    page_items = page_items[:remaining]
+                    remaining = max(0, limit - len(results))
+                    page_items = parsed_items[:remaining]
+                else:
+                    remaining = len(parsed_items)
+                    page_items = parsed_items
+
+                for trimmed, trimmed_update in zip(parsed_items[remaining:], updates[remaining:]):
+                    batch.record(
+                        trimmed,
+                        passed=False,
+                        update=trimmed_update,
+                        rejection_reason="limit_reached",
+                    )
 
                 enriched_in_parallel = False
                 if enrich_details and safe_workers > 1 and len(page_items) > 1:
@@ -527,13 +570,19 @@ class AvitoClient:
                         list(pool.map(self.enrich_item, page_items))
                     enriched_in_parallel = True
 
-                for item in page_items:
-                    if self.tracker:
-                        self.tracker.check_and_update(item)
+                for index, item in enumerate(page_items):
+                    # Contract: track first (even for items the filters will drop),
+                    # then decide whether it may enter results / export / notifications.
+                    update = updates[index]
                     if enrich_details and not enriched_in_parallel:
                         self.enrich_item(item)
-                    if not ads_filter.matches(item):
+
+                    rejection_reason = ads_filter.reject_reason(item)
+                    if rejection_reason is not None:
+                        batch.record(item, passed=False, update=update, rejection_reason=rejection_reason)
                         continue
+
+                    batch.record(item, passed=True, update=update, returned=True)
                     if item.price_drop and item.price_drop > 0:
                         drops_count += 1
                     if notify_telegram and self.notifier:
@@ -821,6 +870,36 @@ class AvitoClient:
                 logger.warning(f"Could not enrich item {item.id}: {html_err}")
 
         return item
+
+    # ------------------------------------------------------------------
+    # Collection contract helpers: tracking -> filtering -> summary
+    # ------------------------------------------------------------------
+    def _start_batch(self, query: str = "", url: Optional[str] = None) -> BatchSummary:
+        """Create and register a batch summary for one collection call."""
+        batch = BatchSummary(query=query, url=url)
+        self._batch_summaries.append(batch)
+        # Keep only a bounded history to avoid unbounded growth in long-running clients.
+        if len(self._batch_summaries) > 100:
+            del self._batch_summaries[:-100]
+        return batch
+
+    def _track_item(self, item: Item) -> Optional[PriceUpdate]:
+        """Run price tracking for a parsed item (no-op when tracking is disabled)."""
+        if not self.tracker:
+            return None
+        return self.tracker.record_price(item)
+
+    @property
+    def last_batch_summary(self) -> Optional[BatchSummary]:
+        """Summary of the most recent search/scrape_url call (covers filtered-out items)."""
+        return self._batch_summaries[-1] if self._batch_summaries else None
+
+    def get_batch_summary(self, index: int = -1) -> Optional[BatchSummary]:
+        """Return a batch summary by position (newest by default)."""
+        try:
+            return self._batch_summaries[index]
+        except IndexError:
+            return None
 
     # Export helper shortcuts
     def export_excel(self, items: List[Item], filepath: Union[str, Path]) -> None:
