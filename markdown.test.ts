@@ -2,15 +2,19 @@ import { describe, it, expect } from "vitest";
 import {
   cleanUpLinks,
   demoteHeadings,
+  describeOutcome,
   expandRedirectLinks,
   flattenMarkdownLinks,
   numberResultHeadings,
+  outcomeOf,
   renderLinkSummary,
   renderQuerySection,
   renderSearchResults,
   renderToolResult,
   BATCH_FETCH_TOOL_NAME,
   FETCH_TOOL_NAME,
+  RATE_LIMIT_RETRY_AFTER_SECONDS,
+  type FailureOutcome,
   type QueryProgress,
   type SearchResultLink,
 } from "./markdown.ts";
@@ -19,12 +23,46 @@ function okEntry(query: string, links: SearchResultLink[], readableText = "body"
   return {
     query,
     status: "done",
-    result: { ok: true, requestedUrl: "", finalUrl: "", title: "", readableText, links },
+    outcome: "success",
+    result: {
+      ok: true,
+      outcome: "success",
+      requestedUrl: "",
+      finalUrl: "",
+      title: "",
+      readableText,
+      links,
+    },
   };
 }
 
-function failEntry(query: string, error: string): QueryProgress {
-  return { query, status: "error", result: { ok: false, requestedUrl: "", error } };
+function failEntry(
+  query: string,
+  error: string,
+  outcome: FailureOutcome = "http-error",
+): QueryProgress {
+  return {
+    query,
+    status: "error",
+    outcome,
+    result: { ok: false, outcome, requestedUrl: "", error },
+  };
+}
+
+/** A query that hit DDG's soft ban, carrying the suggested wait. */
+function rateLimitedEntry(query: string): QueryProgress {
+  return {
+    query,
+    status: "error",
+    outcome: "rate-limited",
+    result: {
+      ok: false,
+      outcome: "rate-limited",
+      requestedUrl: "",
+      error: "rate-limited by search engine (HTTP 202 soft-ban)",
+      retryAfterSeconds: RATE_LIMIT_RETRY_AFTER_SECONDS,
+    },
+  };
 }
 
 describe("expandRedirectLinks", () => {
@@ -143,6 +181,42 @@ describe("cleanUpLinks", () => {
   });
 });
 
+describe("outcomeOf", () => {
+  it("reads the outcome the entry carries", () => {
+    expect(outcomeOf(okEntry("q", []))).toBe("success");
+    expect(outcomeOf(rateLimitedEntry("q"))).toBe("rate-limited");
+    expect(outcomeOf(failEntry("q", "x", "fetch-error"))).toBe("fetch-error");
+  });
+
+  it("is undefined while the query has not finished", () => {
+    const pending: QueryProgress = { query: "q", status: "loading", result: undefined };
+    expect(outcomeOf(pending)).toBeUndefined();
+  });
+
+  it("derives the outcome from the result when the entry predates the field", () => {
+    const legacy: QueryProgress = {
+      query: "q",
+      status: "error",
+      result: { ok: false, outcome: "http-error", requestedUrl: "", error: "HTTP 500" },
+    };
+    expect(outcomeOf(legacy)).toBe("http-error");
+  });
+});
+
+describe("describeOutcome", () => {
+  it("labels each finished outcome for the progress card", () => {
+    expect(describeOutcome(okEntry("q", []))).toBe("success");
+    expect(describeOutcome(rateLimitedEntry("q"))).toBe("rate-limited · wait ~60s");
+    expect(describeOutcome(failEntry("q", "x", "http-error"))).toBe("HTTP error");
+    expect(describeOutcome(failEntry("q", "x", "fetch-error"))).toBe("network/parse error");
+  });
+
+  it("is empty while the query is queued or loading", () => {
+    const pending: QueryProgress = { query: "q", status: "queued", result: undefined };
+    expect(describeOutcome(pending)).toBe("");
+  });
+});
+
 describe("renderQuerySection", () => {
   it("puts the query heading above the cleaned body", () => {
     const out = renderQuerySection(okEntry("q one", [], "## A Result\n\nsome prose"));
@@ -164,7 +238,32 @@ describe("renderQuerySection", () => {
   it("renders a failure line instead of a body when the search failed", () => {
     const out = renderQuerySection(failEntry("q", "HTTP 500 Server Error"));
     expect(out).toContain('## Query: "q"');
-    expect(out).toContain("_search failed: HTTP 500 Server Error_");
+    expect(out).toContain(
+      "_search failed: HTTP error (non-2xx response) -- HTTP 500 Server Error_",
+    );
+  });
+
+  it("names the failure category and keeps the raw error for each failure kind", () => {
+    expect(renderQuerySection(failEntry("q", "HTTP 500 Server Error", "http-error"))).toContain(
+      "_search failed: HTTP error (non-2xx response) -- HTTP 500 Server Error_",
+    );
+    expect(renderQuerySection(failEntry("q", "socket hang up", "fetch-error"))).toContain(
+      "_search failed: network or parsing error -- socket hang up_",
+    );
+  });
+
+  it("tells the model how long to wait when the query was rate-limited", () => {
+    const out = renderQuerySection(rateLimitedEntry("q"));
+    expect(out).toContain("_search failed: rate-limited by the search engine (HTTP 202 soft-ban)");
+    expect(out).toContain("wait ~60 seconds before retrying");
+    expect(out).toContain("-- rate-limited by search engine (HTTP 202 soft-ban)_");
+  });
+
+  it("falls back to a generic failure line when there is no result at all", () => {
+    const entry: QueryProgress = { query: "q", status: "error", result: undefined };
+    expect(renderQuerySection(entry)).toContain(
+      "_search failed: network or parsing error -- unknown_",
+    );
   });
 
   it("marks an empty body rather than emitting nothing", () => {
@@ -241,7 +340,19 @@ describe("renderToolResult", () => {
 
   it("renders a failure line for a failed search", () => {
     const out = renderToolResult([failEntry("q", "HTTP 500 Server Error")]);
-    expect(out).toContain("_search failed: HTTP 500 Server Error_");
+    expect(out).toContain(
+      "_search failed: HTTP error (non-2xx response) -- HTTP 500 Server Error_",
+    );
+  });
+
+  it("keeps failed queries out of the link summary", () => {
+    const out = renderToolResult([
+      okEntry("kept", [{ title: "A", url: "https://a.com" }]),
+      rateLimitedEntry("dropped"),
+    ]);
+    expect(out).toContain("## kept");
+    expect(out).toContain("1. [A](https://a.com)");
+    expect(out).not.toContain("## dropped");
   });
 
   it("omits the menu when there are no links to offer", () => {

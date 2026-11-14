@@ -25,12 +25,14 @@ import { fetch } from "wreq-js";
 import piSmartWebSearch, {
   buildSearchUrl,
   fetchReadablePage,
+  fetchSearchWithRetry,
   hasFetchTools,
   keepFirstResults,
   loadResultsPerQuery,
   formatStatusBadge,
   renderProgressCard,
   readResultLinks,
+  retryTimers,
   DEFAULT_RESULTS_PER_QUERY,
   MAX_RESULTS_PER_QUERY,
   MIN_RESULTS_PER_QUERY,
@@ -131,12 +133,30 @@ function okEntry(query: string, links: SearchResultLink[], readableText = "body"
   return {
     query,
     status: "done",
-    result: { ok: true, requestedUrl: "", finalUrl: "", title: "", readableText, links },
+    outcome: "success",
+    result: {
+      ok: true,
+      outcome: "success",
+      requestedUrl: "",
+      finalUrl: "",
+      title: "",
+      readableText,
+      links,
+    },
   };
 }
 
-function failEntry(query: string, error: string): QueryProgress {
-  return { query, status: "error", result: { ok: false, requestedUrl: "", error } };
+function failEntry(
+  query: string,
+  error: string,
+  outcome: "rate-limited" | "http-error" | "fetch-error" = "http-error",
+): QueryProgress {
+  return {
+    query,
+    status: "error",
+    outcome,
+    result: { ok: false, outcome, requestedUrl: "", error },
+  };
 }
 
 const stubTheme = {
@@ -154,12 +174,63 @@ describe("progress card", () => {
     expect(formatStatusBadge("done")).toBe("[   done    ]");
   });
 
+  it("shows each finished query's outcome next to its badge", () => {
+    const card = renderProgressCard(
+      [
+        okEntry("fine", []),
+        failEntry("banned", "rate-limited by search engine (HTTP 202 soft-ban)", "rate-limited"),
+        failEntry("broken", "HTTP 500 Server Error", "http-error"),
+        failEntry("unreachable", "socket hang up", "fetch-error"),
+      ],
+      stubTheme,
+      100,
+    );
+    const rows = card.split("\n");
+    expect(rows[1]).toContain("success");
+    expect(rows[2]).toContain("rate-limited · wait ~60s");
+    expect(rows[3]).toContain("HTTP error");
+    expect(rows[4]).toContain("network/parse error");
+  });
+
+  it("shows no outcome for a query that is still queued", () => {
+    const queued: QueryProgress = { query: "later", status: "queued", result: undefined };
+    const row = renderProgressCard([queued], stubTheme, 80).split("\n")[1] ?? "";
+    expect(row).toContain("[  queued   ]");
+    expect(row).not.toContain("·");
+  });
+
   it("truncates a query too long for the terminal width", () => {
     const card = renderProgressCard([okEntry("x".repeat(200), [])], stubTheme, 40);
     const queryRow = card.split("\n")[1] ?? "";
     expect(queryRow).toContain("...");
     // Measured in columns: the row carries styling, and an escape sequence occupies none.
     expect(visibleWidth(queryRow)).toBeLessThanOrEqual(40);
+  });
+
+  // Narrow terminals squeeze the outcome label first, then drop it; the row must never
+  // overflow its width, whatever the outcome.
+  it("keeps every row within the terminal width, however narrow", () => {
+    const entries = [
+      okEntry("a query that is far too long to fit", []),
+      failEntry("another long query here", "rate-limited", "rate-limited"),
+      failEntry("a third long query", "HTTP 500", "http-error"),
+      failEntry("a fourth long query", "boom", "fetch-error"),
+      { query: "still waiting", status: "queued", result: undefined } as QueryProgress,
+    ];
+    for (const width of [24, 30, 40, 55]) {
+      for (const line of renderProgressCard(entries, stubTheme, width).split("\n")) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it("truncates the outcome label before letting a narrow row overflow", () => {
+    const row =
+      renderProgressCard([failEntry("q", "rate-limited", "rate-limited")], stubTheme, 24).split(
+        "\n",
+      )[1] ?? "";
+    expect(visibleWidth(row)).toBeLessThanOrEqual(24);
+    expect(row).toContain("[   error   ]");
   });
 
   it("renders an empty card instead of throwing when progressByQuery is undefined", () => {
@@ -247,14 +318,21 @@ describe("fetchReadablePage", () => {
     mockFetch.mockResolvedValue(response({ status: 202 }));
     const result = await fetchReadablePage("https://x", 10);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/rate-limited/);
+    if (!result.ok) {
+      expect(result.outcome).toBe("rate-limited");
+      expect(result.error).toMatch(/rate-limited/);
+      expect(result.retryAfterSeconds).toBe(60);
+    }
   });
 
-  it("reports a non-2xx status as an error", async () => {
+  it("reports a non-2xx status as an HTTP error", async () => {
     mockFetch.mockResolvedValue(response({ ok: false, status: 500, statusText: "Server Error" }));
     const result = await fetchReadablePage("https://x", 10);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBe("HTTP 500 Server Error");
+    if (!result.ok) {
+      expect(result.outcome).toBe("http-error");
+      expect(result.error).toBe("HTTP 500 Server Error");
+    }
   });
 
   it("never throws -- a failure while reading the response comes back as a result", async () => {
@@ -267,7 +345,106 @@ describe("fetchReadablePage", () => {
     } as unknown as FetchResponse);
     const result = await fetchReadablePage("https://x", 10);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBe("network boom");
+    if (!result.ok) {
+      expect(result.outcome).toBe("fetch-error");
+      expect(result.error).toBe("network boom");
+    }
+  });
+
+  it("marks a good page as a success", async () => {
+    mockFetch.mockResolvedValue(response({ html: "<p>readable</p>" }));
+    const result = await fetchReadablePage("https://x", 10);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.outcome).toBe("success");
+  });
+});
+
+// --- fetchSearchWithRetry: one retry for a soft ban, none for anything else ---
+
+describe("fetchSearchWithRetry", () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  /** A sleep that records how long it was asked to wait, without waiting. */
+  function recordingSleep() {
+    const waits: number[] = [];
+    const sleep = (milliseconds: number) => {
+      waits.push(milliseconds);
+      return Promise.resolve();
+    };
+    return { waits, sleep };
+  }
+
+  it("returns a first-attempt success without waiting or retrying", async () => {
+    mockFetch.mockResolvedValue(response({ html: "<p>fine</p>" }));
+    const { waits, sleep } = recordingSleep();
+
+    const result = await fetchSearchWithRetry("https://x", 10, sleep);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
+  });
+
+  it("waits the suggested time, then retries a rate-limited query once", async () => {
+    mockFetch
+      .mockResolvedValueOnce(response({ status: 202 }))
+      .mockResolvedValueOnce(response({ html: "<p>second try works</p>" }));
+    const { waits, sleep } = recordingSleep();
+
+    const result = await fetchSearchWithRetry("https://x", 10, sleep);
+
+    expect(result.ok).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(waits).toEqual([60_000]);
+  });
+
+  it("records the rate-limited outcome when the retry is also soft-banned", async () => {
+    mockFetch.mockResolvedValue(response({ status: 202 }));
+    const { waits, sleep } = recordingSleep();
+
+    const result = await fetchSearchWithRetry("https://x", 10, sleep);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.outcome).toBe("rate-limited");
+    // One retry, not a loop: exactly two requests and one wait went out.
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(waits).toEqual([60_000]);
+  });
+
+  it("does not retry an HTTP error", async () => {
+    mockFetch.mockResolvedValue(response({ ok: false, status: 500, statusText: "Server Error" }));
+    const { waits, sleep } = recordingSleep();
+
+    const result = await fetchSearchWithRetry("https://x", 10, sleep);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.outcome).toBe("http-error");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
+  });
+
+  it("does not retry a network or parsing failure", async () => {
+    // The failure comes in as a response whose body read fails, the same shape the
+    // fetchReadablePage tests use: a fetch() mock that itself rejects trips vitest's
+    // mock-settlement tracking even though fetchReadablePage catches the rejection.
+    mockFetch.mockResolvedValue({
+      status: 200,
+      ok: true,
+      statusText: "OK",
+      url: "https://x",
+      text: () => Promise.reject(new Error("connection reset")),
+    } as unknown as FetchResponse);
+    const { waits, sleep } = recordingSleep();
+
+    const result = await fetchSearchWithRetry("https://x", 10, sleep);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.outcome).toBe("fetch-error");
+      expect(result.error).toBe("connection reset");
+    }
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([]);
   });
 });
 
@@ -387,7 +564,84 @@ describe("web_search execute", () => {
       cwd: tmpdir(),
     } as never);
 
-    expect((out.content[0] as { text: string }).text).toContain("_search failed: HTTP 500");
+    expect((out.content[0] as { text: string }).text).toContain(
+      "_search failed: HTTP error (non-2xx response) -- HTTP 500 Server Error_",
+    );
+  });
+
+  it("retries a rate-limited query once, after the suggested wait", async () => {
+    // The retry wait is swapped for a spy so the test observes it instead of living through it.
+    const waits: number[] = [];
+    const sleepSpy = vi.spyOn(retryTimers, "sleep").mockImplementation((milliseconds: number) => {
+      waits.push(milliseconds);
+      return Promise.resolve();
+    });
+    mockFetch
+      .mockResolvedValueOnce(response({ status: 202 }))
+      .mockResolvedValueOnce(response({ html: resultsPage(2) }));
+    const { tool } = registerExtension();
+
+    try {
+      const out = await tool.execute("call-retry", { searches: ["banned"] }, undefined, undefined, {
+        cwd: tmpdir(),
+      } as never);
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(waits).toEqual([60_000]);
+      const details = out.details as WebSearchDetails;
+      expect(details.progressByQuery?.[0]?.outcome).toBe("success");
+      expect((out.content[0] as { text: string }).text).toContain('## Query: "banned"');
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it("records a rate-limited outcome when the retry is also soft-banned", async () => {
+    const sleepSpy = vi.spyOn(retryTimers, "sleep").mockImplementation(() => Promise.resolve());
+    mockFetch.mockResolvedValue(response({ status: 202 }));
+    const { tool } = registerExtension();
+
+    try {
+      const out = await tool.execute(
+        "call-banned",
+        { searches: ["banned"] },
+        undefined,
+        undefined,
+        {
+          cwd: tmpdir(),
+        } as never,
+      );
+
+      const details = out.details as WebSearchDetails;
+      expect(details.progressByQuery?.[0]?.status).toBe("error");
+      expect(details.progressByQuery?.[0]?.outcome).toBe("rate-limited");
+      expect((out.content[0] as { text: string }).text).toContain(
+        "_search failed: rate-limited by the search engine (HTTP 202 soft-ban)",
+      );
+      expect((out.content[0] as { text: string }).text).toContain(
+        "wait ~60 seconds before retrying",
+      );
+    } finally {
+      sleepSpy.mockRestore();
+    }
+  });
+
+  it("records each query's outcome on its progress entry", async () => {
+    mockFetch
+      .mockResolvedValueOnce(response({ html: resultsPage(2) }))
+      .mockResolvedValueOnce(response({ ok: false, status: 500, statusText: "Server Error" }));
+    const { tool } = registerExtension();
+
+    const out = await tool.execute(
+      "call-outcomes",
+      { searches: ["good", "bad"] },
+      undefined,
+      undefined,
+      { cwd: tmpdir() } as never,
+    );
+
+    const entries = (out.details as WebSearchDetails).progressByQuery ?? [];
+    expect(entries.map((entry) => entry.outcome)).toEqual(["success", "http-error"]);
   });
 
   it("reports progress so the card can animate, ending with every query finished", async () => {

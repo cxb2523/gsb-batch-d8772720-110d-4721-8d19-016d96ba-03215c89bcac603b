@@ -8,29 +8,56 @@ export interface SearchResultLink {
   url: string;
 }
 
+/**
+ * How one query ended, fine-grained enough to tell the four fetch failures apart:
+ *
+ *  - `success`       results were read off the page
+ *  - `rate-limited`  DDG answered with an HTTP 202 challenge page (soft ban)
+ *  - `http-error`    any other non-2xx response
+ *  - `fetch-error`   the request never produced a parseable response (network/parsing throw)
+ */
+export type QueryOutcome = "success" | "rate-limited" | "http-error" | "fetch-error";
+
+/** The three outcomes that mean the query failed. */
+export type FailureOutcome = Exclude<QueryOutcome, "success">;
+
 /** The outcome of one fetch. `requestedUrl` and `finalUrl` differ when the request was redirected. */
 export type PageFetchResult =
   | {
       ok: true;
+      outcome: "success";
       requestedUrl: string;
       finalUrl: string;
       title: string;
       readableText: string;
       links: SearchResultLink[];
     }
-  | { ok: false; requestedUrl: string; error: string };
+  | {
+      ok: false;
+      outcome: FailureOutcome;
+      requestedUrl: string;
+      error: string;
+      /** Present for `rate-limited`: the seconds the engine suggests waiting before retrying. */
+      retryAfterSeconds?: number;
+    };
 
 export type QueryStatus = "queued" | "loading" | "done" | "error";
 
 /**
  * One query: where it has got to, and what it found once done. The functions below only read
  * `result`; `status` is here because index.ts draws a progress row per query from the same list.
+ * `outcome` is the finished query's verdict; it stays undefined while the query is queued or
+ * loading, and on progress restored from a session saved before outcomes existed.
  */
 export interface QueryProgress {
   query: string;
   status: QueryStatus;
+  outcome?: QueryOutcome;
   result: PageFetchResult | undefined;
 }
+
+/** The wait a 202 soft-ban recommends, in seconds. The fetch side waits this long before retrying. */
+export const RATE_LIMIT_RETRY_AFTER_SECONDS = 60;
 
 // =============================================================================
 // Tidying up one extracted page
@@ -112,6 +139,54 @@ export const BATCH_FETCH_TOOL_NAME = "batch_web_fetch";
 export const SEARCH_RESULTS_HEADER = "# Search results by query";
 export const LINK_SUMMARY_HEADER = "# Read these pages";
 
+// =============================================================================
+// Naming each outcome
+//
+// Two renderings of the same four-way verdict: a compact label for the progress card's row,
+// and the category sentence the model reads inside the `_search failed: ..._` line.
+// =============================================================================
+
+/**
+ * The verdict a finished query carries. Progress restored from an older session has no
+ * `outcome` field, so it is derived from the result when needed.
+ */
+export function outcomeOf(entry: QueryProgress): QueryOutcome | undefined {
+  if (entry.outcome) return entry.outcome;
+  if (!entry.result) return undefined;
+  return entry.result.ok ? "success" : entry.result.outcome;
+}
+
+/** The compact per-row label shown next to the status badge, or "" while the query is pending. */
+export function describeOutcome(entry: QueryProgress): string {
+  const outcome = outcomeOf(entry);
+  if (!outcome) return "";
+  switch (outcome) {
+    case "success":
+      return "success";
+    case "rate-limited":
+      return `rate-limited · wait ~${RATE_LIMIT_RETRY_AFTER_SECONDS}s`;
+    case "http-error":
+      return "HTTP error";
+    case "fetch-error":
+      return "network/parse error";
+  }
+}
+
+// The failure category as the model reads it, with the retry hint spelled out for a soft ban.
+function failureOutcomeText(outcome: FailureOutcome): string {
+  switch (outcome) {
+    case "rate-limited":
+      return (
+        `rate-limited by the search engine (HTTP 202 soft-ban) -- ` +
+        `wait ~${RATE_LIMIT_RETRY_AFTER_SECONDS} seconds before retrying`
+      );
+    case "http-error":
+      return "HTTP error (non-2xx response)";
+    case "fetch-error":
+      return "network or parsing error";
+  }
+}
+
 // The sentence telling the model what to do with the links.
 export const FETCH_INSTRUCTION =
   `Open the most relevant links below before answering -- ${FETCH_TOOL_NAME} for a single page, ` +
@@ -124,7 +199,11 @@ export function renderQuerySection(entry: QueryProgress): string {
   const result = entry.result;
 
   if (!result?.ok) {
-    return `${heading}\n_search failed: ${result?.error ?? "unknown"}_\n`;
+    // The failure line names the category, then keeps the raw error after it. A soft ban also
+    // carries the wait in the category itself, so the model knows when a retry stands a chance.
+    // A query with no result at all gets the generic network/parse category.
+    const outcome: FailureOutcome = result?.outcome ?? "fetch-error";
+    return `${heading}\n_search failed: ${failureOutcomeText(outcome)} -- ${result?.error ?? "unknown"}_\n`;
   }
 
   const withPlainLinks = cleanUpLinks(result.readableText);

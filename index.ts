@@ -29,8 +29,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   renderToolResult,
+  describeOutcome,
   BATCH_FETCH_TOOL_NAME,
   FETCH_TOOL_NAME,
+  RATE_LIMIT_RETRY_AFTER_SECONDS,
   type PageFetchResult,
   type QueryProgress,
   type QueryStatus,
@@ -80,14 +82,17 @@ export async function fetchReadablePage(
     if (response.status === 202) {
       return {
         ok: false,
+        outcome: "rate-limited",
         requestedUrl: url,
-        error: "rate-limited by search engine (HTTP 202 soft-ban); wait ~60s before retrying",
+        error: "rate-limited by search engine (HTTP 202 soft-ban)",
+        retryAfterSeconds: RATE_LIMIT_RETRY_AFTER_SECONDS,
       };
     }
 
     if (!response.ok) {
       return {
         ok: false,
+        outcome: "http-error",
         requestedUrl: url,
         error: `HTTP ${response.status} ${response.statusText}`,
       };
@@ -103,6 +108,7 @@ export async function fetchReadablePage(
 
     return {
       ok: true,
+      outcome: "success",
       requestedUrl: url,
       finalUrl,
       title: extraction.title,
@@ -112,10 +118,44 @@ export async function fetchReadablePage(
   } catch (caught) {
     return {
       ok: false,
+      outcome: "fetch-error",
       requestedUrl: url,
       error: caught instanceof Error ? caught.message : String(caught),
     };
   }
+}
+
+// =============================================================================
+// Retrying a rate-limited query, once
+//
+// Six queries in a row under a soft ban would otherwise all return 202. A rate-limited query
+// gets one retry after the wait the ban asks for; every other failure is returned as-is, since
+// an HTTP error or a broken connection is not something a wait fixes.
+// =============================================================================
+
+/**
+ * The clock the retry wait runs on, as a mutable object so a test can replace `sleep` and
+ * observe the wait without spending real seconds on it. Production code never touches this.
+ */
+export const retryTimers = {
+  sleep: (milliseconds: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+};
+
+// Fetch one search URL, retrying once when the engine soft-bans. The retry waits the suggested
+// number of seconds, and waitBeforeNextFetch still runs inside fetchReadablePage, so the
+// request spacing holds on the second attempt too. `sleep` is injectable for tests; the
+// default reads retryTimers at call time, which is what makes the spy above work.
+export async function fetchSearchWithRetry(
+  url: string,
+  resultsPerQuery: number,
+  sleep: (milliseconds: number) => Promise<void> = retryTimers.sleep,
+): Promise<PageFetchResult> {
+  const first = await fetchReadablePage(url, resultsPerQuery);
+  if (first.ok || first.outcome !== "rate-limited") return first;
+
+  await sleep((first.retryAfterSeconds ?? RATE_LIMIT_RETRY_AFTER_SECONDS) * 1000);
+  return fetchReadablePage(url, resultsPerQuery);
 }
 
 // =============================================================================
@@ -290,17 +330,34 @@ export function renderProgressCard(
     const badge = formatStatusBadge(entry.status);
     const style = STATUS_STYLES[entry.status];
 
-    // The query gets whatever room the glyph, the badge and at least one space leave behind.
-    const roomForQuery = width - GLYPH_COLUMN_WIDTH - badge.length - 1;
+    // The outcome label sits just left of the badge, so a finished row reads as query, then
+    // outcome (for a soft ban, including the wait), then badge. Pending queries have no
+    // outcome yet and get the badge alone.
+    //
+    // Width budget, in columns: the glyph (2), at least one column of query, one gap, the
+    // label with its trailing space, and the badge. The badge is never cut -- it is the row's
+    // fixed point -- so when the terminal is too narrow for everything, the label is
+    // truncated first, then dropped, and the row still fits.
+    const roomForLabel = Math.max(0, width - GLYPH_COLUMN_WIDTH - 1 - 1 - badge.length);
+    let outcomeLabel = describeOutcome(entry);
+    if (outcomeLabel && visibleWidth(outcomeLabel) + 1 > roomForLabel) {
+      outcomeLabel = roomForLabel >= 2 ? truncate(outcomeLabel, roomForLabel - 1) : "";
+    }
+    const labelWidth = outcomeLabel ? visibleWidth(outcomeLabel) + 1 : 0;
+
+    // The query gets whatever room the glyph, the label, the badge and at least one space
+    // leave behind.
+    const roomForQuery = width - GLYPH_COLUMN_WIDTH - labelWidth - badge.length - 1;
     const query = truncate(entry.query, Math.max(1, roomForQuery));
     const gapBeforeBadge = Math.max(
       1,
-      width - GLYPH_COLUMN_WIDTH - visibleWidth(query) - badge.length,
+      width - GLYPH_COLUMN_WIDTH - visibleWidth(query) - labelWidth - badge.length,
     );
 
+    const labelText = outcomeLabel ? `${theme.fg(style.color, outcomeLabel)} ` : "";
     lines.push(
       `${theme.fg(style.color, style.glyph)} ${theme.fg("accent", query)}` +
-        `${" ".repeat(gapBeforeBadge)}${theme.fg(style.color, badge)}`,
+        `${" ".repeat(gapBeforeBadge)}${labelText}${theme.fg(style.color, badge)}`,
     );
   }
 
@@ -398,12 +455,15 @@ export default function piSmartWebSearch(api: ExtensionAPI): void {
       const reportProgress = () => onUpdate?.({ content: [], details: { progressByQuery } });
       reportProgress();
 
-      // One query at a time, so waitBeforeNextFetch actually spaces the requests out.
+      // One query at a time, so waitBeforeNextFetch actually spaces the requests out. A
+      // rate-limited query is retried once inside fetchSearchWithRetry, after the wait the
+      // soft ban asks for.
       for (const entry of progressByQuery) {
         entry.status = "loading";
         reportProgress();
 
-        entry.result = await fetchReadablePage(buildSearchUrl(entry.query), resultsPerQuery);
+        entry.result = await fetchSearchWithRetry(buildSearchUrl(entry.query), resultsPerQuery);
+        entry.outcome = entry.result.outcome;
         entry.status = entry.result.ok ? "done" : "error";
         reportProgress();
       }
