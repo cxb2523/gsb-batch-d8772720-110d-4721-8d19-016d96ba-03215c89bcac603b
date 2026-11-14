@@ -164,6 +164,32 @@ describe('Scraper', () => {
 				rr.getText().should.be.eql('OK');
 			});
 
+			it('should reuse an already loaded resource when a redirect ends at its url', async () => {
+				nock('http://example.com').get('/alias.png').reply(302, '', { location: 'http://example.com/img/logo.png' });
+				nock('http://example.com').get('/img/logo.png').reply(200, 'image data', { 'content-type': 'image/png' });
+
+				const s = new Scraper({
+					urls: ['http://example.com'],
+					directory: testDirname,
+					plugins: [ new GenerateFilenamePlugin() ]
+				});
+
+				// simulate a resource which was requested and loaded earlier under its final url
+				const loadedResource = new Resource('http://example.com/img/logo.png', 'images/logo.png');
+				loadedResource.setText('image data');
+				s.loadResource(loadedResource);
+				s.requestedResourcePromises.delete('http://example.com/img/logo.png');
+
+				const aliasResource = new Resource('http://example.com/alias.png');
+				aliasResource.getDepth = sinon.stub().returns(2);
+
+				const result = await s.requestResource(aliasResource);
+
+				// the loaded resource is reused, nothing is saved under the alias
+				result.should.be.eql(loadedResource);
+				aliasResource.getUrl().should.be.eql('http://example.com/alias.png');
+			});
+
 			it('should ignore urlFilter for the redirect target if resource depth=0', async () => {
 				nock('http://example.com').get('/').reply(301, '', { location: 'https://www.example.com/' });
 				nock('https://www.example.com').get('/').reply(200, 'OK');
