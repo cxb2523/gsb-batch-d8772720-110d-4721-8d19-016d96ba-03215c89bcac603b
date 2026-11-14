@@ -1,0 +1,61 @@
+schema_version: 1
+mode: full
+
+repository:
+  url: https://github.com/wyg916/douyin-fabu.git
+  owner: wyg916
+  name: douyin-fabu
+  visibility: public
+  description: Local-first Playwright RPA console for validated Douyin image-post scheduling and publishing.
+  homepage: null
+  topics:
+    - douyin
+    - playwright
+    - rpa
+    - automation
+    - image-publishing
+    - nodejs
+    - windows
+    - feishu
+
+source_control:
+  remote_name: origin
+  default_branch: main
+  preparation_branch: chore/open-source-release
+  nonempty_remote_strategy: pull-request
+  merge_preparation_pr: false
+
+release:
+  license: MIT
+  version: v0.1.0
+  create_release: true
+  draft_first: false
+  prerelease: false
+
+content:
+  primary_readme_language: en
+  additional_readme_languages:
+    - zh-CN
+  research_reference_repositories: true
+  required_governance_files: true
+
+screenshots:
+  required_for_ui_projects: true
+  maximum: 3
+  output_directory: docs/images
+  demo_data_only: true
+
+security:
+  scan_git_history: true
+  block_on:
+    - critical
+    - high
+  require_clean_tree_before_publish: true
+  enable_dependabot_alerts: true
+  enable_dependabot_security_updates: true
+  enable_private_vulnerability_reporting: true
+
+approval:
+  required: true
+  invalidate_on_head_change: true
+  invalidate_on_worktree_change: true

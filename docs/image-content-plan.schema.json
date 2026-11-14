@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.douyin-publisher/image-content-plan.schema.json",
+  "title": "抖音图文批次策划计划",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "source_path",
+      "image_number",
+      "publish_number",
+      "title",
+      "topics",
+      "bgm",
+      "artist",
+      "publish_time"
+    ],
+    "properties": {
+      "source_path": {
+        "type": "string",
+        "minLength": 1
+      },
+      "image_number": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "publish_number": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 15
+      },
+      "topics": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^#[^\\s#-]+$"
+        }
+      },
+      "bgm": {
+        "type": "string",
+        "minLength": 1
+      },
+      "artist": {
+        "type": "string",
+        "minLength": 1
+      },
+      "publish_time": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$"
+      }
+    }
+  }
+}

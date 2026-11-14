@@ -1,0 +1,6 @@
+{
+  "start_date": "YYYY-MM-DD",
+  "batch_id": "replace-with-a-new-unique-batch-id",
+  "published_through": 0,
+  "instructions": "Set a valid start date and create a new unique batch ID for every new image batch."
+}

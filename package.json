@@ -1,0 +1,56 @@
+{
+  "name": "douyin-rpa-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first Playwright RPA console for validated Douyin image-post scheduling and publishing.",
+  "license": "MIT",
+  "homepage": "https://github.com/wyg916/douyin-fabu#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wyg916/douyin-fabu.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wyg916/douyin-fabu/issues"
+  },
+  "keywords": [
+    "douyin",
+    "playwright",
+    "rpa",
+    "automation",
+    "image-publishing",
+    "feishu"
+  ],
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "panel": "node control-panel.js",
+    "health": "node scripts/check-health.js",
+    "check:account1": "node scripts/login-check.js account1",
+    "check:account2": "node scripts/login-check.js account2",
+    "check:account3": "node scripts/login-check.js account3",
+    "login:account1": "node scripts/login-check.js account1",
+    "login:account2": "node scripts/login-check.js account2",
+    "login:account3": "node scripts/login-check.js account3",
+    "dry-run:account1": "node scripts/dry-run.js account1 test-job.json",
+    "dry-run:account2": "node scripts/dry-run.js account2 test-job.json",
+    "dry-run:account3": "node scripts/dry-run.js account3 test-job.json",
+    "dry-run:feishu": "node scripts/dry-run-feishu.js",
+    "validate:content-plan": "node scripts/validate-content-plan.js",
+    "validate:local": "node scripts/local-batch.js validate",
+    "dry-run:local": "node scripts/local-batch.js dry-run",
+    "publish:local": "node scripts/local-batch.js publish",
+    "reconcile:local": "node scripts/reconcile-local.js",
+    "scheduler:once": "node scripts/scheduler.js --once",
+    "scheduler": "node scripts/scheduler.js",
+    "check:syntax": "node --check server.js && node --check control-panel.js && node --check douyin.js && node --check feishu.js",
+    "test": "node --test",
+    "check": "npm run check:syntax && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "1.62.1"
+  }
+}

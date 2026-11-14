@@ -1,0 +1,24 @@
+{
+  "anchors": {
+    "account1": {
+      "profileDir": "profiles/account1"
+    },
+    "account2": {
+      "profileDir": "profiles/account2"
+    },
+    "account3": {
+      "profileDir": "profiles/account3"
+    }
+  },
+  "tableAnchors": {
+    "tbl_example_account1": "account1",
+    "tbl_example_account2": "account2",
+    "tbl_example_account3": "account3"
+  },
+  "anchorAliases": {
+    "主播A": "account1",
+    "主播B": "account2",
+    "主播C": "account3"
+  },
+  "note": "Local seven-field batch paths and real-publish authorization are configured through .env."
+}

@@ -1,0 +1,10 @@
+{
+  "anchor_key": "account1",
+  "batch_id": "local-dry-run-example",
+  "title": "窗边慢一点",
+  "body": "",
+  "hashtags": ["#窗边时光", "#通透光影", "#舒适穿搭"],
+  "music_keyword": "晚风吹雪",
+  "scheduled_at": "2026-09-02 09:40",
+  "images": ["test-assets/cover.png"]
+}

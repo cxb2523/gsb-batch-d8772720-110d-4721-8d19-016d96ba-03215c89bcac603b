@@ -1,0 +1,15 @@
+.git
+.github
+.codex-private
+.env
+.env.*
+!.env.example
+.local-state
+config.json
+downloads
+node_modules
+profiles
+screenshots
+workspace
+npm-debug.log*
+*.log

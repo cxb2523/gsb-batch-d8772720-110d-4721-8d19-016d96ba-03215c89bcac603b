@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>抖音图文发布控制台</title>
+  <link rel="stylesheet" href="/control-panel.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">DOUYIN IMAGE PUBLISHER</p>
+        <h1>抖音图文发布控制台</h1>
+        <p class="subtitle">先选择你的素材状态，界面只显示当前需要执行的步骤。</p>
+      </div>
+      <div class="topbar-actions">
+        <span id="safety-chip" class="chip chip-safe">持久安全模式</span>
+        <button id="refresh-button" class="button button-quiet" type="button">刷新状态</button>
+      </div>
+    </header>
+
+    <section class="status-strip" aria-label="当前批次状态">
+      <div class="status-item">
+        <span>批次</span>
+        <div class="batch-value-row">
+          <strong id="batch-id">读取中…</strong>
+          <button id="copy-batch-id" class="mini-button" type="button" disabled>复制批次号</button>
+        </div>
+      </div>
+      <div class="status-item">
+        <span>待发布</span>
+        <strong id="pending-count">—</strong>
+      </div>
+      <div class="status-item">
+        <span>排期范围</span>
+        <strong id="schedule-range">—</strong>
+      </div>
+      <div class="status-item">
+        <span>批次校验</span>
+        <strong id="validation-state">读取中…</strong>
+      </div>
+    </section>
+
+    <section class="chooser" aria-labelledby="chooser-title">
+      <div class="section-heading">
+        <p class="step-label">第一步</p>
+        <h2 id="chooser-title">你的图片现在在哪一步？</h2>
+      </div>
+      <div class="mode-grid" role="tablist" aria-label="流程选择">
+        <button class="mode-card is-selected" id="mode-full" type="button" role="tab" aria-selected="true" aria-controls="flow-full" data-mode="full">
+          <span class="mode-number">A</span>
+          <span>
+            <strong>新图片完整流程</strong>
+            <small>图片还在“待发布-素材”，需要分析、排期和重命名</small>
+          </span>
+        </button>
+        <button class="mode-card" id="mode-direct" type="button" role="tab" aria-selected="false" aria-controls="flow-direct" data-mode="direct">
+          <span class="mode-number">B</span>
+          <span>
+            <strong>已重命名，直接发布</strong>
+            <small>七字段文件已在“已重命名-素材”，跳过图片分析</small>
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <section id="flow-full" class="workflow" role="tabpanel" aria-labelledby="mode-full">
+      <div class="workflow-head">
+        <div>
+          <p class="step-label">流程 A</p>
+          <h2>新图片完整流程</h2>
+        </div>
+        <span class="requirement">图片分析由 Codex 完成</span>
+      </div>
+
+      <ol class="steps">
+        <li class="step-row">
+          <span class="step-index">1</span>
+          <div class="step-content">
+            <h3>放入原始图片</h3>
+            <p>原图放入 <code>待发布-素材</code>。处理过程只复制，不修改图片和 EXIF。</p>
+            <div class="row-actions">
+              <button class="button button-secondary" type="button" data-folder="source">打开待发布-素材</button>
+              <button class="button button-danger-outline" type="button" data-clear-folder="source">一键清空</button>
+              <span id="source-count" class="inline-state">—</span>
+            </div>
+            <p id="source-clear-result" class="folder-action-result" aria-live="polite"></p>
+          </div>
+          <code class="source-file">待发布-素材\</code>
+        </li>
+
+        <li class="step-row">
+          <span class="step-index">2</span>
+          <div class="step-content">
+            <h3>指定开始日期并让 Codex 分析整批图片</h3>
+            <p>本地发布器没有视觉模型。复制下面的任务指令到当前 Codex 任务，由 Codex 按项目统一规范完成整批排序、时段节奏、标题、话题、BGM和七字段副本。</p>
+            <div class="date-actions">
+              <label>开始日期 <input id="start-date" type="date"></label>
+              <button id="copy-analysis-prompt" class="button button-primary" type="button">复制完整分析指令</button>
+            </div>
+            <p id="copy-hint" class="inline-state" aria-live="polite"></p>
+          </div>
+          <code class="source-file">douyin-image-publish-automation</code>
+        </li>
+
+        <li class="step-row">
+          <span class="step-index">3</span>
+          <div class="step-content">
+            <h3>检查重命名结果</h3>
+            <p>确认生成的副本位于 <code>已重命名-素材</code>，文件名包含标题、3个话题、BGM和发布时间。</p>
+            <div class="row-actions">
+              <button class="button button-secondary" type="button" data-folder="renamed">打开已重命名-素材</button>
+              <button class="button button-danger-outline" type="button" data-clear-folder="renamed">一键清空</button>
+              <span id="renamed-count" class="inline-state">—</span>
+            </div>
+            <p id="renamed-clear-result" class="folder-action-result" aria-live="polite"></p>
+          </div>
+          <code class="source-file">douyin-image-publish-automation</code>
+        </li>
+
+        <li class="step-row">
+          <span class="step-index">4</span>
+          <div class="step-content">
+            <h3>整批校验</h3>
+            <p>检查编号连续、每天不超过3条、严格3话题、BGM不重复以及2小时至14天的排期窗口。</p>
+            <button class="button button-primary" type="button" data-job="validate">运行批次校验</button>
+          </div>
+          <code class="source-file">scripts\local-batch.js validate</code>
+        </li>
+
+        <li class="step-row step-final">
+          <span class="step-index">5</span>
+          <div class="step-content">
+            <h3>进入直接发布流程</h3>
+            <p>批次校验 PASS 后，继续执行登录、单条演练和正式发布。</p>
+            <button id="continue-direct" class="button button-dark" type="button">进入流程 B</button>
+          </div>
+          <code class="source-file">同一控制台</code>
+        </li>
+      </ol>
+    </section>
+
+    <section id="flow-direct" class="workflow is-hidden" role="tabpanel" aria-labelledby="mode-direct" hidden>
+      <div class="workflow-head">
+        <div>
+          <p class="step-label">流程 B</p>
+          <h2>从“已重命名-素材”直接发布</h2>
+        </div>
+        <label class="account-select">发布账号
+          <select id="account-select"><option value="account1">account1</option></select>
+        </label>
+      </div>
+
+      <div class="publish-flow" aria-label="直接发布步骤">
+        <article class="publish-step">
+          <span>01</span>
+          <h3>检查登录</h3>
+          <p>已登录会快速通过；未登录时二维码最长保留15分钟。</p>
+          <button class="button button-primary" type="button" data-job="login">检查并登录</button>
+          <code>scripts\login-check.js</code>
+        </article>
+        <article class="publish-step">
+          <span>02</span>
+          <h3>校验批次</h3>
+          <p>整批校验不通过时，不会打开发布页面。</p>
+          <button class="button button-primary" type="button" data-job="validate">运行批次校验</button>
+          <code>scripts\local-batch.js validate</code>
+        </article>
+        <article class="publish-step">
+          <span>03</span>
+          <h3>安全演练</h3>
+          <p>填写下一条作品并截图，不点击最终“发布”。</p>
+          <button class="button button-primary" type="button" data-job="dry-run">演练下一条</button>
+          <code>scripts\local-batch.js dry-run</code>
+        </article>
+        <article class="publish-step publish-step-verify">
+          <span>04</span>
+          <h3>正式发布并验收</h3>
+          <p>逐条提交；每条必须在内容管理中核对标题、时间和状态后才继续。</p>
+          <button class="button button-secondary" type="button" data-job="reconcile">核对不确定结果</button>
+          <code>scripts\local-batch.js publish</code>
+        </article>
+      </div>
+
+      <section class="publish-gate" aria-labelledby="publish-gate-title">
+        <div class="gate-copy">
+          <p class="step-label">正式发布双重确认</p>
+          <h3 id="publish-gate-title">授权仅对本次任务临时生效</h3>
+          <p>控制台不会把真实发布永久写入 <code>.env</code>。任务结束后自动恢复持久安全模式。</p>
+        </div>
+        <div class="gate-form">
+          <label>输入当前批次 ID
+            <input id="publish-batch-id" type="text" autocomplete="off" spellcheck="false" placeholder="请完整输入批次 ID">
+          </label>
+          <label>发布范围
+            <select id="publish-scope">
+              <option value="all">发布全部剩余条目</option>
+              <option value="one">只发布下一条</option>
+            </select>
+          </label>
+          <label class="confirm-check"><input id="publish-confirm" type="checkbox"> 我确认使用当前账号正式发布该批次</label>
+          <button id="publish-button" class="button button-danger" type="button" disabled>开始正式发布</button>
+          <p id="publish-gate-hint" class="gate-hint">批次校验通过、批次 ID 一致并勾选确认后才能发布。</p>
+        </div>
+      </section>
+    </section>
+
+    <section class="console" aria-labelledby="console-title">
+      <div class="console-head">
+        <div>
+          <p class="step-label">运行状态</p>
+          <h2 id="console-title">任务日志</h2>
+        </div>
+        <span id="job-chip" class="chip">当前无任务</span>
+      </div>
+      <pre id="job-output" tabindex="0">等待操作。建议顺序：登录 → 校验 → 演练 → 正式发布。</pre>
+      <p class="console-note">发布任务运行时不要关闭这个控制台窗口。结果不确定时，系统会停止并先查内容管理，禁止盲目重发。</p>
+    </section>
+
+    <footer>
+      <p>推荐启动文件：<code>一键打开可视化控制台.cmd</code></p>
+      <div class="footer-actions">
+        <button class="text-button" type="button" data-folder="screenshots">打开演练截图目录</button>
+      </div>
+    </footer>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/control-panel-client.js" defer></script>
+</body>
+</html>

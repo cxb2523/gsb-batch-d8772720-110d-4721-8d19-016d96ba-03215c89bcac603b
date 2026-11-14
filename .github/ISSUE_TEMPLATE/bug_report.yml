@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a reproducible defect without sharing account data or secrets.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never paste cookies, QR codes, tokens, `.env` contents, browser profiles, or unredacted screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Workflow
+      options:
+        - Control panel
+        - Local seven-field batch
+        - Feishu scheduler/API
+        - Login/profile
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include sanitized steps, expected behavior, and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Sanitized diagnostics
+      description: Remove paths, account names, record IDs, titles, cookies, tokens, and images of real people.
