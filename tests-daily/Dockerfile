@@ -1,0 +1,101 @@
+# Let's extract kiwix-tools as usual on alpine temporary build container
+FROM alpine:3.21 as kiwix-serve
+LABEL org.opencontainers.image.source https://github.com/openzim/kiwix-tools
+
+# TARGETPLATFORM is injected by docker build
+ARG TARGETPLATFORM
+ARG KIWIX_TOOLS_VERSION
+
+RUN set -e && \
+    apk --no-cache add dumb-init curl && \
+    echo "TARGETPLATFORM: $TARGETPLATFORM" && \
+    if [ "$TARGETPLATFORM" = "linux/386" ]; then ARCH="i586"; \
+    # linux/arm64/v8 points to linux/arm64
+    elif [ "$TARGETPLATFORM" = "linux/arm64/v8" \
+        -o "$TARGETPLATFORM" = "linux/arm64" ]; then ARCH="aarch64"; \
+    # linux/arm translates to linux/arm/v7
+    elif [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then ARCH="armv8"; \
+    elif [ "$TARGETPLATFORM" = "linux/arm/v6" ]; then ARCH="armv6"; \
+    elif [ "$TARGETPLATFORM" = "linux/amd64/v3" \
+        -o "$TARGETPLATFORM" = "linux/amd64/v2" \
+        -o "$TARGETPLATFORM" = "linux/amd64" ]; then ARCH="x86_64"; \
+    # we dont suppot any other arch so let it fail
+    else ARCH="unknown"; fi && \
+    mkdir /kiwix-serve && \
+    if [ -n "$KIWIX_TOOLS_VERSION" ] ; then \
+        # explicit version requested, do not fallback to another one
+        url="http://mirror.download.kiwix.org/nightly/$KIWIX_TOOLS_VERSION/kiwix-tools_linux-$ARCH-$KIWIX_TOOLS_VERSION.tar.gz" && \
+        echo "URL: $url" && \
+        curl -k -f -L $url | tar -xz -C /kiwix-serve --strip-components 1 ; \
+    else \
+        # no version requested, find the most recent nightly which actually
+        # built kiwix-tools for our arch (a nightly build can fail for a given
+        # day, in which case the tarball is simply missing from that day);
+        # kiwix-tools CI is fragile enough that we look quite far back
+        MAX_DAYS_LOOKBACK=100 && \
+        found=0 && \
+        for days_ago in $(seq 0 $MAX_DAYS_LOOKBACK) ; do \
+            candidate=$(date -d @$(( $(date +%s) - days_ago * 86400 )) +"%Y-%m-%d") && \
+            url="http://mirror.download.kiwix.org/nightly/$candidate/kiwix-tools_linux-$ARCH-$candidate.tar.gz" && \
+            echo "Trying URL: $url" && \
+            if curl -k -f -s -o /dev/null --head $url ; then \
+                echo "Found nightly build: $candidate" && \
+                curl -k -f -L $url | tar -xz -C /kiwix-serve --strip-components 1 && \
+                found=1 && \
+                break ; \
+            fi ; \
+        done && \
+        if [ "$found" -ne 1 ] ; then \
+            # no nightly worked in the whole lookback window, fall back to
+            # the latest released (stable) kiwix-tools build for our arch
+            echo "No kiwix-tools nightly build found in the last $MAX_DAYS_LOOKBACK days, falling back to latest release" && \
+            url="http://mirror.download.kiwix.org/release/kiwix-tools/kiwix-tools_linux-$ARCH.tar.gz" && \
+            echo "URL: $url" && \
+            curl -k -f -L $url | tar -xz -C /kiwix-serve --strip-components 1 ; \
+        fi ; \
+    fi
+
+# Build real "workload" container
+FROM python:3.14-slim-bookworm
+
+# Add kiwix-serve
+COPY --from=kiwix-serve /kiwix-serve /usr/local/bin
+
+# Update apt + install dependencies + install Google Chrome dependencies + clean-up apt lists
+RUN apt-get update -y && \
+    apt-get install -qqy wget xvfb unzip jq && \
+    apt-get install -qqy libxss1 libappindicator1 libgconf-2-4 \
+    fonts-liberation libasound2 libnspr4 libnss3 libx11-xcb1 libxtst6 lsb-release xdg-utils \
+    libgbm1 libnss3 libatk-bridge2.0-0 libgtk-3-0 libx11-xcb1 libxcb-dri3-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Fetch the latest version numbers and URLs for Chrome and ChromeDriver
+RUN wget -q -O /tmp/versions.json https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json
+
+# Install chrome
+RUN CHROME_URL=$(jq -r '.channels.Stable.downloads.chrome[] | select(.platform=="linux64") | .url' /tmp/versions.json) && \
+    wget -q --continue -O /tmp/chrome-linux64.zip $CHROME_URL && \
+    unzip /tmp/chrome-linux64.zip -d /opt/chrome
+
+RUN chmod +x /opt/chrome/chrome-linux64/chrome
+
+# Install chromedriver
+RUN CHROMEDRIVER_URL=$(jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform=="linux64") | .url' /tmp/versions.json) && \
+    wget -q --continue -O /tmp/chromedriver-linux64.zip $CHROMEDRIVER_URL && \
+    unzip /tmp/chromedriver-linux64.zip -d /opt/chromedriver && \
+    chmod +x /opt/chromedriver/chromedriver-linux64/chromedriver
+
+# Set up Chromedriver Environment variables
+ENV CHROMEDRIVER_DIR /opt/chromedriver
+ENV PATH $CHROMEDRIVER_DIR:$PATH
+
+# Clean up
+RUN rm /tmp/chrome-linux64.zip /tmp/chromedriver-linux64.zip /tmp/versions.json
+
+# Update pip, install selenium, create work directory
+RUN \
+   python -m pip install --no-cache-dir -U \
+     pip \
+     selenium==4.40.0 \
+     pytest==9.0.2 \
+&& mkdir -p /work

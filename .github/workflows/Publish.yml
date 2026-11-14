@@ -1,0 +1,47 @@
+name: Publish released version
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  docker-publish:
+    runs-on: ubuntu-24.04
+    name: "Docker publish"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build and push Docker images
+        uses: openzim/docker-publish-action@v10
+        with:
+          image-name: openzim/zimit
+          tag-pattern: /^v([0-9.]+)$/
+          latest-on-tag: true
+          restrict-to: openzim/zimit
+          registries: ghcr.io
+          credentials: |
+            GHCRIO_USERNAME=${{ secrets.GHCR_USERNAME }}
+            GHCRIO_TOKEN=${{ secrets.GHCR_TOKEN }}
+          repo_description: auto
+          repo_overview: auto
+          platforms: |
+            linux/amd64
+            linux/arm64
+
+  docker-start:
+    runs-on: ${{ matrix.os }}
+    name: "Start Docker image on ${{ matrix.os }}"
+    needs: docker-publish
+    strategy:
+      matrix:
+        os:
+          [
+            ubuntu-24.04,
+            ubuntu-24.04-arm,
+          ]
+
+    steps:
+      - name: Ensure we can start the Docker image
+        run: |
+          docker run --rm ghcr.io/openzim/zimit:latest zimit --version

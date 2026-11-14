@@ -1,0 +1,52 @@
+name: DailyTests
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+
+jobs:
+  run-daily-tests:
+    runs-on: [self-hosted, Linux, X64]
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+
+      - name: free disk space
+        run: docker system prune -af
+
+      - name: build zimit image
+        run: docker build -t local-zimit .
+
+      - name: run crawl of test website
+        run: |
+          docker run -v $PWD/output:/output local-zimit zimit --seeds https://website.test.openzim.org/ --name tests_eng_test-website --zim-file tests_eng_test-website.zim || EXIT_CODE=$?
+          sudo chown -R $(id -u -n):$(id -g -n) $PWD/output
+          exit ${EXIT_CODE:-0}
+
+      - name: archive ZIM
+        uses: actions/upload-artifact@v6
+        with:
+          name: tests_eng_test-website.zim
+          path: output/tests_eng_test-website.zim
+          retention-days: 30
+
+      - name: run zimcheck
+        run: |
+          docker run --rm \
+            -v "$PWD/output:/output:ro" \
+            ghcr.io/openzim/zim-tools:3.8.0 \
+            zimcheck --empty --checksum --integrity --favicon --main \
+            /output/tests_eng_test-website.zim
+
+      - name: build tests-daily Docker image
+        run: docker build -t local-tests-daily tests-daily
+
+      - name: run integration test suite
+        run: docker run -e SKIP_YOUTUBE_TEST="False" -v $PWD/tests-daily/daily.py:/app/daily.py -v $PWD/output:/output local-tests-daily bash -c "cd /app && pytest -v --log-level=INFO --log-format='%(levelname)s - %(message)s' daily.py"
+
+      - name: cleanup docker
+        if: always()
+        run: docker system prune -af
