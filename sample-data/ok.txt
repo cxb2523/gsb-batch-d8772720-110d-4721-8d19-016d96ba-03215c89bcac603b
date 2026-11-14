@@ -1,0 +1,5 @@
+StatPlanet data-collect sample file
+===================================
+This is a normal, existing text file used by data-collect-acceptance.html
+to verify the success path of the collection module.
+Line 3: 正常采集应报告本文件的内容长度。

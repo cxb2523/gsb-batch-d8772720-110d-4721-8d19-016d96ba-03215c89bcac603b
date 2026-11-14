@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StatPlanet 数据采集验收页</title>
+<style>
+  body { font-family: system-ui, "Segoe UI", sans-serif; margin: 0; background: #f4f6f8; color: #222; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 17px; margin: 28px 0 6px; }
+  .scenario { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 14px 18px; margin-bottom: 18px; }
+  .expect { color: #555; font-size: 13px; margin: 4px 0 10px; }
+  code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+  pre { background: #0f1720; color: #cfe3f5; padding: 10px 12px; border-radius: 6px; font-size: 12px; overflow: auto; }
+  .howto { background: #fff8e6; border: 1px solid #ead9a0; border-radius: 8px; padding: 12px 18px; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>StatPlanet 数据采集模块验收页</h1>
+
+  <div class="howto">
+    <strong>如何运行：</strong>浏览器不允许对 <code>file://</code> 页面发起 fetch，
+    请在仓库根目录启动任意静态服务器后再打开本页，例如：
+    <pre>cd 仓库根目录
+python -m http.server 8000
+# 然后访问 http://localhost:8000/data-collect-acceptance.html</pre>
+    每个场景下方会出现一个汇总区（与仪表盘内渲染的完全一致，仅 id 前缀不同），
+    并附原始结果 JSON，便于逐项核对。
+  </div>
+
+  <div class="scenario">
+    <h2>场景 1 · 正常采集</h2>
+    <p class="expect">清单：<code>["sample-data/ok.txt", "sample-data/ok2.txt"]</code>。
+      预期：总数 2、成功 2；每项显示内容长度（字符数）。</p>
+    <div id="scenario-1"></div>
+  </div>
+
+  <div class="scenario">
+    <h2>场景 2 · 单文件失败不中断其余项</h2>
+    <p class="expect">清单：<code>["sample-data/ok.txt", "sample-data/missing.txt", "sample-data/ok2.txt"]</code>。
+      预期：成功 2、失败 1；<code>missing.txt</code> 显示失败原因（HTTP 404），
+      其后的 <code>ok2.txt</code> 仍然采集成功。</p>
+    <div id="scenario-2"></div>
+  </div>
+
+  <div class="scenario">
+    <h2>场景 3 · 重复路径跳过</h2>
+    <p class="expect">清单：<code>["sample-data/ok.txt", "sample-data/ok.txt"]</code>。
+      预期：成功 1、跳过 1；第二项标记 skipped 并注明与第 1 项重复（只采一次）。</p>
+    <div id="scenario-3"></div>
+  </div>
+
+  <div class="scenario">
+    <h2>场景 4 · 超时判定</h2>
+    <p class="expect">清单：<code>["sample-data/slow.txt", "sample-data/ok.txt"]</code>，超时设为 500 ms。
+      本场景通过 <code>options.fetchImpl</code> 注入一个永不返回的响应来模拟挂起的服务器
+      （真实环境中慢服务器/断网会走同一条超时路径）；超时由该项自己的定时器判定，
+      不等待其他请求结束。预期：失败 1（原因含 timeout）、成功 1，
+      且汇总在约 500 ms 后即出现，不会被挂起项拖住。</p>
+    <div id="scenario-4"></div>
+  </div>
+
+  <div class="scenario">
+    <h2>场景 5 · 全部失败仍显示汇总</h2>
+    <p class="expect">清单：<code>["sample-data/missing.txt", "sample-data/also-missing.txt"]</code>。
+      预期：失败 2，汇总区照常出现，并明确提示“没有可用数据”，页面不空白。</p>
+    <div id="scenario-5"></div>
+  </div>
+
+  <div class="scenario">
+    <h2>场景 6 · 默认清单（data/ 下实际存在的文本文件）</h2>
+    <p class="expect">使用 <code>DataCollect.DEFAULT_MANIFEST</code>（data/ 下 10 个文本文件），
+      超时 10 s。预期：全部成功，各项显示内容长度。</p>
+    <div id="scenario-6"></div>
+  </div>
+</main>
+
+<script src="js/data-collect.js"></script>
+<script>
+(function () {
+  function run(targetId, prefix, paths, options) {
+    var host = document.getElementById(targetId);
+    return DataCollect.collect(paths, options).then(function (results) {
+      DataCollect.renderSummary(results, host, { idPrefix: prefix });
+      var pre = document.createElement('pre');
+      // content 字段可能很长，JSON 里只保留长度，便于核对
+      pre.textContent = JSON.stringify(results.map(function (r) {
+        var copy = {};
+        for (var k in r) {
+          if (k === 'content') { copy.content = '<' + r.content.length + ' chars>'; }
+          else { copy[k] = r[k]; }
+        }
+        return copy;
+      }), null, 2);
+      host.appendChild(pre);
+    });
+  }
+
+  run('scenario-1', 's1',
+    ['sample-data/ok.txt', 'sample-data/ok2.txt'],
+    { timeoutMs: 5000 });
+
+  run('scenario-2', 's2',
+    ['sample-data/ok.txt', 'sample-data/missing.txt', 'sample-data/ok2.txt'],
+    { timeoutMs: 5000 });
+
+  run('scenario-3', 's3',
+    ['sample-data/ok.txt', 'sample-data/ok.txt'],
+    { timeoutMs: 5000 });
+
+  // 场景 4：注入一个对 slow.txt 永不 resolve 的 fetch，模拟挂起的服务器；
+  // 其余路径仍走真实 fetch。超时判定完全由 data-collect.js 自己的定时器完成。
+  var hangingFetch = function (path, fetchOptions) {
+    if (path.indexOf('slow.txt') !== -1) {
+      return new Promise(function () { /* 永不返回 */ });
+    }
+    return fetch(path, fetchOptions);
+  };
+  run('scenario-4', 's4',
+    ['sample-data/slow.txt', 'sample-data/ok.txt'],
+    { timeoutMs: 500, fetchImpl: hangingFetch });
+
+  run('scenario-5', 's5',
+    ['sample-data/missing.txt', 'sample-data/also-missing.txt'],
+    { timeoutMs: 5000 });
+
+  run('scenario-6', 's6',
+    DataCollect.DEFAULT_MANIFEST,
+    { timeoutMs: 10000 });
+})();
+</script>
+</body>
+</html>

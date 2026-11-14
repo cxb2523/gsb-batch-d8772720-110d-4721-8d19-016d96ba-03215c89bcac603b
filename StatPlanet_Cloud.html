@@ -173,6 +173,28 @@
             }
         </script>
         
+		<script src="js/data-collect.js"></script>
+		<script>
+			// 数据采集：逐项采集 data/ 下实际存在的文本数据文件，
+			// 完成后在仪表盘容器（#statsilk-container）内渲染汇总区。
+			// 采集独立于 createjs 预加载队列运行，单项失败只记录、不中断其余项。
+			(function () {
+				function runDataCollection() {
+					DataCollect.collect(DataCollect.DEFAULT_MANIFEST, { timeoutMs: 10000 })
+						.then(function (results) {
+							DataCollect.renderSummary(results, '#statsilk-container');
+						})
+						.catch(function (err) {
+							console.error('data collection failed to run:', err);
+						});
+				}
+				if (document.readyState === 'loading') {
+					document.addEventListener('DOMContentLoaded', runDataCollection);
+				} else {
+					runDataCollection();
+				}
+			})();
+		</script>
 
     </body>
 </html>

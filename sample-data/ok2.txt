@@ -1,0 +1,2 @@
+Another existing sample file, used as a second successful item
+so that "one failure does not interrupt the rest" is observable.
