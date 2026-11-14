@@ -1,0 +1,138 @@
+'use client'
+
+import NumberFlow from '@number-flow/react'
+import { Terminal } from 'lucide-react'
+// @ts-ignore
+import { Sparklines, SparklinesLine } from 'react-sparklines'
+
+import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs'
+import { datasetLabel, humanBytes } from '~/dashboard/formatters'
+import { PipelineDisconnected } from '~/dashboard/pipeline-disconnected'
+import { Profiler } from '~/dashboard/profiler'
+import { QueryPreview } from '~/dashboard/query-preview'
+import { TransformationPreview } from '~/dashboard/transformation-preview'
+import { PipeStatus, useStats } from '~/hooks/use-metrics'
+import { useServerIndex } from '~/hooks/use-server-context'
+import { useUrlParam } from '~/hooks/use-url-param'
+
+const sparklineStyle = { fill: '#d0a9e2' }
+const sparklineColor = 'rgb(170, 140, 235)'
+
+const VALID_TABS = ['profiler', 'data-flow', 'query']
+
+export function Pipeline({ pipeId }: { pipeId: string }) {
+  const { serverIndex } = useServerIndex()
+  const { data, isError } = useStats(serverIndex)
+
+  const [tab, setTab] = useUrlParam('tab', 'profiler', {
+    validate: (v) => VALID_TABS.includes(v),
+  })
+
+  const pipe = data?.pipes.find((pipe) => pipe.id === pipeId)
+
+  if (!pipe) return <PipelineDisconnected />
+
+  return (
+    <div className="flex-1 min-w-0">
+      {pipe.status === PipeStatus.Disconnected ? (
+        <Alert variant="destructive" className="mb-3">
+          <Terminal />
+          <AlertTitle>Pipe disconnected</AlertTitle>
+          <AlertDescription>Showing last known data. Waiting for reconnection...</AlertDescription>
+        </Alert>
+      ) : null}
+      <div className={`p-4 border rounded-xl${isError ? ' opacity-60' : ''}`}>
+        <div className="flex justify-between">
+          <div className="flex gap-2">
+            <div>{pipeId}</div>
+          </div>
+
+          <div className="justify-end">
+            <div className="flex gap-1">
+              <NumberFlow value={pipe.progress.current}></NumberFlow>
+              <div className="text-muted">/</div>
+              <NumberFlow className="text-muted-foreground" value={pipe.progress.to}></NumberFlow>
+            </div>
+          </div>
+        </div>
+        <div className="w-full h-4 overflow-hidden rounded-full bg-gradient-primary my-1.5">
+          <div
+            style={{
+              width: pipe.progress.percent.toFixed(0) + '%',
+            }}
+            className="h-full gradient-primary rounded-full"
+          />
+        </div>
+
+        <div className="flex justify-between mb-3 text-muted-foreground text-xs">
+          <div className="flex items-center gap-1.5">
+            {pipe.dataset?.metadata?.logo_url && (
+              <img src={pipe.dataset.metadata.logo_url} alt="" className="w-4 h-4" />
+            )}
+            <span>{datasetLabel(pipe)}</span>
+            {pipe.dataset?.metadata?.evm?.chain_id != null && (
+              <span className="text-muted-foreground/60">{pipe.dataset.metadata.evm.chain_id}</span>
+            )}
+          </div>
+          <div>{pipe.progress.percent.toFixed(2)}%</div>
+        </div>
+
+        <Tabs className="mt-4 mb-6" value={tab} onValueChange={setTab}>
+          <TabsList className="bg-gray-950">
+            <TabsTrigger className="" value="profiler">
+              Profiler
+            </TabsTrigger>
+            <TabsTrigger value="data-flow">Data samples</TabsTrigger>
+            <TabsTrigger value="query">Query</TabsTrigger>
+          </TabsList>
+          <TabsContent value="profiler">
+            <Profiler pipeId={pipeId} />
+          </TabsContent>
+          <TabsContent value="data-flow">
+            <TransformationPreview pipeId={pipeId} />
+          </TabsContent>
+          <TabsContent value="query">
+            <QueryPreview pipeId={pipeId} />
+          </TabsContent>
+        </Tabs>
+
+        <div className="flex items-center justify-between font-medium text-foreground/80 text-xxs">
+          <div className="flex items-center gap-1">
+            <div className="w-[90px] mr-2 bg-primary/2 rounded-sm overflow-hidden border test pt-2">
+              <Sparklines min={0} data={pipe.history.map((v) => v.blocksPerSecond)} width={100} height={32} margin={0}>
+                <SparklinesLine style={sparklineStyle} color={sparklineColor} />
+              </Sparklines>
+            </div>
+            <div>
+              <div className="text-xxs font-normal">Indexing speed</div>
+              <div>{pipe.speed.blocksPerSecond.toFixed(pipe.speed.blocksPerSecond > 1 ? 0 : 2)} blocks/sec</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-[90px] mr-2 bg-primary/2 rounded-sm overflow-hidden border test pt-2">
+              <Sparklines min={0} data={pipe.history.map((v) => v.bytesPerSecond)} width={100} height={32} margin={0}>
+                <SparklinesLine style={sparklineStyle} color={sparklineColor} />
+              </Sparklines>
+            </div>
+            <div>
+              <div className="font-normal">Download speed</div>
+              <div>{humanBytes(pipe.speed.bytesPerSecond)}/sec</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-[90px] mr-2 bg-primary/2 rounded-sm overflow-hidden border test pt-2">
+              <Sparklines min={0} data={pipe.history.map((v) => v.memory)} width={100} height={32} margin={0}>
+                <SparklinesLine style={sparklineStyle} color={sparklineColor} />
+              </Sparklines>
+            </div>
+            <div>
+              <div className="font-normal">Process memory</div>
+              <div>{data?.usage.memory && humanBytes(data.usage.memory)}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

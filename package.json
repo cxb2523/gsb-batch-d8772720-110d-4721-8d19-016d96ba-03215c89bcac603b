@@ -1,0 +1,30 @@
+{
+  "name": "sqd-pipes",
+  "private": true,
+  "repository": "",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "watch": "turbo run watch"
+  },
+  "devDependencies": {
+    "@babel/parser": "7.29.12",
+    "@biomejs/biome": "2.6.4",
+    "bun-types": "1.4.4",
+    "cpy": "13.2.3",
+    "glob": "14.0.3",
+    "recast": "0.24.0",
+    "tsup": "9.0.0",
+    "tsx": "4.23.15",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3",
+    "zx": "8.8.5"
+  },
+  "packageManager": "pnpm@10.17.0"
+}

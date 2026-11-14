@@ -1,0 +1,21 @@
+export * from './cursor-key.js'
+export * from './decode-error.js'
+export * from './errors.js'
+// Only `normalizeFinalized` is consumed across module boundaries (the target state classes). The
+// watermark class is imported directly by the source, and maxFinalized is module-internal — keep
+// them out of the package's public surface.
+export { normalizeFinalized } from './finalized-watermark.js'
+export * from './fork.js'
+export * from './formatters.js'
+export * from './logger.js'
+export * from './metrics-server.js'
+export * from './output.js'
+export * from './portal-range.js'
+export * from './portal-source.js'
+export type { Profiler, ProfilerOptions, SpanHooks } from './profiling.js'
+// `StreamInfo.state.ranges` is typed with it, so the name has to be reachable by consumers.
+export type { Range } from './query-builder.js'
+export type { PipeToOptions, ShutdownOptions, ShutdownSetting } from './shutdown.js'
+export * from './target.js'
+export * from './transformer.js'
+export * from './types.js'

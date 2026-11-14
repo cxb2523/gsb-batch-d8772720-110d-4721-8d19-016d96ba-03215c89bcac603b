@@ -1,0 +1,82 @@
+name: Test @subsquid/pipes
+
+# This job runs both the core and the CLI suites, so it must trigger on either.
+on:
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'packages/pipes/**'
+      - 'packages/pipes-cli/**'
+      - '.github/workflows/test.yml'
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - 'packages/pipes/**'
+      - 'packages/pipes-cli/**'
+      - '.github/workflows/test.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.10.2-alpine
+        ports:
+          - 8123:8123
+          - 9000:9000
+        env:
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: default
+        options: >-
+          --health-cmd "clickhouse-client --query 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -p 5432
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm run build
+
+      - name: Run @subsquid/pipes tests
+        working-directory: packages/pipes
+        env:
+          TEST_CLICKHOUSE_URL: http://localhost:8123
+          TEST_CLICKHOUSE_USERNAME: default
+          TEST_CLICKHOUSE_PASSWORD: default
+          TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+        run: pnpm test
+
+      - name: Run pipes-cli tests
+        working-directory: packages/pipes-cli
+        run: pnpm test

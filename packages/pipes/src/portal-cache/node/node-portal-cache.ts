@@ -1,0 +1,177 @@
+import { promisify } from 'node:util'
+import zlib from 'node:zlib'
+
+import { BlockCursor, Logger, PortalCache, cursorFromHeader } from '~/core/index.js'
+import { hashQuery } from '~/core/query-builder.js'
+import { last } from '~/internal/array.js'
+import { GetBlock, PortalBlockStream, PortalClient, Query, StreamData } from '~/portal-client/index.js'
+
+// zstd entered node:zlib in Node 22.15, after the typings this package pins
+const zstd = zlib as unknown as Partial<Record<'zstdCompress' | 'zstdDecompress', typeof zlib.gzip>>
+
+const compressAsync = promisify(zstd.zstdCompress ?? zlib.gzip)
+const gunzipAsync = promisify(zlib.gunzip)
+const zstdDecompressAsync = zstd.zstdDecompress && promisify(zstd.zstdDecompress)
+
+const GZIP_MAGIC = Buffer.from([0x1f, 0x8b])
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+
+export type Options<ImplOptions> = {
+  /**
+   * Enable or disable data compression on write.
+   * Uses zstd, or gzip on a runtime without zstd. Reads decode any of them whatever this is set to.
+   * @default true
+   */
+  compress?: boolean
+} & ImplOptions
+
+export type SaveBatch = { queryHash: string; cursors: { first: number; last: number }; data: Buffer }
+export type StreamBatch = { queryHash: string; fromBlock: number }
+
+export abstract class PortalCacheNodeJs<ImplOptions> implements PortalCache {
+  protected readonly options: Options<ImplOptions>
+
+  protected constructor(options: Options<ImplOptions>) {
+    this.options = {
+      compress: true,
+      ...options,
+    }
+  }
+
+  #initialized = false
+
+  protected abstract initialize?(): Promise<void>
+  protected abstract stream(request: StreamBatch): AsyncIterable<Uint8Array>
+  protected abstract save(batch: SaveBatch): Promise<void>
+
+  protected async compress(value: string): Promise<Buffer> {
+    if (!this.options.compress) return Buffer.from(value)
+
+    return await compressAsync(value)
+  }
+
+  /**
+   * A stored value does not record its codec, and the runtime that wrote it or its `compress`
+   * option may differ from this one, so the codec is read from the value's magic bytes.
+   */
+  protected async decompress(value: Uint8Array): Promise<string> {
+    // Bun's SQLite driver returns a BLOB as a plain Uint8Array, which has no `equals` or `toString(encoding)`
+    const buffer = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+
+    if (hasPrefix(buffer, GZIP_MAGIC)) {
+      return (await gunzipAsync(buffer)).toString('utf8')
+    }
+
+    if (hasPrefix(buffer, ZSTD_MAGIC)) {
+      if (!zstdDecompressAsync) {
+        throw new Error('The portal cache holds a zstd-compressed entry, and this runtime has no zstd in node:zlib')
+      }
+
+      return (await zstdDecompressAsync(buffer)).toString('utf8')
+    }
+
+    return buffer.toString('utf8')
+  }
+
+  protected async ensureInitialized() {
+    if (this.#initialized) return
+
+    await this.initialize?.()
+
+    this.#initialized = true
+  }
+
+  async *getStream<Q extends Query>({
+    portal,
+    query,
+    logger,
+    finalized,
+    signal,
+  }: {
+    portal: PortalClient
+    query: Query
+    logger: Logger
+    finalized?: boolean
+    signal?: AbortSignal
+  }): PortalBlockStream<GetBlock<Q>> {
+    const queryHash = await hashQuery(query)
+
+    await this.ensureInitialized()
+
+    let cursor: BlockCursor = {
+      number: query.fromBlock,
+      hash: query.parentBlockHash,
+    }
+    logger.debug(`loading data from cache from ${cursor.number} block`)
+
+    for await (const message of this.stream({
+      fromBlock: cursor.number,
+      queryHash,
+    })) {
+      if (signal?.aborted) return
+
+      const decoded: StreamData<GetBlock<Q>> = reviveMeta(JSON.parse(await this.decompress(message)))
+
+      yield decoded
+
+      cursor = cursorFromHeader(last(decoded.blocks))
+      cursor.number += 1
+    }
+
+    if (query.toBlock && cursor.number >= query.toBlock) return
+
+    logger.debug(`switching to the portal from ${cursor.number} block`)
+    for await (const batch of portal.getStream(
+      {
+        ...query,
+        fromBlock: cursor.number,
+        parentBlockHash: cursor.hash,
+      } as Q,
+      { finalized, request: { abort: signal } },
+    )) {
+      const finalizedHead = batch.head.finalized?.number
+      // TODO add warning
+      if (!finalizedHead) {
+        yield batch
+        continue
+      }
+
+      const finalizedBlocks = batch.blocks.filter((b) => b.header.number <= finalizedHead)
+      if (finalizedBlocks.length) {
+        await this.save({
+          queryHash,
+          cursors: {
+            first: batch.meta.requestedFromBlock,
+            last: last(finalizedBlocks).header.number,
+          },
+          data: await this.compress(
+            JSON.stringify({
+              ...batch,
+              blocks: finalizedBlocks,
+            }),
+          ),
+        })
+      }
+
+      yield batch
+      // TODO check next batch in cache
+    }
+  }
+}
+
+function hasPrefix(value: Buffer, prefix: Buffer): boolean {
+  return value.subarray(0, prefix.length).equals(prefix)
+}
+
+/**
+ * `meta.lastBlockReceivedAt` is typed `Date`, but JSON has no date type: the round-trip through
+ * the cache hands it back as an ISO string. Consumers call `.getTime()` on it, so restore the
+ * declared type before the batch escapes the cache.
+ */
+function reviveMeta<T>(batch: StreamData<T>): StreamData<T> {
+  if (batch.meta?.lastBlockReceivedAt) {
+    batch.meta.lastBlockReceivedAt = new Date(batch.meta.lastBlockReceivedAt)
+  }
+
+  return batch
+}

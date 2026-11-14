@@ -1,0 +1,895 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { gzipSync } from 'node:zlib'
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { PortalBatch } from '~/core/index.js'
+import { defaultLogger } from '~/core/logger.js'
+import { createTarget } from '~/core/target.js'
+import { loadSqlite } from '~/drivers/sqlite/sqlite.js'
+import { evmPortalStream } from '~/evm/index.js'
+import { Options, PortalCacheNodeJs, SaveBatch, StreamBatch } from '~/portal-cache/node/node-portal-cache.js'
+import { PortalSqliteCacheOptions, portalSqliteCache } from '~/portal-cache/node/node-sqlite-cache-adapter.js'
+import { PortalClient } from '~/portal-client/index.js'
+import { createMemoryTarget } from '~/targets/memory/memory-target.js'
+import { withDir } from '~/testing/dir-fixture.js'
+import { MockPortal, blockDecoder, mockPortal, readAll } from '~/testing/index.js'
+import { withPortal } from '~/testing/portal-fixture.js'
+
+// Transform batch to only include data and meta without any functions or complex objects
+const transformBatch = ({
+  data,
+  ctx: {
+    stream: {
+      head,
+      query: {
+        // exclude another dynamic, i.e. URL
+        url,
+        ...query
+      },
+      progress,
+      // exclude progress as it contains timers and dynamic data
+      ...streamRest
+    },
+    batch: {
+      bytesSize,
+      // exclude other dynamic meta fields
+      ...batchRest
+    },
+  },
+}: PortalBatch) => ({
+  data,
+  meta: {
+    head,
+    query,
+    meta: {
+      bytesSize,
+    },
+    state: streamRest.state,
+  },
+})
+
+export async function readAllChunks<T>(stream: AsyncIterable<T>) {
+  const res: T[] = []
+
+  for await (const batch of stream) {
+    res.push(batch)
+  }
+
+  return res
+}
+
+const DB_PATH = './test.db'
+
+withDir('cancels portal retries after a cache miss', async ({ portal: open, dir }) => {
+  const portal = await open({ latest: 5 })
+  portal.fail({ status: 503, times: Number.POSITIVE_INFINITY })
+  const client = new PortalClient({ url: portal.url, http: { retryAttempts: Number.MAX_SAFE_INTEGER } })
+  const controller = new AbortController()
+  const cache = portalSqliteCache({ path: path.join(dir, 'cache.db') })
+  const reading = Array.fromAsync(
+    cache.getStream({
+      portal: client,
+      query: { type: 'evm', fromBlock: 1, toBlock: 5, fields: { block: { number: true, hash: true } } },
+      logger: defaultLogger({ level: 'silent' }),
+      signal: controller.signal,
+    }),
+  )
+
+  await vi.waitFor(() => expect(portal.requests.length).toBeGreaterThan(0))
+  controller.abort()
+
+  await expect(reading).resolves.toEqual([])
+})
+
+describe('Portal cache', () => {
+  let portal: MockPortal
+
+  afterEach(async () => {
+    await portal?.close()
+  })
+
+  beforeEach(async () => {
+    await fs.rm(DB_PATH).catch(() => {})
+  })
+
+  describe('Sqlite adapter', () => {
+    it('should store requests and get the same result on second pass', async () => {
+      portal = await mockPortal([
+        {
+          statusCode: 200,
+          data: [
+            { header: { number: 1, hash: '0x1', timestamp: 1000 } },
+            { header: { number: 2, hash: '0x2', timestamp: 2000 } },
+            { header: { number: 3, hash: '0x3', timestamp: 3000 } },
+            { header: { number: 4, hash: '0x4', timestamp: 4000 } },
+            { header: { number: 5, hash: '0x5', timestamp: 5000 } },
+          ],
+          head: { finalized: { number: 5, hash: '0x5' } },
+          validateRequest: (res) => {
+            expect(res.fromBlock).toBe(0)
+          },
+        },
+      ])
+
+      const cache = portalSqliteCache({ path: DB_PATH })
+
+      const stream = evmPortalStream({
+        id: 'test',
+        portal: portal.url,
+        outputs: blockDecoder({ from: 0, to: 5 }),
+        cache,
+      })
+
+      const res1 = (await readAllChunks(stream)).map(transformBatch)
+      const res2 = (await readAllChunks(stream)).map(transformBatch)
+
+      expect(res1).toEqual(res2)
+      expect(res2).toMatchInlineSnapshot(`
+        [
+          {
+            "data": [
+              {
+                "hash": "0x1",
+                "number": 1,
+                "timestamp": 1000,
+              },
+              {
+                "hash": "0x2",
+                "number": 2,
+                "timestamp": 2000,
+              },
+              {
+                "hash": "0x3",
+                "number": 3,
+                "timestamp": 3000,
+              },
+              {
+                "hash": "0x4",
+                "number": 4,
+                "timestamp": 4000,
+              },
+              {
+                "hash": "0x5",
+                "number": 5,
+                "timestamp": 5000,
+              },
+            ],
+            "meta": {
+              "head": {
+                "finalized": {
+                  "hash": "0x5",
+                  "number": 5,
+                },
+                "latest": undefined,
+              },
+              "meta": {
+                "bytesSize": 265,
+              },
+              "query": {
+                "hash": "1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5",
+                "raw": {
+                  "fields": {
+                    "block": {
+                      "hash": true,
+                      "number": true,
+                      "timestamp": true,
+                    },
+                  },
+                  "fromBlock": 0,
+                  "logs": undefined,
+                  "parentBlockHash": undefined,
+                  "stateDiffs": undefined,
+                  "toBlock": 5,
+                  "traces": undefined,
+                  "transactions": undefined,
+                  "type": "evm",
+                },
+              },
+              "state": {
+                "current": {
+                  "hash": "0x5",
+                  "number": 5,
+                  "timestamp": 5000,
+                },
+                "initial": 0,
+                "last": 5,
+                "ranges": [
+                  {
+                    "from": 0,
+                    "to": 5,
+                  },
+                ],
+                "rollbackChain": [],
+              },
+            },
+          },
+        ]
+      `)
+
+      // check stored rows by query hash
+      const rows = await readAllChunks(
+        cache.stream({
+          queryHash: '1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5',
+          fromBlock: 0,
+        }),
+      )
+
+      expect(rows).toHaveLength(1)
+    })
+
+    it('should hand back lastBlockReceivedAt as a Date on the cached pass', async () => {
+      portal = await mockPortal([
+        {
+          statusCode: 200,
+          data: [
+            { header: { number: 1, hash: '0x1', timestamp: 1000 } },
+            { header: { number: 2, hash: '0x2', timestamp: 2000 } },
+          ],
+          head: { finalized: { number: 2, hash: '0x2' } },
+        },
+      ])
+
+      const stream = evmPortalStream({
+        id: 'test',
+        portal: portal.url,
+        outputs: blockDecoder({ from: 0, to: 2 }),
+        cache: portalSqliteCache({ path: DB_PATH }),
+      })
+
+      const live = await readAllChunks(stream)
+      const cached = await readAllChunks(stream)
+
+      // JSON has no date type, so the cache round-trip returns an ISO string unless it is
+      // revived. Consumers (the pubsub target, the rpc-latency watcher) call .getTime() on it.
+      expect(live[0].ctx.batch.lastBlockReceivedAt).toBeInstanceOf(Date)
+      expect(cached[0].ctx.batch.lastBlockReceivedAt).toBeInstanceOf(Date)
+      expect(() => cached[0].ctx.batch.lastBlockReceivedAt.getTime()).not.toThrow()
+    })
+
+    it('should not reuse data that has from greater than request', async () => {
+      portal = await mockPortal([
+        {
+          statusCode: 200,
+          data: [
+            { header: { number: 6, hash: '0x6', timestamp: 6000 } },
+            { header: { number: 7, hash: '0x7', timestamp: 7000 } },
+            { header: { number: 8, hash: '0x8', timestamp: 8000 } },
+            { header: { number: 9, hash: '0x9', timestamp: 9000 } },
+            { header: { number: 10, hash: '0x10', timestamp: 10000 } },
+          ],
+          head: { finalized: { number: 20, hash: '0x20' } },
+          validateRequest: (req) => {
+            expect(req.fromBlock).toBe(6)
+          },
+        },
+        {
+          statusCode: 200,
+          data: [
+            { header: { number: 1, hash: '0x1', timestamp: 1000 } },
+            { header: { number: 2, hash: '0x2', timestamp: 2000 } },
+            { header: { number: 3, hash: '0x3', timestamp: 3000 } },
+            { header: { number: 4, hash: '0x4', timestamp: 4000 } },
+            { header: { number: 5, hash: '0x5', timestamp: 5000 } },
+          ],
+          head: { finalized: { number: 20, hash: '0x20' } },
+          validateRequest: (req) => {
+            expect(req.fromBlock).toBe(0)
+          },
+        },
+      ])
+
+      const cache = portalSqliteCache({ path: DB_PATH })
+
+      const stream = evmPortalStream({
+        id: 'test',
+        portal: portal.url,
+        outputs: blockDecoder({ from: 6, to: 10 }),
+        cache,
+      })
+
+      await readAllChunks(stream) // first pass to store data
+
+      // now request from 0 to 5, should not reuse data from 6 to 10
+      const stream2 = evmPortalStream({
+        id: 'test',
+        portal: portal.url,
+        outputs: blockDecoder({ from: 0, to: 5 }),
+        cache,
+      })
+
+      const res2 = (await readAllChunks(stream2)).map(transformBatch)
+
+      expect(res2).toMatchInlineSnapshot(`
+        [
+          {
+            "data": [
+              {
+                "hash": "0x1",
+                "number": 1,
+                "timestamp": 1000,
+              },
+              {
+                "hash": "0x2",
+                "number": 2,
+                "timestamp": 2000,
+              },
+              {
+                "hash": "0x3",
+                "number": 3,
+                "timestamp": 3000,
+              },
+              {
+                "hash": "0x4",
+                "number": 4,
+                "timestamp": 4000,
+              },
+              {
+                "hash": "0x5",
+                "number": 5,
+                "timestamp": 5000,
+              },
+            ],
+            "meta": {
+              "head": {
+                "finalized": {
+                  "hash": "0x20",
+                  "number": 20,
+                },
+                "latest": undefined,
+              },
+              "meta": {
+                "bytesSize": 265,
+              },
+              "query": {
+                "hash": "1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5",
+                "raw": {
+                  "fields": {
+                    "block": {
+                      "hash": true,
+                      "number": true,
+                      "timestamp": true,
+                    },
+                  },
+                  "fromBlock": 0,
+                  "parentBlockHash": undefined,
+                  "toBlock": 5,
+                  "type": "evm",
+                },
+              },
+              "state": {
+                "current": {
+                  "hash": "0x5",
+                  "number": 5,
+                  "timestamp": 5000,
+                },
+                "initial": 0,
+                "last": 5,
+                "ranges": [
+                  {
+                    "from": 0,
+                    "to": 5,
+                  },
+                ],
+                "rollbackChain": [],
+              },
+            },
+          },
+        ]
+      `)
+
+      // check stored rows by query hash
+      const rows = await readAllChunks(
+        cache.stream({
+          queryHash: '1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5',
+          fromBlock: 0,
+        }),
+      )
+
+      expect(rows).toHaveLength(2)
+    })
+
+    it('should support block gaps and exclude latest blocks', async () => {
+      portal = await mockPortal([
+        {
+          statusCode: 200,
+          data: [
+            { header: { number: 1, hash: '0x1', timestamp: 1000 } },
+            { header: { number: 2, hash: '0x2', timestamp: 2000 } },
+            { header: { number: 3, hash: '0x3', timestamp: 3000 } },
+            { header: { number: 4, hash: '0x4', timestamp: 4000 } },
+            { header: { number: 5, hash: '0x5', timestamp: 5000 } },
+          ],
+          head: { finalized: { number: 2, hash: '0x2' } },
+          validateRequest: (req) => {
+            expect(req.fromBlock).toBe(0)
+          },
+        },
+        {
+          statusCode: 200,
+          data: [
+            { header: { number: 3, hash: '0x3', timestamp: 3000 } },
+            { header: { number: 4, hash: '0x4', timestamp: 4000 } },
+            { header: { number: 5, hash: '0x5', timestamp: 5000 } },
+          ],
+          head: { finalized: { number: 5, hash: '0x5' } },
+          validateRequest: (req) => {
+            expect(req.fromBlock).toBe(3)
+          },
+        },
+      ])
+
+      const cache = portalSqliteCache({ path: DB_PATH })
+
+      const stream = evmPortalStream({
+        id: 'test',
+        portal: portal.url,
+        outputs: blockDecoder({ from: 0, to: 5 }),
+        cache,
+      })
+
+      const res1 = (await readAllChunks(stream)).map(transformBatch)
+      const res2 = (await readAllChunks(stream)).map(transformBatch)
+
+      expect(res1).toMatchInlineSnapshot(`
+        [
+          {
+            "data": [
+              {
+                "hash": "0x1",
+                "number": 1,
+                "timestamp": 1000,
+              },
+              {
+                "hash": "0x2",
+                "number": 2,
+                "timestamp": 2000,
+              },
+              {
+                "hash": "0x3",
+                "number": 3,
+                "timestamp": 3000,
+              },
+              {
+                "hash": "0x4",
+                "number": 4,
+                "timestamp": 4000,
+              },
+              {
+                "hash": "0x5",
+                "number": 5,
+                "timestamp": 5000,
+              },
+            ],
+            "meta": {
+              "head": {
+                "finalized": {
+                  "hash": "0x2",
+                  "number": 2,
+                },
+                "latest": undefined,
+              },
+              "meta": {
+                "bytesSize": 265,
+              },
+              "query": {
+                "hash": "1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5",
+                "raw": {
+                  "fields": {
+                    "block": {
+                      "hash": true,
+                      "number": true,
+                      "timestamp": true,
+                    },
+                  },
+                  "fromBlock": 0,
+                  "parentBlockHash": undefined,
+                  "toBlock": 5,
+                  "type": "evm",
+                },
+              },
+              "state": {
+                "current": {
+                  "hash": "0x5",
+                  "number": 5,
+                  "timestamp": 5000,
+                },
+                "initial": 0,
+                "last": 5,
+                "ranges": [
+                  {
+                    "from": 0,
+                    "to": 5,
+                  },
+                ],
+                "rollbackChain": [
+                  {
+                    "hash": "0x3",
+                    "number": 3,
+                    "timestamp": 3000,
+                  },
+                  {
+                    "hash": "0x4",
+                    "number": 4,
+                    "timestamp": 4000,
+                  },
+                  {
+                    "hash": "0x5",
+                    "number": 5,
+                    "timestamp": 5000,
+                  },
+                ],
+              },
+            },
+          },
+        ]
+      `)
+      expect(res2).toMatchInlineSnapshot(`
+        [
+          {
+            "data": [
+              {
+                "hash": "0x1",
+                "number": 1,
+                "timestamp": 1000,
+              },
+              {
+                "hash": "0x2",
+                "number": 2,
+                "timestamp": 2000,
+              },
+            ],
+            "meta": {
+              "head": {
+                "finalized": {
+                  "hash": "0x2",
+                  "number": 2,
+                },
+                "latest": undefined,
+              },
+              "meta": {
+                "bytesSize": 265,
+              },
+              "query": {
+                "hash": "1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5",
+                "raw": {
+                  "fields": {
+                    "block": {
+                      "hash": true,
+                      "number": true,
+                      "timestamp": true,
+                    },
+                  },
+                  "fromBlock": 0,
+                  "logs": undefined,
+                  "parentBlockHash": undefined,
+                  "stateDiffs": undefined,
+                  "toBlock": 5,
+                  "traces": undefined,
+                  "transactions": undefined,
+                  "type": "evm",
+                },
+              },
+              "state": {
+                "current": {
+                  "hash": "0x2",
+                  "number": 2,
+                  "timestamp": 2000,
+                },
+                "initial": 0,
+                "last": 5,
+                "ranges": [
+                  {
+                    "from": 0,
+                    "to": 5,
+                  },
+                ],
+                "rollbackChain": [],
+              },
+            },
+          },
+          {
+            "data": [
+              {
+                "hash": "0x3",
+                "number": 3,
+                "timestamp": 3000,
+              },
+              {
+                "hash": "0x4",
+                "number": 4,
+                "timestamp": 4000,
+              },
+              {
+                "hash": "0x5",
+                "number": 5,
+                "timestamp": 5000,
+              },
+            ],
+            "meta": {
+              "head": {
+                "finalized": {
+                  "hash": "0x5",
+                  "number": 5,
+                },
+                "latest": undefined,
+              },
+              "meta": {
+                "bytesSize": 159,
+              },
+              "query": {
+                "hash": "1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5",
+                "raw": {
+                  "fields": {
+                    "block": {
+                      "hash": true,
+                      "number": true,
+                      "timestamp": true,
+                    },
+                  },
+                  "fromBlock": 0,
+                  "logs": undefined,
+                  "parentBlockHash": undefined,
+                  "stateDiffs": undefined,
+                  "toBlock": 5,
+                  "traces": undefined,
+                  "transactions": undefined,
+                  "type": "evm",
+                },
+              },
+              "state": {
+                "current": {
+                  "hash": "0x5",
+                  "number": 5,
+                  "timestamp": 5000,
+                },
+                "initial": 0,
+                "last": 5,
+                "ranges": [
+                  {
+                    "from": 0,
+                    "to": 5,
+                  },
+                ],
+                "rollbackChain": [],
+              },
+            },
+          },
+        ]
+      `)
+
+      // check stored rows by query hash
+      const rows = await readAllChunks(
+        cache.stream({
+          queryHash: '1137b8a50718df4ec48060ae5cef9c8e929b619a23846c34a2535b3548b589c5',
+          fromBlock: 0,
+        }),
+      )
+
+      expect(rows).toHaveLength(2)
+    })
+
+    it('forwards the finalized option to the portal when the target requires it', async () => {
+      // The mock serves /finalized-stream ONLY, so the cache's own portal call — the one leg the
+      // client-side proxy does not cover — has to carry the flag or this 404s. The second pass then
+      // replays the same blocks from the cache without touching the portal at all.
+      portal = await mockPortal(
+        [
+          {
+            statusCode: 200,
+            data: [
+              { header: { number: 1, hash: '0x1', timestamp: 1000 } },
+              { header: { number: 2, hash: '0x2', timestamp: 2000 } },
+            ],
+            head: { finalized: { number: 2, hash: '0x2' } },
+          },
+        ],
+        { finalized: true },
+      )
+
+      const cache = portalSqliteCache({ path: DB_PATH })
+      const seen: number[][] = []
+
+      const run = () =>
+        evmPortalStream({
+          id: 'test',
+          portal: { url: portal.url, finalized: false },
+          logger: 'silent',
+          outputs: blockDecoder({ from: 0, to: 2 }).pipe((d) => d.map((b) => ({ blockNumber: b.number }))),
+          cache,
+        }).pipeTo(
+          createMemoryTarget({
+            onData: (data) => {
+              seen.push(data.map((b) => b.blockNumber))
+            },
+          }),
+        )
+
+      await run()
+      // The single mocked response is spent; a second portal request would 500.
+      await run()
+
+      expect(seen).toEqual([
+        [1, 2],
+        [1, 2],
+      ])
+    })
+  })
+})
+
+describe('Portal cache finalized floor', () => {
+  beforeEach(async () => {
+    await fs.rm(DB_PATH).catch(() => {})
+  })
+
+  // The cache makes its own portal call, and the source splits what it returns.
+  withPortal('splits the portal tail against the persisted floor', async ({ portal: serve }) => {
+    const portal = await serve([
+      {
+        statusCode: 200,
+        data: [6, 7, 8].map((n) => ({ header: { number: n, hash: `0x${n}`, timestamp: n * 1000 } })),
+      },
+    ])
+
+    const shapes: number[][] = []
+    const target = createTarget<{ number: number }[]>({
+      write: async ({ read }) => {
+        const resume = { latest: { number: 5, hash: '0x5' }, finalized: { number: 5, hash: '0x5' } }
+
+        for await (const { data } of read(resume, { perBlockUnfinalized: true })) {
+          shapes.push(data.map((b) => b.number))
+        }
+      },
+    })
+
+    await evmPortalStream({
+      id: 'test',
+      portal: portal.url,
+      logger: 'silent',
+      outputs: blockDecoder({ from: 0, to: 8 }),
+      cache: portalSqliteCache({ path: DB_PATH }),
+    }).pipeTo(target)
+
+    expect(shapes).toEqual([[6], [7], [8]])
+  })
+
+  // A new pipe has no persisted floor, so only the cached blocks tell it where finality is.
+  withPortal('splits the portal tail against the finality the cached blocks carry', async ({ portal: serve }) => {
+    const portal = await serve([
+      {
+        statusCode: 200,
+        data: [1, 2, 3, 4, 5].map((n) => ({ header: { number: n, hash: `0x${n}`, timestamp: n * 1000 } })),
+        head: { finalized: { number: 5, hash: '0x5' } },
+      },
+      {
+        statusCode: 200,
+        data: [6, 7, 8].map((n) => ({ header: { number: n, hash: `0x${n}`, timestamp: n * 1000 } })),
+      },
+    ])
+
+    const cache = portalSqliteCache({ path: DB_PATH })
+    const run = async (to: number) => {
+      const shapes: number[][] = []
+      const target = createTarget<{ number: number }[]>({
+        write: async ({ read }) => {
+          for await (const { data } of read(undefined, { perBlockUnfinalized: true })) {
+            shapes.push(data.map((b) => b.number))
+          }
+        },
+      })
+
+      await evmPortalStream({
+        id: 'test',
+        portal: portal.url,
+        logger: 'silent',
+        outputs: blockDecoder({ from: 1, to }),
+        cache,
+      }).pipeTo(target)
+
+      return shapes
+    }
+
+    await run(5)
+
+    expect(await run(8)).toEqual([[1, 2, 3, 4, 5], [6], [7], [8]])
+  })
+})
+
+// A store outlives the runtime and the options that wrote it, so a read must not assume either.
+describe('Portal cache codec', () => {
+  const blocks = [1, 2, 3, 4, 5].map((n) => ({ header: { number: n, hash: `0x${n}`, timestamp: n * 1000 } }))
+
+  async function rewriteValues(file: string, encode: (value: Buffer) => Buffer) {
+    const db = await loadSqlite({ path: file })
+    const rows = db.all<{ rowid: number; value: Buffer }>('SELECT rowid, value FROM data')
+
+    for (const row of rows) {
+      db.exec('UPDATE data SET value = ? WHERE rowid = ?', [encode(row.value), row.rowid])
+    }
+
+    db.close()
+  }
+
+  type Case = {
+    entry: string
+    write: Partial<PortalSqliteCacheOptions>
+    encode?: (value: Buffer) => Buffer
+    read: Partial<PortalSqliteCacheOptions>
+  }
+
+  withDir.for<Case>([
+    { entry: 'a gzip entry under the default options', write: { compress: false }, encode: gzipSync, read: {} },
+    { entry: 'an uncompressed entry under the default options', write: { compress: false }, read: {} },
+    { entry: 'a compressed entry with compress off', write: {}, read: { compress: false } },
+  ])('reads $entry', async ({ write, encode, read }, { portal: open, dir }) => {
+    const portal = await open({ blocks, finalized: 5 })
+    const file = path.join(dir, 'cache.db')
+    const run = (options: Partial<PortalSqliteCacheOptions>) =>
+      readAll(
+        evmPortalStream({
+          id: 'test',
+          portal: portal.url,
+          logger: 'silent',
+          outputs: blockDecoder({ from: 1, to: 5 }),
+          cache: portalSqliteCache({ path: file, ...options }),
+        }),
+      )
+
+    const written = await run(write)
+    if (encode) {
+      await rewriteValues(file, encode)
+    }
+
+    expect(await run(read)).toEqual(written)
+    expect(portal.requests).toHaveLength(1)
+  })
+
+  /** Hands each value back as a plain `Uint8Array`, the way Bun's SQLite driver returns a BLOB. */
+  class Uint8ArrayCache extends PortalCacheNodeJs<object> {
+    #rows = new Map<string, { to: number; value: Uint8Array }>()
+
+    constructor(options: Options<object>) {
+      super(options)
+    }
+
+    protected async initialize() {}
+
+    protected async *stream({ queryHash, fromBlock }: StreamBatch) {
+      for (
+        let row = this.#rows.get(`${queryHash}:${fromBlock}`);
+        row;
+        row = this.#rows.get(`${queryHash}:${row.to + 1}`)
+      ) {
+        yield new Uint8Array(row.value)
+      }
+    }
+
+    protected async save({ queryHash, cursors, data }: SaveBatch) {
+      this.#rows.set(`${queryHash}:${cursors.first}`, { to: cursors.last, value: data })
+    }
+  }
+
+  withPortal.for([true, false])(
+    'reads a value a store hands back as Uint8Array, compress %s',
+    async (compress, { portal: open }) => {
+      const portal = await open({ blocks, finalized: 5 })
+      const cache = new Uint8ArrayCache({ compress })
+      const run = () =>
+        readAll(
+          evmPortalStream({
+            id: 'test',
+            portal: portal.url,
+            logger: 'silent',
+            outputs: blockDecoder({ from: 1, to: 5 }),
+            cache,
+          }),
+        )
+
+      const written = await run()
+
+      expect(await run()).toEqual(written)
+      expect(portal.requests).toHaveLength(1)
+    },
+  )
+})

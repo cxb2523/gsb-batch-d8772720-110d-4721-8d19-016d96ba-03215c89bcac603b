@@ -1,0 +1,51 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["**/.env.*local"],
+  "tasks": {
+    "@subsquid/pipes#build": {
+      "inputs": [
+        "src/**/*.ts",
+        "scripts/**/*.ts",
+        "package.json",
+        "README.md",
+        "../README.md",
+        "tsconfig.json",
+        "tsconfig.*.json",
+        "tsup.config.js",
+        "../tsconfig.json"
+      ],
+      "outputs": ["dist/**", "dist-dts/**"],
+      "outputLogs": "new-only"
+    },
+    "@subsquid/pipes-cli#build": {
+      "inputs": [
+        "src/**/*.ts",
+        "package.json",
+        "README.md",
+        "../README.md",
+        "tsconfig.json",
+        "tsconfig.*.json",
+        "tsup.config.js",
+        "../tsconfig.json"
+      ],
+      "outputs": ["dist/**", "dist-dts/**"],
+      "outputLogs": "new-only"
+    },
+    "@subsquid/pipes-cli#test": {
+      "inputs": ["src/**/*.ts", "package.json", "tsconfig.json", "vitest.config.ts"],
+      "outputs": [],
+      "outputLogs": "new-only"
+    },
+    "@subsquid/pipes-ui#test": {
+      "inputs": ["app/**/*.ts", "app/**/*.tsx", "package.json", "tsconfig.json", "vitest.config.ts"],
+      "outputs": [],
+      "outputLogs": "new-only"
+    },
+    "@sqd-pipes/docs#build": {
+      "inputs": ["examples/**/*.ts", "tsconfig.json"],
+      "dependsOn": ["@subsquid/pipes#build"],
+      "outputs": ["dist/**"],
+      "outputLogs": "new-only"
+    }
+  }
+}
