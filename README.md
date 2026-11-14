@@ -372,6 +372,23 @@ $env:HASDATA_API_KEY="your_key_here"; npm test
 
 The same suite runs in CI on every push and once a week on a schedule, because the upstream tool list can change without anyone touching this repository. A failure means the tool list moved, the key stopped working, or the endpoint was unreachable, and the assertion message says which.
 
+### Round-trip helper
+
+`test/support/round-trip.mjs` exports `fetchRoundTripOptions`, which performs the two-call round-trip flow in one call: the outbound search first, then one return search per selected option using that option's `departureToken`. It returns a record per option, each marked `ok`, `empty` (no return flights pair with it) or `failed`, with the failure category (`auth`, `validation`, `rate_limit`, `other`). One failing option does not discard the others, and rate limits are retried with a growing delay before being recorded as `rate_limit`.
+
+The function takes an injectable request function, so tests can run the whole flow offline without a key, credits or a network. `test/round-trip.test.mjs` uses synthetic payloads shaped like the documented response, covering success, an empty return, 401, a schema rejection and consecutive rate limits. Those payloads are test data, not captured production results.
+
+```bash
+# Offline checks only, no key needed
+node --test test/round-trip.test.mjs
+
+# The same checks as part of the full suite
+npm test
+
+# Opt in to one real call (spends credits, shape assertions only)
+HASDATA_API_KEY=your_key_here HASDATA_ROUND_TRIP_LIVE=1 node --test test/round-trip.test.mjs
+```
+
 ## Contributing
 
 Corrections to the parameter table and the response sample are the most useful contribution, because those are the parts that drift. Include the call you made and the response you got. Pull requests from forks run the suite without a key, and the live checks skip instead of going red.
