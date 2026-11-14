@@ -1171,6 +1171,145 @@ def describe_login_probe_result(result):
 
 
 # ============================================================
+# 列表翻页逐页结局（page_outcomes）
+#
+# 每抓一页都记录一条结局，区分「这页确实没数据」和「这页采集失败」。
+# 登录/风控结论直接复用 classify_login_probe_response，不另造判断。
+# ============================================================
+class PageOutcomeType(Enum):
+    """单页列表抓取的结局类型（取值同时作为结果 JSON 中的机器可读字符串）。"""
+
+    SUCCESS = "success"                    # 成功（有职位）
+    EMPTY = "empty"                        # 空结果（接口正常但没有职位）
+    LOGIN_INVALID = "login_invalid"        # 登录失效
+    RESTRICTED = "restricted"              # 受限（风控码或 HTTP 403/429）
+    RESPONSE_ERROR = "response_error"      # 响应异常（超时、未捕获到响应、JSON 无效）
+
+
+# 登录失效与受限必须终止后续翻页；其余失败按既有逻辑继续或跳过
+TERMINAL_PAGE_OUTCOMES = frozenset({
+    PageOutcomeType.LOGIN_INVALID,
+    PageOutcomeType.RESTRICTED,
+})
+
+PAGE_OUTCOME_LABELS = {
+    PageOutcomeType.SUCCESS: "成功",
+    PageOutcomeType.EMPTY: "空结果",
+    PageOutcomeType.LOGIN_INVALID: "登录失效",
+    PageOutcomeType.RESTRICTED: "受限",
+    PageOutcomeType.RESPONSE_ERROR: "响应异常",
+}
+
+PAGE_OUTCOME_ICONS = {
+    PageOutcomeType.SUCCESS: "✅",
+    PageOutcomeType.EMPTY: "⚪",
+    PageOutcomeType.LOGIN_INVALID: "🔒",
+    PageOutcomeType.RESTRICTED: "⛔",
+    PageOutcomeType.RESPONSE_ERROR: "⚠️",
+}
+
+_PROBE_STATUS_TO_PAGE_OUTCOME = {
+    LoginProbeStatus.AVAILABLE: PageOutcomeType.SUCCESS,
+    LoginProbeStatus.EMPTY: PageOutcomeType.EMPTY,
+    LoginProbeStatus.UNAUTHENTICATED: PageOutcomeType.LOGIN_INVALID,
+    LoginProbeStatus.RESTRICTED: PageOutcomeType.RESTRICTED,
+    LoginProbeStatus.RESPONSE_ERROR: PageOutcomeType.RESPONSE_ERROR,
+}
+
+
+def classify_page_outcome(data, http_status=200):
+    """把一页 joblist 响应（或捕获失败）归类为逐页结局。
+
+    登录/风控判定完全沿用 ``classify_login_probe_response`` 的结论，
+    本函数只做状态到结局类型的映射，不另造一套判断。
+
+    Args:
+        data: ``NetworkJoblistCapture.wait_next_response`` 返回的解析后
+            JSON 字典；超时/未捕获到响应/响应体 JSON 无效时为 None。
+        http_status: 可选 HTTP 状态码（401/403/429 等），被动捕获链路
+            通常拿不到，默认 200。
+
+    Returns:
+        (PageOutcomeType, LoginProbeResult | None, str)：
+        结局类型、探测分类结论（data 不可用时为 None）、可读说明。
+    """
+    if data is None:
+        return (
+            PageOutcomeType.RESPONSE_ERROR,
+            None,
+            "未捕获到可用的搜索响应（超时、页面未发起请求或响应体不是有效 JSON）",
+        )
+    if not isinstance(data, dict):
+        return (
+            PageOutcomeType.RESPONSE_ERROR,
+            None,
+            "响应不是有效 JSON 对象",
+        )
+
+    probe = classify_login_probe_response(data, http_status=http_status)
+    outcome = _PROBE_STATUS_TO_PAGE_OUTCOME[probe.status]
+
+    if outcome is PageOutcomeType.SUCCESS:
+        description = "接口正常，返回带明文薪资的职位"
+    elif outcome is PageOutcomeType.EMPTY:
+        description = "接口正常但没有职位（空结果）"
+    elif outcome is PageOutcomeType.LOGIN_INVALID:
+        description = f"登录态失效：{describe_login_probe_result(probe)}"
+    elif outcome is PageOutcomeType.RESTRICTED:
+        description = f"访问受限：{describe_login_probe_result(probe)}"
+    else:
+        description = f"响应异常：{describe_login_probe_result(probe)}"
+    return outcome, probe, description
+
+
+def build_page_summary(page_outcomes):
+    """从逐页结局列表汇总总页数、成功页数、空结果页数与失败页数。
+
+    失败页数只统计登录失效、受限、响应异常三类真实失败；
+    空结果是接口正常的一种结局，单独计数。三类之和等于总页数。
+    """
+    counts = Counter(item["outcome"] for item in page_outcomes)
+    failed = sum(
+        counts.get(outcome_type.value, 0)
+        for outcome_type in (
+            PageOutcomeType.LOGIN_INVALID,
+            PageOutcomeType.RESTRICTED,
+            PageOutcomeType.RESPONSE_ERROR,
+        )
+    )
+    return {
+        "total_pages": len(page_outcomes),
+        "success_pages": counts.get(PageOutcomeType.SUCCESS.value, 0),
+        "empty_pages": counts.get(PageOutcomeType.EMPTY.value, 0),
+        "failed_pages": failed,
+    }
+
+
+def print_page_outcome_report(page_outcomes, summary, stop_line=None):
+    """终端打印逐页结局清单，让人一眼看出停在哪一页、为什么停。"""
+    if not page_outcomes:
+        return
+    print("\n逐页结局：")
+    print(
+        f"  共 {summary['total_pages']} 页 | 成功 {summary['success_pages']} 页"
+        f" | 空结果 {summary['empty_pages']} 页 | 失败 {summary['failed_pages']} 页"
+    )
+    for item in page_outcomes:
+        try:
+            outcome_type = PageOutcomeType(item["outcome"])
+        except ValueError:
+            outcome_type = None
+        icon = PAGE_OUTCOME_ICONS.get(outcome_type, "•")
+        label = PAGE_OUTCOME_LABELS.get(outcome_type, item["outcome"])
+        print(
+            f"  第 {item['page']} 页  {icon} {label}"
+            f" | 捕获 {item['job_count']} 条 | {item['description']}"
+        )
+    if stop_line:
+        print(stop_line)
+
+
+# ============================================================
 # 登录状态检测
 # ============================================================
 def check_login_state(cdp_port=DEFAULT_CDP_PORT):
@@ -1883,27 +2022,59 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 "type": "mouseMoved", "x": x, "y": y
             }, sid)
 
-    def gate_first_response(data):
-        """用首个真实搜索响应判定登录/风控（#53：不再单独发固定探测请求）。"""
-        result = classify_login_probe_response(data)
-        if result.status is LoginProbeStatus.AVAILABLE:
+    # 逐页结局清单：每抓一页都留下一条记录，区分「确实没数据」与「采集失败」。
+    # 登录失效/受限终止后续翻页，未抓到的页不伪造结局。
+    page_outcomes = []
+    terminal_stop = None  # 提前终止原因（登录失效/受限/hasMore=false/中断等）
+
+    def build_list_meta():
+        summary = build_page_summary(page_outcomes)
+        return {
+            "keyword": keyword,
+            "city": city_name,
+            "filters": filters,
+            "filter_desc": filter_desc,
+            "scraped_at": datetime.now().isoformat(),
+            "page_outcomes": page_outcomes,
+            "page_summary": summary,
+        }
+
+    def flush_outcomes():
+        """把当前逐页结局随结果文件一起落盘（哪怕本页没有职位）。"""
+        if output_path:
+            flush_jobs(output_path, build_list_meta(), all_jobs)
+
+    def record_page_outcome(pg, outcome, description, job_count):
+        page_outcomes.append({
+            "page": pg,
+            "outcome": outcome.value,
+            "description": description,
+            "job_count": job_count,
+        })
+
+    def gate_first_response(probe):
+        """用首个真实搜索响应的分类结论判定登录/风控（#53：不再单独发固定探测请求）。
+
+        结论直接取自 classify_login_probe_response，本函数只负责提示与终止语义。
+        """
+        if probe.status is LoginProbeStatus.AVAILABLE:
             print("✅ 已登录\n")
             return
-        if result.status is LoginProbeStatus.UNAUTHENTICATED:
+        if probe.status is LoginProbeStatus.UNAUTHENTICATED:
             raise LoginGateError(
                 "❌ 未检测到 BOSS直聘登录状态。请先在 Chrome 中登录 zhipin.com。\n"
                 "   可运行 --check 检查环境，或 --setup-chrome 启动 Chrome。"
             )
-        if result.status is LoginProbeStatus.RESTRICTED:
+        if probe.status is LoginProbeStatus.RESTRICTED:
             raise LoginGateError(
-                f"❌ {describe_login_probe_result(result)}，已停止抓取。\n"
+                f"❌ {describe_login_probe_result(probe)}，已停止抓取。\n"
                 f"   请先在浏览器中完成验证或稍后再试，不要重复运行登录探测。"
             )
-        if result.status is LoginProbeStatus.EMPTY:
-            print(f"⚠️  {describe_login_probe_result(result)}；继续执行实际职位搜索。\n")
+        if probe.status is LoginProbeStatus.EMPTY:
+            print(f"⚠️  {describe_login_probe_result(probe)}；继续执行实际职位搜索。\n")
             return
         raise LoginGateError(
-            f"❌ {describe_login_probe_result(result)}，已停止抓取。"
+            f"❌ {describe_login_probe_result(probe)}，已停止抓取。"
         )
 
     try:
@@ -1929,13 +2100,14 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 if data is None:
                     # 捕获超时：页面可能被重定向到验证/登录页，交由 DOM 兜底
                     log.warning("⚠️ 未捕获到页面自身的搜索响应")
-                else:
-                    gate_first_response(data)
             else:
                 # 翻页：滚动到底触发无限滚动加载，继续旁听页面自身请求
                 human_scroll(cdp, sid, to_bottom=True)
                 data = capture.wait_next_response(timeout=20)
                 incr_request()
+
+            # 逐页结局分类：登录/风控沿用 classify_login_probe_response 的结论
+            outcome, probe, description = classify_page_outcome(data)
 
             reached_end = (
                 isinstance(data, dict)
@@ -1957,14 +2129,42 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                     except (json.JSONDecodeError, ValueError):
                         print(f"  ⚠️ JSON 解析失败")
                         jobs = []
+                if jobs:
+                    # DOM 兜底拿到了职位，结局升级为成功并注明数据来源
+                    outcome = PageOutcomeType.SUCCESS
+                    description = "API 未捕获到职位，DOM 兜底提取成功（薪资可能受字体反爬影响）"
             elif not jobs:
                 log.warning("⚠️ 未捕获到职位数据，已跳过 DOM fallback；如需强制降级可加 --allow-dom-fallback")
 
             if pg == 1:
                 human_mouse_jitter(cdp, sid)
 
+            # 先记录结局（含该页实际捕获/兜底到的职位数）并落盘，
+            # 随后首屏门即使抛出 LoginGateError，结局也已经写进结果文件。
+            record_page_outcome(pg, outcome, description, len(jobs))
+            flush_outcomes()
+
+            if pg == 1:
+                # 首屏登录/风控门沿用既有判定（与逐页结局同一个 probe 结论，不另造判断）
+                if data is not None:
+                    gate_first_response(probe)
+
+            if outcome in TERMINAL_PAGE_OUTCOMES and pg > 1:
+                # 登录失效/受限在翻页途中出现：终止后续翻页并保留前面页的数据。
+                # 终止原因统一在结尾的逐页结局清单里打印，避免重复刷屏。
+                terminal_stop = (
+                    f"  ⛔ 停在第 {pg} 页：「{PAGE_OUTCOME_LABELS[outcome]}」，"
+                    f"已终止后续翻页（{description}）"
+                )
+                break
+
             if not jobs:
-                print("  ⚠️ 无数据")
+                print(f"  ⚠️ 无数据（结局：{PAGE_OUTCOME_LABELS[outcome]}）")
+                # hasMore=false 的空页同样是最后一页，不再空转等待
+                if reached_end:
+                    terminal_stop = "  已到最后一页（hasMore=false），提前结束\n"
+                    print(terminal_stop)
+                    break
                 continue
 
             new = 0
@@ -1992,18 +2192,12 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
 
             print(f"  本页 {len(jobs)} 条, 新增 {new}, 累计 {len(all_jobs)}")
 
-            # 每页抓完就写入文件，异常退出也能保留
-            if output_path:
-                flush_jobs(output_path, {
-                    "keyword": keyword,
-                    "city": city_name,
-                    "filters": filters,
-                    "filter_desc": filter_desc,
-                    "scraped_at": datetime.now().isoformat(),
-                }, all_jobs)
+            # 每页抓完就写入文件，异常退出也能保留（结局已随 flush_outcomes 落盘）
+            flush_outcomes()
 
             if reached_end:
-                print("  已到最后一页（hasMore=false），提前结束\n")
+                terminal_stop = "  已到最后一页（hasMore=false），提前结束\n"
+                print(terminal_stop)
                 break
 
             if pg < max_pages:
@@ -2011,37 +2205,42 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
                 print(f"  翻页等待 {d:.0f}s...\n")
                 time.sleep(d)
 
+    except LoginGateError:
+        # 首屏登录/风控门：结局已在抛出前记录并落盘，交给 main 保持既有退出语义
+        terminal_stop = "  已终止抓取（详见上方逐页结局）"
+        raise
     except KeyboardInterrupt:
         print("\n中断")
+        terminal_stop = "  用户中断，已抓页面的结局与数据均已保留"
     except CDP_TRANSIENT_EXCEPTIONS as e:
         # CDP 传输层瞬态异常：优雅停止并保留已抓数据（每页已增量写盘），不裸崩（#78）
         print(f"\n⚠️ CDP 连接异常，已停止抓取: {e}")
+        terminal_stop = f"  CDP 连接异常终止：{e}"
     except RuntimeError as e:
         print(f"\n⚠️ {e}")
+        terminal_stop = f"  运行时异常终止：{e}"
     finally:
         cdp.send("Target.closeTarget", {"targetId": tid})
         cdp.close()
+
+    page_summary = build_page_summary(page_outcomes)
 
     print(f"\n{'='*60}")
     new_total = len([j for j in all_jobs if j.get('is_new')])
     print(f"完成: {len(all_jobs)} 条,其中新增 {new_total} 条(🆕)")
 
-    if all_jobs:
-        # 最终写入（含时间戳更新）
-        flush_jobs(output_path, {
-            "keyword": keyword,
-            "city": city_name,
-            "filters": filters,
-            "filter_desc": filter_desc,
-            "scraped_at": datetime.now().isoformat(),
-        }, all_jobs)
-        print(f"已保存: {output_path}")
+    # 无论有没有职位都落盘一次：保证逐页结局随结果文件保留（含整轮 0 职位的场景）
+    flush_jobs(output_path, build_list_meta(), all_jobs)
+    print(f"已保存: {output_path}")
 
-        # CSV 导出
-        if fmt == "csv":
-            csv_path = output_path.rsplit(".", 1)[0] + ".csv"
-            write_csv(csv_path, all_jobs)
-    else:
+    # 逐页结局清单：一眼看出停在哪一页、为什么停
+    print_page_outcome_report(page_outcomes, page_summary, stop_line=terminal_stop)
+
+    # CSV 导出（仅有职位时）
+    if all_jobs and fmt == "csv":
+        csv_path = output_path.rsplit(".", 1)[0] + ".csv"
+        write_csv(csv_path, all_jobs)
+    if not all_jobs:
         print("无数据")
 
     return {
@@ -2052,6 +2251,8 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
         "output_path": output_path,
         "filters": filters,
         "filter_desc": filter_desc,
+        "page_outcomes": page_outcomes,
+        "page_summary": page_summary,
     }
 
 
@@ -3123,6 +3324,9 @@ def main():
                 "filter_desc": list_data.get("filter_desc", []),
                 "scraped_at": datetime.now().isoformat(),
                 "merged_from": args.merge,
+                # 保留逐页结局与汇总，合并只增删岗位，不重写翻页结局
+                "page_outcomes": list_data.get("page_outcomes", []),
+                "page_summary": list_data.get("page_summary", {}),
             }, merged_jobs)
             print(f"合并结果已保存: {args.output}")
             if args.format == "csv":

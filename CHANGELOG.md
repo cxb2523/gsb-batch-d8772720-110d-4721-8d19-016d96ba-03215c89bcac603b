@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- 列表抓取逐页结局（page_outcomes）：翻页过程中每抓一页都记录一条结局并随结果 JSON 落盘，结局区分「成功（有职位）」「空结果（接口正常但无职位）」「登录失效」「受限（风控码或 HTTP 403/429）」「响应异常（超时、未捕获到响应、JSON 无效）」五类。结果 JSON 新增 `page_outcomes` 数组（每项含页码 `page`、结局类型 `outcome`、可读说明 `description`、该页捕获职位数 `job_count`）与 `page_summary` 汇总（总页数、成功页数、空结果页数、失败页数；三类之和恒等于总页数）。登录失效与受限立即终止后续翻页，其余失败按既有逻辑继续/跳过；`hasMore=false` 提前结束时未抓的页不伪造结局。已抓职位仍逐页增量写盘，任何单页失败都不丢前面页数据；即使整轮 0 职位也会落盘一份带结局的结果文件。终端结束时打印逐页清单，一眼看出停在哪一页、为什么停。首屏登录/风控判定仍完全沿用 `classify_login_probe_response` 的结论，不另造判断；`LoginGateError` 的退出语义保持不变（抛出前结局已先落盘）。新增 `tests/test_page_outcomes.py`，用构造响应字典覆盖五类结局与翻页终止/续抓，不依赖真实浏览器
 - 一键发版工作流（#107 后续）：`make-release.yml`（Actions → Run workflow 填版本号）自动完成版本四处对齐 + `uv lock` + CHANGELOG 定版 + 全量单测，并推好 `release/vX.Y.Z` 分支给出开 PR 链接；`release.yml` 改为双路触发——release PR 合并进 master 时按提交首行识别 `chore(release): x.y.z` 自动补打 tag 并构建发布（手动 `git push tag v*` 的老路继续可用），发版手动动作只剩「开 PR 并合并」。事件链刻意不依赖 GITHUB_TOKEN 触发下游（GitHub 防递归会吞掉 bot 开的 PR/推的 tag，且本仓库分支保护对管理员也强制必需 check）。`release.yml` 现额外附稳定文件名的 `boss_zhipin_scraper-latest-py3-none-any.whl`，支持 `releases/latest/download/` 固定 URL 永远装最新版（pip 以 wheel 元数据识别版本，实测通过）。README 双语「安装」章节新增方式 6（pip / uv 直接安装），CLI 章节补 latest 固定 URL。`package-skill.sh` 的 `sed -i` 改为 BSD/GNU 双平台兼容（make-release 在 ubuntu 上复用该脚本）
 
 ## 2.4.0 (2026-11-03)

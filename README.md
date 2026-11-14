@@ -58,6 +58,7 @@ python3 scripts/job_summary.py
 - 详情页 JD 抓取 + 技能分析
 - 抓取后聚合摘要 + 可复制提示词
 - 增量写入（异常退出不丢数据）
+- 逐页结局记录（`page_outcomes` / `page_summary`）：每页区分成功、空结果、登录失效、受限（风控/403/429）、响应异常五类结局并随结果 JSON 落盘；登录失效/受限自动终止翻页，终端结尾打印逐页清单，明确「这页没数据」还是「这页采集失败」以及停在哪一页
 - 一键环境检查 + 持久隔离 Chrome/Chromium CDP profile
 - 多维筛选（规模、融资、薪资、经验、学历、行业）
 - macOS + Linux + Windows 支持；macOS 会自动探测 Google Chrome 或 Chromium；Windows 已通过单元测试与基础 CLI 验证（GBK 控制台崩溃已修复），并支持 Chrome 或 Microsoft Edge CDP；真实抓取链路仍欢迎反馈

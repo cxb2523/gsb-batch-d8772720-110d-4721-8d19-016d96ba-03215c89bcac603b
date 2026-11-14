@@ -56,6 +56,7 @@ Right after scraping you get: salary ranges, experience requirements, top skill 
 - Detail-page JD scraping + skill analysis
 - Aggregated summary + copy-paste prompt after scraping
 - Incremental writes (no data loss on crash)
+- Per-page outcomes (`page_outcomes` / `page_summary`): every page is recorded as one of five outcomes — success (with jobs), empty (API OK but no jobs), login invalid, restricted (risk-control code or HTTP 403/429), or response error (timeout / no response captured / invalid JSON) — and persisted with the result JSON. Login-invalid and restricted stop further paging; the terminal prints a page-by-page report showing exactly which page stopped and why
 - One-shot environment check + persistent isolated Chrome/Chromium CDP profile
 - Multi-dimension filters (scale, funding, salary, experience, degree, industry)
 - macOS + Linux + Windows support; macOS automatically detects Google Chrome or Chromium; Windows is verified by unit tests and basic CLI checks (GBK console crash fixed) and supports Chrome or Microsoft Edge CDP; real scraping flows still welcome feedback
