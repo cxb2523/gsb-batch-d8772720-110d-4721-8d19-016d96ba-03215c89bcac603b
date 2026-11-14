@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Dict, List, Optional, Set
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -102,10 +102,42 @@ class RobotsCache:
 
 @dataclass
 class CrawlStats:
+    """Outcome of a single crawl.
+
+    ``unfetched_urls`` is the honest "what was left behind" channel:
+    every normalized URL that was really enqueued on the frontier but
+    never processed, in discovery order, deduplicated. A URL blocked by
+    robots.txt, rejected by the pre-filter, or failing its request has
+    been *processed* (dequeued and accounted for in the counters), so it
+    never appears here.
+    """
+
     pages_fetched: int = 0
     articles_found: int = 0
     robots_blocked: int = 0
     errors: int = 0
+    # Why the loop stopped:
+    #   "completed"  — frontier drained naturally, nothing left behind
+    #   "max_pages"  — page budget exhausted while fetchable URLs remained
+    #   "max_depth"  — only beyond-depth frontier entries were left
+    stop_reason: str = "completed"
+    # Convenience flag: True iff at least one enqueued URL went unprocessed.
+    truncated: bool = False
+    # Normalized, de-duplicated enqueued-but-unprocessed URLs, discovery order.
+    unfetched_urls: List[str] = dataclass_field(default_factory=list)
+
+
+@dataclass
+class CrawlResult:
+    """Returned instead of a bare list when ``with_stats=True``.
+
+    Deliberately a separate object (rather than mutating the returned
+    article list): the default call path keeps returning exactly the
+    plain ``List[Dict]`` existing callers depend on.
+    """
+
+    articles: List[Dict]
+    stats: CrawlStats
 
 
 # ----------------------------------------------------------------------
@@ -133,13 +165,26 @@ class AsyncCrawler:
         self.timeout = timeout
         self.extractor = ArticleExtractor()
 
-    async def crawl(self, start_url: str) -> List[Dict]:
+    async def crawl(
+        self, start_url: str, with_stats: bool = False
+    ) -> "List[Dict] | CrawlResult":
         stats = CrawlStats()
         domain = urlparse(start_url).netloc
         seen_norm: Set[str] = set()
         articles: List[Dict] = []
         sem = asyncio.Semaphore(self.concurrency)
         headers = {"User-Agent": get_user_agent()}
+
+        # Frontier bookkeeping for the truncation channel.
+        # enqueued_order: every normalized URL admitted to the frontier,
+        #   in discovery order (the seed first).
+        # handled_norm:   normalized URLs actually dequeued and processed
+        #   (fetched, robots-checked, pre-filtered or failed). Anything
+        #   enqueued but not handled is, by construction, unfetched — so
+        #   the leftover list is derived from the real frontier state
+        #   rather than re-parsing pages.
+        enqueued_order: List[str] = []
+        handled_norm: Set[str] = set()
 
         async with httpx.AsyncClient(
             follow_redirects=True, headers=headers, timeout=self.timeout
@@ -151,11 +196,29 @@ class AsyncCrawler:
             # frontier holds (url, depth); a simple list-based BFS is plenty
             # at these page counts — no need for a priority heap.
             frontier = [(start_url, 0)]
-            seen_norm.add(normalize_url(start_url))
+            start_key = normalize_url(start_url)
+            seen_norm.add(start_key)
+            enqueued_order.append(start_key)
 
             while frontier and stats.pages_fetched < self.max_pages:
-                batch = frontier[: self.concurrency]
-                frontier = frontier[self.concurrency :]
+                # Only entries within the depth budget may be fetched.
+                # Depth-terminal entries (depth > max_depth) stay parked in
+                # the frontier: they are genuine discovered-but-not-crawled
+                # links and must survive into the unfetched list.
+                batch = []
+                remaining: List[tuple] = []
+                for item in frontier:
+                    if len(batch) < self.concurrency and item[1] <= self.max_depth:
+                        batch.append(item)
+                    else:
+                        remaining.append(item)
+                frontier = remaining
+                if not batch:
+                    # Everything left sits beyond max_depth.
+                    break
+
+                for url, _depth in batch:
+                    handled_norm.add(normalize_url(url))
 
                 results = await asyncio.gather(
                     *[
@@ -171,26 +234,48 @@ class AsyncCrawler:
                     article, links, depth = r
                     if article is not None:
                         articles.append(article)
-                    if depth < self.max_depth:
-                        for link in links:
-                            if (
-                                self.same_domain_only
-                                and urlparse(link).netloc != domain
-                            ):
-                                continue
-                            key = normalize_url(link)
-                            if key in seen_norm:
-                                continue
-                            seen_norm.add(key)
-                            frontier.append((link, depth + 1))
-                        # prioritize article-shaped URLs so we hit real
-                        # content before exhausting max_pages on nav/hubs
-                        frontier.sort(key=lambda item: not _looks_like_article(item[0]))
+                    # Enqueue every in-domain, unseen link regardless of
+                    # depth. Links one hop past the limit are admitted but
+                    # never expanded/fetched, which is exactly what makes a
+                    # depth-only stop observable in the unfetched list.
+                    for link in links:
+                        if (
+                            self.same_domain_only
+                            and urlparse(link).netloc != domain
+                        ):
+                            continue
+                        key = normalize_url(link)
+                        if key in seen_norm:
+                            continue
+                        seen_norm.add(key)
+                        enqueued_order.append(key)
+                        frontier.append((link, depth + 1))
+                    # prioritize article-shaped URLs so we hit real
+                    # content before exhausting max_pages on nav/hubs
+                    frontier.sort(key=lambda item: not _looks_like_article(item[0]))
+
+        stats.articles_found = len(articles)
+        stats.unfetched_urls = [
+            key for key in enqueued_order if key not in handled_norm
+        ]
+        stats.truncated = bool(stats.unfetched_urls)
+        if not stats.truncated:
+            stats.stop_reason = "completed"
+        elif stats.pages_fetched >= self.max_pages and any(
+            depth <= self.max_depth for _url, depth in frontier
+        ):
+            stats.stop_reason = "max_pages"
+        else:
+            stats.stop_reason = "max_depth"
 
         logger.info(
             f"Crawl of {start_url}: fetched={stats.pages_fetched} "
-            f"articles={len(articles)} robots_blocked={stats.robots_blocked} errors={stats.errors}"
+            f"articles={len(articles)} robots_blocked={stats.robots_blocked} "
+            f"errors={stats.errors} stop_reason={stats.stop_reason} "
+            f"unfetched={len(stats.unfetched_urls)}"
         )
+        if with_stats:
+            return CrawlResult(articles=articles, stats=stats)
         return articles
 
     async def _fetch_one(self, client, sem, robots, url, depth, stats):
@@ -273,7 +358,9 @@ class JSCrawler:
         self.timeout = timeout
         self.extractor = ArticleExtractor()
 
-    def crawl(self, start_url: str) -> List[Dict]:
+    def crawl(
+        self, start_url: str, with_stats: bool = False
+    ) -> "List[Dict] | CrawlResult":
         import httpx as _httpx
 
         from ..core.renderer import PersistentRenderer
@@ -281,8 +368,14 @@ class JSCrawler:
         domain = urlparse(start_url).netloc
         user_agent = get_user_agent()
         stats = CrawlStats()
-        seen_norm: Set[str] = {normalize_url(start_url)}
+        start_key = normalize_url(start_url)
+        seen_norm: Set[str] = {start_key}
         frontier = [(start_url, 0)]
+        # See AsyncCrawler.crawl for the enqueued/handled bookkeeping:
+        # the unfetched list is derived from real frontier state, never
+        # by re-parsing pages.
+        enqueued_order: List[str] = [start_key]
+        handled_norm: Set[str] = set()
         articles: List[Dict] = []
         robots_parsers: Dict[str, Optional[RobotFileParser]] = {}
 
@@ -314,7 +407,16 @@ class JSCrawler:
         ) as renderer:
             while frontier and stats.pages_fetched < self.max_pages:
                 frontier.sort(key=lambda item: not _looks_like_article(item[0]))
-                url, depth = frontier.pop(0)
+                # Skip depth-terminal entries rather than dropping them:
+                # they remain in the frontier and thus the unfetched list.
+                idx = next(
+                    (i for i, (_u, d) in enumerate(frontier) if d <= self.max_depth),
+                    None,
+                )
+                if idx is None:
+                    break  # only beyond-depth entries remain
+                url, depth = frontier.pop(idx)
+                handled_norm.add(normalize_url(url))
 
                 if not _prefilter(url) or not robots_allowed(url):
                     stats.robots_blocked += 1
@@ -347,20 +449,40 @@ class JSCrawler:
                 except Exception as e:
                     logger.debug(f"Extraction failed {url}: {e}")
 
-                if depth < self.max_depth:
-                    for link in links:
-                        if self.same_domain_only and urlparse(link).netloc != domain:
-                            continue
-                        key = normalize_url(link)
-                        if key in seen_norm:
-                            continue
-                        seen_norm.add(key)
-                        frontier.append((link, depth + 1))
+                # Admit all in-domain unseen links, even one hop past the
+                # depth budget, so a depth-only stop stays visible.
+                for link in links:
+                    if self.same_domain_only and urlparse(link).netloc != domain:
+                        continue
+                    key = normalize_url(link)
+                    if key in seen_norm:
+                        continue
+                    seen_norm.add(key)
+                    enqueued_order.append(key)
+                    frontier.append((link, depth + 1))
+
+        stats.articles_found = len(articles)
+        stats.unfetched_urls = [
+            key for key in enqueued_order if key not in handled_norm
+        ]
+        stats.truncated = bool(stats.unfetched_urls)
+        if not stats.truncated:
+            stats.stop_reason = "completed"
+        elif stats.pages_fetched >= self.max_pages and any(
+            depth <= self.max_depth for _url, depth in frontier
+        ):
+            stats.stop_reason = "max_pages"
+        else:
+            stats.stop_reason = "max_depth"
 
         logger.info(
             f"JS crawl of {start_url}: fetched={stats.pages_fetched} "
-            f"articles={len(articles)} robots_blocked={stats.robots_blocked} errors={stats.errors}"
+            f"articles={len(articles)} robots_blocked={stats.robots_blocked} "
+            f"errors={stats.errors} stop_reason={stats.stop_reason} "
+            f"unfetched={len(stats.unfetched_urls)}"
         )
+        if with_stats:
+            return CrawlResult(articles=articles, stats=stats)
         return articles
 
 
@@ -378,7 +500,8 @@ def crawl_site(
     min_text_length: int = 200,
     same_domain_only: bool = True,
     obey_robots: bool = True,
-) -> List[Dict]:
+    with_stats: bool = False,
+) -> "List[Dict] | CrawlResult":
     """
     Crawl any news-provider URL (homepage, section page, whatever) and
     return extracted articles. This is the compulsory backbone of
@@ -393,6 +516,14 @@ def crawl_site(
         not explicitly given. Passing either explicitly always wins,
         regardless of js mode (no more guessing "was this overridden?"
         from a magic-number match).
+
+    with_stats: when False (default) returns the plain article list,
+        exactly as before. When True, returns a :class:`CrawlResult`
+        carrying the same article list plus a :class:`CrawlStats` outcome
+        — page/article/robots/error counters, the stop reason, and the
+        normalized, de-duplicated list of frontier URLs that were
+        enqueued but never crawled (empty when the site was exhausted
+        rather than truncated). Both backends return the same shape.
     """
     if js:
         js_crawler = JSCrawler(
@@ -402,7 +533,7 @@ def crawl_site(
             same_domain_only=same_domain_only,
             obey_robots=obey_robots,
         )
-        return js_crawler.crawl(start_url)
+        return js_crawler.crawl(start_url, with_stats=with_stats)
 
     async_crawler = AsyncCrawler(
         max_pages=max_pages if max_pages is not None else 40,
@@ -412,4 +543,6 @@ def crawl_site(
         same_domain_only=same_domain_only,
         obey_robots=obey_robots,
     )
-    return asyncio.run(async_crawler.crawl(start_url))
+    return asyncio.run(
+        async_crawler.crawl(start_url, with_stats=with_stats)
+    )
