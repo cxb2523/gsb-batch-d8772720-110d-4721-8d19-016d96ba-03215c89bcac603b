@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.0 — 2026-11-14
+
+### Added
+- **`Scraper.crawl()` can now account for every page.** The flat record list
+  could never say why a pagination walk stopped, and a request failure on page
+  N raised immediately, discarding every record taken on pages 1…N-1. A new
+  `detailed=True` flag changes the return value from the flat list to a dict:
+  `{"pages": [...], "records": [...]}`, with one entry per attempted page
+  carrying `page`, `url`, `count`, `outcome` and `error`, plus the aggregated
+  `records` from every successful page. Four outcome constants are exported
+  alongside `Scraper`: `CRAWL_SUCCESS`, `CRAWL_REQUEST_FAILED`,
+  `CRAWL_NO_NEXT_PAGE` (the natural end when no next-page link is found) and
+  `CRAWL_PAGES_LIMIT` (the explicit `pages` truncation — deliberately distinct
+  from a missing link). When a request fails in detailed mode the failed page
+  is marked `request_failed` with the exception text, records already
+  extracted stay in `records` (the walk stops without guessing the next URL),
+  and even a first-page failure leaves a readable outcome behind an empty
+  record list.
+- **The default `crawl()` contract is unchanged.** Without `detailed=True` it
+  still returns the flat list of records with the same success-path results,
+  and a failed request still raises as it always did. `Page.extract`, the
+  selector semantics, static/browser fetching, authenticated sessions and the
+  deep `Crawler` strategies are untouched.
+
 ## 1.4.0 — 2026-09-11
 
 ### Added

@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from .scraping.markdown import _clean_markdown
 from .scraping.page import Page
-from .scraping.scraper import Scraper
+from .scraping.scraper import (
+    CRAWL_NO_NEXT_PAGE,
+    CRAWL_PAGES_LIMIT,
+    CRAWL_REQUEST_FAILED,
+    CRAWL_SUCCESS,
+    Scraper,
+)
 from .scraping.selectors import _split_selector, _value_from
 from .scraping.session import Session
 from .scraping.url import (
@@ -44,4 +50,8 @@ __all__ = [
     "_split_selector",
     "_value_from",
     "_clean_markdown",
+    "CRAWL_SUCCESS",
+    "CRAWL_REQUEST_FAILED",
+    "CRAWL_NO_NEXT_PAGE",
+    "CRAWL_PAGES_LIMIT",
 ]

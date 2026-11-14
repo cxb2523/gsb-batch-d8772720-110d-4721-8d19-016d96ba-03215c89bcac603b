@@ -16,6 +16,19 @@ from .selectors import _split_selector, _value_from
 from .session import Session
 from .url import DEFAULT_UA, _decoded_html, _raise_for_status
 
+# Per-page outcomes reported by Scraper.crawl(detailed=True). The flat record
+# list could never say why the walk stopped — these four make it explicit:
+#   success        the page fetched fine and the walk moved (or continued) on
+#   request_failed the fetch raised; the page kept no records and the walk
+#                  stops there without guessing the next URL
+#   no_next_page   the page fetched fine but exposed no next-page link
+#   pages_limit    the page fetched fine and the `pages` budget was spent —
+#                  a deliberate truncation, never conflated with no_next_page
+CRAWL_SUCCESS = "success"
+CRAWL_REQUEST_FAILED = "request_failed"
+CRAWL_NO_NEXT_PAGE = "no_next_page"
+CRAWL_PAGES_LIMIT = "pages_limit"
+
 
 class Scraper:
     """Entry point. Pick a strategy or let it decide on its own."""
@@ -119,7 +132,8 @@ class Scraper:
         next_page: str | None = None,
         pages: int | None = None,
         base: str | None = None,
-    ) -> list[dict]:
+        detailed: bool = False,
+    ) -> list[dict] | dict:
         """Walks multiple pages following the next-page link and extracts 'fields'.
 
         start:     initial URL.
@@ -128,26 +142,90 @@ class Scraper:
         next_page: selector for the next-page link (e.g. "li.next a::attr(href)").
         pages:     optional page limit.
         base:      prefix for relative URLs (otherwise inferred from the host).
+        detailed:  when False (the default) returns the flat list of records,
+                   exactly as before — including raising if a page's request
+                   fails. When True, returns a dict instead:
+
+                       {
+                         "pages": [   # one entry per page actually attempted
+                           {"page": 1, "url": ..., "count": 2,
+                            "outcome": "success", "error": None},
+                           ...
+                         ],
+                         "records": [ ...all records from every successful page... ],
+                       }
+
+                   Every outcome constant is exported alongside Scraper:
+                   CRAWL_SUCCESS, CRAWL_REQUEST_FAILED, CRAWL_NO_NEXT_PAGE and
+                   CRAWL_PAGES_LIMIT. A failed page is reported (outcome
+                   "request_failed", `error` carries the exception text, count
+                   0) and the walk stops without guessing another URL; every
+                   record extracted earlier stays in `records` — even when the
+                   very first page fails, in which case `records` is empty but
+                   the failed page's outcome remains readable.
         """
         from urllib.parse import urljoin
 
         url: str | None = start
-        results: list[dict] = []
+        records: list[dict] = []
+        report: list[dict] = []
         n = 0
         while url:
-            page = self.static(url)
-            results.extend(page.extract(item, fields))
             n += 1
+            try:
+                page = self.static(url)
+            except Exception as e:
+                # Default mode keeps the historical contract: the exception
+                # propagates. Detailed mode keeps every record already taken
+                # and accounts for this page instead of losing the walk.
+                if not detailed:
+                    raise
+                report.append(
+                    {
+                        "page": n,
+                        "url": url,
+                        "count": 0,
+                        "outcome": CRAWL_REQUEST_FAILED,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
+                )
+                break
+            rows = page.extract(item, fields)
+            records.extend(rows)
+
             if pages and n >= pages:
-                break
-            if not next_page:
-                break
-            sel, op, arg = _split_selector(next_page)
-            node = page.soup.select_one(sel)
-            op = op if op != "text" else "attr"
-            href = _value_from(node, op, arg or "href") if node else None
-            url = urljoin(base or url, href) if href else None
-        return results
+                outcome = CRAWL_PAGES_LIMIT
+                next_url = None
+            elif not next_page:
+                outcome = CRAWL_NO_NEXT_PAGE
+                next_url = None
+            else:
+                sel, op, arg = _split_selector(next_page)
+                node = page.soup.select_one(sel)
+                op = op if op != "text" else "attr"
+                href = _value_from(node, op, arg or "href") if node else None
+                if not href:
+                    outcome = CRAWL_NO_NEXT_PAGE
+                    next_url = None
+                else:
+                    outcome = CRAWL_SUCCESS
+                    next_url = urljoin(base or url, href)
+
+            if detailed:
+                report.append(
+                    {
+                        "page": n,
+                        "url": url,
+                        "count": len(rows),
+                        "outcome": outcome,
+                        "error": None,
+                    }
+                )
+            url = next_url
+
+        if detailed:
+            return {"pages": report, "records": records}
+        return records
 
     # --- session --------------------------------------------------------------
     def session(self) -> Session:

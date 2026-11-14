@@ -16,8 +16,8 @@ and OPIC in pure Python.
 - **Webpage**: https://bytecrawl.vercel.app/
 - **Hosted MCP endpoint**: https://bytecrawl.vercel.app/mcp
 - **Agent skill**: https://bytecrawl.vercel.app/agent-onboarding/SKILL.md
-- **Latest release**: **1.4.0** — clearer errors when a site's bot protection
-  (Cloudflare, DataDome, …) blocks a fetch ([changelog](https://github.com/abrahamperz/ByteCrawl/blob/main/CHANGELOG.md))
+- **Latest release**: **1.5.0** — `Scraper.crawl()` gains a detailed mode that
+  accounts for every page, keeping records already taken when one request fails ([changelog](https://github.com/abrahamperz/ByteCrawl/blob/main/CHANGELOG.md))
 
 ## Why focused crawling?
 

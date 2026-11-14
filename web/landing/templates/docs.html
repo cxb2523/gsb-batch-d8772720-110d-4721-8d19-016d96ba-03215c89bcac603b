@@ -264,7 +264,7 @@ books = page.<span class="f">extract</span>(<span class="s">"article.product_pod
           <tr><td><code>.browser(url, wait, scroll)</code></td><td>Page</td><td>Strategy 2 · real Chromium for JS-rendered pages. <code class="inline">wait</code> = CSS selector to await.</td></tr>
           <tr><td><code>.api(url, params)</code></td><td>Page</td><td>Strategy 3 · GET a JSON API; result in <code class="inline">page.json()</code>.</td></tr>
           <tr><td><code>.fetch(url, strategy)</code></td><td>Page</td><td>Auto: tries static, falls back to browser if the page looks empty (JS).</td></tr>
-          <tr><td><code>.crawl(start, item, fields, next_page, pages)</code></td><td>list[dict]</td><td>Strategy 4 · follow the <code class="inline">next_page</code> link across pages, extract records.</td></tr>
+          <tr><td><code>.crawl(start, item, fields, next_page, pages, detailed=False)</code></td><td>list[dict] · dict</td><td>Strategy 4 · follow the <code class="inline">next_page</code> link across pages, extract records. <code class="inline">detailed=True</code> returns per-page outcomes (<code class="inline">success</code> / <code class="inline">request_failed</code> / <code class="inline">no_next_page</code> / <code class="inline">pages_limit</code>) plus the aggregated records.</td></tr>
           <tr><td><code>.session()</code></td><td>Session</td><td>Strategy 5 · an authenticated, cookie-persistent session.</td></tr>
         </tbody>
       </table>

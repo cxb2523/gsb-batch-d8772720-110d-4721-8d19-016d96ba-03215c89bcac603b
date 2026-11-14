@@ -23,6 +23,10 @@ LLM:                  page.markdown() · page.tokens()
 """
 
 from .core import (
+    CRAWL_NO_NEXT_PAGE,
+    CRAWL_PAGES_LIMIT,
+    CRAWL_REQUEST_FAILED,
+    CRAWL_SUCCESS,
     RATE_LIMIT_MESSAGE,
     UNREACHABLE_MESSAGE,
     BlockedError,
@@ -64,5 +68,9 @@ __all__ = [
     "pagerank",
     "cosine",
     "compare",
+    "CRAWL_SUCCESS",
+    "CRAWL_REQUEST_FAILED",
+    "CRAWL_NO_NEXT_PAGE",
+    "CRAWL_PAGES_LIMIT",
 ]
-__version__ = "1.4.0"
+__version__ = "1.5.0"
