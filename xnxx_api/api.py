@@ -15,7 +15,7 @@ from base_api.modules.provider import fetch_content, download_errors, download_h
 from base_api.modules.logger import configure_app_logging, get_logger
 
 from typing import AsyncGenerator, ClassVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from curl_cffi import AsyncSession
 from selectolax.lexbor import LexborHTMLParser
 from base_api.modules.type_hints import DownloadReport
@@ -25,8 +25,12 @@ from base_api import (
     BaseCore,
     BaseMedia,
     DownloadConfigHLS,
+    ErrorMode,
+    ResultOrder,
     RetryPolicy,
+    ScrapeOperationError,
     ScrapeResult,
+    ScrapeStage,
     media_field,
     make_iterator_config,
     is_resource_gone,
@@ -244,6 +248,255 @@ class Video(BaseMedia):
         return await download_hls(self, configuration)
 
 
+@dataclass(frozen=True, slots=True)
+class SearchPageResult(ScrapeResult[Video]):
+    """Outcome of one target page of a :meth:`Client.search_videos` scrape.
+
+    The search stream yields exactly one ``SearchPageResult`` per requested page,
+    in target order. It is a ``ScrapeResult`` with ``stage == ScrapeStage.PAGE``:
+
+    * ``url`` is the complete URL that was requested for the page, and
+      ``page_index`` is its position in the requested ``pages`` range.
+    * ``succeeded`` is ``True`` for a page that was fetched and parsed, even when
+      it contained zero entries (``item_count == 0``).
+    * A failed page has ``error`` set; the error already carries the page URL and
+      the underlying failure message. Later pages are still scraped.
+    * ``items`` holds the page's per-video results and ``videos`` the
+      successfully scraped :class:`Video` objects. ``failed_items`` records
+      videos that were extracted but could not be built or loaded.
+    """
+
+    items: tuple[ScrapeResult[Video], ...] = ()
+    failed_items: tuple[ScrapeResult[Video], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.stage is not ScrapeStage.PAGE:
+            raise ValueError("SearchPageResult must use the page stage")
+        if self.item is not None:
+            raise ValueError("a page outcome cannot contain a single item")
+        if self.error is not None and (self.items or self.failed_items):
+            raise ValueError("a failed page cannot contain item results")
+
+    @property
+    def succeeded(self) -> bool:
+        """Return ``True`` when the page was fetched and parsed successfully."""
+        return self.error is None
+
+    @property
+    def item_count(self) -> int:
+        """Return how many videos were successfully produced for this page."""
+        return len(self.items)
+
+    @property
+    def page_url(self) -> str:
+        """Alias for the complete page URL."""
+        return self.url
+
+    @property
+    def failed(self) -> bool:
+        """Return ``True`` when the page was not fetched or parsed."""
+        return self.error is not None
+
+    @property
+    def error_message(self) -> str | None:
+        """Return the failure message for a failed page, else ``None``."""
+        return None if self.error is None else str(self.error)
+
+    @property
+    def results(self) -> tuple[ScrapeResult[Video], ...]:
+        """Return the page's per-video results."""
+        return self.items
+
+    @property
+    def videos(self) -> tuple[Video, ...]:
+        """Return the page's successfully scraped videos."""
+        return tuple(result.unwrap() for result in self.items)
+
+    def __iter__(self):
+        """Iterate over the page's videos, so ``for video in page`` works."""
+        return iter(self.videos)
+
+    def unwrap(self) -> tuple[Video, ...]:
+        """Return the page's videos, or raise the typed page error."""
+        if self.error is not None:
+            raise self.error
+        return self.videos
+
+
+class SearchStream:
+    """Stream of one :class:`SearchPageResult` per requested search page.
+
+    ``page_urls`` exposes the full, ordered target URLs built for this call, and
+    iteration yields exactly one outcome per URL in that same order. A page
+    outcome carries the page's videos, so callers that only need entries can read
+    ``result.videos`` (or iterate the result directly).
+
+    The underlying scrape stream is owned by this object. Use ``async with`` or
+    ``aclose()`` when stopping early so outstanding page and item tasks are
+    cancelled immediately. Outcomes that were already produced remain readable
+    after closing.
+    """
+
+    def __init__(
+        self,
+        source: AsyncGenerator[ScrapeResult[Video], None],
+        page_urls: list[str],
+    ) -> None:
+        self._source = source
+        self.page_urls: tuple[str, ...] = tuple(page_urls)
+        self._buffer: list[SearchPageResult] = []
+        self._pending_items: dict[int, list[ScrapeResult[Video]]] = {}
+        self._pending_failures: dict[int, list[ScrapeResult[Video]]] = {}
+        self._next_page = 0
+        self._source_exhausted = False
+        self._closed = False
+        self._close_guard: asyncio.Lock = asyncio.Lock()
+
+    def __aiter__(self) -> "SearchStream":
+        return self
+
+    async def __anext__(self) -> SearchPageResult:
+        # Outcomes produced before close stay readable.
+        while not self._buffer:
+            if self._source_exhausted or self._closed:
+                raise StopAsyncIteration
+            await self._advance()
+        return self._buffer.pop(0)
+
+    async def _advance(self) -> None:
+        try:
+            result = await self._source.__anext__()
+        except StopAsyncIteration:
+            self._source_exhausted = True
+            self._finish_pages_through(len(self.page_urls))
+            return
+
+        stage = getattr(result, "stage", ScrapeStage.ITEM)
+        page_index = getattr(result, "page_index", self._next_page)
+        if not 0 <= page_index < len(self.page_urls):
+            raise RuntimeError(
+                f"scrape stream reported page {page_index} but only "
+                f"{len(self.page_urls)} pages were requested"
+            )
+
+        # Results arrive in target order, so every earlier page has ended and is
+        # reported before this result.
+        if page_index > self._next_page:
+            self._finish_pages_through(page_index)
+
+        if stage == ScrapeStage.PAGE:
+            error = getattr(result, "error", None)
+            if page_index == self._next_page and error is not None:
+                # base-api reports a failed page at that page's position. Its
+                # entries (if any were extracted before the failure) are dropped
+                # because they cannot be trusted to be complete.
+                self._pending_items.pop(page_index, None)
+                self._pending_failures.pop(page_index, None)
+                self._buffer.append(self._page_result(page_index, error=error))
+                self._next_page = page_index + 1
+            # A page-success marker is only a boundary signal; the page outcome
+            # is emitted once a later page starts or the stream ends.
+            return
+
+        # A late entry for a page that was already reported cannot be attributed
+        # to a new outcome; base-api's ordered mode never produces this.
+        if page_index < self._next_page:
+            return
+
+        target = (
+            self._pending_items if _result_succeeded(result) else self._pending_failures
+        )
+        target.setdefault(page_index, []).append(result)
+
+    def _finish_pages_through(self, limit: int) -> None:
+        while self._next_page < limit and self._next_page < len(self.page_urls):
+            page_index = self._next_page
+            self._buffer.append(
+                self._page_result(
+                    page_index,
+                    items=self._pending_items.pop(page_index, []),
+                    failed_items=self._pending_failures.pop(page_index, []),
+                )
+            )
+            self._next_page += 1
+
+    def _page_result(
+        self,
+        page_index: int,
+        *,
+        items: list[ScrapeResult[Video]] | None = None,
+        failed_items: list[ScrapeResult[Video]] | None = None,
+        error: ScrapeOperationError | None = None,
+    ) -> SearchPageResult:
+        if error is not None:
+            logger.warning(
+                "Search page %s failed (%s): %s", page_index, self.page_urls[page_index], error
+            )
+        elif not items and not failed_items:
+            logger.debug("Search page %s produced no videos", page_index)
+        return SearchPageResult(
+            stage=ScrapeStage.PAGE,
+            url=self.page_urls[page_index],
+            page_index=page_index,
+            item_index=None,
+            attempts=getattr(error, "attempt", 1) if error is not None else 1,
+            error=error,
+            items=tuple(items or ()),
+            failed_items=tuple(failed_items or ()),
+        )
+
+    async def aclose(self) -> None:
+        """Cancel outstanding work and close the underlying stream exactly once.
+
+        Outcomes that were already produced stay readable: they are still
+        returned before iteration terminates.
+        """
+        if self._closed:
+            return
+        async with self._close_guard:
+            if self._closed:
+                return
+            self._closed = True
+        close = getattr(self._source, "aclose", None)
+        if close is not None:
+            await close()
+
+    async def __aenter__(self) -> "SearchStream":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
+
+
+def _result_succeeded(result: ScrapeResult[Video]) -> bool:
+    """Return whether a scrape result carried a usable item."""
+    return bool(getattr(result, "succeeded", getattr(result, "error", None) is None))
+
+
+def _build_search_page_urls(query: str, mode, upload_time, length, searching_quality,
+                            pages: int) -> list[str]:
+    url = f"https://www.xnxx.com/search{mode}{upload_time}{length}{searching_quality}/{quote(query, safe='')}"
+    page_urls = [url]
+    page_urls.extend([f"{url}/{page}" for page in range(1, int(pages))])
+    return page_urls
+
+
+def _make_search_iterator_config(iterator_config: IteratorConfig | None) -> IteratorConfig:
+    if iterator_config is None:
+        iterator_config = make_iterator_config()
+    # The search stream promises exactly one outcome per page, so failed pages
+    # must be yielded rather than skipped or raised. Target order keeps a page's
+    # entries together and lets earlier pages be reported before later ones.
+    # A caller-supplied page error handler is dropped because it could return
+    # RAISE/SKIP and hide the page failure; item settings are preserved.
+    return replace(
+        iterator_config,
+        order=ResultOrder.ORIGINAL,
+        page_error_mode=ErrorMode.YIELD,
+        page_error_handler=None,
+    )
+
+
 @dataclass(kw_only=True, slots=True)
 class User(BaseMedia):
 
@@ -361,22 +614,33 @@ class Client:
                      length: Length | str = "",
                      searching_quality: SearchingQuality | str = "",
                      iterator_config: IteratorConfig | None = None,
-                     ) -> AsyncGenerator[ScrapeResult[Video], None]:
-        url = f"https://www.xnxx.com/search{mode}{upload_time}{length}{searching_quality}/{quote(query, safe='')}"
+                     ) -> SearchStream:
+        """Search videos and stream one outcome per requested page.
 
-        page_urls = [url]
-        page_urls.extend([f"{url}/{page}" for page in range(1, int(pages))])
+        ``pages == 0`` requests just the first page; any positive value requests
+        exactly ``pages`` pages, unchanged from earlier releases.
+
+        Every requested page produces one :class:`SearchPageResult` with its
+        complete URL, ``page_index`` and, when it succeeded, the page's videos.
+        A page can succeed with zero entries and a failed page carries its typed
+        error while later pages are still scraped. The returned
+        :class:`SearchStream` also owns the underlying scrape stream;
+        ``async with`` or ``await stream.aclose()`` releases it when stopping
+        early.
+        """
+        page_urls = _build_search_page_urls(
+            query, mode, upload_time, length, searching_quality, pages
+        )
         logger.info(f"Searching for videos using query: {query} and page URLs: {page_urls}")
-        if iterator_config is None:
-            iterator_config = make_iterator_config()
 
-        return scrape_stream(
+        stream = scrape_stream(
             core=self.core,
             constructor=Video,
             target_page_urls=page_urls,
             item_extractor=extractor_html,
-            iterator_config=iterator_config,
+            iterator_config=_make_search_iterator_config(iterator_config),
         )
+        return SearchStream(stream, page_urls)
 
 
 def create_parser() -> argparse.ArgumentParser:

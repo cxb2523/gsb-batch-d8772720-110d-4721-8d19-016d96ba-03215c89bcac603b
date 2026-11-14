@@ -97,6 +97,25 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Searching with per-page outcomes
+
+`search_videos` yields exactly one outcome per requested page, in target order.
+A page can succeed with zero entries, and a failed page reports its URL and error
+without stopping later pages. Use `async with` so stopping early closes the stream:
+
+```python
+async with client.search_videos("example query", pages=3) as stream:
+    async for page in stream:
+        if page.succeeded:
+            print(f"{page.url}: {page.item_count} videos")
+            for video in page.videos:
+                print(video.title)
+        else:
+            print(f"{page.url} failed: {page.error}")
+        if enough_results():
+            break  # closing the stream cancels outstanding work
+```
+
 ---
 
 # Support the Project ❤️
