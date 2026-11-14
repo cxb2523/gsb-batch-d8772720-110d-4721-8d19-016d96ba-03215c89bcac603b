@@ -1,0 +1,12 @@
+# 全局默认审查人：仓库所有者
+* @wq19901103wq
+
+# 核心回复生成逻辑修改需要仓库所有者审查
+src/reply/ @wq19901103wq
+src/bot/ @wq19901103wq
+prompts/ @wq19901103wq
+skills/ @wq19901103wq
+
+# CI/CD 配置修改需要仓库所有者审查
+.github/ @wq19901103wq
+requirements.txt @wq19901103wq
