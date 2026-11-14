@@ -21,6 +21,7 @@ built on.
 - [`Check`](#check)
 - [`Client` and `Page`](#client-and-page)
 - [`Provider` and the module functions](#provider-and-the-module-functions)
+- [`SessionAllocator` and `Assignment`](#sessionallocator-and-assignment)
 - [Your own transport](#your-own-transport)
 
 ## `Proxy`
@@ -183,6 +184,41 @@ A `Provider` is a frozen description of one gateway: `id`, `label`,
 `exit_ip_headers` is every header name the exit address may arrive under, tried
 in order; `exit_ip_header` is the first of them. In a definition file the key is
 `exit_ip_header` and takes one name or a list.
+
+## `SessionAllocator` and `Assignment`
+
+```python
+SessionAllocator(template, state_path)
+```
+
+`template` is a `Proxy` whose parameters every worker shares; anything else is
+a `ParamError`. `state_path` is a local JSON file. Opens no socket.
+
+| call | returns |
+|---|---|
+| `.assign(workers)` | a list of `Assignment`, one per worker name, in the order given |
+| `.state_path` | the path the mapping is kept in |
+
+`workers` is an iterable of distinct, non-empty strings; anything else is a
+`ParamError`. Workers already in the state file keep their recorded session;
+only workers the file does not know have an id drawn. A state file that exists
+but is not the structure this module writes is a `ParamError` naming the path -
+it is never silently rebuilt.
+
+An `Assignment` is frozen: `worker`, `status`, `session_id`, `proxy`,
+`reason`. `status` is one of `"created"`, `"reused"`, `"failed"`,
+`"conflict"`; `.ok` is true for the first two. `proxy` is the template pinned
+to the worker's session id and is `None` on `"failed"`; `reason` is set on
+`"failed"` and `"conflict"` and names the cause - a provider with no session
+parameter, a recorded id the gateway's own validation refuses, a template
+whose parameters no longer match the recorded ones, or a registration another
+writer committed first.
+
+The state file holds worker names, session ids and the template's parameters -
+never the password or the login. Writes go through a sibling `.lock` file and
+a re-read-merge-replace, so a second process committing at the same time
+cannot erase workers the first one registered; a worker registered by both is
+reported as `"conflict"` and the first registration is kept.
 
 ## Your own transport
 

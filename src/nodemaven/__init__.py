@@ -27,6 +27,7 @@ lets the whole string-building half of this package stay testable with no socket
 and no account - see ``nodemaven.check`` and ``nodemaven.api``.
 """
 
+from .allocator import Assignment, SessionAllocator
 from .api import Client, Page
 from .check import Check
 from .errors import (
@@ -48,6 +49,8 @@ __version__ = "0.1.7"
 __all__ = [
     "Proxy",
     "Provider",
+    "SessionAllocator",
+    "Assignment",
     "Client",
     "Page",
     "Check",

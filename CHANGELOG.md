@@ -8,6 +8,31 @@ itself is built on: a change to what the gateway is believed to accept carries
 the probe that established it and the date it was run. "The vendor's documentation
 says so" is not one of those, and an entry that rests on it says so outright.
 
+## Unreleased
+
+### Sticky sessions can now survive a restart
+
+`Proxy.sessions(n)` hands back a batch and remembers nothing, so a process that
+died mid-run lost which worker held which session, and the next run drew again
+with no way to avoid repeating itself. The new `SessionAllocator` takes a
+`Proxy` template, a list of worker names and a state file: the first run draws
+one session per worker and writes the file, later runs reuse the recorded ids
+and draw only for workers never seen. Each worker gets an `Assignment` back
+whose status is one of `created`, `reused`, `failed` (with the reason, e.g. a
+provider that declares no session parameter) or `conflict` (the template's
+parameters changed under a recorded worker, or another process registered the
+worker first).
+
+Ids are drawn by `Proxy.sessions` and recorded ids are re-validated by
+`Proxy.session`, so the gateway's separator rules are enforced by the existing
+code rather than by a second implementation. The state file holds worker
+names, session ids and the template parameters - never the password - and a
+file that exists but is not the structure this module wrote raises `ParamError`
+naming the path instead of being silently rebuilt. Writes are serialised
+through a sibling lock file and a re-read-merge before replace, so two
+processes committing at once cannot erase each other's workers. Nothing here
+opens a socket.
+
 ## 0.1.7 - 2026-10-19
 
 ### An error never prints a body that has no message
