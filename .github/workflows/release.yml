@@ -1,0 +1,236 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev rpm
+
+      - name: Rust setup
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Sync node version and setup cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'pnpm'
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Extract Version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG_NAME=${{ github.ref_name }}
+          else
+            TAG_NAME=$(git describe --tags --abbrev=0)
+            echo "Manual run detected. Using latest tag: $TAG_NAME"
+          fi
+          echo "RELEASE_TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          VERSION=${TAG_NAME#v}
+          echo "TAURI_APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VITE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Version extracted: $VERSION"
+
+      - name: Download Core (Windows)
+        if: matrix.platform == 'windows-latest'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download --repo xin-Easy/yuHai --pattern "yuHai-windows-latest-*-portable.zip" --dir src-tauri/resources --clobber
+          cd src-tauri/resources
+          Move-Item -Path $(Get-ChildItem yuHai-windows-latest-*-portable.zip).Name -Destination yuHai-core-win-x64.zip -Force
+
+      - name: Download Core (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download --repo xin-Easy/yuHai --pattern "yuHai-ubuntu-latest-*-portable.zip" --dir src-tauri/resources --clobber
+          cd src-tauri/resources
+          mv yuHai-ubuntu-latest-*-portable.zip yuHai-core-linux-x64.zip
+
+      - name: Update Tauri Config (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          ./src-tauri/update_config.ps1 -Platform "win-x64"
+
+      - name: Update Tauri Config (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          chmod +x ./src-tauri/update_config.sh
+          ./src-tauri/update_config.sh "linux-x64"
+
+      - name: Build the app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Generate signatures (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $files = Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Include *.exe,*.msi
+          foreach ($file in $files) {
+            pnpm tauri signer sign --private-key $env:TAURI_SIGNING_PRIVATE_KEY --password $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD $file.FullName
+          }
+
+      - name: Generate signatures (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          find src-tauri/target/release/bundle -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -print0 | while IFS= read -r -d '' file; do
+            pnpm tauri signer sign --private-key "${TAURI_SIGNING_PRIVATE_KEY}" --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" "${file}"
+          done
+
+      - name: List bundle files (Debug)
+        shell: bash
+        run: |
+          ls -R src-tauri/target/release/bundle || echo "Bundle directory not found"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ env.RELEASE_TAG_NAME }}
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-update:
+    needs: build-tauri
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Generate latest.json
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const refType = context.ref.startsWith('refs/tags/') ? 'tag' : 'other';
+            const refName = context.ref.replace('refs/tags/', '').replace('refs/heads/', '');
+
+            let release;
+            if (refType === 'tag' && refName.startsWith('v')) {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag: refName });
+            } else {
+              const releases = await github.rest.repos.listReleases({ owner, repo, per_page: 1, page: 1 });
+              if (!releases.data.length) {
+                throw new Error('No releases found for generating latest.json');
+              }
+              release = { data: releases.data[0] };
+            }
+
+            const tag = release.data.tag_name;
+            const version = tag.replace(/^v/, '');
+            const assets = release.data.assets || [];
+
+            const findAsset = (matcher) => assets.find((a) => matcher(a.name));
+            const listAssets = () => assets.map((a) => a.name).join(', ');
+            const pickSig = async (asset) => {
+              if (!asset) return null;
+              const res = await fetch(asset.browser_download_url, {
+                headers: { Authorization: `token ${process.env.GITHUB_TOKEN}` }
+              });
+              if (!res.ok) {
+                throw new Error(`Failed to fetch signature: ${asset.name}`);
+              }
+              return (await res.text()).trim();
+            };
+
+            const windowsAsset = findAsset((name) => name.endsWith('.exe')) || findAsset((name) => name.endsWith('.msi'));
+            const windowsSigAsset =
+              findAsset((name) => name.endsWith('.exe.sig')) || findAsset((name) => name.endsWith('.msi.sig'));
+            const linuxAsset = findAsset((name) => name.endsWith('.AppImage'));
+            const linuxSigAsset = findAsset((name) => name.endsWith('.AppImage.sig'));
+
+            if (!windowsAsset || !windowsSigAsset) {
+              throw new Error(`Missing Windows updater assets (.exe/.exe.sig or .msi/.msi.sig). Assets: ${listAssets()}`);
+            }
+            if (!linuxAsset || !linuxSigAsset) {
+              throw new Error(`Missing Linux updater assets (.AppImage/.AppImage.sig). Assets: ${listAssets()}`);
+            }
+
+            const windowsSignature = await pickSig(windowsSigAsset);
+            const linuxSignature = await pickSig(linuxSigAsset);
+
+            const latest = {
+              version,
+              notes: release.data.body || '',
+              pub_date: release.data.published_at || new Date().toISOString(),
+              platforms: {
+                'windows-x86_64': {
+                  url: windowsAsset.browser_download_url,
+                  signature: windowsSignature
+                },
+                'linux-x86_64': {
+                  url: linuxAsset.browser_download_url,
+                  signature: linuxSignature
+                }
+              }
+            };
+
+            fs.writeFileSync('latest.json', JSON.stringify(latest, null, 2));
+            console.log('latest.json generated');
+
+      - name: Prepare update site
+        run: |
+          mkdir updater-site
+          mv latest.json updater-site/latest.json
+
+      - name: Publish latest.json to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: updater-site
+          publish_branch: gh-pages

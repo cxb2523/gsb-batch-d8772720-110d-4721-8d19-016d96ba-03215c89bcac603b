@@ -1,0 +1,57 @@
+.sidebar-stats {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  padding: 20px;
+  background: inherit;
+  border-top: 1px solid rgb(0 0 0 / 5%);
+  
+  .stat-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 15px;
+    
+    .stat-item {
+      flex: 1;
+      text-align: center;
+      
+      .stat-label {
+        margin-bottom: 4px;
+        font-size: 12px;
+        opacity: 0.7;
+      }
+      
+      .stat-value {
+        font-size: 16px;
+        font-weight: 600;
+      }
+    }
+    
+    .stat-divider {
+      width: 1px;
+      height: 20px;
+      margin: 0 10px;
+      background-color: currentcolor;
+      opacity: 0.1;
+    }
+  }
+  
+  .stat-total {
+    padding-top: 10px;
+    text-align: center;
+    border-top: 1px dashed rgb(0 0 0 / 5%);
+    
+    .stat-label {
+      margin-bottom: 4px;
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    
+    .stat-value {
+      font-size: 20px;
+      font-weight: bold;
+    }
+  }
+}

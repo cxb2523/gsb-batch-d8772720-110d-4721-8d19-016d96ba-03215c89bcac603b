@@ -1,0 +1,112 @@
+.art-table {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+
+  .el-table {
+    flex: 1;
+    width: 100%;
+    margin-top: 0;
+  }
+
+  :deep(.el-loading-mask) {
+    z-index: 100;
+    background-color: var(--default-box-color) !important;
+  }
+
+  // Loading 过渡动画 - 消失时淡出
+  .loading-fade-leave-active {
+    transition: opacity 0.3s ease-out;
+  }
+
+  .loading-fade-leave-to {
+    opacity: 0;
+  }
+
+  // 空状态垂直居中
+  &.is-empty {
+    :deep(.el-scrollbar__wrap) {
+      display: flex;
+    }
+  }
+
+  .pagination {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    margin: 0;
+    padding: 12px 16px;
+    border-top: 1px solid var(--el-border-color-lighter, #ebeef5);
+    background: var(--el-fill-color-blank, #fff);
+    transition: background 0.25s ease;
+
+    :deep(.el-select) {
+      width: 102px !important;
+    }
+
+    // 分页按钮美化
+    :deep(.el-pagination) {
+      --el-pagination-button-width: 32px;
+      --el-pagination-button-height: 32px;
+      font-weight: 500;
+
+      .btn-prev,
+      .btn-next,
+      .el-pager li {
+        border-radius: 8px;
+        margin: 0 2px;
+        transition: all 0.2s ease;
+      }
+
+      .el-pager li:not(.is-active):hover {
+        color: var(--el-color-primary);
+        background: var(--el-color-primary-light-9, #ecf5ff);
+      }
+
+      .el-pager li.is-active {
+        font-weight: 600;
+      }
+
+      .btn-prev:hover,
+      .btn-next:hover {
+        color: var(--el-color-primary);
+        background: var(--el-color-primary-light-9, #ecf5ff);
+      }
+
+      .el-pagination__total {
+        color: var(--el-text-color-secondary);
+        font-size: 13px;
+      }
+
+      .el-pagination__jump {
+        color: var(--el-text-color-secondary);
+        font-size: 13px;
+        margin-left: 12px;
+
+        .el-input__inner {
+          border-radius: 6px;
+        }
+      }
+
+      .el-pagination__sizes {
+        .el-input__wrapper {
+          border-radius: 6px;
+        }
+      }
+    }
+
+    // 分页对齐方式
+    &.left {
+      justify-content: flex-start;
+    }
+
+    &.center {
+      justify-content: center;
+    }
+
+    &.right {
+      justify-content: flex-end;
+    }
+  }
+}
