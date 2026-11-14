@@ -6,6 +6,7 @@
     "scripts": {
         "start": "node backend/server.js",
         "dev": "node --watch backend/server.js",
+        "test": "node --test \"backend/tests/*.test.js\"",
         "lint": "npx prettier --write .",
         "mailpit:up": "docker-compose -f docker-compose-mailpit.yml up -d",
         "mailpit:down": "docker-compose -f docker-compose-mailpit.yml down"
