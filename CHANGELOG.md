@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fix crash when stats file has not been created yet (#544)
+- Always report a partial ZIM in `--zimit-progress-file` when no complete archive has
+  been produced: crawler failure, warc2zim failure and SIGINT/SIGTERM interruption now
+  set `partialZim` to true, just like soft limit hits ; it is only false on success
 
 ## [3.1.3] - 2026-07-31
 

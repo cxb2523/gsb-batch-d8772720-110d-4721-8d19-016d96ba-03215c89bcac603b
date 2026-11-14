@@ -35,6 +35,41 @@ from zimit.utils import download_file
 
 temp_root_dir: Path | None = None
 
+# zimit progress file of the current run, if any. Used by the signal handler to flag
+# the archive as partial when the run is interrupted.
+current_zimit_stats_file: Path | None = None
+
+# True as soon as a SIGINT/SIGTERM has been received during the current run
+run_interrupted = False
+
+
+def set_partial_zim_flag(zimit_stats_file: Path, *, partial_zim: bool = True) -> None:
+    """Set the partialZim flag in the zimit progress file.
+
+    The file is left untouched when it does not exist (or does not contain a JSON
+    object): it is up to the progress watcher to create it and we must not fabricate
+    an empty stats object. Any error while updating the file is only logged, so that
+    the original exit code of the scraper is never masked.
+    """
+    if not zimit_stats_file.exists():
+        logger.debug(
+            f"Skipping partial ZIM status update, {zimit_stats_file} does not exist"
+        )
+        return
+    try:
+        content = zimit_stats_file.read_bytes()
+        # the progress file is touched at watcher startup and might still be empty if
+        # no progress has been reported yet
+        stats_content = json.loads(content) if content.strip() else {}
+        if not isinstance(stats_content, dict):
+            raise ValueError("unexpected content, not a JSON object")
+        stats_content["partialZim"] = partial_zim
+        zimit_stats_file.write_text(json.dumps(stats_content))
+    except Exception as exc:
+        logger.warning(
+            f"Failed to update partial ZIM status in {zimit_stats_file}: {exc}"
+        )
+
 
 class ProgressFileWatcher:
     def __init__(
@@ -52,8 +87,11 @@ class ProgressFileWatcher:
     def stop(self):
         if not self.process:
             return
+        # give the watcher a chance to flush a pending progress update, then make sure
+        # it is really gone so that it cannot overwrite the final status
         self.process.join(0.1)
         self.process.terminate()
+        self.process.join(1)
 
     def watch(self):
         self.process = Process(
@@ -448,7 +486,9 @@ def run(raw_args):
         help="If set, output zimit stats as JSON to this file. Forces the creation of"
         "crawler and warc2zim stats as well. If --statsFilename and/or "
         "--warc2zim-progress-file are not set, default temporary files will be used. "
-        "Relative filename resolves to output directory, see --output.",
+        "A `partialZim` flag is written on exit, set to true when no complete ZIM has "
+        "been produced (crawler soft limit hit, crawler failure, conversion failure or "
+        "interruption). Relative filename resolves to output directory, see --output.",
     )
 
     parser.add_argument(
@@ -944,6 +984,14 @@ def run(raw_args):
         zimit_stats_file.parent.mkdir(parents=True, exist_ok=True)
     zimit_stats_file.unlink(missing_ok=True)
 
+    # remember the progress file of this run so that the signal handler can flag the
+    # archive as partial if we are interrupted
+    global current_zimit_stats_file, run_interrupted  # noqa: PLW0603
+    current_zimit_stats_file = (
+        zimit_stats_file if known_args.zimit_progress_file else None
+    )
+    run_interrupted = False
+
     if known_args.zimit_progress_file:
         # setup inotify crawler progress watcher
         watcher = ProgressFileWatcher(
@@ -985,134 +1033,94 @@ def run(raw_args):
     )
 
     partial_zim = False
+    # True only when a complete archive has been produced ; anything else (soft limit
+    # hit, crawler failure, conversion failure, interruption) means a partial archive
+    zim_completed = False
+    warc2zim_exit_code = None
 
-    # if warc files are passed, do not run browsertrix crawler but fetch the files if
-    # they are provided as an HTTP URL + extract the archive if it is a tar.gz
-    warc_files: list[Path] = []
-    if known_args.warcs:
-        for warc_location in [
-            warc_location.strip() for warc_location in known_args.warcs.split(",")
-        ]:
-            suffix = "".join(Path(urllib.parse.urlparse(warc_location).path).suffixes)
-            if suffix not in {".tar", ".tar.gz", ".warc", ".warc.gz"}:
-                raise Exception(f"Unsupported file at {warc_location}")
-
-            filename = tempfile.NamedTemporaryFile(
-                dir=temp_root_dir,
-                prefix="warc_",
-                suffix=suffix,
-                delete_on_close=False,
-            )
-
-            if not re.match(r"^https?\://", warc_location):
-                # warc_location is not a URL, so it is a path, simply add it to the list
-                if not Path(warc_location).exists():
-                    raise Exception(f"Impossible to find file at {warc_location}")
-
-                # if it is a plain warc or warc.gz, simply add it to the list
-                if suffix in {".warc", ".warc.gz"}:
-                    warc_files.append(Path(warc_location))
-                    continue
-
-                # otherwise extract tar.gz but do not delete it afterwards
-                extract_path = temp_root_dir / f"{filename.name}_files"
-                logger.info(
-                    f"Extracting WARC(s) from {warc_location} to {extract_path}"
-                )
-                with tarfile.open(warc_location, "r") as fh:
-                    # Extract all the contents to the specified directory
-                    fh.extractall(path=extract_path, filter="data")
-                warc_files.append(Path(extract_path))
-                continue
-
-            # warc_location is a URL, let's download it to a temp name to avoid name
-            # collisions
-            warc_file = Path(filename.name)
-            logger.info(f"Downloading WARC(s) from {warc_location} to {warc_file}")
-            download_file(warc_location, warc_file)
-
-            # if it is a plain warc or warc.gz, simply add it to the list
-            if suffix in {".warc", ".warc.gz"}:
-                warc_files.append(warc_file)
-                continue
-
-            # otherwise extract tar.gz and delete it afterwards
-            extract_path = temp_root_dir / f"{filename.name}_files"
-            logger.info(f"Extracting WARC(s) from {warc_file} to {extract_path}")
-            with tarfile.open(warc_file, "r") as fh:
-                # Extract all the contents to the specified directory
-                fh.extractall(path=extract_path, filter="data")
-            logger.info(f"Deleting archive at {warc_file}")
-            warc_file.unlink()
-            warc_files.append(Path(extract_path))
-
-    else:
-        logger.info(f"Running browsertrix-crawler crawl: {cmd_line}")
-        crawl = subprocess.run(crawler_args, check=False)
-        if (
-            crawl.returncode == EXIT_CODE_CRAWLER_SIZE_LIMIT_HIT
-            and known_args.sizeSoftLimit
-        ):
-            logger.info(
-                "Crawl size soft limit hit. Continuing with warc2zim conversion."
-            )
-            if known_args.zimit_progress_file:
-                partial_zim = True
-        elif (
-            crawl.returncode == EXIT_CODE_CRAWLER_TIME_LIMIT_HIT
-            and known_args.timeSoftLimit
-        ):
-            logger.info(
-                "Crawl time soft limit hit. Continuing with warc2zim conversion."
-            )
-            if known_args.zimit_progress_file:
-                partial_zim = True
-        elif crawl.returncode != 0:
-            logger.error(
-                f"Crawl returned an error: {crawl.returncode}, scraper exiting"
-            )
-            cancel_cleanup()
-            return crawl.returncode
-
-        if known_args.collection:
-            warc_files = [
-                temp_root_dir.joinpath(f"collections/{known_args.collection}/archive/")
-            ]
+    try:
+        # if warc files are passed, do not run browsertrix crawler but fetch the files
+        # if they are provided as an HTTP URL + extract the archive if it is a tar.gz
+        warc_files: list[Path] = []
+        if known_args.warcs:
+            warc_files = get_warc_files(known_args.warcs)
 
         else:
-            warc_dirs = sorted(
-                temp_root_dir.rglob("collections/crawl-*/archive/"),
-                key=lambda path: path.lstat().st_mtime,
-            )
-            if len(warc_dirs) == 0:
-                raise RuntimeError(
-                    "Failed to find directory where WARC files have been created"
-                )
-            elif len(warc_dirs) > 1:
+            logger.info(f"Running browsertrix-crawler crawl: {cmd_line}")
+            crawl = subprocess.run(crawler_args, check=False)
+            if (
+                crawl.returncode == EXIT_CODE_CRAWLER_SIZE_LIMIT_HIT
+                and known_args.sizeSoftLimit
+            ):
                 logger.info(
-                    "Found many WARC files directories, combining pages from all "
-                    "of them"
+                    "Crawl size soft limit hit. Continuing with warc2zim conversion."
                 )
-                for directory in warc_dirs:
-                    logger.info(f"- {directory}")
-            warc_files = warc_dirs
+                if known_args.zimit_progress_file:
+                    partial_zim = True
+            elif (
+                crawl.returncode == EXIT_CODE_CRAWLER_TIME_LIMIT_HIT
+                and known_args.timeSoftLimit
+            ):
+                logger.info(
+                    "Crawl time soft limit hit. Continuing with warc2zim conversion."
+                )
+                if known_args.zimit_progress_file:
+                    partial_zim = True
+            elif crawl.returncode != 0:
+                logger.error(
+                    f"Crawl returned an error: {crawl.returncode}, scraper exiting"
+                )
+                cancel_cleanup()
+                return crawl.returncode
 
-    logger.info("")
-    logger.info("----------")
-    logger.info(
-        f"Processing WARC files in/at "
-        f"{' '.join(str(warc_file) for warc_file in warc_files)}"
-    )
-    warc2zim_args.extend(str(warc_file) for warc_file in warc_files)
+            if known_args.collection:
+                warc_files = [
+                    temp_root_dir.joinpath(
+                        f"collections/{known_args.collection}/archive/"
+                    )
+                ]
 
-    logger.info(f"Calling warc2zim with these args: {warc2zim_args}")
+            else:
+                warc_dirs = sorted(
+                    temp_root_dir.rglob("collections/crawl-*/archive/"),
+                    key=lambda path: path.lstat().st_mtime,
+                )
+                if len(warc_dirs) == 0:
+                    raise RuntimeError(
+                        "Failed to find directory where WARC files have been created"
+                    )
+                elif len(warc_dirs) > 1:
+                    logger.info(
+                        "Found many WARC files directories, combining pages from all "
+                        "of them"
+                    )
+                    for directory in warc_dirs:
+                        logger.info(f"- {directory}")
+                warc_files = warc_dirs
 
-    warc2zim_exit_code = warc2zim(warc2zim_args)
+        logger.info("")
+        logger.info("----------")
+        logger.info(
+            f"Processing WARC files in/at "
+            f"{' '.join(str(warc_file) for warc_file in warc_files)}"
+        )
+        warc2zim_args.extend(str(warc_file) for warc_file in warc_files)
 
-    if known_args.zimit_progress_file and zimit_stats_file.exists():
-        stats_content = json.loads(zimit_stats_file.read_bytes())
-        stats_content["partialZim"] = partial_zim
-        zimit_stats_file.write_text(json.dumps(stats_content))
+        logger.info(f"Calling warc2zim with these args: {warc2zim_args}")
+
+        warc2zim_exit_code = warc2zim(warc2zim_args)
+        # warc2zim returns None (or 0) when the ZIM has been created successfully
+        zim_completed = (
+            not warc2zim_exit_code and not partial_zim and not run_interrupted
+        )
+    finally:
+        if known_args.zimit_progress_file:
+            # stop watching progress files before writing the final status, so that a
+            # late progress update cannot erase the partialZim flag
+            watcher.stop()
+            set_partial_zim_flag(zimit_stats_file, partial_zim=not zim_completed)
+        # run is over, a late signal must not alter the status of this run anymore
+        current_zimit_stats_file = None
 
     # also call cancel_cleanup when --keep, even if it is not supposed to be registered,
     # so that we will display temporary files location just like in other situations
@@ -1120,6 +1128,66 @@ def run(raw_args):
         cancel_cleanup()
 
     return warc2zim_exit_code
+
+
+def get_warc_files(warcs: str) -> list[Path]:
+    """Fetch / extract WARC files passed via --warcs, by-passing the crawler"""
+    if temp_root_dir is None:
+        raise RuntimeError("Temporary root dir is not set")
+    warc_files: list[Path] = []
+    for warc_location in [warc_location.strip() for warc_location in warcs.split(",")]:
+        suffix = "".join(Path(urllib.parse.urlparse(warc_location).path).suffixes)
+        if suffix not in {".tar", ".tar.gz", ".warc", ".warc.gz"}:
+            raise Exception(f"Unsupported file at {warc_location}")
+
+        filename = tempfile.NamedTemporaryFile(
+            dir=temp_root_dir,
+            prefix="warc_",
+            suffix=suffix,
+            delete_on_close=False,
+        )
+
+        if not re.match(r"^https?\://", warc_location):
+            # warc_location is not a URL, so it is a path, simply add it to the list
+            if not Path(warc_location).exists():
+                raise Exception(f"Impossible to find file at {warc_location}")
+
+            # if it is a plain warc or warc.gz, simply add it to the list
+            if suffix in {".warc", ".warc.gz"}:
+                warc_files.append(Path(warc_location))
+                continue
+
+            # otherwise extract tar.gz but do not delete it afterwards
+            extract_path = temp_root_dir / f"{filename.name}_files"
+            logger.info(f"Extracting WARC(s) from {warc_location} to {extract_path}")
+            with tarfile.open(warc_location, "r") as fh:
+                # Extract all the contents to the specified directory
+                fh.extractall(path=extract_path, filter="data")
+            warc_files.append(Path(extract_path))
+            continue
+
+        # warc_location is a URL, let's download it to a temp name to avoid name
+        # collisions
+        warc_file = Path(filename.name)
+        logger.info(f"Downloading WARC(s) from {warc_location} to {warc_file}")
+        download_file(warc_location, warc_file)
+
+        # if it is a plain warc or warc.gz, simply add it to the list
+        if suffix in {".warc", ".warc.gz"}:
+            warc_files.append(warc_file)
+            continue
+
+        # otherwise extract tar.gz and delete it afterwards
+        extract_path = temp_root_dir / f"{filename.name}_files"
+        logger.info(f"Extracting WARC(s) from {warc_file} to {extract_path}")
+        with tarfile.open(warc_file, "r") as fh:
+            # Extract all the contents to the specified directory
+            fh.extractall(path=extract_path, filter="data")
+        logger.info(f"Deleting archive at {warc_file}")
+        warc_file.unlink()
+        warc_files.append(Path(extract_path))
+
+    return warc_files
 
 
 def get_cleaned_url(url: str):
@@ -1252,11 +1320,16 @@ def get_crawler_cmd_line(args):
 
 
 def sigint_handler(*args):  # noqa: ARG001
+    global run_interrupted  # noqa: PLW0603
+    run_interrupted = True
     logger.info("")
     logger.info("")
     logger.info("SIGINT/SIGTERM received, stopping zimit")
     logger.info("")
     logger.info("")
+    if current_zimit_stats_file:
+        # interrupted run, the archive is not complete
+        set_partial_zim_flag(current_zimit_stats_file, partial_zim=True)
     sys.exit(3)
 
 
