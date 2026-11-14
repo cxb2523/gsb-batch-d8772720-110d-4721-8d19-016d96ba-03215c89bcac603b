@@ -54,7 +54,10 @@ class FileDownloader {
     this._httpClient = axios.create(this._httpConfig);
 
     this._outputFolder = path.join(process.cwd(), this._config.folder);
-    this._maxBytesSize = this._maxMbSize * MB;
+    this._maxBytesSize = this._config.maxSizeInMb * MB;
+    // Filenames already taken during the current run(), to make sure that
+    // every successful download gets its own path on disk
+    this._reservedFilenames = new Set();
 
     debug('FileDownloader instance created.');
     debug('HTTP config', this._httpConfig);
@@ -97,17 +100,23 @@ class FileDownloader {
     debug('Creating ouput folder "%s"...', this._outputFolder);
     await makeDir(this._outputFolder);
 
+    // Reset the names taken by a previous run(): each run deduplicates on its own
+    this._reservedFilenames.clear();
+
+    // Reserve a unique base name for every download in input order, before any
+    // download starts: the dedup suffix (-1, -2, ...) is therefore stable and
+    // independent of the (potentially concurrent) completion order
+    const downloadsWithReservedName = downloadsWithUrl.map((d, index) => ({
+      ...d,
+      reservedBaseName: this._reserveBaseName({ ...d, index, total }),
+    }));
+
     const filePaths = await Bluebird.map(
-      downloadsWithUrl,
-      (d, index) => {
-        const { url, parsedName } = d;
-        return this._download({
-          url,
-          parsedName,
-          index,
-          total,
-        });
-      },
+      downloadsWithReservedName,
+      ({ url, reservedBaseName }) => this._download({
+        url,
+        reservedBaseName,
+      }),
       { concurrency },
     );
 
@@ -116,18 +125,15 @@ class FileDownloader {
 
   /**
    * @param {string} url
-   * @param {string} [parsedName]
-   * @param {number} index
-   * @param {number} total
+   * @param {string} reservedBaseName The unique (within the run) base name
+   * computed from the namePattern before the download started
    * @return {Promise}
    */
   async _download({
     url,
-    parsedName,
-    index,
-    total,
+    reservedBaseName,
   }) {
-    debug('Dowloading "%s" (%d/%d)...', url, index + 1, total);
+    debug('Dowloading "%s"...', url);
 
     try {
       const response = await this._httpClient.get(url);
@@ -135,13 +141,8 @@ class FileDownloader {
 
       this._checkContentLength({ url, headers });
 
-      const filename = this._buildFilename({
-        url,
-        parsedName,
-        headers,
-        index,
-        total,
-      });
+      const ext = this._getFileExtensionFromHeaders({ headers });
+      const filename = `${reservedBaseName}${ext}`;
 
       return this._saveFile({ filename, response });
     } catch (error) {
@@ -164,24 +165,27 @@ class FileDownloader {
   }
 
   /**
+   * Builds the base name (without the response-derived extension) from the
+   * configured namePattern and reserves a unique value for it within the
+   * current run(): if the resulting name is already taken by another download
+   * of the same run, a stable dedup suffix (-1, -2, ...) is inserted before
+   * the pattern extension.
    * @param {string} url
    * @param {string} [parsedName]
-   * @param {Object} headers
-   * @param {number} currentCount
+   * @param {number} index
    * @param {number} total
    * @return {string}
    */
-  _buildFilename({
+  _reserveBaseName({
     url,
     parsedName,
-    headers,
     index,
     total,
   }) {
     const parsedUrl = nodeUrl.parse(url);
     const { name: baseNameFromUrl } = path.parse(parsedUrl.pathname);
 
-    const finalName = [
+    const baseName = [
       FileDownloader.replacers.name.bind(null, baseNameFromUrl),
       FileDownloader.replacers.index.bind(null, index, total),
       FileDownloader.replacers.uuid,
@@ -192,10 +196,23 @@ class FileDownloader {
       this._config.namePattern,
     );
 
-    const ext = this._getFileExtensionFromHeaders({ headers });
-    const fileName = `${finalName}${ext}`;
+    let reservedName = baseName;
 
-    return fileName;
+    if (this._reservedFilenames.has(reservedName)) {
+      const parsedBaseName = path.parse(baseName);
+      const hasName = Boolean(parsedBaseName.name);
+      const dedupBaseName = hasName ? parsedBaseName.name : baseName;
+      const patternExtension = hasName ? parsedBaseName.ext : '';
+      let dedupIndex = 1;
+      do {
+        reservedName = `${dedupBaseName}-${dedupIndex}${patternExtension}`;
+        dedupIndex += 1;
+      } while (this._reservedFilenames.has(reservedName));
+    }
+
+    this._reservedFilenames.add(reservedName);
+
+    return reservedName;
   }
 
   /**
@@ -215,9 +232,11 @@ class FileDownloader {
     }
 
     const contentType = headers['content-type'];
-    const extension = `.${mime.getExtension(contentType)}`;
+    // mime.getExtension() returns false/undefined when the content-type is
+    // unknown: keep a nameless extension instead of producing ".false"
+    const mappedExtension = contentType ? mime.getExtension(contentType.split(';')[0].trim()) : false;
 
-    return extension;
+    return mappedExtension ? `.${mappedExtension}` : '';
   }
 
   /**
@@ -230,14 +249,21 @@ class FileDownloader {
       const filePath = path.join(this._outputFolder, filename);
       debug('Saving file "%s"...', filePath);
 
-      response.data.pipe(fs.createWriteStream(filePath));
+      const writeStream = fs.createWriteStream(filePath);
 
       response.data
         .on('error', (error) => {
           debug(error.message);
           reject(error);
         })
-        .on('end', () => {
+        .pipe(writeStream);
+
+      writeStream
+        .on('error', (error) => {
+          debug(error.message);
+          reject(error);
+        })
+        .on('finish', () => {
           debug('File "%s" saved!', filePath);
           resolve(filePath);
         });
