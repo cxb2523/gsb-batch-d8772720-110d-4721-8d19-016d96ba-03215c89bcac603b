@@ -1,0 +1,85 @@
+# Export Format Reference
+
+RPA Core exports persisted transactions as JSON or NDJSON through:
+
+```bash
+rpacore transaction export --format json
+rpacore transaction export --format ndjson
+```
+
+## Selecting One Transaction
+
+Add `--transaction-id ID` to either format to export exactly one record from
+an existing database; use `--db PATH` when outside the selected project.
+
+```bash
+rpacore transaction export --db path/to/rpacore.db --transaction-id ID --format json
+rpacore transaction export --db path/to/rpacore.db --transaction-id ID --format ndjson
+```
+
+JSON contains one canonical transaction-v3 entry; NDJSON contains one line.
+Export remains v2 with no new envelope field. Blank/whitespace-only IDs are
+usage errors (`2`) before storage access; other IDs are passed unchanged.
+A missing/deleted selected record or unavailable/incompatible database fails
+(`1`) with diagnostics on stderr and empty stdout, never an all-record fallback
+or successful empty export. Without this option, the uncapped all-record
+traversal below is unchanged. Both paths buffer serialization before publishing
+stdout, so record/serialization failures publish no partial export.
+
+Canonical exports do not include captured outcome projections; use report-v2
+or [CLI list/show v3](cli.md#machine-readable-compatibility) for that truth.
+
+## JSON
+
+JSON export writes one envelope:
+
+```json
+{
+  "export_format_version": 2,
+  "framework_version": "0.3.0",
+  "exported_at": "2026-01-01T00:00:00+00:00",
+  "transactions": []
+}
+```
+
+Each entry in `transactions` is the canonical serialized transaction record and
+contains `transaction_format_version`. The current transaction format is version
+3 and includes the caller-owned `definition_identity` used for recovery
+compatibility. An empty identity marks a legacy or inspection-only record.
+
+Report and notifier payloads use the separate report format version 2, which
+embeds the canonical transaction-v3 record.
+
+## Compatibility
+
+The JSON export envelope, each NDJSON line, and the nested transaction record
+are independently versioned. Consumers must check both the export and
+transaction version before interpreting a record. Each released version has a
+closed set of framework-owned fields: changing, removing, renaming, retyping,
+or changing the meaning of one requires a new format version. RPA Core does not
+add new framework-owned fields to an existing export or transaction version.
+
+## Iteration Consistency
+
+Without `--transaction-id`, export selects records through normalized-UTC cursor pages in `created_at DESC,
+id ASC` order. It keeps one page of summaries at a time and releases the page
+query before loading records, so slow output or partial consumption does not
+hold a SQLite read lock against concurrent checkpoints. Inserts before the
+current cursor do not appear later; inserts after it can appear in a later page.
+Updates to a selected transaction are visible when that record is loaded. A
+selected transaction deleted by concurrent cleanup before its load is omitted.
+Export has no transaction-list limit.
+
+## NDJSON
+
+NDJSON export writes one JSON object per line. Each line contains
+`export_format_version`, `framework_version`, `exported_at`, and a transaction
+record. Consumers should parse each line independently.
+
+## Sensitive Data
+
+Machine-readable transaction records can include user-supplied state, metadata,
+step arguments, exception messages, and artifact metadata. They do not include
+runtime resources, config, credentials, or artifact file contents.
+
+Export files should be handled as sensitive business data.

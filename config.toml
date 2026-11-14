@@ -1,0 +1,24 @@
+max_retries = 0
+retry_delay = 0.0
+retry_backoff = 1.0
+log_level = "INFO"
+log_format = "text"
+transaction_db_path = "rpacore.db"
+screenshot_dir = ""
+credential_provider = "env"
+
+[queue]
+db_path = "queue.db"
+lease_timeout = 30
+max_retries = 3
+
+# [notification.email]
+# host = "smtp.example.com"
+# port = 587
+# from_addr = "rpacore@example.com"
+# to_addrs = ["admin@example.com"]
+# attach_screenshots = true
+
+# [notification.webhook]
+# url = "https://hooks.example.com/rpacore"
+# include_transaction = false

@@ -1,0 +1,135 @@
+# Testing RPA Core Steps
+
+RPA Core does not provide a custom step test case, test runner, or
+framework-specific pytest plugin. Step tests should be normal pytest tests that
+instantiate a step, a `Transaction`, and a `ProcessContext` directly.
+
+This keeps test execution deterministic and visible. A custom base class would
+need rules for hidden setup, exception wrapping, transaction mutation,
+artifact cleanup, and engine ordering. The current examples do not show enough
+repeated boilerplate to justify that public API.
+
+## Basic Pattern
+
+Test step behavior at the smallest useful boundary:
+
+```python
+from pathlib import Path
+
+from rpacore import ProcessContext, Transaction
+from steps.greeting import WriteGreeting
+
+
+def test_write_greeting(tmp_path: Path) -> None:
+    output = tmp_path / "greeting.txt"
+    step = WriteGreeting(
+        name="write_greeting",
+        execution_order=1,
+        arguments={"name": "Alice", "output_path": str(output)},
+    )
+    transaction = Transaction(reference="test", steps=[step])
+
+    step.execute(ProcessContext(transaction=transaction))
+
+    assert output.read_text(encoding="utf-8") == "Hello, Alice\n"
+    assert transaction.state["greeting_path"] == str(output)
+```
+
+Use `Engine.run()` in tests only when the engine's ordering, retry,
+classification, screenshot, checkpoint, or status behavior is part of the
+assertion.
+
+## Business Exceptions
+
+Business failures are expected domain outcomes. Assert the exception directly
+when testing a step method, and assert that no unintended state or artifacts
+were produced:
+
+```python
+import pytest
+
+from rpacore import BusinessException, ProcessContext, Transaction
+
+
+def test_step_rejects_invalid_input(step) -> None:
+    transaction = Transaction(reference="test", steps=[step])
+
+    with pytest.raises(BusinessException, match="invalid input"):
+        step.execute(ProcessContext(transaction=transaction))
+
+    assert transaction.state == {}
+    assert transaction.artifacts == []
+```
+
+Use an engine-level test when you need to verify that a `BusinessException`
+sets step status, lets later steps continue, or halts remaining work with
+`halts_remaining_steps=True`.
+
+## System Exceptions
+
+System failures are technical failures. If the step raises `SystemException`
+itself, assert that exception directly. If the step raises another unexpected
+exception, use an engine-level test to verify the framework wraps it as a
+`SystemException` and applies retry behavior.
+
+```python
+import pytest
+
+from rpacore import ProcessContext, SystemException, Transaction
+
+
+def test_step_reports_service_timeout(step) -> None:
+    transaction = Transaction(reference="test", steps=[step])
+
+    with pytest.raises(SystemException, match="service timeout"):
+        step.execute(ProcessContext(transaction=transaction))
+```
+
+## State and Artifacts
+
+`ctx.state` is durable JSON-safe transaction state. Step arguments,
+transaction metadata, and artifact metadata follow the same JSON-safe contract.
+Use lists rather than tuples and assert exact shapes and values that later
+steps or persisted records depend on.
+
+Use `ctx.add_artifact()` to register generated file paths. Tests should assert
+the artifact record, not read artifact contents through the reporting or
+notification layer. Reports, notifications, and serialization use artifact
+metadata and paths; they do not automatically attach arbitrary artifact file
+contents.
+
+For files that must not appear partially written, write through
+`atomic_output_path(destination)` and register the artifact only after the
+context succeeds. Test both the successful destination and the failure path that
+preserves any previous destination.
+
+## Static Analysis
+
+Before pushing or opening a pull request, run the same static analysis checks that CI runs. These require the development dependencies.
+
+Type checking with mypy:
+
+```powershell
+python -m mypy rpacore
+```
+
+Linting with Ruff (pyflakes rules only):
+
+```powershell
+python -m ruff check rpacore
+```
+
+CI runs these commands in the standalone `static` job. A failing mypy or Ruff check blocks the CI run.
+
+## Decision
+
+Do not add a framework-specific test base class to the current API. Plain pytest
+tests with direct `ProcessContext` construction cover the demonstrated step-testing needs:
+business exceptions, system exceptions, durable state, artifact records, and
+engine-level retry/status behavior where needed.
+
+If repeated real projects later show meaningful boilerplate that cannot be
+removed with ordinary pytest fixtures, add a narrow helper for that workflow.
+Any helper must document its setup timing, mutation behavior, exception
+disposition, and whether it runs a single step directly or delegates to
+`Engine.run()`.

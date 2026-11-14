@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # scripts/verify_docs.py is a release gate; keep this path in sync with its tests.
+      - name: Verify docs
+        run: python scripts/verify_docs.py --repo-root .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Record Python and SQLite runtime versions
+        run: python -c "import platform, sqlite3; print(platform.python_version(), sqlite3.sqlite_version)"
+
+      - name: Run tests
+        run: pytest
+
+  static:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Type check rpacore
+        run: python -m mypy rpacore
+
+      - name: Lint rpacore
+        run: python -m ruff check rpacore
+
+  package:
+    runs-on: ubuntu-latest
+    # Public docs ship with the release, so packaging waits for both docs and tests.
+    # If docs fail, GitHub marks this job skipped by design; the docs job is the gate signal.
+    needs: [docs, test]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check -r requirements/release.txt
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Check dist metadata
+        run: python -m twine check dist/*
+
+      - name: Verify examples/ absent from wheel
+        run: |
+          python - <<'EOF'
+          import zipfile, sys, glob
+          wheels = glob.glob('dist/*.whl')
+          assert wheels, 'No wheel found in dist/'
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = zf.namelist()
+          leaked = [n for n in names if n.startswith('examples/')]
+          if leaked:
+              print('ERROR: examples/ leaked into wheel:', leaked)
+              sys.exit(1)
+          print('wheel contents OK — examples/ absent')
+          EOF
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rpacore-dist
+          path: dist/*
+
+  installed-artifact:
+    runs-on: ${{ matrix.os }}
+    needs: package
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: rpacore-dist
+          path: dist
+
+      - name: Record Python and SQLite runtime versions
+        run: python -c "import platform, sqlite3; print(platform.python_version(), sqlite3.sqlite_version)"
+
+      - name: Validate installed wheel
+        run: python scripts/validate_installed_wheel.py --repo-root . --wheel-dir dist --work-dir validation-artifacts/installed-wheel
+
+      - name: Retain SQLite runtime safety evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sqlite-runtime-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            validation-artifacts/installed-wheel/sqlite-runtime/sqlite-runtime.json
+            validation-artifacts/installed-wheel/sqlite-runtime/sqlite-runtime.xml
+          if-no-files-found: warn
+
+      - name: Install Windows test dependencies
+        if: runner.os == 'Windows' && matrix.python-version == '3.12'
+        run: pip install -e ".[dev]"
+
+      - name: Run Windows test suite
+        if: runner.os == 'Windows' && matrix.python-version == '3.12'
+        run: python -m pytest

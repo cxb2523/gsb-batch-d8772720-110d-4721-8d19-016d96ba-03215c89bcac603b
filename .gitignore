@@ -1,0 +1,58 @@
+# Private - not part of the framework
+.internal/
+Classes/
+.rpiv/
+
+# Local agent / navigation tooling state
+.codegraph/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+.venv-check/
+.review-venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+# Windows reserved device name.
+nul
+
+# Testing
+.pytest_cache/
+.pytest-tmp/
+.coverage
+htmlcov/
+# Default output from scripts/validate_examples_against_wheel.py.
+validation-artifacts/
+
+# SQLite databases (created at runtime)
+*.db
+.continue
+.pi
+
+/.crew/
+/.crew
+!.crew/artifacts/
+!.crew/graphs/
+!.crew/artifacts/.gitkeep
+!.crew/graphs/.gitkeep

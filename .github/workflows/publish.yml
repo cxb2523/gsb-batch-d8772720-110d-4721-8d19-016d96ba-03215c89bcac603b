@@ -1,0 +1,199 @@
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Full GitHub Actions run ID for the passing Release candidate workflow.
+        required: true
+        type: string
+      core_commit:
+        description: Full 40-character RPA Core commit recorded by the candidate lock.
+        required: true
+        type: string
+      examples_commit:
+        description: Full 40-character rpacore-examples commit recorded by the candidate lock.
+        required: true
+        type: string
+      release_version:
+        description: Release version recorded by the candidate lock, without the v prefix.
+        required: true
+        type: string
+      wheel_sha256:
+        description: SHA-256 of the exact candidate wheel.
+        required: true
+        type: string
+      sdist_sha256:
+        description: SHA-256 of the exact candidate source distribution.
+        required: true
+        type: string
+      publish_confirm:
+        description: "Type: publish rpacore <release_version> candidate <candidate_run_id> to pypi"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify-candidate:
+    name: Verify immutable candidate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify frozen main source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+
+      - name: Verify frozen public release documentation
+        env:
+          EXPECTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: >
+          python scripts/verify_docs.py
+          --repo-root .
+          --expected-release-version "$EXPECTED_RELEASE_VERSION"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-artifacts-${{ inputs.candidate_run_id }}
+          path: candidate-artifacts
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-evidence-aggregate
+          path: candidate-aggregate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - name: Verify run, exact bytes, and unclaimed release identity
+        run: >
+          python scripts/verify_publish_candidate.py
+          --candidate-artifacts-dir candidate-artifacts
+          --aggregate-evidence candidate-aggregate/release-candidate-aggregate.json
+          --candidate-run-id "${{ inputs.candidate_run_id }}"
+          --expected-version "${{ inputs.release_version }}"
+          --expected-core-commit "${{ inputs.core_commit }}"
+          --expected-examples-commit "${{ inputs.examples_commit }}"
+          --expected-wheel-sha256 "${{ inputs.wheel_sha256 }}"
+          --expected-sdist-sha256 "${{ inputs.sdist_sha256 }}"
+          --publish-confirm "${{ inputs.publish_confirm }}"
+          --repository "${{ github.repository }}"
+          --github-token "${{ github.token }}"
+          --output candidate-publish-lock.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: verified-publish-candidate-lock
+          path: candidate-publish-lock.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    name: Publish verified distributions
+    runs-on: ubuntu-latest
+    needs: verify-candidate
+    environment: pypi
+
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify frozen main source
+        env:
+          EXPECTED_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+
+      - name: Reverify frozen public release documentation
+        env:
+          EXPECTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: >
+          python scripts/verify_docs.py
+          --repo-root .
+          --expected-release-version "$EXPECTED_RELEASE_VERSION"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-artifacts-${{ inputs.candidate_run_id }}
+          path: candidate-artifacts
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate-evidence-aggregate
+          path: candidate-aggregate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: verified-publish-candidate-lock
+          path: publish-lock
+
+      - name: Recheck exact bytes and unclaimed release identity
+        run: >
+          python scripts/verify_publish_candidate.py
+          --candidate-artifacts-dir candidate-artifacts
+          --aggregate-evidence candidate-aggregate/release-candidate-aggregate.json
+          --candidate-run-id "${{ inputs.candidate_run_id }}"
+          --expected-version "${{ inputs.release_version }}"
+          --expected-core-commit "${{ inputs.core_commit }}"
+          --expected-examples-commit "${{ inputs.examples_commit }}"
+          --expected-wheel-sha256 "${{ inputs.wheel_sha256 }}"
+          --expected-sdist-sha256 "${{ inputs.sdist_sha256 }}"
+          --publish-confirm "${{ inputs.publish_confirm }}"
+          --repository "${{ github.repository }}"
+          --github-token "${{ github.token }}"
+          --expected-lock publish-lock/candidate-publish-lock.json
+
+      - name: Install metadata checker
+        run: python -m pip install --disable-pip-version-check -r requirements/release.txt
+
+      - name: Check immutable distribution metadata
+        run: python -m twine check candidate-artifacts/rpacore-*
+
+      - name: Validate the exact installed wheel
+        run: python scripts/validate_installed_wheel.py --repo-root . --wheel-dir candidate-artifacts
+
+      - name: Prepare exact verified distributions for upload
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          mkdir publish-distributions
+          mkdir publish-checksums
+          cp candidate-artifacts/rpacore-*.whl publish-distributions/
+          cp candidate-artifacts/rpacore-*.tar.gz publish-distributions/
+          printf '%s  %s\n' "${{ inputs.wheel_sha256 }}" "publish-distributions/rpacore-${RELEASE_VERSION}-py3-none-any.whl" > publish-checksums/SHA256SUMS.txt
+          printf '%s  %s\n' "${{ inputs.sdist_sha256 }}" "publish-distributions/rpacore-${RELEASE_VERSION}.tar.gz" >> publish-checksums/SHA256SUMS.txt
+          sha256sum --check publish-checksums/SHA256SUMS.txt
+
+      - name: Publish exact verified distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: publish-distributions

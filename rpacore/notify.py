@@ -1,0 +1,392 @@
+"""Notification dispatch for rpacore transactions."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import smtplib
+import socket
+import ssl
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Callable, Protocol, runtime_checkable
+
+from rpacore._validation import type_error, value_error
+from rpacore.credentials import CredentialProvider
+from rpacore.logger import get_logger
+from rpacore.report import (
+    TransactionReport,
+    _snapshot_report,
+    render_html,
+    render_json,
+    render_text,
+)
+
+
+@runtime_checkable
+class Notifier(Protocol):
+    """Protocol for notification backends."""
+
+    def send(self, report: TransactionReport) -> None:
+        """Send a notification for the given report."""
+        ...
+
+
+class EmailNotifier:
+    """Sends transaction reports via SMTP.
+
+    The SMTP password is read from the CredentialProvider via
+    credentials.get("smtp_password") — never stored in config.
+
+    Config section: [notification.email]
+      host      (str, required)
+      port      (int, default 587)
+      from_addr (str, required)
+      to_addrs  (list[str] or comma-separated str, required)
+      attach_screenshots (bool, default true)
+
+    Screenshots referenced in the report are attached as files if they
+    exist on disk and attach_screenshots is true. Missing or unreadable
+    screenshot paths are skipped so notification delivery cannot depend on
+    artifact file availability.
+    """
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        credentials: CredentialProvider,
+    ) -> None:
+        raw = config.get("notification", {})
+        if not isinstance(raw, dict):
+            raise type_error("notification", "dict", raw)
+        cfg = raw.get("email", {})
+        if not isinstance(cfg, dict):
+            raise type_error("notification.email", "dict", cfg)
+
+        host = cfg.get("host", "")
+        if not isinstance(host, str):
+            raise type_error("notification.email.host", "str", host)
+        if not host:
+            raise value_error("notification.email.host", "non-empty str", host)
+
+        port = cfg.get("port", 587)
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise type_error("notification.email.port", "int", port)
+
+        from_addr = cfg.get("from_addr", "")
+        if not isinstance(from_addr, str):
+            raise type_error("notification.email.from_addr", "str", from_addr)
+        if not from_addr:
+            raise value_error(
+                "notification.email.from_addr", "non-empty str", from_addr
+            )
+
+        to_addrs_raw = cfg.get("to_addrs", "")
+        if isinstance(to_addrs_raw, list):
+            if any(not isinstance(a, str) for a in to_addrs_raw):
+                raise type_error("notification.email.to_addrs", "list[str]", to_addrs_raw)
+            to_addrs = [a for a in to_addrs_raw]
+        elif isinstance(to_addrs_raw, str):
+            to_addrs = [a.strip() for a in to_addrs_raw.split(",") if a.strip()]
+        else:
+            raise type_error(
+                "notification.email.to_addrs",
+                "list[str] or comma-separated str",
+                to_addrs_raw,
+            )
+        if not to_addrs:
+            raise value_error(
+                "notification.email.to_addrs", "non-empty list[str]", to_addrs_raw
+            )
+
+        timeout = cfg.get("timeout", 30)
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            raise type_error("notification.email.timeout", "int", timeout)
+        if timeout <= 0:
+            raise value_error("notification.email.timeout", "int > 0", timeout)
+
+        attach_screenshots = cfg.get("attach_screenshots", True)
+        if not isinstance(attach_screenshots, bool):
+            raise type_error(
+                "notification.email.attach_screenshots",
+                "bool",
+                attach_screenshots,
+            )
+
+        self.host: str = host
+        self.port: int = port
+        self.timeout: int = timeout
+        self.from_addr: str = from_addr
+        self.to_addrs: list[str] = to_addrs
+        self.attach_screenshots: bool = attach_screenshots
+        self._credentials: CredentialProvider = credentials
+
+    def send(self, report: TransactionReport) -> None:
+        """Build and send an HTML email with optional screenshot attachments."""
+        password = self._credentials.get("smtp_password")
+        report_payload = json.loads(render_json(report))
+        transaction = report_payload["transaction"]
+        assert isinstance(transaction, dict)
+
+        html_body = render_html(report)
+        text_body = render_text(report)
+
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = (
+            f"rpacore [{transaction['status']}] {transaction['reference']}"
+        )
+        msg["From"] = self.from_addr
+        msg["To"] = ", ".join(self.to_addrs)
+
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(text_body, "plain", "utf-8"))
+        alt.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(alt)
+
+        if self.attach_screenshots:
+            seen: set[str] = set()
+            steps = report_payload["steps"]
+            assert isinstance(steps, list)
+            for step in steps:
+                assert isinstance(step, dict)
+                exceptions = step["exceptions"]
+                assert isinstance(exceptions, list)
+                for exc in exceptions:
+                    assert isinstance(exc, dict)
+                    path = exc.get("screenshot_path")
+                    if not isinstance(path, str):
+                        continue
+                    if path and path not in seen:
+                        seen.add(path)
+                        try:
+                            filename = os.path.basename(path)
+                            with open(path, "rb") as fh:
+                                part = MIMEApplication(fh.read())
+                            part["Content-Disposition"] = f'attachment; filename="{filename}"'
+                            msg.attach(part)
+                        except OSError:
+                            pass
+
+        with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as smtp:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.login(self.from_addr, password)
+            smtp.sendmail(self.from_addr, self.to_addrs, msg.as_string())
+
+
+class WebhookNotifier:
+    """Posts transaction reports as JSON to a webhook URL.
+
+    Compatible with Slack incoming webhooks, Teams, Discord, or any custom
+    endpoint that accepts a JSON POST.
+
+    Config section: [notification.webhook]
+      url                 (str, required)
+      include_transaction (bool, default false)
+      include_report      (bool, default false)
+
+    Only http and https URLs are accepted. Private, loopback, and link-local
+    hosts are allowed because webhook URLs are trusted operator configuration.
+    """
+
+    def __init__(self, config: dict[str, object]) -> None:
+        raw = config.get("notification", {})
+        if not isinstance(raw, dict):
+            raise type_error("notification", "dict", raw)
+        cfg = raw.get("webhook", {})
+        if not isinstance(cfg, dict):
+            raise type_error("notification.webhook", "dict", cfg)
+
+        url = cfg.get("url", "")
+        if not isinstance(url, str):
+            raise type_error("notification.webhook.url", "str", url)
+        if not url:
+            raise value_error("notification.webhook.url", "non-empty str", url)
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise value_error(
+                "notification.webhook.url",
+                "http or https URL",
+                url,
+            )
+        if parsed.username or parsed.password:
+            raise value_error(
+                "notification.webhook.url",
+                "URL without embedded credentials",
+                _redact_url_credentials(parsed),
+            )
+
+        timeout = cfg.get("timeout", 30)
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            raise type_error("notification.webhook.timeout", "int", timeout)
+        if timeout <= 0:
+            raise value_error("notification.webhook.timeout", "int > 0", timeout)
+
+        include_transaction = cfg.get("include_transaction", False)
+        if not isinstance(include_transaction, bool):
+            raise type_error(
+                "notification.webhook.include_transaction",
+                "bool",
+                include_transaction,
+            )
+        include_report = cfg.get("include_report", False)
+        if not isinstance(include_report, bool):
+            raise type_error(
+                "notification.webhook.include_report",
+                "bool",
+                include_report,
+            )
+
+        self.url: str = url
+        self.timeout: int = timeout
+        self.include_transaction: bool = include_transaction
+        self.include_report: bool = include_report
+
+    def send(self, report: TransactionReport) -> None:
+        """POST a JSON payload to the configured webhook URL."""
+        report_payload = json.loads(render_json(report))
+        transaction = report_payload["transaction"]
+        assert isinstance(transaction, dict)
+        artifacts = report_payload["artifacts"]
+        assert isinstance(artifacts, list)
+        payload = {
+            "transaction_id": transaction["id"],
+            "reference": transaction["reference"],
+            "status": transaction["status"],
+            "retry_count": transaction["retry_count"],
+            "generated_at": report_payload["generated_at"],
+            "metadata": transaction["metadata"],
+            "artifacts": artifacts,
+            "text": render_text(report),
+        }
+        transaction_record = report_payload["transaction_record"]
+        if self.include_transaction and transaction_record:
+            payload["transaction"] = transaction_record
+        if self.include_report:
+            payload["report"] = report_payload
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            self.url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            resp.read()
+
+
+def _redact_url_credentials(parsed: urllib.parse.ParseResult) -> str:
+    netloc = parsed.netloc.rsplit("@", 1)[-1]
+    return parsed._replace(netloc=f"<credentials>@{netloc}").geturl()
+
+
+def _retryable_notification_error(error: Exception) -> bool:
+    """Recognize temporary transport failures without guessing from messages."""
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in {408, 429, 500, 502, 503, 504}
+    if isinstance(error, smtplib.SMTPResponseException):
+        return 400 <= error.smtp_code < 500
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return bool(error.recipients) and all(
+            400 <= code < 500 for code, _ in error.recipients.values()
+        )
+    if isinstance(error, smtplib.SMTPServerDisconnected):
+        return True
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    return isinstance(reason, (TimeoutError, ConnectionError)) or (
+        isinstance(reason, socket.gaierror) and reason.errno == socket.EAI_AGAIN
+    )
+
+
+def dispatch(
+    notifiers: list[Notifier],
+    report: TransactionReport,
+    *,
+    logger: logging.Logger | None = None,
+    on_failure: Callable[[str], None] | None = None,
+) -> None:
+    """Send a report through all configured notifiers.
+
+    Temporary transport failures get at most three attempts, with waits of
+    1 then 2 seconds. Every attempt receives an isolated snapshot. Delivery
+    is best-effort: retries may duplicate notifications, and process exit or
+    exhaustion may lose them. Direct notifier.send calls remain single-shot.
+    Terminal failures are logged and swallowed. When supplied, on_failure
+    receives the failed notifier class name once after terminal logging.
+    The transaction outcome is never affected by notification failures.
+    """
+    log = logger if logger is not None else get_logger()
+    for notifier in notifiers:
+        notifier_name = type(notifier).__name__
+        attempt = 1
+        try:
+            for attempt in range(1, 4):
+                try:
+                    notifier.send(_snapshot_report(report))
+                except MemoryError:
+                    raise
+                except Exception as exc:
+                    if isinstance(exc, urllib.error.HTTPError):
+                        exc.close()
+                    if attempt == 3 or not _retryable_notification_error(exc):
+                        raise
+                    log.warning(
+                        "Notifier %s failed on attempt %s/3; retrying in %s seconds",
+                        notifier_name, attempt, attempt,
+                        extra={
+                            "event": "notifier_retry", "notifier": notifier_name,
+                            "attempt": attempt, "max_attempts": 3,
+                            "wait_seconds": attempt,
+                        },
+                    )
+                    time.sleep(attempt)
+                else:
+                    break
+        except MemoryError:
+            raise
+        except Exception:
+            log.exception(
+                "Notifier %s failed; swallowing to protect transaction outcome",
+                notifier_name,
+                extra={
+                    "event": "notifier_error", "notifier": notifier_name,
+                    "attempt": attempt, "max_attempts": 3,
+                },
+            )
+            if on_failure is not None:
+                try:
+                    on_failure(notifier_name)
+                except MemoryError:
+                    raise
+                except Exception:
+                    log.exception(
+                        "Notification failure callback raised; swallowing to protect transaction outcome",
+                        extra={"event": "notifier_failure_callback_error", "notifier": notifier_name},
+                    )
+
+
+def build_notifiers(
+    config: dict[str, object],
+    credentials: CredentialProvider,
+) -> list[Notifier]:
+    """Construct notifiers from config. Missing sections produce no notifier.
+
+    Returns a list containing whichever notifiers are configured.
+    An absent [notification.email] or [notification.webhook] section is a no-op.
+    """
+    notifiers: list[Notifier] = []
+    notification = config.get("notification", {})
+    if not isinstance(notification, dict):
+        return notifiers
+
+    if "email" in notification:
+        notifiers.append(EmailNotifier(config, credentials))
+    if "webhook" in notification:
+        notifiers.append(WebhookNotifier(config))
+
+    return notifiers

@@ -1,0 +1,1258 @@
+"""Runner — queue-driven execution loop."""
+
+from __future__ import annotations
+
+import logging
+import socket
+import sqlite3
+import sys
+import threading
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
+from typing import Callable
+
+from rpacore._clock import _Clock, _SYSTEM_CLOCK
+from rpacore._definition import validate_definition_identity
+from rpacore._json_state import JsonStateError, validate_json_object
+from rpacore._queue_checkpoint import _save_queue_transaction_fenced
+from rpacore._sqlite_retry import _sleep_before_sqlite_retry, is_transient_sqlite_lock
+from rpacore._validation import type_error
+from rpacore.context import ProcessContext
+from rpacore.credentials import CredentialProvider
+from rpacore.exceptions import BusinessException, ExecutionValidationError, SystemException
+from rpacore.engine import Engine
+from rpacore.logger import bind_log_context, get_logger
+from rpacore.notify import Notifier, dispatch
+from rpacore.persistence import (
+    TransactionFenceError,
+    _load_transaction_with_revision,
+    _prepare_transaction_database,
+    load_transaction,
+)
+from rpacore.queue import (
+    QueueAttemptOutcome,
+    QueueItem,
+    QueueLeaseLostError,
+    QueueProvider,
+    SqliteQueue,
+)
+from rpacore.recovery import _prepare_resumed_transaction
+from rpacore.report import generate_report
+from rpacore.status import Status
+from rpacore.transaction import HistoryEvent, Transaction
+
+
+_PERSISTENCE_SAVE_ATTEMPTS = 3
+_PERSISTENCE_RETRY_DELAY_SECONDS = 0.05
+_LEASE_RENEW_ATTEMPTS = 3
+_LEASE_RETRY_DELAY_SECONDS = 0.05
+_CLAIM_ATTEMPTS = 3
+_CLAIM_RETRY_DELAY_SECONDS = 0.05
+_DEFAULT_LEASE_RENEWAL_INTERVAL_SECONDS = 10.0
+
+# Cleanup precedence:
+# - no active error + cleanup error: propagate the cleanup error
+# - active ordinary/fatal error + cleanup error: preserve the active error and
+#   attach the cleanup error as a note
+# - fatal error + truthy resource_scope.__exit__: propagate the fatal error
+_FATAL_SIGNALS = (MemoryError, KeyboardInterrupt, SystemExit)
+
+
+class _CheckpointError(RuntimeError):
+    """Internal wrapper carrying queue retry policy for checkpoint failures."""
+
+    def __init__(self, original: Exception, *, retry: bool) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.retry = retry
+
+
+class _DurableTransactionBindingError(RuntimeError):
+    """Raised when a persisted queue transaction binding cannot be honored."""
+
+
+class _LeaseRenewalError(RuntimeError):
+    """Raised when the runner cannot renew a queue lease for an unknown reason."""
+
+
+@dataclass
+class _LeaseHeartbeat:
+    """Runner-owned heartbeat state for one claimed queue item."""
+
+    stop_event: threading.Event
+    thread: threading.Thread
+    operation_lock: threading.RLock = field(default_factory=threading.RLock)
+    error: BaseException | None = None
+
+    def raise_if_failed(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
+@dataclass
+class QueueRunSummary:
+    """Claim and transition counts from a completed ``run_queue_loop()`` call.
+
+    ``processed`` and ``failed`` are compatibility aggregates: processed means
+    claims handed to this runner, while failed includes terminal failures,
+    scheduled retries, and lease loss. The disposition-specific counters are
+    authoritative when present; ``transition_unknown`` covers providers that
+    do not attest the result of ``fail()``.
+    """
+
+    processed: int = field(default=0)
+    completed: int = field(default=0)
+    failed: int = field(default=0)
+    callback_errors: int = field(default=0)
+    persistence_errors: int = field(default=0)
+    lifecycle_errors: int = field(default=0)
+    notification_errors: int = field(default=0)
+    retry_scheduled: int = field(default=0)
+    terminal_failed: int = field(default=0)
+    lease_lost: int = field(default=0)
+    transition_unknown: int = field(default=0)
+
+
+def run_queue_loop(
+    queue: QueueProvider,
+    engine: Engine,
+    build_transaction: Callable[[QueueItem], Transaction],
+    config: dict[str, object],
+    credentials: CredentialProvider,
+    *,
+    worker_id: str = "",
+    notifiers: list[Notifier] | None = None,
+    logger: logging.Logger | None = None,
+    after_item: Callable[[QueueItem, Transaction | None, Exception | None], None] | None = None,
+    stop_event: threading.Event | None = None,
+    retry_business_failures: bool = False,
+    transaction_db_path: str | None = None,
+    resource_scope: AbstractContextManager[dict[str, object] | None] | None = None,
+    on_finish: Callable[[QueueRunSummary], None] | None = None,
+) -> QueueRunSummary:
+    """Drain a queue by running each item through the engine.
+
+    Claims items one at a time until none is currently eligible. Delayed pending
+    work remains for a later invocation. For each item:
+    - Calls build_transaction(item) to construct a Transaction (user responsibility).
+    - Builds a ProcessContext with the item's payload in transaction.state.
+    - Runs engine.run(ctx).
+        - Supplies a strict transaction checkpoint when transaction_db_path is set.
+        - Generates a report and dispatches notifiers after engine.run(ctx).
+    - Calls queue.complete() if transaction.status is SUCCESSFUL.
+    - Calls queue.fail() with retry=False for business-only transaction failures
+      unless retry_business_failures=True.
+    - Calls queue.fail() with retry=True for system failures and unexpected errors.
+    - Also calls queue.fail() if build_transaction() or any unexpected error raises.
+    - Calls after_item(item, transaction, error) once per item on ordinary item
+      outcomes after execution, checkpointing, reporting, and notification.
+            transaction is None if build_transaction() raised; error is None on normal paths
+            and set for unexpected processing, reporting, or transaction persistence failures.
+      Fires before the final queue state transition (complete/fail). If the callback
+      raises on a success-path item, the item is still marked complete (the automation
+      ran) but the error is counted in QueueRunSummary.callback_errors. If the callback
+      raises on a failure-path item, queue.fail() is called as normal. Ordinary
+      callback failures do not stop the loop. Confirmed lease loss skips the callback
+      because the worker no longer owns the item outcome.
+    - Enters resource_scope before claiming any items. Returned resources are
+      shallow-copied into every item context. Top-level resource names are isolated;
+      nested resource objects retain shared identity.
+    - Calls on_finish(summary) exactly once after the loop exits. Exceptions are logged
+      and swallowed so cleanup cannot change the run outcome.
+    - Starts one runner-owned heartbeat thread per claimed item. The heartbeat
+      only renews the queue lease. If the lease is lost, the next checkpoint or
+      final transition raises QueueLeaseLostError, skips the final queue
+      transition, logs the loss, and stops the worker from claiming more work.
+      A stale transaction token or revision raises TransactionFenceError with
+      the same stop-without-transition behavior.
+
+    Args:
+        queue:             The queue to drain.
+        engine:            Configured Engine instance.
+        build_transaction: User-supplied callable mapping a QueueItem to a Transaction.
+        config:            Framework config dict (passed to ProcessContext).
+        credentials:       Credential provider (passed to ProcessContext).
+        worker_id:         Worker identifier passed to queue.next_item(). Defaults to hostname.
+        notifiers:         Optional list of notifiers to call after each transaction. Defaults to [].
+                           Notification failures are logged and counted but never change
+                           transaction or queue outcomes.
+        logger:            Optional logger. Defaults to the rpacore logger.
+        after_item:        Optional callback fired after each item. Receives (item, transaction, error).
+        stop_event:        Optional threading.Event. When set, the loop stops before claiming
+                           the next item. The item currently in-flight completes normally.
+                           The caller is responsible for setting the event (e.g. from a
+                           signal handler). The library never calls signal.signal().
+        retry_business_failures:
+                           If True, retry failed business transactions according to the
+                           queue retry policy. Defaults to False so deterministic business
+                           failures are terminal queue outcomes.
+        transaction_db_path:
+                           Optional SQLite transaction database path. When set, the
+                           queue must be SqliteQueue. The runner supplies atomic
+                           claim-token and revision-fenced checkpoints throughout
+                           engine.run(ctx). Checkpoint failures stop execution and
+                           prevent queue completion.
+        resource_scope:    Optional context manager entered before queue claims and
+                           exited after processing. It may return shared resources
+                           shallow-copied into every item context. Cleanup failures
+                           propagate after already-decided queue outcomes.
+        on_finish:         Optional callback fired exactly once after the loop exits.
+                           Receives the final summary. Exceptions are logged and swallowed.
+
+    Returns:
+        QueueRunSummary with counts of processed, completed, and failed items.
+    """
+    log = logger if logger is not None else get_logger()
+    if not worker_id:
+        worker_id = socket.gethostname()
+    _notifiers: list[Notifier] = notifiers if notifiers is not None else []
+    summary = QueueRunSummary()
+    run_error: BaseException | None = None
+
+    try:
+        if transaction_db_path is not None:
+            queue = _require_sqlite_queue(queue)
+            _prepare_transaction_database(transaction_db_path)
+        shared_resources: dict[str, object] = {}
+        if resource_scope is None:
+            return _run_items(
+                queue,
+                engine,
+                build_transaction,
+                config,
+                credentials,
+                worker_id=worker_id,
+                notifiers=_notifiers,
+                log=log,
+                after_item=after_item,
+                stop_event=stop_event,
+                retry_business_failures=retry_business_failures,
+                transaction_db_path=transaction_db_path,
+                shared_resources=shared_resources,
+                summary=summary,
+            )
+
+        scope_resources = resource_scope.__enter__()
+        try:
+            if scope_resources is not None:
+                if not isinstance(scope_resources, dict):
+                    raise type_error("resource_scope yield", "dict | None", scope_resources)
+                shared_resources = dict(scope_resources)
+            _log_resource_scope(log, "resource_scope_acquired", worker_id, shared_resources)
+            result = _run_items(
+                queue,
+                engine,
+                build_transaction,
+                config,
+                credentials,
+                worker_id=worker_id,
+                notifiers=_notifiers,
+                log=log,
+                after_item=after_item,
+                stop_event=stop_event,
+                retry_business_failures=retry_business_failures,
+                transaction_db_path=transaction_db_path,
+                shared_resources=shared_resources,
+                summary=summary,
+            )
+        except BaseException as error:
+            exc_info = sys.exc_info()
+            if isinstance(error, _FATAL_SIGNALS):
+                try:
+                    resource_scope.__exit__(*exc_info)
+                except BaseException as cleanup_error:
+                    _add_cleanup_failure_note(error, "resource_scope", cleanup_error)
+                raise
+            if not resource_scope.__exit__(*exc_info):
+                raise
+            result = summary
+        else:
+            resource_scope.__exit__(None, None, None)
+        _log_resource_scope(log, "resource_scope_released", worker_id, shared_resources)
+        return result
+    except BaseException as error:
+        run_error = error
+        raise
+    finally:
+        try:
+            if on_finish is not None:
+                try:
+                    on_finish(summary)
+                except _FATAL_SIGNALS as cleanup_error:
+                    if isinstance(run_error, _FATAL_SIGNALS):
+                        _add_cleanup_failure_note(run_error, "on_finish", cleanup_error)
+                    else:
+                        raise
+                except Exception:
+                    summary.lifecycle_errors += 1
+                    log.exception(
+                        "on_finish callback raised during lifecycle cleanup",
+                        extra={"event": "on_finish_error", "worker_id": worker_id},
+                    )
+        except BaseException as error:
+            run_error = error
+            raise
+        finally:
+            log.log(
+                logging.ERROR if run_error is not None else logging.INFO,
+                "Queue run aborted" if run_error is not None else "Queue run completed",
+                extra={
+                    "event": "queue_run_aborted" if run_error is not None else "queue_run_completed",
+                    "worker_id": worker_id,
+                    "processed": summary.processed,
+                    "completed": summary.completed,
+                    "failed": summary.failed,
+                    "retry_scheduled": summary.retry_scheduled,
+                    "terminal_failed": summary.terminal_failed,
+                    "lease_lost": summary.lease_lost,
+                    "transition_unknown": summary.transition_unknown,
+                },
+                exc_info=(type(run_error), run_error, run_error.__traceback__)
+                if run_error is not None else None,
+            )
+
+
+def _add_cleanup_failure_note(
+    active_error: BaseException,
+    cleanup_name: str,
+    cleanup_error: BaseException,
+) -> None:
+    """Record a secondary cleanup failure without replacing an active fatal signal."""
+    active_error.add_note(
+        f"{cleanup_name} cleanup also raised "
+        f"{type(cleanup_error).__name__}: {cleanup_error}"
+    )
+
+
+def _run_items(
+    queue: QueueProvider,
+    engine: Engine,
+    build_transaction: Callable[[QueueItem], Transaction],
+    config: dict[str, object],
+    credentials: CredentialProvider,
+    *,
+    worker_id: str,
+    notifiers: list[Notifier],
+    log: logging.Logger,
+    after_item: Callable[[QueueItem, Transaction | None, Exception | None], None] | None,
+    stop_event: threading.Event | None,
+    retry_business_failures: bool,
+    transaction_db_path: str | None,
+    shared_resources: dict[str, object],
+    summary: QueueRunSummary,
+) -> QueueRunSummary:
+    """Process queue items after lifecycle startup has completed."""
+    while True:
+        item = _next_item_with_retries(queue, worker_id=worker_id, log=log, stop_event=stop_event)
+        if item is None:
+            break
+
+        summary.processed += 1
+        log.info(
+            "Processing queue item",
+            extra={"event": "queue_item_start", "queue_item_id": item.id, "queue_reference": item.reference, "worker_id": worker_id},
+        )
+        heartbeat = _start_lease_heartbeat(queue, item, worker_id=worker_id, log=log)
+        try:
+            should_continue = _run_claimed_item(
+                queue=queue,
+                engine=engine,
+                build_transaction=build_transaction,
+                config=config,
+                credentials=credentials,
+                item=item,
+                worker_id=worker_id,
+                notifiers=notifiers,
+                log=log,
+                after_item=after_item,
+                retry_business_failures=retry_business_failures,
+                transaction_db_path=transaction_db_path,
+                shared_resources=shared_resources,
+                summary=summary,
+                heartbeat=heartbeat,
+            )
+        finally:
+            _stop_lease_heartbeat_preserving_error(heartbeat)
+
+        if not should_continue:
+            break
+
+    return summary
+
+
+def _next_item_with_retries(
+    queue: QueueProvider,
+    *,
+    worker_id: str,
+    log: logging.Logger,
+    stop_event: threading.Event | None,
+) -> QueueItem | None:
+    """Retry only the built-in claim, whose lock failures leave no new claim."""
+    claim = queue.next_item
+    can_retry = (
+        isinstance(queue, SqliteQueue)
+        and getattr(claim, "__func__", None) is SqliteQueue.next_item
+    )
+    for attempt in range(_CLAIM_ATTEMPTS):
+        if stop_event is not None and stop_event.is_set():
+            return None
+        try:
+            return claim(worker_id)
+        except sqlite3.OperationalError as error:
+            if not can_retry or not is_transient_sqlite_lock(error) or attempt == _CLAIM_ATTEMPTS - 1:
+                raise
+            _sleep_before_sqlite_retry(
+                attempt,
+                clock=_clock_for_queue(queue),
+                delay_seconds=_CLAIM_RETRY_DELAY_SECONDS,
+                log=log,
+                event="queue_claim_retry",
+                operation="next_item",
+                queue_item_id="",
+                worker_id=worker_id,
+                error=error,
+                max_attempts=_CLAIM_ATTEMPTS,
+            )
+    raise RuntimeError("Queue claim exhausted without a result")
+
+
+def _run_claimed_item(
+    queue: QueueProvider,
+    engine: Engine,
+    build_transaction: Callable[[QueueItem], Transaction],
+    config: dict[str, object],
+    credentials: CredentialProvider,
+    item: QueueItem,
+    *,
+    worker_id: str,
+    notifiers: list[Notifier],
+    log: logging.Logger,
+    after_item: Callable[[QueueItem, Transaction | None, Exception | None], None] | None,
+    retry_business_failures: bool,
+    transaction_db_path: str | None,
+    shared_resources: dict[str, object],
+    summary: QueueRunSummary,
+    heartbeat: _LeaseHeartbeat,
+) -> bool:
+    """Process one claimed item; return whether the queue loop should continue."""
+    with bind_log_context(
+        queue_item_id=item.id,
+        queue_reference=item.reference,
+        worker_id=worker_id,
+    ):
+        return _run_claimed_item_with_context(
+            queue,
+            engine,
+            build_transaction,
+            config,
+            credentials,
+            item,
+            worker_id=worker_id,
+            notifiers=notifiers,
+            log=log,
+            after_item=after_item,
+            retry_business_failures=retry_business_failures,
+            transaction_db_path=transaction_db_path,
+            shared_resources=shared_resources,
+            summary=summary,
+            heartbeat=heartbeat,
+        )
+
+
+def _run_claimed_item_with_context(
+    queue: QueueProvider,
+    engine: Engine,
+    build_transaction: Callable[[QueueItem], Transaction],
+    config: dict[str, object],
+    credentials: CredentialProvider,
+    item: QueueItem,
+    *,
+    worker_id: str,
+    notifiers: list[Notifier],
+    log: logging.Logger,
+    after_item: Callable[[QueueItem, Transaction | None, Exception | None], None] | None,
+    retry_business_failures: bool,
+    transaction_db_path: str | None,
+    shared_resources: dict[str, object],
+    summary: QueueRunSummary,
+    heartbeat: _LeaseHeartbeat,
+) -> bool:
+    """Process one claimed item with queue correlation bound."""
+    transaction: Transaction | None = None
+    ctx: ProcessContext | None = None
+    error: Exception | None = None
+    outcome_error: Exception | None = None
+    originally_intended_complete = False
+    callback_failed = False
+    lease_lost = False
+
+    try:
+        transaction, transaction_revision = _transaction_for_queue_item(
+            queue,
+            item,
+            build_transaction,
+            transaction_db_path=transaction_db_path,
+            retry_business_failures=retry_business_failures,
+            worker_id=worker_id,
+            log=log,
+            summary=summary,
+            operation_lock=heartbeat.operation_lock,
+        )
+        ctx = ProcessContext(
+            transaction=transaction,
+            config=config,
+            resources=dict(shared_resources),
+            credentials=credentials,
+        )
+        if transaction_db_path is None or transaction.status is not Status.SUCCESSFUL:
+            if transaction_db_path is not None:
+                checkpoint = _lease_checked_checkpoint(
+                    heartbeat,
+                    _strict_transaction_checkpoint(
+                        db_path=transaction_db_path,
+                        queue_db_path=_require_sqlite_queue(queue).db_path,
+                        item=item,
+                        initial_revision=transaction_revision,
+                        worker_id=worker_id,
+                        log=log,
+                        summary=summary,
+                        clock=_clock_for_queue(queue),
+                    ),
+                )
+            else:
+                checkpoint = _lease_only_checkpoint(heartbeat)
+            engine.run(ctx, checkpoint=checkpoint)
+        heartbeat.raise_if_failed()
+        validate_json_object(ctx.transaction.state, path="transaction.state")
+        originally_intended_complete = ctx.transaction.status == Status.SUCCESSFUL
+    except _FATAL_SIGNALS:
+        raise
+    except Exception as exc:
+        error = exc
+        outcome_error = exc
+        lease_lost = isinstance(exc, (QueueLeaseLostError, TransactionFenceError))
+        log.exception(
+            "Unexpected error processing queue item",
+            extra={"event": "queue_item_error", "queue_item_id": item.id, "queue_reference": item.reference, "worker_id": worker_id},
+        )
+
+    if not lease_lost:
+        try:
+            heartbeat.raise_if_failed()
+        except QueueLeaseLostError as exc:
+            error = exc
+            outcome_error = exc
+            lease_lost = True
+        except _FATAL_SIGNALS:
+            raise
+        except Exception as exc:
+            if error is None:
+                error = exc
+            if outcome_error is None:
+                outcome_error = exc
+
+    if ctx is not None and not lease_lost:
+        try:
+            report = generate_report(ctx.transaction)
+        except _FATAL_SIGNALS:
+            raise
+        except Exception as exc:
+            if error is None:
+                error = exc
+            log.exception(
+                "Post-run report generation failed; preserving queue outcome",
+                extra={"event": "queue_item_postprocess_error", "queue_item_id": item.id, "queue_reference": item.reference, "worker_id": worker_id},
+            )
+        else:
+            def count_notification_error(notifier: str) -> None:
+                summary.notification_errors += 1
+
+            dispatch(
+                notifiers,
+                report,
+                logger=log,
+                on_failure=count_notification_error,
+            )
+
+    if after_item is not None and not lease_lost:
+        try:
+            after_item(item, transaction, error)
+        except _FATAL_SIGNALS:
+            raise
+        except Exception:
+            callback_failed = True
+            log.exception(
+                "after_item callback raised during post-processing",
+                extra={"event": "after_item_error", "queue_item_id": item.id, "worker_id": worker_id},
+            )
+
+    if not lease_lost:
+        try:
+            heartbeat.raise_if_failed()
+        except QueueLeaseLostError as exc:
+            error = exc
+            outcome_error = exc
+            lease_lost = True
+        except _FATAL_SIGNALS:
+            raise
+        except Exception as exc:
+            if error is None:
+                error = exc
+            if outcome_error is None:
+                outcome_error = exc
+
+    if lease_lost:
+        summary.failed += 1
+        summary.lease_lost += 1
+        _log_lease_lost(log, item, worker_id, error)
+        return False
+
+    if originally_intended_complete:
+        with heartbeat.operation_lock:
+            transition_error = _complete_queue_item_with_retries(
+                queue,
+                item,
+                worker_id=worker_id,
+                log=log,
+            )
+        if isinstance(transition_error, QueueLeaseLostError):
+            summary.failed += 1
+            summary.lease_lost += 1
+            _log_lease_lost(log, item, worker_id, transition_error)
+            return False
+        if transition_error is not None:
+            raise transition_error
+        summary.completed += 1
+        if callback_failed:
+            summary.callback_errors += 1
+        log.info(
+            "Completed queue item",
+            extra={"event": "queue_item_complete", "queue_item_id": item.id, "queue_reference": item.reference, "worker_id": worker_id},
+        )
+        return True
+
+    if isinstance(outcome_error, _CheckpointError):
+        retry = outcome_error.retry
+    elif isinstance(outcome_error, _DurableTransactionBindingError):
+        retry = False
+    elif isinstance(outcome_error, _LeaseRenewalError):
+        retry = True
+    elif isinstance(outcome_error, (ExecutionValidationError, JsonStateError)):
+        retry = False
+    else:
+        retry = (
+            retry_business_failures
+            or outcome_error is not None
+            or not _transaction_has_only_business_failures(transaction)
+        )
+    with heartbeat.operation_lock:
+        transition_outcome, transition_error = _fail_queue_item_with_retries(
+            queue,
+            item,
+            retry=retry,
+            worker_id=worker_id,
+            log=log,
+        )
+    if isinstance(transition_error, QueueLeaseLostError):
+        summary.failed += 1
+        summary.lease_lost += 1
+        _log_lease_lost(log, item, worker_id, transition_error)
+        return False
+    if transition_error is not None:
+        raise transition_error
+    summary.failed += 1
+    if transition_outcome is QueueAttemptOutcome.RETRY_SCHEDULED:
+        summary.retry_scheduled += 1
+    elif transition_outcome is QueueAttemptOutcome.FAILED:
+        summary.terminal_failed += 1
+    else:
+        summary.transition_unknown += 1
+    if not error and not callback_failed and ctx is not None:
+        log.warning(
+            "Queue item failed (transaction status: %s)",
+            ctx.transaction.status,
+            extra={"event": "queue_item_fail", "queue_item_id": item.id, "queue_reference": item.reference, "worker_id": worker_id},
+        )
+    return True
+
+
+def _lease_checked_checkpoint(
+    heartbeat: _LeaseHeartbeat,
+    checkpoint: Callable[[Transaction], None],
+) -> Callable[[Transaction], None]:
+    """Return a checkpoint that fails before persistence after lease loss."""
+
+    def checked_checkpoint(transaction: Transaction) -> None:
+        heartbeat.raise_if_failed()
+        with heartbeat.operation_lock:
+            heartbeat.raise_if_failed()
+            checkpoint(transaction)
+        heartbeat.raise_if_failed()
+
+    return checked_checkpoint
+
+
+def _log_resource_scope(
+    log: logging.Logger,
+    event: str,
+    worker_id: str,
+    resources: dict[str, object],
+) -> None:
+    log.info(
+        "Resource scope event",
+        extra={
+            "event": event,
+            "worker_id": worker_id,
+            "resource_count": len(resources),
+            "resource_names": sorted(resources),
+        },
+    )
+
+
+def _lease_only_checkpoint(heartbeat: _LeaseHeartbeat) -> Callable[[Transaction], None]:
+    """Return a checkpoint that only enforces lease loss boundaries."""
+
+    def checkpoint(transaction: Transaction) -> None:
+        heartbeat.raise_if_failed()
+
+    return checkpoint
+
+
+def _start_lease_heartbeat(
+    queue: QueueProvider,
+    item: QueueItem,
+    *,
+    worker_id: str,
+    log: logging.Logger,
+) -> _LeaseHeartbeat:
+    """Start one runner-owned heartbeat thread for a claimed queue item."""
+    stop_event = threading.Event()
+    heartbeat = _LeaseHeartbeat(
+        stop_event=stop_event,
+        thread=threading.Thread(target=lambda: None),
+    )
+
+    def run() -> None:
+        while not stop_event.is_set():
+            if stop_event.wait(_lease_renewal_interval(queue)):
+                return
+            try:
+                with heartbeat.operation_lock:
+                    error = _renew_lease_with_retries(
+                        queue,
+                        item.id,
+                        claimed_by=item.claimed_by,
+                        claim_token=item.claim_token,
+                        log=log,
+                        worker_id=worker_id,
+                    )
+            except _FATAL_SIGNALS as error:
+                heartbeat.error = error
+                return
+            if error is not None:
+                if isinstance(error, (QueueLeaseLostError, MemoryError)):
+                    heartbeat.error = error
+                else:
+                    heartbeat.error = _LeaseRenewalError(
+                        f"Queue item {item.id!r} lease renewal failed: {error}"
+                    )
+                return
+
+    heartbeat.thread = threading.Thread(
+        name=f"rpacore-lease-{item.id}",
+        target=run,
+        daemon=True,
+    )
+    heartbeat.thread.start()
+    return heartbeat
+
+
+def _stop_lease_heartbeat(heartbeat: _LeaseHeartbeat) -> None:
+    heartbeat.stop_event.set()
+    heartbeat.thread.join()
+
+
+def _stop_lease_heartbeat_preserving_error(heartbeat: _LeaseHeartbeat) -> None:
+    """Stop a heartbeat without replacing an exception already in flight."""
+    active_error = sys.exception()
+    try:
+        _stop_lease_heartbeat(heartbeat)
+    except BaseException as cleanup_error:
+        if active_error is None:
+            raise
+        _add_cleanup_failure_note(active_error, "lease heartbeat", cleanup_error)
+
+
+def _lease_renewal_interval(queue: QueueProvider) -> float:
+    lease_timeout = getattr(queue, "lease_timeout", None)
+    if (
+        isinstance(lease_timeout, (int, float))
+        and not isinstance(lease_timeout, bool)
+        and lease_timeout > 0
+    ):
+        return min(
+            max(float(lease_timeout) / 3.0, 0.1),
+            _DEFAULT_LEASE_RENEWAL_INTERVAL_SECONDS,
+        )
+    return _DEFAULT_LEASE_RENEWAL_INTERVAL_SECONDS
+
+
+def _renew_lease_with_retries(
+    queue: QueueProvider,
+    item_id: str,
+    *,
+    claimed_by: str,
+    claim_token: str,
+    log: logging.Logger,
+    worker_id: str,
+) -> Exception | None:
+    for attempt in range(_LEASE_RENEW_ATTEMPTS):
+        try:
+            queue.renew_lease(
+                item_id,
+                claimed_by=claimed_by,
+                claim_token=claim_token,
+            )
+            return None
+        except sqlite3.OperationalError as exc:
+            if not is_transient_sqlite_lock(exc) or attempt == _LEASE_RENEW_ATTEMPTS - 1:
+                return exc
+            _sleep_before_sqlite_retry(
+                attempt,
+                clock=_clock_for_queue(queue),
+                delay_seconds=_LEASE_RETRY_DELAY_SECONDS,
+                log=log,
+                event="queue_lease_renewal_retry",
+                operation="renew_lease",
+                queue_item_id=item_id,
+                worker_id=worker_id,
+                error=exc,
+                max_attempts=_LEASE_RENEW_ATTEMPTS,
+            )
+        except MemoryError as exc:
+            return exc
+        except Exception as exc:
+            return exc
+    return None
+
+
+def _complete_queue_item_with_retries(
+    queue: QueueProvider,
+    item: QueueItem,
+    *,
+    worker_id: str,
+    log: logging.Logger,
+) -> Exception | None:
+    """Complete a queue item, retrying short-lived SQLite lock failures."""
+    for attempt in range(_LEASE_RENEW_ATTEMPTS):
+        try:
+            queue.complete(
+                item.id,
+                claimed_by=item.claimed_by,
+                claim_token=item.claim_token,
+            )
+            return None
+        except sqlite3.OperationalError as exc:
+            if not is_transient_sqlite_lock(exc) or attempt == _LEASE_RENEW_ATTEMPTS - 1:
+                return exc
+            _sleep_before_sqlite_retry(
+                attempt,
+                clock=_clock_for_queue(queue),
+                delay_seconds=_LEASE_RETRY_DELAY_SECONDS,
+                log=log,
+                event="queue_transition_retry",
+                operation="complete",
+                queue_item_id=item.id,
+                worker_id=worker_id,
+                error=exc,
+                max_attempts=_LEASE_RENEW_ATTEMPTS,
+            )
+        except MemoryError:
+            raise
+        except Exception as exc:
+            return exc
+    return None
+
+
+def _fail_queue_item_with_retries(
+    queue: QueueProvider,
+    item: QueueItem,
+    *,
+    retry: bool,
+    worker_id: str,
+    log: logging.Logger,
+) -> tuple[QueueAttemptOutcome | None, Exception | None]:
+    """Fail one claim and return its actual disposition when the provider attests it."""
+    for attempt in range(_LEASE_RENEW_ATTEMPTS):
+        try:
+            outcome = queue.fail(
+                item.id,
+                retry=retry,
+                claimed_by=item.claimed_by,
+                claim_token=item.claim_token,
+            )
+            if outcome not in (
+                None,
+                QueueAttemptOutcome.RETRY_SCHEDULED,
+                QueueAttemptOutcome.FAILED,
+            ):
+                return None, RuntimeError(
+                    "QueueProvider.fail() must return None, retry_scheduled, or failed; "
+                    f"got {outcome!r}"
+                )
+            return outcome, None
+        except sqlite3.OperationalError as exc:
+            if not is_transient_sqlite_lock(exc) or attempt == _LEASE_RENEW_ATTEMPTS - 1:
+                return None, exc
+            _sleep_before_sqlite_retry(
+                attempt,
+                clock=_clock_for_queue(queue),
+                delay_seconds=_LEASE_RETRY_DELAY_SECONDS,
+                log=log,
+                event="queue_transition_retry",
+                operation="fail",
+                queue_item_id=item.id,
+                worker_id=worker_id,
+                error=exc,
+                max_attempts=_LEASE_RENEW_ATTEMPTS,
+            )
+        except MemoryError:
+            raise
+        except Exception as exc:
+            return None, exc
+    return None, RuntimeError("Queue fail transition exhausted without a result")
+
+
+def _log_lease_lost(
+    log: logging.Logger,
+    item: QueueItem,
+    worker_id: str,
+    error: Exception | None,
+) -> None:
+    log.error(
+        "Queue item lease lost; skipping final queue transition and stopping worker",
+        extra={
+            "event": "queue_item_lease_lost",
+            "queue_item_id": item.id,
+            "queue_reference": item.reference,
+            "claimed_by": item.claimed_by,
+            "worker_id": worker_id,
+        },
+        exc_info=(type(error), error, error.__traceback__) if error is not None else None,
+    )
+
+
+def _require_sqlite_queue(queue: QueueProvider) -> SqliteQueue:
+    """Return the provider required for transaction checkpoint fencing."""
+    if not isinstance(queue, SqliteQueue):
+        raise TypeError(
+            "transaction_db_path requires SqliteQueue so queue claims and "
+            "transaction checkpoints can be fenced atomically"
+        )
+    return queue
+
+
+def _clock_for_queue(queue: QueueProvider) -> _Clock:
+    """Return a private queue clock, defaulting custom providers to system time."""
+    if isinstance(queue, SqliteQueue):
+        return queue._clock
+    clock = getattr(queue, "_clock", None)
+    return clock if isinstance(clock, _Clock) else _SYSTEM_CLOCK
+
+
+def _transaction_for_queue_item(
+    queue: QueueProvider,
+    item: QueueItem,
+    build_transaction: Callable[[QueueItem], Transaction],
+    *,
+    transaction_db_path: str | None,
+    retry_business_failures: bool,
+    worker_id: str,
+    log: logging.Logger,
+    summary: QueueRunSummary,
+    operation_lock: threading.RLock,
+) -> tuple[Transaction, int]:
+    if transaction_db_path is None:
+        transaction = build_transaction(item)
+        _seed_transaction_state_from_payload(transaction, item, worker_id=worker_id, log=log)
+        transaction.validate_for_execution()
+        return transaction, 0
+
+    if item.transaction_id:
+        try:
+            candidate = build_transaction(item)
+            transaction, recovered_revision = _load_transaction_with_revision(
+                item.transaction_id,
+                transaction_db_path,
+            )
+            transaction = _prepare_resumed_transaction(
+                transaction,
+                candidate.steps,
+                retry_business_failures=retry_business_failures,
+                definition_identity=candidate.definition_identity,
+            )
+            return transaction, recovered_revision
+        except (
+            KeyError,
+            sqlite3.Error,
+            SystemException,
+            ValueError,
+            JsonStateError,
+        ) as exc:
+            raise _DurableTransactionBindingError(
+                f"Queue item {item.id!r} is bound to transaction "
+                f"{item.transaction_id!r}, but it cannot be resumed: {exc}"
+            ) from exc
+
+    transaction = build_transaction(item)
+    _seed_transaction_state_from_payload(transaction, item, worker_id=worker_id, log=log)
+    transaction.validate_for_execution()
+    _validate_initial_queue_transaction(transaction)
+    with operation_lock:
+        revision, error = _save_queue_transaction_with_retries(
+            transaction,
+            db_path=transaction_db_path,
+            queue_db_path=_require_sqlite_queue(queue).db_path,
+            item=item,
+            expected_revision=0,
+            initial=True,
+            log=log,
+            event="transaction_initial_persistence_retry",
+            queue_item_id=item.id,
+            worker_id=worker_id,
+            clock=_clock_for_queue(queue),
+        )
+        if error is not None:
+            if isinstance(error, TransactionFenceError):
+                raise error
+            summary.persistence_errors += 1
+            log.error(
+                "Initial transaction persistence failed",
+                extra={
+                    "event": "transaction_initial_persistence_error",
+                    "queue_item_id": item.id,
+                    "queue_reference": item.reference,
+                    "transaction_id": transaction.id,
+                    "transaction_reference": transaction.reference,
+                    "worker_id": worker_id,
+                },
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            raise _CheckpointError(
+                error,
+                retry=not isinstance(error, (ExecutionValidationError, JsonStateError)),
+            ) from error
+    if revision is None:
+        raise RuntimeError("Initial fenced transaction save returned no revision")
+    item.transaction_id = transaction.id
+    return transaction, revision
+
+
+def _seed_transaction_state_from_payload(
+    transaction: Transaction,
+    item: QueueItem,
+    *,
+    worker_id: str,
+    log: logging.Logger,
+) -> None:
+    validate_json_object(item.payload, path="queue item payload")
+    state_collisions = sorted(set(transaction.state).intersection(item.payload))
+    if state_collisions:
+        log.warning(
+            "Queue item payload overwrote pre-existing transaction state keys",
+            extra={
+                "event": "queue_payload_state_collision",
+                "queue_item_id": item.id,
+                "queue_reference": item.reference,
+                "transaction_id": transaction.id,
+                "transaction_reference": transaction.reference,
+                "state_keys": state_collisions,
+                "worker_id": worker_id,
+            },
+        )
+    transaction.state = {**transaction.state, **item.payload}
+
+
+def _validate_initial_queue_transaction(transaction: Transaction) -> None:
+    """Reject pre-started transactions before their provisional durable save."""
+    validate_definition_identity(
+        transaction.definition_identity,
+        field="transaction.definition_identity",
+        required=True,
+    )
+    if transaction.status is not Status.PENDING:
+        raise ExecutionValidationError(
+            "queue transaction.status must be pending before initial binding"
+        )
+    if transaction.history:
+        raise ExecutionValidationError(
+            "queue transaction.history must be empty before initial binding"
+        )
+
+
+def _transaction_has_only_business_failures(transaction: Transaction | None) -> bool:
+    """Return True when all failed steps ended with business exceptions."""
+    if transaction is None:
+        return False
+    failed = transaction.failed_steps()
+    return bool(failed) and all(
+        step.exceptions and isinstance(step.exceptions[-1], BusinessException)
+        for step in failed
+    )
+
+
+def _strict_transaction_checkpoint(
+    *,
+    db_path: str,
+    queue_db_path: str,
+    item: QueueItem,
+    initial_revision: int,
+    worker_id: str,
+    log: logging.Logger,
+    summary: QueueRunSummary,
+    clock: _Clock,
+) -> Callable[[Transaction], None]:
+    """Return a checkpoint that raises when transaction persistence fails."""
+
+    revision = initial_revision
+
+    def checkpoint(transaction: Transaction) -> None:
+        nonlocal revision
+        new_revision, error = _save_queue_transaction_with_retries(
+            transaction,
+            db_path=db_path,
+            queue_db_path=queue_db_path,
+            item=item,
+            expected_revision=revision,
+            log=log,
+            event="transaction_checkpoint_retry",
+            queue_item_id=item.id,
+            worker_id=worker_id,
+            clock=clock,
+        )
+        if error is None:
+            if new_revision is None:
+                raise RuntimeError("Fenced checkpoint returned no revision")
+            revision = new_revision
+            return
+        if isinstance(error, TransactionFenceError):
+            raise error
+        summary.persistence_errors += 1
+        log.error(
+            "Transaction checkpoint failed",
+            extra={
+                "event": "transaction_checkpoint_error",
+                "queue_item_id": item.id,
+                "queue_reference": item.reference,
+                "transaction_id": transaction.id,
+                "transaction_reference": transaction.reference,
+                "worker_id": worker_id,
+            },
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        raise _CheckpointError(
+            error,
+            retry=(
+                not isinstance(error, (ExecutionValidationError, JsonStateError))
+                and _checkpoint_failure_allows_queue_retry(
+                    transaction,
+                    db_path=db_path,
+                )
+            ),
+        ) from error
+
+    return checkpoint
+
+
+def _checkpoint_failure_allows_queue_retry(transaction: Transaction, *, db_path: str) -> bool:
+    """Return False only when the current durable snapshot proves retry is unsafe."""
+    try:
+        durable = load_transaction(transaction.id, db_path)
+    except Exception:
+        return _in_memory_checkpoint_failure_allows_queue_retry(transaction)
+
+    # A failed checkpoint did not publish the in-memory change that triggered
+    # it.  Only use the durable retry guard when the snapshot is exactly the
+    # same history; an older snapshot must not decide the new outcome.
+    if durable.history != transaction.history:
+        return _in_memory_checkpoint_failure_allows_queue_retry(transaction)
+    return _transaction_history_allows_queue_retry(durable)
+
+
+def _in_memory_checkpoint_failure_allows_queue_retry(transaction: Transaction) -> bool:
+    """Retry after an unpersisted checkpoint unless it recorded a business failure."""
+    if transaction.history and transaction.history[-1].event == HistoryEvent.STEP_FAILED:
+        return not _has_business_failed_step(transaction)
+    return True
+
+
+def _transaction_history_allows_queue_retry(transaction: Transaction) -> bool:
+    """Apply checkpoint retry policy to one transaction history snapshot."""
+    if not transaction.history:
+        return True
+    last_event = transaction.history[-1].event
+    if last_event == HistoryEvent.STEP_SUCCEEDED:
+        return False
+    if last_event == HistoryEvent.STEP_FAILED:
+        return not _has_business_failed_step(transaction)
+    return True
+
+
+def _has_business_failed_step(transaction: Transaction) -> bool:
+    return any(
+        step.exceptions and isinstance(step.exceptions[-1], BusinessException)
+        for step in transaction.failed_steps()
+    )
+
+
+def _save_queue_transaction_with_retries(
+    transaction: Transaction,
+    *,
+    db_path: str,
+    queue_db_path: str,
+    item: QueueItem,
+    expected_revision: int,
+    log: logging.Logger,
+    event: str,
+    queue_item_id: str,
+    worker_id: str,
+    clock: _Clock,
+    initial: bool = False,
+) -> tuple[int | None, Exception | None]:
+    """Save a fenced queue transaction, retrying short-lived SQLite locks."""
+    for attempt in range(_PERSISTENCE_SAVE_ATTEMPTS):
+        try:
+            revision = _save_queue_transaction_fenced(
+                transaction,
+                db_path=db_path,
+                queue_db_path=queue_db_path,
+                queue_item_id=item.id,
+                claimed_by=item.claimed_by,
+                claim_token=item.claim_token,
+                expected_revision=expected_revision,
+                initial=initial,
+            )
+            return revision, None
+        except sqlite3.OperationalError as exc:
+            if (
+                not is_transient_sqlite_lock(exc)
+                or attempt == _PERSISTENCE_SAVE_ATTEMPTS - 1
+            ):
+                return None, exc
+            _sleep_before_sqlite_retry(
+                attempt,
+                clock=clock,
+                delay_seconds=_PERSISTENCE_RETRY_DELAY_SECONDS,
+                log=log,
+                event=event,
+                operation="save_transaction",
+                queue_item_id=queue_item_id,
+                worker_id=worker_id,
+                error=exc,
+                max_attempts=_PERSISTENCE_SAVE_ATTEMPTS,
+            )
+        except MemoryError:
+            raise
+        except Exception as exc:
+            return None, exc
+    raise RuntimeError("Fenced transaction save exhausted without a result")

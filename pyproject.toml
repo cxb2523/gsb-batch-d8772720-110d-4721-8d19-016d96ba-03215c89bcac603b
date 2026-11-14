@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rpacore"
+version = "0.3.0"
+description = "RPA Core — deterministic, stateful RPA in Python"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    { name = "Renato Moselli" },
+]
+keywords = ["rpa", "automation", "workflow", "enterprise"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.urls]
+Homepage = "https://rpacore.dev"
+Documentation = "https://github.com/renatomoselli/rpacore/tree/main/docs"
+Repository = "https://github.com/renatomoselli/rpacore"
+Issues = "https://github.com/renatomoselli/rpacore/issues"
+Security = "https://github.com/renatomoselli/rpacore/security/advisories/new"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1.1",
+    "mypy==2.1.0",
+    "ruff>=0.9.0",
+    "build>=1.0",
+    "twine>=5.1.0",
+    "wheel>=0.46.2",
+]
+screenshots = [
+    "mss>=9.0",
+]
+keyring = [
+    "keyring",
+]
+
+[project.scripts]
+rpacore = "rpacore.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rpacore*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+files = ["rpacore"]
+
+[tool.ruff.lint]
+select = ["F"]
