@@ -5,10 +5,14 @@
   "description": "MCP server for Glassdoor through HasData's hosted API: search job listings by keyword and location, and read one posting in full with the company rating and salary estimate. No Glassdoor partner account. 1,000 free credits every month.",
   "type": "module",
   "bin": {
-    "hasdata-glassdoor-mcp": "index.mjs"
+    "hasdata-glassdoor-mcp": "index.mjs",
+    "hasdata-glassdoor-benchmark": "scripts/salary-benchmark.mjs"
   },
   "files": [
     "index.mjs",
+    "scripts/salary-benchmark.mjs",
+    "scripts/lib/client.mjs",
+    "scripts/lib/collect.mjs",
     "README.md",
     "LICENSE"
   ],

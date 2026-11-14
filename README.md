@@ -27,6 +27,7 @@ https://mcp.hasdata.com/mcp?apis=glassdoor
 - [Quick start](#quick-start)
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
+- [Collecting a whole market](#collecting-a-whole-market)
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
@@ -280,6 +281,38 @@ The server exposes 5 resources, one per parameter whose accepted values are a fi
 
 The list is served without an API key, so a client can read it before a user has signed up.
 
+## Collecting a whole market
+
+A single listing call answers "what does one page say". A benchmark needs the pages behind it, and needs to know when it did not reach the end. This repository also ships that loop as a collector, used by the `/salary-benchmark` command and runnable on its own:
+
+```bash
+node scripts/salary-benchmark.mjs \
+  --keyword "data engineer" --location "Austin, TX" \
+  --sort recent --max-pages 5
+```
+
+| Flag | Meaning |
+| :--- | :--- |
+| `--keyword` | Required. The role, such as `data engineer` |
+| `--location` | Required. The market, such as `Austin, TX` |
+| `--sort` | `recent` or `relevant`; omit for Glassdoor's own order |
+| `--domain` | A regional Glassdoor site; omit for the US site |
+| `--max-pages` | Pages to walk, 1 to 50. Default 5. Each page is up to 10 credits |
+| `--json` | Print the raw result instead of the readable report |
+| `--endpoint` | Point at a local fake server instead of HasData |
+
+The rules it enforces:
+
+- **Page one carries no token.** Every later page sends only the token the previous response put in `pagination.otherPages`, as `nextPageToken`, with all other parameters unchanged. A page number is never constructed or sent.
+- **Every stop is named.** The walk ends on a missing token, a token already used, an empty page, or the page cap. A page that fails after its retries also ends the walk. Each page is reported with its number, its outcome, its posting count and the running total, so an incomplete walk is visible rather than implied.
+- **A failed page keeps the pages already paid for.** The report still carries the grouped statistics over what was collected, marked incomplete, and the process exits non-zero.
+- **429 and `concurrency_limit` retry, 401 does not.** A throttle is retried with an increasing wait up to five times; a rejected key fails on the first response.
+- **Salary sets stay separate.** `EMPLOYER_PROVIDED` and `ESTIMATED` are never averaged together, `HOURLY` never mixes with `ANNUAL`, a missing `salary` is counted as no salary, and `min = median = max` is one point figure.
+
+Cost is the one thing to say before a long walk: pages are billed at 10 credits each, so `--max-pages 10` is up to 100 credits, and a page that fails is not billed. The collected pages are what the free tier's 100 monthly calls buy you, so a five-page benchmark uses half a month of the free plan.
+
+The collector is tested against a local fake MCP server, so the paging and retry rules are provable with no API key and no network. See [Development](#development).
+
 ## Errors and failure paths
 
 Plan for these rather than assuming a happy path.
@@ -403,6 +436,13 @@ The tests in `test/` assert the tool contract, the part that can break without a
 One test asserts that a live posting still carries `salary.source`. The README leans on that field to keep employer figures apart from estimates, and a response that quietly dropped it would leave the advice standing with nothing behind it.
 
 The contract suite also runs weekly on a schedule, because the upstream tool list can change without anyone touching this repository.
+
+`test/collect.test.mjs` covers the market collector, and it runs with **no API key and no network**. `scripts/testing/fake-mcp-server.mjs` serves the same JSON-RPC and SSE shape on `127.0.0.1` and scripts every pagination and failure case: two pages merging, a missing page-two token, a repeated token, a throttle followed by a success, a runaway throttle, a 401, an empty page, a mid-walk server error, and the salary shapes that must not mix. Each test asserts what was actually sent, so a collector that invented a page number or dropped a query parameter would fail rather than pass.
+
+```bash
+node --test test/collect.test.mjs      # offline, no key needed
+node --test                            # the full suite; live checks skip without a key
+```
 
 ## Contributing
 

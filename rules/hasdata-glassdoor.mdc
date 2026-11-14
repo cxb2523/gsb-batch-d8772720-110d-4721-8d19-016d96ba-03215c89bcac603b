@@ -23,6 +23,8 @@ The listing `description` is a snippet and it ends mid-sentence. Full text, stat
 
 `pagination.otherPages` maps a page number to an opaque token, and that token is what `nextPageToken` takes. Keep the other parameters unchanged while paging.
 
+Walk a market with `scripts/salary-benchmark.mjs` rather than by hand. It takes the token from the page before, stops on a missing or repeated token instead of constructing a page number, retries a 429 or `concurrency_limit` up to five times with a growing wait, fails a 401 at once, and still reports the grouped salary statistics over the pages it did collect when a later page fails. The report names every page's outcome and whether the walk was complete, so an answer can say how much of the market the figures cover. Each page costs 10 credits.
+
 `domain` selects one of the regional Glassdoor sites, and the US site is the default rather than a value you can pass.
 
 Salary figures and employer ratings are Glassdoor's own numbers. Attribute them instead of presenting them as the market.
