@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# venv
+.venv/
+venv/
+
+# env / secrets
+.env
+*.key
+*.pem
+
+# logs / outputs / data
+logs/
+output/
+outputs/
+data/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# outputs / generated files
+output/
+*.xlsx
+
+# editor logs
+.cursor/
+*.log
+
+# notebooks / attachments
+attachment/
+.ipynb_checkpoints/
+
+# Private / Internal
+readme/审批事务/
+dev_scripts/
+failures.txt
