@@ -495,6 +495,22 @@ body.drawer-open .drawer-backdrop { opacity: 1; pointer-events: auto; }
 .pp-note { margin: 6px 0 0; font-size: 14px; line-height: 1.5; white-space: pre-line; }
 .pp-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 
+/* import from a list (js/plan.js): the outcomes of the pages, one row each */
+.pp-import { margin-top: 18px; }
+.pp-import .pp-actions { margin: 0 0 4px; }
+.pp-import-url, .pp-import-file { max-width: 520px; }
+.pp-import-rows { list-style: none; padding: 0; margin: 10px 0; }
+.pp-import-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); margin: 0 0 6px; font-size: 14px; }
+.pp-imp-file { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.pp-imp-title { flex: 1; min-width: 0; color: var(--muted); font-size: 13px; }
+.pp-imp-status { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); white-space: nowrap; }
+.pp-imp-status[data-status="skipped"] { background: color-mix(in srgb, var(--viz-pointer) 14%, transparent); color: var(--viz-pointer); }
+.pp-imp-status[data-status="duplicate"] { background: color-mix(in srgb, var(--viz-changed) 16%, transparent); color: var(--viz-changed); }
+.pp-import-summary { font-size: 14px; font-weight: 600; margin: 10px 0 12px; }
+.pp-import .tp-warn { margin: 8px 0; }
+.pp-import-plan:empty { display: none; }
+.pp-import-plan .tp-btn { margin-top: 6px; }
+
 /* exercise pages: the check under the student's block (js/exercise.js) */
 .exercise-panel { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
 .ex-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

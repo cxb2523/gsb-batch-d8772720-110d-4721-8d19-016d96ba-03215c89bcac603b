@@ -190,15 +190,23 @@
 				return null;
 			raw.i.slice(0, 80).forEach(function(it){
 				var file = it instanceof Array ? it[0] : it;
+				// a page can carry its own code language (an imported list does): [file, note, lang]
 				if(typeof file === 'string' && known[file] && !items.some(function(x){ return x.file === file; }))
-					items.push({file: file, note: it instanceof Array ? text(it[1], 600) : ''});
+					items.push({
+						file: file,
+						note: it instanceof Array ? text(it[1], 600) : '',
+						c: it instanceof Array && CODE_LANGS.indexOf(it[2]) >= 0 ? it[2] : ''
+					});
 				else
 					dropped = dropped + 1;
 			});
 			return {t: text(raw.t, 120), d: text(raw.d, 1500), items: items, c: CODE_LANGS.indexOf(raw.c) >= 0 ? raw.c : '', m: raw.m ? 1 : 0, dropped: dropped};
 		}
 		function encode(plan){
-			return encodeText(JSON.stringify({v: 1, t: plan.t || '', d: plan.d || '', i: plan.items.map(function(x){ return x.note ? [x.file, x.note] : [x.file]; }), c: plan.c || '', m: plan.m ? 1 : 0}));
+			return encodeText(JSON.stringify({v: 1, t: plan.t || '', d: plan.d || '', i: plan.items.map(function(x){
+				if(x.c) return [x.file, x.note || '', x.c];       // a page with its own code language
+				return x.note ? [x.file, x.note] : [x.file];
+			}), c: plan.c || '', m: plan.m ? 1 : 0}));
 		}
 		function fromHash(hash){
 			var m = /(?:^#|&)plan=([A-Za-z0-9_-]{1,24000})(?:&|$)/.exec(hash || '');
@@ -214,7 +222,9 @@
 			return h.toString(36);
 		}
 		function url(file, str, index, plan){
-			return file + '#plan=' + str + '&i=' + index + (plan && plan.c ? '&c=' + plan.c : '');
+			var item = plan && plan.items && plan.items[index];
+			var c = item && item.c ? item.c : plan && plan.c;   // a page's own language wins over the plan's
+			return file + '#plan=' + str + '&i=' + index + (c ? '&c=' + c : '');
 		}
 		function progress(){
 			try { return JSON.parse(localStorage.getItem('dsv-plan-progress') || '{}') || {}; } catch(e) { return {}; }
@@ -227,7 +237,7 @@
 			all[id][file] = 1;
 			try { localStorage.setItem('dsv-plan-progress', JSON.stringify(all)); } catch(e) {}
 		}
-		return {encode: encode, parse: parse, fromHash: fromHash, url: url, done: done, mark: mark, idOf: idOf, known: known, flat: flat};
+		return {encode: encode, parse: parse, fromHash: fromHash, url: url, done: done, mark: mark, idOf: idOf, known: known, flat: flat, CODE_LANGS: CODE_LANGS};
 	})();
 	window.dsvPlan = PLAN;
 

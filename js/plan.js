@@ -356,6 +356,362 @@
 		draw();
 	}
 
+	// ---------------------------------------------------------------------- import from a list
+	//
+	// A teacher's list is a JSON array: [{file, note, lang?}, ...]. plan.html collects the pages of
+	// the list one by one and writes the outcome of each on the page. Only pages of this site are
+	// fetched (js/layout.js knows them); a page that is not in the menu is skipped, a repeated page
+	// keeps its first entry, and a note longer than 600 characters is shortened. The job is kept in
+	// this browser after every page, so a network error, a pause or a reload goes on from the last
+	// page done instead of starting over. Re-importing the same list shows the same rows again.
+	function buildImport(){
+		var STORE = 'dsv-plan-imports', LAST = 'dsv-plan-import-last', MAX_JOBS = 5;
+		var NOTE_MAX = 600, MAX_ITEMS = 80;
+		var LANGS = PLAN.CODE_LANGS || ['dugum', 'turkce', 'cpp', 'java'];
+		var STATUS_KEYS = {normal: 'ppImportNormal', skipped: 'ppImportSkipped', duplicate: 'ppImportDuplicate', truncated: 'ppImportTruncated'};
+		var current = null, running = false, token = 0;
+
+		// ---- the job store
+		function readJobs(){
+			try {
+				var all = JSON.parse(localStorage.getItem(STORE) || '{}');
+				return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+			} catch(e) { return {}; }
+		}
+		function writeJobs(jobs){ try { localStorage.setItem(STORE, JSON.stringify(jobs)); } catch(e) {} }
+		function persist(){
+			if(!current) return;
+			var jobs = readJobs();
+			jobs[current.key] = current;
+			var keys = Object.keys(jobs);
+			if(keys.length > MAX_JOBS){
+				keys.filter(function(k){ return k !== current.key; }).slice(0, keys.length - MAX_JOBS).forEach(function(k){ delete jobs[k]; });
+			}
+			writeJobs(jobs);
+		}
+		function lastKey(){
+			try { var l = JSON.parse(localStorage.getItem(LAST) || 'null'); return l && l.key ? l.key : null; } catch(e) { return null; }
+		}
+		function setLast(key){ try { localStorage.setItem(LAST, JSON.stringify({key: key})); } catch(e) {} }
+		function hash(text){
+			var h = 5381;
+			for(var i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+			return h.toString(36);
+		}
+		function keyOf(source){ return source.kind === 'url' ? 'u:' + source.url : 'f:' + hash(source.text); }
+
+		// ---- reading the list
+		function parseManifest(text){
+			var data;
+			try { data = JSON.parse(text); } catch(e) { return {error: 'json'}; }
+			if(!(data instanceof Array)) return {error: 'array'};
+			if(!data.length) return {error: 'empty'};
+			return {items: data};
+		}
+		// the outcome of every item, decided in the order of the list (nothing is fetched here)
+		function evaluate(items){
+			var seen = {}, out = [];
+			items.slice(0, MAX_ITEMS).forEach(function(raw){
+				var isObject = raw && typeof raw === 'object' && !(raw instanceof Array);
+				var file = isObject && typeof raw.file === 'string' ? raw.file : '';
+				var note = isObject && typeof raw.note === 'string' ? raw.note : '';
+				var lang = isObject && typeof raw.lang === 'string' && LANGS.indexOf(raw.lang) >= 0 ? raw.lang : '';
+				var status;
+				if(!file || !PLAN.known[file])
+					status = 'skipped';
+				else if(seen[file])
+					status = 'duplicate';
+				else {
+					seen[file] = 1;
+					if(note.length > NOTE_MAX){ note = note.slice(0, NOTE_MAX); status = 'truncated'; }
+					else status = 'normal';
+				}
+				out.push({file: file, note: note, lang: lang, status: status, fetched: false});
+			});
+			return out;
+		}
+		function sameSiteUrl(value){
+			var u;
+			try { u = new URL(value, location.href); } catch(e) { return null; }
+			if(u.origin !== location.origin || (u.protocol !== 'http:' && u.protocol !== 'https:')) return null;
+			u.hash = '';
+			return u;
+		}
+
+		// ---- drawing
+		var box = el('section', {'class': 'tp-box pp-import', id: 'pp-import'});
+		box.appendChild(el('h2', {}, t('ppImportTitle')));
+		box.appendChild(el('p', {'class': 'tp-help', id: 'pp-import-help'}, t('ppImportHelp')));
+
+		var fieldUrl = el('label', {'class': 'tp-field pp-import-url'});
+		fieldUrl.appendChild(el('span', {}, t('ppImportUrl')));
+		var urlInput = el('input', {type: 'text', id: 'pp-import-url', placeholder: t('ppImportUrlPh'), 'aria-label': t('ppImportUrl'), autocomplete: 'off'});
+		fieldUrl.appendChild(urlInput);
+		box.appendChild(fieldUrl);
+
+		var fieldFile = el('label', {'class': 'tp-field pp-import-file'});
+		fieldFile.appendChild(el('span', {}, t('ppImportFile')));
+		var fileInput = el('input', {type: 'file', id: 'pp-import-file', accept: '.json,application/json'});
+		fieldFile.appendChild(fileInput);
+		box.appendChild(fieldFile);
+
+		var buttons = el('div', {'class': 'pp-actions'});
+		var startBtn = el('button', {type: 'button', 'class': 'tp-btn primary', id: 'pp-import-start'}, t('ppImportStart'));
+		var pauseBtn = el('button', {type: 'button', 'class': 'tp-btn', id: 'pp-import-pause'}, t('ppImportPause'));
+		var resumeBtn = el('button', {type: 'button', 'class': 'tp-btn', id: 'pp-import-resume'}, t('ppImportResume'));
+		pauseBtn.hidden = true;
+		resumeBtn.hidden = true;
+		buttons.appendChild(startBtn);
+		buttons.appendChild(pauseBtn);
+		buttons.appendChild(resumeBtn);
+		box.appendChild(buttons);
+
+		var errorBox = el('p', {'class': 'tp-warn', id: 'pp-import-error', role: 'alert'});
+		errorBox.hidden = true;
+		box.appendChild(errorBox);
+		var statusText = el('p', {'class': 'pp-meta', id: 'pp-import-status', role: 'status', 'aria-live': 'polite'});
+		box.appendChild(statusText);
+		var counts = el('p', {'class': 'pp-meta pp-import-counts', id: 'pp-import-counts'});
+		box.appendChild(counts);
+		var rows = el('ol', {'class': 'pp-import-rows', id: 'pp-import-rows'}); // the status line already speaks for a screen reader
+		box.appendChild(rows);
+		var summary = el('p', {'class': 'pp-import-summary', id: 'pp-import-summary'});
+		summary.hidden = true;
+		box.appendChild(summary);
+		var planRow = el('div', {'class': 'pp-actions pp-import-plan'});
+		var openPlan = el('a', {'class': 'tp-btn primary', id: 'pp-import-open', href: '#'}, t('ppImportOpen'));
+		openPlan.style.textDecoration = 'none';
+		openPlan.hidden = true;
+		var copyPlan = el('button', {type: 'button', 'class': 'tp-btn', id: 'pp-import-copy'}, t('ppImportCopy'));
+		copyPlan.hidden = true;
+		planRow.appendChild(openPlan);
+		planRow.appendChild(copyPlan);
+		box.appendChild(planRow);
+		root.appendChild(box);
+
+		function showError(text){
+			errorBox.textContent = text || '';
+			errorBox.hidden = !text;
+		}
+		function statusKeyOf(e){ return STATUS_KEYS[e.status]; }
+		function whyOf(e){
+			if(e.status === 'skipped') return t('ppImportWhySkipped');
+			if(e.status === 'duplicate') return t('ppImportWhyDuplicate');
+			if(e.status === 'truncated') return t('ppImportWhyTruncated');
+			return '';
+		}
+		function rowEl(e){
+			var li = el('li', {'class': 'pp-import-row', 'data-status': e.status, 'data-file': e.file});
+			li.appendChild(el('span', {'class': 'pp-imp-file'}, e.file));
+			li.appendChild(el('span', {'class': 'pp-imp-title'}, e.status === 'skipped' ? '' : titleOf(e.file)));
+			var why = whyOf(e);
+			var badge = el('span', {'class': 'pp-imp-status', 'data-status': e.status}, t(statusKeyOf(e)));
+			if(why) badge.title = why;
+			li.appendChild(badge);
+			return li;
+		}
+		function countsOf(job){
+			var c = {normal: 0, skipped: 0, duplicate: 0, truncated: 0};
+			job.entries.slice(0, job.next).forEach(function(e){ if(c[e.status] !== undefined) c[e.status]++; });
+			return c;
+		}
+		function planOf(job){
+			var items = job.entries.filter(function(e){ return e.status === 'normal' || e.status === 'truncated'; })
+			                         .map(function(e){ return {file: e.file, note: e.note, c: e.lang}; });
+			return {t: t('ppImportPlan'), d: '', items: items, c: '', m: 0};
+		}
+		// where the imported plan starts (its first page, the plan bar around it) and the link for the students
+		function planLinks(job){
+			var plan = planOf(job);
+			if(!plan.items.length) return {start: '', share: ''};
+			var str = PLAN.encode(plan);
+			return {start: PLAN.url(plan.items[0].file, str, 0, plan), share: 'plan.html#plan=' + str};
+		}
+		function paint(){
+			if(current){
+				var c = countsOf(current);
+				counts.textContent = t('ppImportCounts', c);
+				counts.setAttribute('data-normal', String(c.normal));
+				counts.setAttribute('data-skipped', String(c.skipped));
+				counts.setAttribute('data-duplicate', String(c.duplicate));
+				counts.setAttribute('data-truncated', String(c.truncated));
+				rows.textContent = '';
+				current.entries.slice(0, current.next).forEach(function(e){ rows.appendChild(rowEl(e)); });
+			}
+			else {
+				counts.textContent = '';
+				rows.textContent = '';
+			}
+			var incomplete = !!current && !current.complete;
+			pauseBtn.hidden = !running;
+			resumeBtn.hidden = !(incomplete && !running);
+			startBtn.disabled = running;
+			if(running)
+				statusText.textContent = t('ppImportRunning', {done: current.next, n: current.entries.length});
+			else if(incomplete){
+				statusText.textContent = current.error === 'network'
+					? t('ppImportNetwork', {file: current.entries[current.next] ? current.entries[current.next].file : ''})
+					: t('ppImportPaused', {done: current.next, n: current.entries.length});
+			}
+			else if(current)
+				statusText.textContent = t('ppImportDone');
+			else
+				statusText.textContent = '';
+			if(current && current.complete){
+				var c2 = countsOf(current);
+				summary.textContent = t('ppImportSummary', {n: current.next, normal: c2.normal, skipped: c2.skipped, duplicate: c2.duplicate, truncated: c2.truncated});
+				summary.hidden = false;
+				var links = planLinks(current);
+				openPlan.href = links.start || '#';
+				openPlan.hidden = !links.start;
+				copyPlan.hidden = !links.share;
+			}
+			else {
+				summary.hidden = true;
+				openPlan.hidden = true;
+				copyPlan.hidden = true;
+			}
+		}
+
+		// ---- collecting the pages
+		function fetchPage(file){
+			return fetch(file, {cache: 'no-store', credentials: 'same-origin'}).then(function(res){
+				if(!res.ok) throw new Error('HTTP ' + res.status);
+				return res.text();
+			});
+		}
+		function finish(){
+			running = false;
+			if(!current) return;
+			current.complete = true;
+			current.paused = false;
+			current.running = false;
+			current.error = '';
+			persist();
+			paint();
+		}
+		function run(){
+			if(!current || current.complete) return;
+			var job = current, my = ++token;
+			running = true;
+			job.paused = false;
+			job.error = '';
+			persist();
+			paint();
+			(function step(){
+				if(my !== token || !running) return;
+				if(job.next >= job.entries.length){ finish(); return; }
+				var e = job.entries[job.next];
+				if(e.status === 'skipped' || e.status === 'duplicate'){ // no page to fetch: the outcome is known at once
+					job.next++;
+					persist();
+					paint();
+					setTimeout(step, 0);
+					return;
+				}
+				job.running = true; // a reload during this fetch goes on from this page
+				persist();
+				fetchPage(e.file).then(function(){
+					if(my !== token || !running) return;
+					e.fetched = true;
+					job.next++;
+					job.running = false;
+					persist();
+					paint();
+					setTimeout(step, 0);
+				}, function(){
+					if(my !== token) return;
+					job.running = false;
+					// a break, not a pause by the user: a reload goes on from this page by itself
+					job.paused = false;
+					job.error = 'network';
+					running = false;
+					persist();
+					paint();
+				});
+			})();
+		}
+		function pause(){
+			if(!current) return;
+			running = false;
+			token++;
+			current.paused = true;
+			current.running = false;
+			persist();
+			paint();
+		}
+		function begin(source, text){
+			var parsed = parseManifest(text);
+			if(parsed.error){ showError(t('ppImportErr' + parsed.error.charAt(0).toUpperCase() + parsed.error.slice(1))); return; }
+			var key = keyOf(source), sig = hash(text); // the whole list is not kept, only its fingerprint
+			var jobs = readJobs();
+			var job = jobs[key];
+			if(!job || job.sig !== sig || !(job.entries instanceof Array)){ // a new list, or the same address with other contents
+				job = {key: key, kind: source.kind, name: source.name || source.url || '', sig: sig, entries: evaluate(parsed.items),
+				       next: 0, running: false, paused: false, complete: false, error: ''};
+				jobs[key] = job;
+				writeJobs(jobs);
+			}
+			else if(job.error === 'network'){ // the same list again: a break before does not need another try by hand
+				job.error = '';
+				job.paused = false;
+			}
+			setLast(key);
+			current = job;
+			running = false;
+			token++;
+			showError('');
+			persist();
+			run();
+		}
+
+		// ---- events
+		startBtn.addEventListener('click', function(){
+			var value = urlInput.value.trim();
+			if(value){
+				var u = sameSiteUrl(value);
+				if(!u){ showError(t('ppImportErrUrl')); return; }
+				showError('');
+				startBtn.disabled = true;
+				fetch(u.href, {cache: 'no-store', credentials: 'same-origin'}).then(function(res){
+					if(!res.ok) throw new Error('HTTP ' + res.status);
+					return res.text();
+				}).then(function(text){
+					begin({kind: 'url', url: u.href, name: u.href}, text);
+				}, function(){
+					showError(t('ppImportErrFetch'));
+				}).then(function(){ startBtn.disabled = running; paint(); });
+				return;
+			}
+			var file = fileInput.files && fileInput.files[0];
+			if(!file){ showError(t('ppImportErrNone')); return; }
+			var reader = new FileReader();
+			reader.onload = function(){ begin({kind: 'file', text: String(reader.result || ''), name: file.name}, String(reader.result || '')); };
+			reader.onerror = function(){ showError(t('ppImportErrFile')); };
+			reader.readAsText(file);
+		});
+		pauseBtn.addEventListener('click', pause);
+		resumeBtn.addEventListener('click', function(){ if(current){ showError(''); run(); } });
+		copyPlan.addEventListener('click', function(){
+			var links = planLinks(current);
+			if(links.share) copy(new URL(links.share, location.href).href, t('ppImportCopied'));
+		});
+		urlInput.addEventListener('input', function(){ showError(''); });
+
+		// ---- after a reload: the last list is drawn again and, if it was interrupted, goes on
+		var jobs = readJobs(), last = lastKey();
+		if(last && jobs[last] && jobs[last].entries instanceof Array){
+			current = jobs[last];
+			paint();
+			if(!current.complete && !current.paused) // interrupted (a page refresh), not paused by the user
+				run();
+		}
+		else
+			paint();
+
+		window.dsvPlanImport = {job: function(){ return current ? JSON.parse(JSON.stringify(current)) : null; }, run: run, pause: pause}; // for the tests
+	}
+
 	// ---------------------------------------------------------------------- the student's plan page
 	function buildPlan(){
 		var found = PLAN.fromHash(location.hash);
@@ -366,6 +722,7 @@
 			var make = el('a', {'class': 'tp-btn primary', href: 'teacher.html'}, t('teacherLink'));
 			make.style.textDecoration = 'none';
 			root.appendChild(make);
+			buildImport();
 			return;
 		}
 		var plan = found.plan, str = found.str, id = found.id, doneMap = PLAN.done(id), n = plan.items.length;
@@ -423,6 +780,7 @@
 		share.addEventListener('click', function(){ copy(location.href, t('tpCopied')); });
 		actions.appendChild(share);
 		root.appendChild(actions);
+		buildImport();
 	}
 
 	if(kind === 'teacher') buildTeacher();
