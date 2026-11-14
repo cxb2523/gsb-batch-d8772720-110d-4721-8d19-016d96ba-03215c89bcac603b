@@ -1,0 +1,228 @@
+"""
+User input processing and validation.
+
+Handles different types of user input (usernames, URLs, patterns) and
+provides validation, type detection, and URL conversion utilities.
+"""
+
+import re
+
+import streamlit as st
+from fastfingertips.url_utils import extract_path_segment
+from fastfingertips.url_utils import is_valid_url as is_url
+from letterboxdpy.constants.project import DOMAIN
+from letterboxdpy.utils.utils_url import (
+    is_short_url,
+    normalize_sort_by,
+    parse_films_url,
+    parse_list_url,
+    resolve_short_url,
+)
+
+
+class Input:
+    textbox_placeholder = (
+        "Enter a **username**, list **url** or **username/list-title**."
+    )
+
+    def __init__(self):
+        self.data = None
+        self.type = None
+        self.length = None
+        self.is_url = None
+        self.is_username = None
+        self.is_empty = None
+
+    def process_data(self):
+        query_data = st.query_params.to_dict()
+
+        input_data = st.text_input(
+            value=query_data.get("q", ""),
+            label=self.textbox_placeholder,
+        )
+
+        input_type = "query" if "q" in query_data else "input" if input_data else None
+
+        st.query_params.clear()
+
+        self.data = input_data.strip() if input_data else ""
+        self.type = input_type
+        self.length = len(self.data)
+
+        self.is_empty = not self.data
+        clean_input = self.data.strip("/")
+        self.is_username = bool(re.match(r"^[A-Za-z0-9_]+$", clean_input))
+        self.is_url = bool(not self.is_username and is_url(self.data))
+
+    @staticmethod
+    def convert_to_url(data):  # noqa: C901
+        """
+        normal:
+            fastfingertips/list_name                              -> fastfingertips/list_name
+            fastfingertips/list/list_name                         -> fastfingertips/list_name
+            fastfingertips/list/list_name/detail                  -> fastfingertips/list_name
+
+        specific names('list' or 'detail'):
+            # if a list's name is 'list'?
+            `fastfingertips/list`                                 -> fastfingertips/list
+            `fastfingertips/list/list`                            -> fastfingertips/list
+            `fastfingertips/list/list/detail`                     -> fastfingertips/list
+
+            # if a list's name is 'detail'?
+            `fastfingertips/detail`                               -> fastfingertips/detail
+            `fastfingertips/detail/detail`                        -> fastfingertips/detail
+            `fastfingertips/list/detail`                          -> fastfingertips/detail
+            `fastfingertips/list/detail/detail`                   -> fastfingertips/detail
+
+        filters:
+            `fastfingertips/list_name/decade/1990s/genre/crime+-comedy/by/popular`
+            `fastfingertips/list/list_name/decade/1990s/genre/crime+-comedy/by/popular`
+            `fastfingertips/list/list_name/detail/decade/1990s/genre/crime+-comedy/by/popular`
+
+        extras:
+            checks the / sign at the end and beginning of the data.
+        """
+
+        def clean_slashes(data):
+            """Remove leading and trailing slashes"""
+            data = data.strip("/")
+            if len(data) <= 2:
+                st.error("Data is too short.")
+                return None
+            return data
+
+        def parse_data_blocks(data):
+            """Split data and extract username"""
+            if "/" not in data:
+                return None, None
+
+            data_blocks = data.split("/")
+            username = data_blocks[0]
+            remaining_blocks = data_blocks[1:]
+            return username, remaining_blocks
+
+        def extract_list_slug(data_blocks):
+            """Extract list slug from data blocks with complex logic"""
+            if len(data_blocks) == 1:
+                return data_blocks[0], []
+
+            def handle_list_keyword():
+                """Handle when first block is 'list'"""
+                list_slug = data_blocks[1]
+                remaining = data_blocks[2:]
+                if remaining and remaining[0] == "detail":
+                    remaining = remaining[1:]
+                return list_slug, remaining
+
+            def handle_detail_keyword():
+                """Handle when first block is 'detail'"""
+                if data_blocks[1] == "detail":
+                    return data_blocks[0], data_blocks[2:]
+                else:
+                    return data_blocks[0], data_blocks[1:]
+
+            if data_blocks[0] == "list":
+                return handle_list_keyword()
+            elif data_blocks[0] == "detail":
+                return handle_detail_keyword()
+            else:
+                return data_blocks[0], data_blocks[1:]
+
+        if "/" in data:
+            # Clean and parse input data
+            cleaned_data = clean_slashes(data)
+            if not cleaned_data:
+                return None
+
+            username, data_blocks = parse_data_blocks(cleaned_data)
+            if not username or not data_blocks:
+                return None
+
+            if data_blocks[0] in ("watchlist", "films"):
+                section = data_blocks[0]
+                suffix = "/".join(data_blocks[1:]) + "/" if len(data_blocks) > 1 else ""
+                return f"{DOMAIN}/{username}/{section}/{suffix}"
+
+            # Extract list slug using nested function
+            list_slug, remaining_blocks = extract_list_slug(data_blocks)
+
+            try:
+                if all([username, list_slug]):
+                    filters = ""
+                    if remaining_blocks:
+                        filters = "/".join(remaining_blocks) + "/"
+                    return f"{DOMAIN}/{username}/list/{list_slug}/" + filters
+                else:
+                    st.error("Username or list title is empty.")
+            except Exception as e:
+                st.error(e)
+        else:
+            # Username mode
+            clean = data.strip("/")
+            if re.match(r"^[A-Za-z0-9_]+$", clean):
+                return f"{DOMAIN}/{clean}/"
+
+        return None
+
+    @staticmethod
+    def parse_letterboxd_url(url: str) -> dict:
+        """Parse Letterboxd URL and extract components"""
+        if is_short_url(url):
+            url = resolve_short_url(url)
+        url = url.split("?", 1)[0].split("#", 1)[0]
+        url = re.sub(r"/page/\d+/?", "/", url)
+        url = url.rstrip("/") + "/"
+
+        sort_match = re.search(r"/by/([^/?#]+)/?", url)
+        sort_by = normalize_sort_by(sort_match.group(1)) if sort_match else None
+        clean_url = re.sub(r"/by/[^/?#]+/?", "/", url)
+
+        if "/watchlist" in clean_url:
+            match = re.search(r"letterboxd\.com/([^/]+)/watchlist(?:/(.*))?", clean_url)
+            if match:
+                username = match.group(1)
+                filters = (match.group(2) or "").strip("/")
+                return {
+                    "username": username,
+                    "slug": "watchlist",
+                    "filters": filters,
+                    "sort_by": sort_by,
+                    "type": "watchlist",
+                    "url": url,
+                }
+            raise ValueError(f"Invalid watchlist URL format: {url}")
+        elif "/films" in clean_url and "/list/" not in clean_url:
+            username, filters = parse_films_url(clean_url)
+            return {
+                "username": username,
+                "slug": "films",
+                "filters": filters or "",
+                "sort_by": sort_by,
+                "type": "user_films",
+                "url": url,
+            }
+        elif "/list/" in clean_url:
+            match = re.search(
+                r"letterboxd\.com/([^/]+)/list/([^/]+)(?:/(.*))?", clean_url
+            )
+            if match:
+                username, slug = match.group(1), match.group(2)
+                raw_filters = match.group(3) or ""
+                raw_filters = re.sub(r"^detail/?", "", raw_filters.strip("/"))
+                filters = raw_filters.strip("/")
+            else:
+                username, slug = parse_list_url(clean_url)
+                filters = ""
+            return {
+                "username": username,
+                "slug": slug,
+                "filters": filters,
+                "sort_by": sort_by,
+                "type": "user_list",
+                "url": url,
+            }
+        elif "letterboxd.com/" in url and "/film/" not in url:
+            username = extract_path_segment(url, after="letterboxd.com/", before="/")
+            if username:
+                return {"username": username, "type": "user", "url": url}
+        raise ValueError(f"Unsupported URL type: {url}")
