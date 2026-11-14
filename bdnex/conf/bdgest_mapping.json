@@ -1,0 +1,23 @@
+{
+    "Couleurs": "Colorist",
+    "Couverture": "CoverArtist",
+    "Dessin": "Penciller",
+    "Editeur": "Publisher",
+    "Format": "Format",
+    "Language": "LanguageISO",
+    "Lettrage": "Letterer",
+    "Scénario": "Writer",
+    "Titre": "Title",
+    "Tome": "Volume",
+    "AlternateNumber": "AlternateNumber",
+    "author": "Writer",
+    "description": "Summary",
+    "Style": "Genre",
+    "illustrator": "Inker",
+    "Planches": "PageCount",
+    "publisher": "Publisher",
+    "score": "Notes",
+    "Série": "Series",
+    "album_url": "Web",
+    "Note": "CommunityRating"
+}
