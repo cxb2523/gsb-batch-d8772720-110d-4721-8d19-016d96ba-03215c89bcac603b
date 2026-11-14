@@ -1,0 +1,54 @@
+name: keepalive
+
+# 唯一的用途：保证仓库 60 天内至少有一次提交。
+#
+# 为什么需要：仓库连续 60 天没有任何提交，GitHub 会把所有定时任务（schedule）
+# 静默禁用——不报错、不提示，而且被禁用之后它自己不会再跑，没法自救。
+#
+# 为什么不频繁：正常情况下 daily.yml 每次推送新内容时都会提交索引，仓库不缺活动；
+# 这里只是"那边万一停了"的保险。所以一个月才检查一次，
+# 而且只有"距上次提交超过 20 天"才真的提交一次（一个月最多 1 次提交）。
+# 20 天这个阈值是留了余量的：两次检查最多隔 31 天，最坏情况也不会到 60 天。
+on:
+  schedule:
+    # 分针刻意写 7：GitHub 的调度器在整点最挤（月度任务被拖点也无所谓，
+    # 但跟项目里"一律避开整点"的约定保持一致）。
+    - cron: '7 4 1 * *'     # 每月 1 号，UTC 04:07 = 北京时间 12:07
+  workflow_dispatch:        # 想手动确认一下也行
+
+permissions:
+  contents: write           # 提交需要它
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  touch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5      # v4 声明的是 Node 20，已弃用，见 daily.yml 里的注释
+
+      # checkout 默认只取 1 个提交，而它就是 main 上最新的那个，
+      # 所以这里直接看 HEAD 的提交时间就够了。
+      - name: 看看到上次提交过了多久
+        id: age
+        run: |
+          LAST=$(git log -1 --format=%ct)
+          DAYS=$(( ($(date +%s) - LAST) / 86400 ))
+          echo "最后一次提交：$(git log -1 --format='%cI  %s')"
+          echo "距今 $DAYS 天"
+          echo "days=$DAYS" >> "$GITHUB_OUTPUT"
+
+      - name: 太久没动了才提交一次
+        if: steps.age.outputs.days >= 20
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "保活提交 · $(date -u +'%Y-%m-%d %H:%M UTC')" > state/keepalive.txt
+          git add state/keepalive.txt
+          git commit -m "chore: 保活提交（防 60 天无活动自动禁用定时任务）[skip ci]"
+          git push

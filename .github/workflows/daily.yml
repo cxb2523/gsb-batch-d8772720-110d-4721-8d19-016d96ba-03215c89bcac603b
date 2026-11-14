@@ -1,0 +1,106 @@
+name: gk-daily-push
+
+# 每天跑一次：北京时间 **02:30** 叫醒工作流，之后再随机等 0~15 分钟就开抓、开推。
+# 推送一条「📰 每日时政（前一天要闻）」。
+# 内容超长会自动**拆成多条**发（见 main.build_messages）。
+#
+# ═══════════════════════════════════════════════════════════════════════
+# ⚠️ 关于送达时刻 —— 改之前先读这段（2026-10-03 的明确取舍）
+# ═══════════════════════════════════════════════════════════════════════
+# 本仓库实测过：GitHub 的 schedule 是**系统性晚点**，不是差几分钟：
+#   · cron UTC 18:07（北京 02:07）实测晚 2.8 ~ 5.0 小时
+#   · cron UTC 06:07（北京 14:07）实测晚 5.2 ~ 7.6 小时
+# 而且每次 run 的 created_at == run_started_at —— 说明晚点**全部发生在
+# GitHub 的 cron 调度层**（慢慢派活），不是 runner 排队不够用。
+#
+# 所以这套参数的含义是：**cron 是"叫醒工作流"的时刻，不是送达时刻。**
+# cron 定在北京 02:30，实际收到大概率落在 **05:20 ~ 10:05** 之间，每天不定。
+# 这是明确接受的取舍 —— 要的是"每天稳定跑一次、大致在清晨到上午到"，
+# 而不是"固定在某一分钟收到"。
+#
+# 如果以后想改成"稳定落在某个时刻"，做法是：把 cron 提前到目标时刻之前
+# （提前量必须**大于最大晚点 ~7.6 小时**），然后在 job 里等到目标时刻再动手。
+# 注意单个 job 最多只能活 6 小时，所以提前量超过 ~5.5 小时就必须拆成
+# 两个 job 接力等。完整方法见技能 gh-actions-schedule-diagnosis。
+on:
+  schedule:
+    - cron: '30 18 * * *'     # UTC 18:30 = 北京 02:30（次日凌晨）
+  workflow_dispatch:          # 支持手动触发，方便测试
+    inputs:
+      test_push:
+        description: '只发一条测试消息，验证企业微信通道（不抓取、不动索引）'
+        type: boolean
+        default: false
+      dry_run:
+        description: '只抓取并打印，不真的推送'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write             # 需要它才能把去重索引提交回仓库
+
+concurrency:
+  # 一天只跑一次，所以按 workflow 一把梭就行：定时和手动不会并发打架。
+  # （以前是按 cron 分早晚两组，那是为了不让"正在睡 10 小时"的 run 堵住下一次。）
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-22.04
+    # 随机延迟最长 15 分钟 + 脚本耗时（所有源都超时的话最坏约 50 分钟）。
+    # 给 60 分钟绰绰有余，也不会白占着 runner。
+    timeout-minutes: 60
+
+    steps:
+      # ⚠️ 版本别往回调：v4 / v5 声明的是 Node 20 运行时，
+      #    而 GitHub 已经弃用 Node 20（日志顶部会挂一条 ##[warning]
+      #    "Node.js 20 is deprecated"，看着像报错，其实只是提醒）。
+      #    checkout v5 / setup-python v6 起改用 Node 24。
+      #    （没有直接上最新的 v7：v6 起 checkout 改了凭据持久化的实现，
+      #      而本工作流依赖 persist-credentials 把 state/ 推回仓库，先稳一版。）
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      # 纯标准库实现，不需要 pip install，省时间也少一个失败点。
+      # 定时触发才抖这个随机（手动触发不加，方便复现和测试）。
+      - name: 随机等 0~15 分钟
+        if: github.event_name == 'schedule'
+        run: |
+          j=$((RANDOM % 901))          # 0 ~ 900 秒，即 0~15 分钟
+          echo "本 job 开始于 UTC $(date -u '+%F %T')（北京 $(date -u -d '+8 hours' '+%F %T')）"
+          echo "随机延迟 $((j / 60)) 分 $((j % 60)) 秒后再开抓"
+          sleep "$j"
+
+      - name: Run push script
+        env:
+          WEWORK_WEBHOOK: ${{ secrets.WEWORK_WEBHOOK }}
+          WEWORK_MSG_TYPE: ${{ vars.WEWORK_MSG_TYPE }}
+          TEST_PUSH: ${{ inputs.test_push && '1' || '0' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          # 「每日时政」看哪一天：凌晨那次看**前一天**。
+          # ⚠️ 别改成靠"现在几点"去猜 —— 排队晚点可能跨过中午 12 点，
+          #    靠猜会把这次误切成"今天"，内容就错了。手动触发给 'auto'（按当前时间判断）。
+          NEWS_DAY: ${{ github.event_name == 'schedule' && 'yesterday' || 'auto' }}
+        run: python main.py
+
+      # 把索引和考试日历提交回仓库，记住推过什么、下次只推新的。
+      # 只有内容真的变了才提交（state.py 里内容没变就不写盘），
+      # 所以安静的日子不会平白多出提交。仓库保活另交给 keepalive.yml。
+      - name: Commit state
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "索引无变化，跳过提交"
+          else
+            git commit -m "chore: 更新已推送索引 [skip ci]"
+            git push || echo "提交失败（可能是分支保护），不影响任务本身"
+          fi

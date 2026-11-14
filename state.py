@@ -1,0 +1,70 @@
+# -*- coding: utf-8 -*-
+"""去重索引：把推送过的链接存下来，实现"只推新内容"。
+
+索引文件会由 GitHub Actions 自动提交回仓库，所以每一轮都有记录。
+"""
+
+import json
+import logging
+import os
+import time
+
+import config
+
+
+def load_state(path=None):
+    path = path or config.STATE_FILE
+    if not os.path.exists(path):
+        return {"last_run": "", "seen": []}
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        if not isinstance(data, dict):
+            raise ValueError("状态文件格式不对")
+        data.setdefault("last_run", "")
+        data.setdefault("seen", [])
+        return data
+    except Exception as exc:
+        logging.warning("状态文件读取失败，按空索引处理：%s", exc)
+        return {"last_run": "", "seen": []}
+
+
+def _fingerprint(data):
+    """去掉 last_run 之后的指纹，用来判断"内容到底变没变"。"""
+    return json.dumps({k: v for k, v in data.items() if k != "last_run"},
+                      ensure_ascii=False, sort_keys=True)
+
+
+def save_state(state, path=None):
+    path = path or config.STATE_FILE
+    # 控制索引长度，先进先出，避免文件无限膨胀
+    seen = state.get("seen", [])
+    if len(seen) > config.STATE_MAX:
+        seen = seen[-config.STATE_MAX:]
+    state["seen"] = seen
+
+    # 内容和上次一模一样时就不写盘（last_run 也一并留在上次的值）。
+    # 不写盘 → 工作区没变化 → 工作流那步就不用提交，
+    # 免得仓库一天平白多出两条没意义的提交（保活交给 keepalive.yml）。
+    # ⚠️ 所以 last_run 的语义是「最后一次**内容有变化**的运行时刻」，
+    #    不是「最后一次运行时刻」—— 连着几天没有新内容时它会停在原地，看日志别误会。
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                old = json.load(fp)
+            if isinstance(old, dict) and _fingerprint(old) == _fingerprint(state):
+                logging.info("索引内容没变化，跳过写盘（last_run 保持 %s）",
+                             old.get("last_run") or "-")
+                return
+        except Exception:
+            pass
+
+    # 明确按**北京时间**记（服务器跑在 UTC，直接用 time.strftime 会差 8 小时，
+    # 跟消息里的时间对不上，看日志时容易误会）
+    state["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() + 8 * 3600))
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # newline="\n"：防 Windows 本地跑出 CRLF 假 diff
+    with open(path, "w", encoding="utf-8", newline="\n") as fp:
+        json.dump(state, fp, ensure_ascii=False, indent=1)
+    logging.info("索引已保存，累计 %d 条", len(seen))
