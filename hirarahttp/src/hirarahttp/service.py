@@ -60,6 +60,7 @@ class SiteMapRequest(BaseModel):
     max_depth: int = 3
     respect_robots: bool = True
     keep_query: bool = False
+    resume: list[dict] | None = None
 
 
 class WebWatchRequest(BaseModel):

@@ -652,7 +652,12 @@ SITE_MAP_SCHEMA = {
         "Crawl one site breadth-first from a URL and map it: every page's "
         "status, title, depth and size, as a list and an indented outline. "
         "Stays on the start host, skips assets, honours robots.txt, and stops "
-        "at max_pages / max_depth. Every fetch goes through the SSRF guard."
+        "at max_pages / max_depth. Every fetch goes through the SSRF guard. "
+        "pages_outcome gives the fate of every candidate URL exactly once "
+        "(fetched / budget / depth / robots, with status, error and the page "
+        "it was first found on). Pass resume= with a previous pages_outcome to "
+        "continue: budget/depth entries are retried, fetched/robots entries "
+        "are skipped, and no known URL is fetched twice."
     ),
     "input_schema": {
         "type": "object",
@@ -665,6 +670,16 @@ SITE_MAP_SCHEMA = {
             "respect_robots": {"type": "boolean", "description": "Default true."},
             "keep_query": {"type": "boolean",
                            "description": "Treat ?query variants as separate pages."},
+            "resume": {
+                "type": "array",
+                "description": (
+                    "The pages_outcome list from a previous site_map call. "
+                    "budget/depth entries become this run's starting points; "
+                    "fetched/robots entries are skipped. Invalid URLs or "
+                    "unknown outcomes fail the call before any request fires."
+                ),
+                "items": {"type": "object"},
+            },
         },
         "required": ["url"],
         "additionalProperties": False,
@@ -832,16 +847,20 @@ class Toolset:
 
     @tool_permission('site_map')
     async def site_map(self, *, url: str, max_pages: int = 50, max_depth: int = 3,
-                       respect_robots: bool = True, keep_query: bool = False) -> dict:
+                       respect_robots: bool = True, keep_query: bool = False,
+                       resume: list[dict] | None = None) -> dict:
         try:
             return await run_site_map(
                 url, config=self.config, max_pages=min(max_pages, self.config.crawl_max_pages),
-                max_depth=max_depth, respect_robots=respect_robots, keep_query=keep_query)
+                max_depth=max_depth, respect_robots=respect_robots, keep_query=keep_query,
+                resume=resume)
         except CrawlError as exc:
-            return {"url": url, "pages": [], "count": 0, "error": str(exc)}
+            return {"url": url, "pages": [], "count": 0, "pages_outcome": [],
+                    "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
             log.exception("site_map failed")
-            return {"url": url, "pages": [], "count": 0, "error": f"site_map failed: {exc}"}
+            return {"url": url, "pages": [], "count": 0, "pages_outcome": [],
+                    "error": f"site_map failed: {exc}"}
 
     @tool_permission('web_watch')
     async def web_watch(self, *, action: str = "check", url: str | None = None,

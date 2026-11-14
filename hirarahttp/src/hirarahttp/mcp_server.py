@@ -411,9 +411,11 @@ async def link_check_tool(url: str, scope: str = "page", max_pages: int = 20,
 @server.tool(name="site_map", description=T.SITE_MAP_SCHEMA["description"])
 @mcp_errors
 async def site_map_tool(url: str, max_pages: int = 50, max_depth: int = 3,
-                        respect_robots: bool = True, keep_query: bool = False) -> dict:
+                        respect_robots: bool = True, keep_query: bool = False,
+                        resume: list[dict] | None = None) -> dict:
     return await _toolset.site_map(url=url, max_pages=max_pages, max_depth=max_depth,
-                                   respect_robots=respect_robots, keep_query=keep_query)
+                                   respect_robots=respect_robots, keep_query=keep_query,
+                                   resume=resume)
 
 
 @server.tool(name="web_watch", description=T.WEB_WATCH_SCHEMA["description"])

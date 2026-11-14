@@ -25,7 +25,7 @@ redirect hop) goes through [`hirara-core`](../hirara-core/) resolve-then-pin.
 | **`parameter_test`** | ✅ shipped | Vary one parameter across values |
 | **`response_compare`** | ✅ shipped | Diff two responses (history or inline) |
 | **`link_check`** | ✅ shipped | Broken links on a page or across a site |
-| **`site_map`** | ✅ shipped | Same-site crawl: status, title, depth (honours robots.txt) |
+| **`site_map`** | ✅ shipped | Same-site crawl: per-page outcomes (fetched/budget/depth/robots), honours robots.txt, resumable |
 | **`web_watch`** | ✅ shipped | Remember a page and diff it on the next check |
 | **`secret_list`** | ✅ shipped | Named, host-scoped credentials for `http_request(secret=…)`; values never shown |
 
@@ -132,6 +132,29 @@ Docker (loopback):
 ```bash
 docker compose up -d --build
 ```
+
+### Crawl outcomes and resuming `site_map`
+
+Every candidate URL the crawler discovers gets exactly one entry in
+`pages_outcome`, sorted by `depth` then `url`. Each element records `url`,
+`depth`, `outcome`, `status`, `error` and `found_on` (the page on which the
+URL was first discovered, or `null` for the start URL). The four fates are:
+
+| `outcome` | Meaning |
+|---|---|
+| `fetched` | The page was requested; `status` holds the HTTP code, `error` a transport failure (status stays `null`). |
+| `budget` | Reached the `max_pages` cap before this queued URL could be fetched. |
+| `depth` | Discovered one level past `max_depth`, so its links were never expanded. |
+| `robots` | `robots.txt` disallows it; no request is ever sent. |
+
+A run cut short by the page budget can be continued: pass the previous
+result's `pages_outcome` back as `resume`. `budget`/`depth` entries become the
+new run's starting points, while `fetched`/`robots` entries are skipped and no
+known URL is fetched twice. The resumed run still obeys its own `max_pages`,
+`max_depth` and `respect_robots` (a seed that is now robots-blocked or past
+the new depth limit is reclassified accordingly). An invalid URL or unknown
+outcome in `resume` fails the call with an error before any request is made.
+`link_check` does not take `resume` and is otherwise unchanged.
 
 ---
 
