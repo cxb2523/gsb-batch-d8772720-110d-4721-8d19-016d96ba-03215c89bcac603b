@@ -15,7 +15,7 @@ import config
 def load_state(path=None):
     path = path or config.STATE_FILE
     if not os.path.exists(path):
-        return {"last_run": "", "seen": []}
+        return {"last_run": "", "seen": [], "source_health": {}}
     try:
         with open(path, "r", encoding="utf-8") as fp:
             data = json.load(fp)
@@ -23,10 +23,12 @@ def load_state(path=None):
             raise ValueError("状态文件格式不对")
         data.setdefault("last_run", "")
         data.setdefault("seen", [])
+        # 源健康度账本（见 health.py）；老的 state 文件里没这个键，补上空账本
+        data.setdefault("source_health", {})
         return data
     except Exception as exc:
         logging.warning("状态文件读取失败，按空索引处理：%s", exc)
-        return {"last_run": "", "seen": []}
+        return {"last_run": "", "seen": [], "source_health": {}}
 
 
 def _fingerprint(data):

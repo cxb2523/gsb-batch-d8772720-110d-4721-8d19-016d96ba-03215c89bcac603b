@@ -16,6 +16,7 @@ import traceback
 import config
 import topics
 from fetcher import fetch_all, url_date
+from health import failure_notice, update_health
 from log_utils import setup_logging, tail_logs
 from push import safe_push
 from state import load_state, save_state
@@ -224,25 +225,8 @@ def build_messages(items, notice=""):
 
 
 def _failure_notice(health, threshold=2):
-    """把"连续失败"的源拼成一行提示；没有就返回空串。
-
-    阈值取 2 是有意的：偶尔一次的 403 / 超时很常见（对方站点抖一下），不值得惊动；
-    **连着两天以上**才说明这个源是真的坏了，得让人知道。
-    """
-    broken = []
-    for name, rec in (health or {}).items():
-        try:
-            n = int(rec.get("count", 0))
-        except (TypeError, ValueError):
-            n = 0
-        if n >= threshold:
-            broken.append((n, name))
-    if not broken:
-        return ""
-    broken.sort(key=lambda x: (-x[0], x[1]))
-    shown = "、".join("%s 连续 %d 天" % (name, n) for n, name in broken[:4])
-    more = "" if len(broken) <= 4 else " 等共 %d 个源" % len(broken)
-    return "⚠️ 抓取异常：%s%s" % (shown, more)
+    """兼容旧调用名：实现已挪到 health.failure_notice，方便离线测试。"""
+    return failure_notice(health, threshold=threshold)
 
 
 def _tag_prefix(topic):
@@ -296,22 +280,22 @@ def main():
         # 以前源失败只在日志里留一行，于是"山西两个源全挂、中公一直 403"这种
         # 持续好几天的故障，谁都没发现（日志是没人天天翻的）。
         # 现在把"连续失败"记进 state，连续 2 天以上就写进推送消息里。
+        # 账本的累加/清零/同日去重规则全在 health.update_health 里，可离线单测。
+        # 注意：抓到了条目但被日期/关键词过滤成空的源不算失败 —— fetcher 不会把
+        # 它放进 failures，所以这里天然只统计"抓取/解析失败"。
         today_str = bj_today().isoformat()
         health = state.setdefault("source_health", {})
-        for name in list(health):
-            if name not in failures:
-                del health[name]                  # 恢复了就清零
-        for name, reason in failures.items():
-            rec = health.setdefault(name, {})
-            if rec.get("last") != today_str:      # 同一天跑两次只算一天
-                rec["count"] = int(rec.get("count", 0)) + 1
-            rec["reason"] = reason
-            rec["last"] = today_str
-        notice = _failure_notice(health)
+        update_health(health, failures, today_str)
+        notice = failure_notice(health)
         if notice:
             logging.warning("源健康度：%s", notice)
 
         if not all_items:
+            # 先把账本落盘再报错：否则下面 raise 之后 save_state 永远轮不到，
+            # "所有源连续挂了几天"的连续天数每次都从 0 开始，告警永远攒不出来。
+            # 内容没变（比如所有源昨天、今天一样地全挂、seen 也没动）时 save_state
+            # 自己会跳过写盘，不会平白产生提交。
+            save_state(state)
             raise RuntimeError(
                 "所有源都没抓到内容，可能是网络被拦或站点改版，请检查源配置。"
             )
