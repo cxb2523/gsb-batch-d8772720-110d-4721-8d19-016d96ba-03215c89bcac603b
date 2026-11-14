@@ -27,6 +27,7 @@ https://mcp.hasdata.com/mcp?apis=redfin
 - [Quick start](#quick-start)
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
+- [Batch collection](#batch-collection)
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
@@ -341,6 +342,49 @@ The server exposes 30 resources, one per parameter whose accepted values are a f
 
 The list is served without an API key, so a client can read it before a user has signed up.
 
+## Batch collection
+
+`lib/collect.mjs` walks a listing search page by page on top of the same MCP tool call the server exposes, and returns a result you can persist and resume. It is a module, not a CLI, so it slots into an existing MCP client chain.
+
+```js
+import { collectListingsFromApi } from '@hasdata/redfin-mcp/collect';
+
+const result = await collectListingsFromApi({
+  apiKey: process.env.HASDATA_API_KEY,
+  keyword: '78741',
+  type: 'forSale',
+  maxPages: 5,
+});
+
+// result.pages    — one record per page: page, outcome, itemCount, kept, dropped, nextPage
+// result.listings — merged listings, price-less rows dropped
+// result.dropped  — how many rows were dropped for having no price
+// result.done     — false when the run stopped early and can be resumed
+
+const resumed = await collectListingsFromApi({
+  apiKey: process.env.HASDATA_API_KEY,
+  keyword: result.keyword,
+  type: result.type,
+  previous: result, // starts at the first page that did not succeed
+});
+```
+
+What it guarantees:
+
+- **Paging follows the response.** The next page comes from `pagination.nextPage`, and a page's own number from `pagination.currentPage`. A short page is not treated as the last one, so a market of 95 rows takes three calls, not two and a half.
+- **Shape is explicit.** A response carrying a `properties` array is a market page. Anything else is a single-property answer (a full street address or a building name) and ends the run with `singleHit: true`. It is never recorded as an empty page.
+- **Every page has an outcome** in `pages[]`: `success`, `empty`, `rate_limited` or `error`. A `rate_limited` or `error` page stops the walk, and everything collected before it stays in the result.
+- **429s and `concurrency_limit` are retried** with an increasing delay (1s, 2s, 4s by default; tune with `retry: { retries, baseDelayMs, factor }`). When the retries run out the page is marked `rate_limited`, `done` is `false` and `nextPage` is the page to resume at.
+- **Resuming skips successful pages.** Pass the previous result as `previous`; the first page that did not succeed is requested again, and pages already collected are not re-requested or re-charged. The result is JSON-serialisable, so store it anywhere.
+- **`forRent` ranges survive untouched.** `price`, `beds`, `baths` and `area` stay `{ min, max }` objects. Nothing is averaged.
+- **A listing without a price is dropped and counted** in `dropped` (and per page in `pages[].dropped`). A rental range counts as priced when either bound is a number.
+
+Pass the extra listing filters (`beds_min_`, `price_max_` and the rest) under `filters`, and they are forwarded unchanged on every call. `maxPages` limits this run only, so a resumed run can be given a fresh budget.
+
+If you already own the MCP client, pass its `callTool` with the same `(name, args) => Promise<jsonRpcMessage>` signature to `collectListings` directly; the collector parses both `content` text blocks and `structuredContent`. A 429, or a `concurrency_limit` marker in either the HTTP error or the returned payload, goes down the retry path.
+
+The tests in `test/collect.test.mjs` drive the collector with hand-built JSON-RPC responses and touch no network, so they spend no credits.
+
 ## Errors and failure paths
 
 Plan for these rather than assuming a happy path.
@@ -421,6 +465,8 @@ Because Redfin resolves a full street address to that property's page rather tha
 
 By paging, at a call per page. A city reports its full count in `totalResults` and hands you forty listings at a time, so a large market is hundreds of calls rather than a single sweep. Cutting the market by zipcode, price band or home type gives the same coverage in fewer, narrower queries, which is usually the better trade.
 
+For a resumable sweep, `lib/collect.mjs` walks a market for you and records what each page did, so a run that hits a rate limit can be resumed without re-paying for pages already collected. See [Batch collection](#batch-collection).
+
 ### Can I filter sold listings by date?
 
 Not reliably right now. `type: sold` works and returns Redfin's default three-month window, but `soldWithinOption` is not being translated into a filter Redfin accepts, and passing it returns active listings labelled `SOLD`. Leave it off until that is fixed.
@@ -461,6 +507,8 @@ HASDATA_API_KEY=your_key_here npm test
 ```
 
 The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=redfin` returns the expected tool count, that no name changed, that every tool still declares its required parameters and carries a description, that the filter enums this README documents are still the ones the schema offers, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason.
+
+`test/collect.test.mjs` covers the batch collector offline, with hand-built JSON-RPC responses instead of a live endpoint: multi-page market walks, a single address hit, `forRent` ranges, rate limits, price-less rows and resuming. Those checks need no key and spend no credits.
 
 The contract suite also runs weekly on a schedule, because the upstream tool list can change without anyone touching this repository.
 

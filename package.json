@@ -9,9 +9,15 @@
   },
   "files": [
     "index.mjs",
+    "lib/",
     "README.md",
     "LICENSE"
   ],
+  "exports": {
+    "./collect": "./lib/collect.mjs",
+    "./mcp-rpc": "./lib/mcp-rpc.mjs",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "test": "node --test"
   },
