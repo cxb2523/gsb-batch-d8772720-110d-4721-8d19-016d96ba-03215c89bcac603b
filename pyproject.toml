@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pinchtab-webgraph"
+version = "0.1.0"
+description = "Deterministic (no-LLM) crawler that maps ANY website into a nav+content graph via the PinchTab browser CLI, then answers how-to and where-is queries offline."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Edouard Gouilliard" }]
+keywords = ["browser-automation", "web-crawler", "site-map", "accessibility", "how-to", "pinchtab", "navigation-graph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
+dependencies = []  # pure stdlib — only needs the external `pinchtab` CLI at runtime
+
+# Optional: automated keyring-backed login for authenticated apps. The base
+# install stays pure-stdlib; only add this if you use `--login-config`.
+[project.optional-dependencies]
+login = ["keyring>=24"]
+mcp = ["mcp[cli]>=1.28,<2"]
+# keep the keyring pin in sync with optional-dependencies.login. The self-
+# referencing `pinchtab-webgraph[mcp]` keeps the mcp pin in ONE place (the `mcp`
+# extra) — the Phase-3 chat agent drives the MCP server as its tool backend.
+# `websockets` powers the Phase-4 live browser pane (screencast.py imports it
+# directly to open the CDP DevTools socket).
+ui = ["fastapi>=0.110,<1", "uvicorn[standard]>=0.29,<1", "keyring>=24", "anthropic>=0.80,<1", "websockets>=13,<16", "pinchtab-webgraph[mcp]"]
+# Phase-6 alternative chat backend: drive the user's locally-logged-in Claude Code via
+# the Claude Agent SDK (no ANTHROPIC_API_KEY). Kept as a SEPARATE extra so the ~75MB
+# SDK is NOT forced on a plain [ui] install. Self-references [mcp] because the spawned
+# `claude` subprocess runs `python -m pinchtab_webgraph.mcp_server` as its tool backend.
+ui-claude-code = ["claude-agent-sdk>=0.2,<1", "pinchtab-webgraph[mcp]"]
+test = ["pytest>=7", "httpx>=0.27"]
+utcp = ["utcp>=1.1,<2"]
+
+[project.urls]
+Homepage = "https://github.com/egouilliard/pinchtab-webgraph"
+Repository = "https://github.com/egouilliard/pinchtab-webgraph"
+Issues = "https://github.com/egouilliard/pinchtab-webgraph/issues"
+
+[project.scripts]
+pinchtab-webgraph = "pinchtab_webgraph.cli:main"
+pwg = "pinchtab_webgraph.cli:main"
+pinchtab-webgraph-mcp = "pinchtab_webgraph.mcp_server:main"
+pinchtab-webgraph-ui = "pinchtab_webgraph.ui.server:main"
+
+[tool.setuptools]
+packages = ["pinchtab_webgraph", "pinchtab_webgraph.ui"]
+
+[tool.setuptools.package-data]
+"pinchtab_webgraph" = ["vendor/*.min.js"]
+"pinchtab_webgraph.ui" = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
