@@ -147,20 +147,35 @@ class HKUSpider(BaseSpider):
             while True:
                 # 获取当前页面的所有项目链接
                 before_count = len(self.temp_links)
-                self._extract_programs_from_current_page()
+                try:
+                    self._extract_programs_from_current_page()
+                except Exception as e:
+                    # 登记该页结局为异常中断后停止翻页，已收集的项目保留在 temp_links 中
+                    self.register_page_error(page_num, e)
+                    break
                 after_count = len(self.temp_links)
-                
-                print(f"   📄 第 {page_num} 页: 发现 {after_count - before_count} 个项目 (累计: {after_count})")
-                
+                new_items = after_count - before_count
+
+                # 登记该页结局
+                if new_items == 0 and not self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="programme-details"]'):
+                    self.register_page_no_data(page_num)
+                else:
+                    self.register_page_success(page_num, new_items)
+
+                print(f"   📄 第 {page_num} 页: 发现 {new_items} 个项目 (累计: {after_count})")
+
                 # 尝试点击下一页
                 if not self._go_to_next_page():
                     break
                 page_num += 1
-            
+
             print_phase_complete("Phase 1", len(self.temp_links))
-            
+
         except Exception as e:
             print(f"❌ 获取项目列表失败: {e}")
+            # 列表页加载阶段即失败（如首页超时），登记第 1 页为异常中断
+            if not self.page_outcomes:
+                self.register_page_error(1, e)
     
     def _extract_programs_from_current_page(self) -> None:
         """
@@ -276,9 +291,10 @@ class HKUSpider(BaseSpider):
                 
                 # 抓取申请链接（优化后的流程）
                 result["项目申请链接"] = self._extract_apply_link(driver)
-                
-            except Exception:
-                pass
+
+            except Exception as e:
+                # 单条详情失败只登记该条，保留模板字段，其余条目继续
+                self.register_detail_failure(item, e)
         
         duration = time.time() - item_start
         return result, duration

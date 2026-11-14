@@ -16,7 +16,9 @@
 
 import sys
 import argparse
+import json
 import os
+from datetime import datetime
 
 # 强制设置输出编码为 UTF-8，解决 Windows 下的 UnicodeEncodeError
 if sys.platform.startswith('win'):
@@ -80,6 +82,116 @@ from utils.data_saver import save_excel, preview_data
 
 # 导入配置
 from config import UNIVERSITY_INFO
+import config
+
+
+# ==============================================================================
+# 🟢【采集状态持久化】
+# 每轮采集后保存分页结局与已采集数据，供「只重跑异常页」使用
+# ==============================================================================
+
+def get_state_path(university_key: str) -> str:
+    """获取指定大学的采集状态文件路径（运行时读取 OUTPUT_DIR，便于测试重定向）"""
+    return os.path.join(config.OUTPUT_DIR, f".spider_state_{university_key}.json")
+
+
+def save_spider_state(university_key: str, spider: BaseSpider, results: List[Dict]) -> Optional[str]:
+    """
+    保存本轮采集状态（分页结局、失败页码、已采集数据），供后续重跑异常页
+
+    参数:
+        university_key (str): 大学标识
+        spider (BaseSpider): 爬虫实例（读取其 page_outcomes / failed_details）
+        results (List[Dict]): 本轮（可能已合并）的结果数据
+
+    返回:
+        Optional[str]: 状态文件路径，保存失败返回 None
+    """
+    state = {
+        "university_key": university_key,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "results": results,
+        "page_outcomes": getattr(spider, "page_outcomes", []),
+        "failed_pages": spider.get_failed_pages() if hasattr(spider, "get_failed_pages") else [],
+        "failed_details": getattr(spider, "failed_details", []),
+    }
+    try:
+        os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+        path = get_state_path(university_key)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception as e:
+        print(f"⚠️ 采集状态保存失败: {e}")
+        return None
+
+
+def load_spider_state(university_key: str) -> Optional[Dict]:
+    """
+    加载上次采集的状态文件
+
+    返回:
+        Optional[Dict]: 状态字典（含 results / page_outcomes / failed_pages），不存在返回 None
+    """
+    path = get_state_path(university_key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ 采集状态读取失败: {e}")
+        return None
+
+
+def print_collection_summary(spider: BaseSpider, results: List[Dict],
+                             run_error: Optional[Exception] = None) -> None:
+    """
+    打印终端采集摘要：总项目数、各页结局、失败详情条数
+
+    无数据时明确区分「页面本身无数据」与「采集中途异常中断」。
+    """
+    outcomes = getattr(spider, "page_outcomes", []) or []
+    failed_details = getattr(spider, "failed_details", []) or []
+
+    print("\n" + "=" * 50)
+    print("📋 采集过程摘要")
+    print(f"   📊 总项目数: {len(results)} 条")
+
+    if outcomes:
+        status_labels = {
+            BaseSpider.PAGE_STATUS_SUCCESS: "✅ 成功",
+            BaseSpider.PAGE_STATUS_NO_DATA: "📭 无数据",
+            BaseSpider.PAGE_STATUS_ERROR: "❌ 异常中断",
+        }
+        print("   📄 各页结局:")
+        for o in outcomes:
+            label = status_labels.get(o.get("status"), str(o.get("status")))
+            line = f"      第 {o.get('page')} 页: {label}，新增 {o.get('new_items', 0)} 条"
+            if o.get("error"):
+                line += f"（原因: {o['error']}）"
+            print(line)
+    else:
+        print("   📄 各页结局: （爬虫未登记分页结局）")
+
+    print(f"   ⚠️ 详情抓取失败: {len(failed_details)} 条")
+    for f in failed_details[:10]:
+        print(f"      - {f.get('name', '')}: {f.get('error', '')}")
+    if len(failed_details) > 10:
+        print(f"      ... 其余 {len(failed_details) - 10} 条略")
+
+    if run_error is not None:
+        print(f"   ❌ 爬虫异常中断: {run_error}（已保留中断前采集的数据）")
+
+    if not results:
+        interrupted = run_error is not None or any(
+            o.get("status") == BaseSpider.PAGE_STATUS_ERROR for o in outcomes
+        )
+        if interrupted:
+            print("   ⚠️ 本轮采集因异常中断，且未获取到任何数据")
+        else:
+            print("   📭 本轮采集结果为「无数据」（页面可正常访问，但未列出任何项目）")
+    print("=" * 50)
 
 
 # ==============================================================================
@@ -326,60 +438,103 @@ def interactive_select_university() -> Optional[str]:
 
 
 
-def run_spider(university_key: str, debug: bool = False):
+def run_spider(university_key: str, debug: bool = False,
+               retry_failed: bool = False, auto_confirm: bool = False):
     """
     运行指定大学的爬虫
-    
+
     参数:
         university_key (str): 大学标识
         debug (bool): 是否开启调试模式（显示浏览器窗口）
+        retry_failed (bool): 只重跑上次异常中断的页码，并与首次采集结果合并去重
+        auto_confirm (bool): 跳过交互确认（用于脚本/测试调用）
     """
     # 获取爬虫类
     spider_class = get_spider_class(university_key)
-    
+
     if spider_class is None:
         print(f"❌ 错误: 未找到 [{university_key}] 的爬虫实现")
         return
-    
+
     # 获取大学信息
     uni_info = UNIVERSITY_INFO[university_key]
-    
+
     print(f"\n🎯 准备爬取: {uni_info['name_cn']} ({uni_info['name']})")
     print(f"📍 目标网址: {uni_info['list_url']}")
     print(f"🔧 运行模式: {'调试模式 (显示浏览器)' if debug else '无头模式 (后台运行)'}")
-    
+
+    # 重跑模式：加载上次状态，确定需要重跑的页码
+    previous_results: List[Dict] = []
+    failed_pages: List[int] = []
+    if retry_failed:
+        state = load_spider_state(university_key)
+        if not state:
+            print("⚠️ 未找到上次采集的状态文件，将执行完整采集")
+        else:
+            failed_pages = state.get("failed_pages") or []
+            previous_results = state.get("results") or []
+            if not failed_pages:
+                print("✅ 上次采集没有异常中断的页码，无需重跑")
+                return
+            print(f"🔁 只重跑上次异常中断的页码: {failed_pages}")
+            print(f"📦 上次已采集 {len(previous_results)} 条，将在本轮结束后合并去重")
+
     # 确认开始
-    confirm = input("\n❓ 确认开始爬取? (Y/n): ").strip().lower()
-    if confirm == 'n':
-        print("❌ 已取消")
-        return
-    
+    if not auto_confirm:
+        confirm = input("\n❓ 确认开始爬取? (Y/n): ").strip().lower()
+        if confirm == 'n':
+            print("❌ 已取消")
+            return
+
     print("\n" + "=" * 50)
     print("✅ 确认成功！正在为您启动爬虫进程，首次运行可能需要几秒钟加载浏览器...")
     print("⏳ 请耐心等待，不要关闭弹出的窗口。")
     print("=" * 50 + "\n")
-    
+
     # 使用 with 语句确保资源释放
     with spider_class(headless=not debug) as spider:
-        # 执行爬取
-        results = spider.run()
-        
+        # 只重跑异常页：把页码清单交给爬虫（由爬虫的分页循环自行跳过其他页）
+        if retry_failed and failed_pages:
+            spider.retry_pages = failed_pages
+
+        # 执行爬取：即使爬虫抛出异常，也保留已采集的数据继续走预览与保存
+        results: List[Dict] = []
+        run_error: Optional[Exception] = None
+        try:
+            results = spider.run() or []
+        except Exception as e:
+            run_error = e
+            results = list(getattr(spider, "results", []) or [])
+            print(f"\n❌ 爬虫抛出异常: {e}")
+            print(f"   已保留中断前采集的 {len(results)} 条数据，继续预览与保存流程")
+
+        # 重跑模式：与首次采集结果合并去重
+        if retry_failed and previous_results:
+            results = BaseSpider.merge_results(previous_results, results)
+            spider.results = results
+            print(f"🔀 重跑结果已与首次采集合并去重，合并后共 {len(results)} 条")
+
+        # 终端摘要：总项目数、各页结局、失败详情条数
+        print_collection_summary(spider, results, run_error)
+
+        # 保存采集状态（供下次 --retry-failed 使用）
+        save_spider_state(university_key, spider, results)
+
         if results:
             # 预览数据
             preview_data(results, rows=10)
-            
+
             # 询问是否保存
-            save_choice = input("\n💾 是否保存到 Excel? (Y/n): ").strip().lower()
+            save_choice = 'y' if auto_confirm else input("\n💾 是否保存到 Excel? (Y/n): ").strip().lower()
             if save_choice != 'n':
                 filepath = save_excel(
-                    results, 
+                    results,
                     university_code=uni_info['code'],
                     university_name=uni_info['name']
                 )
                 if filepath:
                     print("\n✨ 任务完成！")
-        else:
-            print("\n⚠️ 未获取到任何数据")
+        # 无数据的情况已在 print_collection_summary 中明确说明（无数据 vs 异常中断）
 
 
 def main():
@@ -392,6 +547,7 @@ def main():
   python main.py              交互式选择地区和大学
   python main.py hku          直接爬取香港大学
   python main.py cuhk --debug 调试模式爬取香港中文大学
+  python main.py hku --retry-failed  只重跑上次异常中断的页码并合并去重
         """
     )
     
@@ -406,7 +562,13 @@ def main():
         action='store_true',
         help='调试模式（显示浏览器窗口）'
     )
-    
+
+    parser.add_argument(
+        '--retry-failed',
+        action='store_true',
+        help='只重跑上次异常中断的页码，并与首次采集结果合并去重'
+    )
+
     args = parser.parse_args()
     
     # 打印横幅
@@ -427,7 +589,7 @@ def main():
             return
     
     # 运行爬虫
-    run_spider(university_key, debug=args.debug)
+    run_spider(university_key, debug=args.debug, retry_failed=args.retry_failed)
 
 
 if __name__ == "__main__":
