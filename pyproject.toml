@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nodemaven"
+dynamic = ["version"]
+description = "Build and validate proxy connection strings. No transport, no retries."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "NodeMaven", email = "alexandr.kazmin@nodemaven.com" }]
+keywords = ["proxy", "residential-proxy", "scraping", "http-proxy", "playwright"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Internet :: WWW/HTTP",
+    "Typing :: Typed",
+]
+dependencies = ["tomli>=1.1.0; python_version < '3.11'"]
+
+[project.optional-dependencies]
+# `requests` is not used anywhere in this package and this extra does not change
+# that: `grep -rn "import requests" src/` finds nothing, `Proxy.requests()` is a
+# three-line dict of strings, and `check.connect()` writes its own CONNECT by
+# hand precisely so that no HTTP library is needed to read a status line.
+#
+# It exists so that the documented example is installable in one line. An
+# outside developer reported on 2026-09-10, against 0.1.3 from PyPI, that the
+# quickstart imported `requests` while `pip install nodemaven` does not install
+# it - reproduced the same day in a clean venv holding only `nodemaven==0.1.3`.
+# The alternative was making `requests` a hard dependency, which would have
+# broken the one property that separates this package from the vendor's own
+# client, for the benefit of one code block.
+requests = ["requests>=2.25"]
+
+[project.urls]
+# These render as the sidebar on the PyPI page, so every one of them has to answer
+# 200 to a logged-out visitor.
+#
+# `Source` and `Issues` were held back while nodemaven/nodemaven-python was
+# internal, because an internal repository answers 404 to an anonymous visitor
+# exactly as a repository that does not exist does. That condition is gone:
+# `gh api repos/nodemaven/nodemaven-python --jq .visibility` answered `public`
+# on 2026-09-08, so both links resolve for a logged-out reader and can stay.
+#
+# PyPI bakes this table into each uploaded distribution and never re-reads the
+# repository, so a visibility flip cannot put a link on a page that is already
+# up: 0.1.2's sidebar carried Homepage and Documentation and no Source, re-read
+# on 2026-09-08, with both entries already sitting in this file since 0.1.1.
+# 0.1.3 shipped on 2026-09-09 and `Source` and `Issues` are on the project page,
+# so the rule is measured in both directions now - metadata travels with a
+# release and never with anything else.
+Homepage = "https://nodemaven.com"
+Documentation = "https://docs.nodemaven.com"
+Source = "https://github.com/nodemaven/nodemaven-python"
+Issues = "https://github.com/nodemaven/nodemaven-python/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "nodemaven.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nodemaven = ["py.typed", "data/providers/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

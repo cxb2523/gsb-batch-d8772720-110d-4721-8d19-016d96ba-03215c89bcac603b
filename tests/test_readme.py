@@ -1,0 +1,855 @@
+"""Every output the documentation quotes, compared against the real thing.
+
+This file exists because the one quotation in the README that had no test drifted
+without anyone noticing: it listed nine parameter names where the code produced
+ten, and the Rust port's equivalent test is what caught it. The rule that came
+out of that is the reason this file is here - **a document that quotes real
+output needs a test per quotation, or the quotation is a comment.**
+
+Comparisons collapse whitespace. That is deliberate and it is the only slack
+allowed: a paragraph in a fenced block has to be re-wrappable to stay readable at
+80 columns, and nothing else about it may change. Every word still has to match.
+
+**It covers `docs/` as well as `README.md`, from 2026-09-10.** The README was 984
+lines and half of it was reference and measurement, so it was split. The split is
+the moment those tests were most likely to become green no-ops - every one of
+them scanned `README.md` by name, and content moving out from under a scan is
+exactly the shape a test takes when it stops testing anything. So the fixtures
+below are the corpus, the per-file checks say which file they mean, and every
+scan asserts it found something before it checks it.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+from nodemaven import Proxy, load
+from nodemaven.check import Check
+
+ROOT = Path(__file__).resolve().parent.parent
+README = ROOT / "README.md"
+DOCS = ROOT / "docs"
+
+#: The documents this file is responsible for. Named rather than globbed: a new
+#: file under `docs/` should fail this suite until somebody decides what checks
+#: it is owed, and a glob would adopt it silently with none.
+DOCUMENTS = {
+    "README.md": README,
+    "docs/api-reference.md": DOCS / "api-reference.md",
+    "docs/validation.md": DOCS / "validation.md",
+    "docs/observed-behavior.md": DOCS / "observed-behavior.md",
+}
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _headings(readme: str) -> set:
+    """Every heading as GitHub would anchor it: lowered, punctuation dropped.
+
+    **Lines inside fenced code blocks are skipped, and a heading needs a space
+    after its hashes**, both from 2026-09-09. Before that this took any line
+    beginning with `#`, which in these files means every Python and TOML
+    comment inside every example - `# Statistics are per proxy username`
+    became the anchor `statistics-are-per-proxy-username`, and GitHub creates
+    no such anchor.
+
+    That made the anchor tests below weaker than they read. They check that
+    every in-page link points at a heading that exists; with comments in the
+    set, a link could point at a comment and pass. The tests were not wrong
+    about their subject, they were quietly checking a superset of it, and a
+    superset is exactly the shape a passing test takes when it has stopped
+    testing anything.
+    """
+    headings = set()
+    fenced = False
+    for line in readme.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        stripped = line.strip()
+        if not re.match(r"^#{1,6} ", stripped):
+            continue
+        text = stripped.lstrip("#").strip().lower()
+        headings.add(re.sub(r"[^a-z0-9 -]", "", text).replace(" ", "-"))
+    return headings
+
+
+def _blocks(text: str):
+    """Every fenced block in one document, with its language tag."""
+    return re.findall(r"```([a-z]*)\n(.*?)```", text, re.DOTALL)
+
+
+def _imports(blocks) -> set:
+    """Every module name imported by a Python block, top level only."""
+    return {
+        module
+        for language, body in blocks
+        if language == "python"
+        for module in re.findall(r"^\s*(?:import|from)\s+([\w]+)", body, re.M)
+    }
+
+
+@pytest.fixture(scope="module")
+def documents() -> dict:
+    missing = [name for name, path in DOCUMENTS.items() if not path.exists()]
+    assert missing == [], f"a document this suite checks is gone: {missing}"
+    return {
+        name: path.read_text(encoding="utf-8") for name, path in DOCUMENTS.items()
+    }
+
+
+@pytest.fixture(scope="module")
+def readme(documents: dict) -> str:
+    return documents["README.md"]
+
+
+@pytest.fixture(scope="module")
+def reference(documents: dict) -> str:
+    return documents["docs/api-reference.md"]
+
+
+@pytest.fixture(scope="module")
+def behavior(documents: dict) -> str:
+    return documents["docs/observed-behavior.md"]
+
+
+@pytest.fixture(scope="module")
+def corpus(documents: dict) -> str:
+    """Every document at once.
+
+    For assertions of the form "the documentation says X" - which file says it
+    is an editing decision and should not fail a test. Assertions about layout,
+    about what a reader arriving from PyPI sees, or about one section's contract
+    take the single-file fixture instead.
+    """
+    return "\n\n".join(documents.values())
+
+
+@pytest.fixture(scope="module")
+def prose(readme: str) -> str:
+    """The README with its HTML comments removed.
+
+    Assertions about what the file *says* run against this rather than against
+    the raw text. The surviving comments are notes to whoever edits the file -
+    which links must stay absolute, which blocks a test pins - and none of them
+    is prose a reader sees, so counting them as prose would let an editing note
+    satisfy or break an assertion about the documentation.
+    """
+    return re.sub(r"<!--.*?-->", "", readme, flags=re.DOTALL)
+
+
+@pytest.fixture(scope="module")
+def blocks(corpus: str):
+    """Every fenced block in the corpus, with its language tag."""
+    return _blocks(corpus)
+
+
+class TestTheReadmeIsSelfConsistent:
+    def test_it_no_longer_claims_to_open_no_socket(self, prose: str):
+        # "This library opens no socket" was true of every version up to 0.1.2
+        # and false the moment `check()` landed. Pinned as a test because it is
+        # the kind of sentence that gets restored by somebody tidying the intro.
+        #
+        # The record of the correction lives in CLAUDE.md and the CHANGELOG, not
+        # in the README: shipped documentation describes the product as it is,
+        # and a reader of the package has no use for what it used to say.
+        assert "This library opens no socket" not in prose
+        assert "`Proxy` opens no socket" in prose
+
+    def test_it_no_longer_claims_nothing_is_raised_from_a_response(
+        self, prose: str
+    ):
+        assert "nothing here sends one" not in prose
+
+    def test_the_account_api_separates_what_was_called_from_what_was_not(
+        self, behavior: str
+    ):
+        # Documenting a call with an example is a claim that it works, so the
+        # documentation has to say which calls that claim rests on. Until
+        # 2026-09-08 the answer was "none of them" and this test pinned the
+        # words "transcribed, not measured". Calls were then sent to the live
+        # API and the paragraph had to change - which is exactly what it was
+        # pinned for, and it is pinned again for the same reason: the next call
+        # that gets measured moves the boundary again.
+        #
+        # It moved a second time on 2026-09-09, in the other direction. The
+        # section used to argue that transcribed paths were safe to ship because
+        # a wrong one earns a 404; this host answers an unrouted path with 200
+        # and the dashboard's own HTML, so that argument was never true here.
+        # The retraction is pinned too, because the tempting edit is to delete a
+        # wrong sentence rather than to say what it cost.
+        #
+        # It moved a third time on 2026-09-10, and that one is why this test now
+        # names the writes explicitly. The wording it used to pin - "still never
+        # been called" - had been false since the day before, when `--phase 11`
+        # sent all five, and it was false in `api.py`'s module docstring at the
+        # same time while that file's own method docstrings recorded the runs.
+        # A test that pins the cautious half of a claim keeps the caution alive
+        # after the measurement has replaced it.
+        section = behavior.split("## A wrong path is not answered 404", 1)[1]
+        section = section.split("\n## ", 1)[0]
+        assert "measured" in section and "transcribed" in section
+        assert "negative control" in section
+        assert "all five wrapped write calls were measured" in section
+        # The read five are named. A count with no names cannot be checked by a
+        # reader, and cannot be checked here either.
+        for path in ("users/me", "countries", "regions", "cities", "isps"):
+            assert f"`{path}`" in section, path
+
+    def test_every_error_class_the_package_exports_is_in_the_table(
+        self, readme: str
+    ):
+        import nodemaven
+
+        exported = [
+            name
+            for name in nodemaven.__all__
+            if name.endswith("Error") and name != "NodeMavenError"
+        ]
+        table = readme.split("## Errors", 1)[1].split("\n## ", 1)[0]
+        missing = [name for name in exported if f"`{name}`" not in table]
+        assert missing == [], f"exported and undocumented: {missing}"
+
+    def test_the_nav_line_points_at_headings_that_exist(self, readme: str):
+        nav = readme.split("\n\n</div>", 1)[0].rsplit("\n", 1)[1]
+        anchors = re.findall(r"\]\(#([a-z0-9-]+)\)", nav)
+        assert anchors, "the nav line was not found, so nothing was checked"
+        assert set(anchors) <= _headings(readme), set(anchors) - _headings(readme)
+
+    @pytest.mark.parametrize("name", sorted(DOCUMENTS))
+    def test_every_in_page_anchor_points_at_a_heading_in_that_page(
+        self, name, documents: dict
+    ):
+        # Widened from the nav line after a section was renamed and two links
+        # elsewhere went on pointing at the old anchor. GitHub renders a dead
+        # in-page link as ordinary text that does nothing when clicked - no 404,
+        # no warning - so nothing but this would have said so.
+        #
+        # Parametrised over the documents from 2026-09-10. Before the split this
+        # was one scan of README.md; had it stayed that way, the three files the
+        # content moved into would have had no anchor checking at all, and they
+        # are where most of the anchors now are.
+        text = documents[name]
+        anchors = set(re.findall(r"\]\(#([a-z0-9-]+)\)", text))
+        assert anchors, f"{name} has no in-page links, so nothing was checked"
+        assert anchors <= _headings(text), (name, anchors - _headings(text))
+
+    @pytest.mark.parametrize("name", sorted(DOCUMENTS))
+    def test_every_cross_document_anchor_points_at_a_heading_that_exists(
+        self, name, documents: dict
+    ):
+        # `docs/api-reference.md` links into `docs/observed-behavior.md` by
+        # anchor, and a rename on either side breaks it silently the same way an
+        # in-page link breaks. The split created these links; nothing checked
+        # them until this test.
+        text = documents[name]
+        links = re.findall(r"\]\((?:\.\./)?(?:docs/)?([a-z-]+\.md)#([a-z0-9-]+)\)", text)
+        if not links:
+            pytest.skip(f"{name} links into no other document by anchor")
+        for target, anchor in links:
+            key = next(
+                (k for k in documents if k.endswith(target)), None
+            )
+            assert key, f"{name} links at {target}, which this suite does not know"
+            assert anchor in _headings(documents[key]), (name, target, anchor)
+
+    def test_a_comment_in_a_code_block_is_not_read_as_a_heading(self):
+        # The tests above check that every in-page link points at a heading that
+        # exists. That is only worth something if the heading set is the
+        # headings - until 2026-09-09 it also held every `#` comment in every
+        # example, so a link could point at a comment and pass. Both tests were
+        # green the whole time, on a superset of their own subject.
+        #
+        # Written against a fixture rather than against the README, because the
+        # rule is about `_headings` and a README that happens to have no
+        # comment starting with a word would satisfy it by accident.
+        sample = "\n".join(
+            [
+                "# Real Heading",
+                "",
+                "```python",
+                "# Statistics are per proxy username",
+                "#### not a heading either",
+                "```",
+                "",
+                "## Second Real Heading",
+                "#no space after the hashes",
+            ]
+        )
+        assert _headings(sample) == {"real-heading", "second-real-heading"}
+
+    def test_the_statistics_examples_name_the_filters_the_server_has(
+        self, blocks
+    ):
+        """The range is ``start`` and ``end``, and nothing else catches a typo.
+
+        `Client` forwards `**filters` as query parameters unaltered, and this
+        server **ignores a query parameter it does not know** - measured
+        2026-09-09. So `start_date=` is accepted by Python, sent, and dropped,
+        and because the range is then absent the call answers 500 with the
+        server complaining about something else. That is the `norotate` failure
+        mode one layer up: the package refuses an unknown *gateway* parameter
+        and forwards an unknown *API* parameter in silence.
+
+        The names are written out here, which is a second copy of a contract
+        this file's own docstring warns against. It is deliberate, because
+        there is no first copy to point at: `**filters` means the package holds
+        no list of legal filter names anywhere. The copy is the finding.
+        """
+        names = {"proxy_username", "timezone", "start", "end", "period",
+                 "request_source", "limit"}
+        calls = [
+            (call, args)
+            for _language, body in blocks
+            for call, args in re.findall(r"client\.(statistics_\w+|domain_statistics)\(([^)]*)\)", body)
+        ]
+        assert calls, "no statistics example was found, so nothing was checked"
+        for call, args in calls:
+            for keyword in re.findall(r"(\w+)=", args):
+                assert keyword in names, (
+                    f"{call} is shown with {keyword}=, which this server has no "
+                    f"such filter for; it would be dropped in silence"
+                )
+
+    def test_no_statistics_example_carries_an_iso_date(self, blocks):
+        # The server parses `dd-mm-yyyy` and answers an ISO date 400, measured
+        # 2026-09-09 by `--phase 10`. The examples carried ISO until that day.
+        #
+        # Scoped to the fenced blocks on purpose: the prose in
+        # `docs/observed-behavior.md` quotes `start=2026-08-20` as the form that
+        # fails, and a scan over the whole text would have to be written to
+        # permit the very string it is looking for. A test that has to make an
+        # exception for the correct case is one edit away from making it for the
+        # wrong one.
+        #
+        # This matched `start_date=`/`end_date=` when it was written, because it
+        # was written from the examples rather than from the API. Those names
+        # are not filters this server has, so the test pinned the date format of
+        # two arguments that did nothing - and the moment they were corrected it
+        # would have matched nothing and passed on an empty list. The `assert
+        # dated` guard below is the only reason that would have been noticed,
+        # and it is why a scan-and-check test needs one.
+        dated = [
+            value
+            for _language, body in blocks
+            for value in re.findall(r"\b(?:start|end)=\"([^\"]+)\"", body)
+        ]
+        assert dated, "no dated example was found, so nothing was checked"
+        for value in dated:
+            assert re.fullmatch(r"\d{2}-\d{2}-\d{4}", value), (
+                f"a statistics example dates as {value!r}; this server parses "
+                f"dd-mm-yyyy and answers ISO 400"
+            )
+
+    def test_no_statistics_example_omits_the_range_and_the_period(self, blocks):
+        # All three statistics endpoints answer **500** - not 400 - when
+        # `start`, `end` and `period` are all omitted, measured 2026-09-09 by
+        # `--phase 10`, though the document marks all three optional. So an
+        # example calling one with the username alone is an example of a 500.
+        # `domain_statistics("acct-1")` was exactly that until this test.
+        for _language, body in blocks:
+            for call, args in re.findall(
+                r"client\.(statistics_\w+|domain_statistics)\(([^)]*)\)", body
+            ):
+                keywords = set(re.findall(r"(\w+)=", args))
+                assert keywords & {"start", "end", "period"}, (
+                    f"{call} is shown with no start=, end= or period=, which "
+                    f"this server answers 500"
+                )
+
+
+class TestTheExamplesAreInstallable:
+    """An example that imports something needs an install line that installs it.
+
+    Written 2026-09-10, after the first outside developer to install the package
+    reported the first block of the README failing with `ModuleNotFoundError: No
+    module named 'requests'`. Reproduced the same day against 0.1.3 from PyPI in
+    a venv holding only `nodemaven`.
+
+    Nothing in the suite could have caught it. `test_api.py` has a test whose
+    subject is "zero required dependencies" and it reads `api.py`'s source, so
+    it says nothing about a document. This file had 62 checks on the README and
+    every one of them checked what it *said*, not whether what it *showed* runs.
+    The gap was between two files that each looked covered.
+
+    The scan found a second one nobody had reported: the Playwright example has
+    the same defect and always had.
+    """
+
+    #: Modules an example may import with no install line. `nodemaven` is the
+    #: package itself; the rest is the standard library, taken from the
+    #: interpreter on 3.10 and newer and listed by hand below that, because CI
+    #: runs 3.9 and `sys.stdlib_module_names` does not exist there.
+    FREE = frozenset({"nodemaven"}) | frozenset(
+        getattr(sys, "stdlib_module_names", None)
+        or {
+            "base64", "dataclasses", "inspect", "json", "os", "pathlib", "re",
+            "secrets", "socket", "sys", "time", "typing", "urllib",
+        }
+    )
+
+    @pytest.mark.parametrize("name", sorted(DOCUMENTS))
+    def test_every_third_party_import_is_named_in_an_install_line(
+        self, name, documents: dict
+    ):
+        text = documents[name]
+        blocks = _blocks(text)
+        installs = " ".join(
+            body for language, body in blocks if "pip install" in body
+        )
+        imported = _imports(blocks)
+        for module in sorted(imported - self.FREE):
+            assert re.search(rf"\b{re.escape(module)}\b", installs), (
+                f"{name} shows `import {module}` and no `pip install` line in "
+                f"that file installs it; a reader copying the example gets "
+                f"ModuleNotFoundError"
+            )
+
+    def test_the_import_scan_still_finds_the_examples_it_was_written_for(
+        self, corpus: str
+    ):
+        """The found-something guard for the test above, in the one place it works.
+
+        It was written per-document, as `assert imported or not blocks`, and
+        `docs/validation.md` failed it correctly: that file's Python blocks use
+        `Proxy` from the surrounding text and import nothing at all, which is
+        not a defect. A guard that fires on a legitimate document is worse than
+        no guard, because the fix under time pressure is to delete it.
+
+        So the guard belongs over the corpus, where it can name what it expects.
+        `requests` and `playwright` are the two third-party modules the
+        documentation shows, and `requests` is the whole reason the extra
+        exists - if the scan stops seeing them, it is the scan that broke and
+        not the documentation.
+        """
+        imported = _imports(_blocks(corpus))
+        for module in ("requests", "playwright"):
+            assert module in imported, (
+                f"the scan no longer sees `import {module}` anywhere; the fenced "
+                f"blocks or the import regex changed and the install-line test "
+                f"above is now checking nothing"
+            )
+
+    def test_the_package_declares_the_extra_the_readme_tells_people_to_install(
+        self, readme: str
+    ):
+        # `pip install nodemaven[requests]` is only a real instruction if the
+        # extra exists. pip answers an undeclared extra with a warning and
+        # installs the package without it, so the example would fail exactly as
+        # before while the README looked fixed. `pyproject.toml` is read as text
+        # rather than through a TOML parser, because this suite runs on 3.9 where
+        # `tomllib` does not exist and the package's own `tomli` fallback is an
+        # optional install.
+        extras = re.findall(r"pip install [\"']?nodemaven\[([a-z0-9_,-]+)\]", readme)
+        assert extras, "the README stopped naming an extra, so nothing was checked"
+
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        declared = text.split("[project.optional-dependencies]", 1)[1]
+        declared = declared.split("\n[", 1)[0]
+        for group in extras:
+            for extra in group.split(","):
+                assert re.search(rf"^{re.escape(extra)}\s*=", declared, re.M), (
+                    f"the README says `pip install nodemaven[{extra}]` and "
+                    f"pyproject.toml declares no such extra"
+                )
+
+
+    def test_an_extra_is_quoted_so_zsh_does_not_glob_it(self, readme: str):
+        # zsh, the default shell on macOS, reads `nodemaven[requests]` as a glob
+        # and answers `no matches found` before pip ever runs. Found 2026-10-01
+        # running the quickstart in a clean venv from a zsh prompt. Quoted, the
+        # same line works in zsh, bash, fish and cmd.
+        bare = re.findall(r"pip install nodemaven\[[^\]]*\]", readme)
+        assert not bare, (
+            f"{bare} is unquoted; zsh globs the brackets and the install fails "
+            f"with `no matches found`. Write it as pip install \"nodemaven[...]\""
+        )
+
+class TestTheReadmeLinksResolveOnPyPI:
+    """PyPI renders this file and resolves nothing relative.
+
+    A relative `](docs/validation.md)` resolves against
+    `pypi.org/project/nodemaven/` on the package page and answers 404 there,
+    which is CEO rule 1 - a production link that goes nowhere gets removed or
+    fixed. The rule was written in three HTML comments in the README and
+    enforced by nobody until the split created five links that could break it.
+
+    **Both tests run against `prose`, not against the raw file, and the first
+    run is why.** They were written against the raw text and failed on
+    `](LICENSE)` and `](docs/validation.md)` - two strings that are not links at
+    all, but the HTML comments explaining to an editor which spelling is
+    forbidden. So the test caught the notes documenting the rule instead of a
+    breach of it. The second test is worse in the same way and would not have
+    announced itself: a comment naming `docs/validation.md` satisfies
+    `name in text`, so with raw text it would have gone on passing after the
+    real link was deleted.
+    """
+
+    def test_no_link_in_the_readme_is_relative(self, prose: str):
+        links = re.findall(r"\]\(([^)]+)\)", prose)
+        assert links, "no links were found, so nothing was checked"
+        relative = [
+            target
+            for target in links
+            if not target.startswith(("#", "http://", "https://", "mailto:"))
+        ]
+        assert relative == [], (
+            f"relative links in the PyPI long description, which 404 there: "
+            f"{relative}"
+        )
+
+    def test_the_readme_links_at_every_document_this_suite_checks(
+        self, prose: str
+    ):
+        # The split is only an improvement if the pieces are reachable. A doc
+        # nobody links to is a doc nobody reads, and it goes stale first.
+        #
+        # Matched inside a `](...)` rather than anywhere in the text, so that
+        # naming a file in a sentence does not stand in for linking at it.
+        linked = re.findall(r"\]\(([^)]+)\)", prose)
+        for name in DOCUMENTS:
+            if name == "README.md":
+                continue
+            assert any(target.endswith(name) for target in linked), (
+                f"the README links at nothing named {name}"
+            )
+
+
+class TestTheParameterTable:
+    def test_every_known_parameter_has_a_row(self, readme: str):
+        # The table is what a developer reads instead of the shipped TOML. A
+        # parameter missing from it is reachable only by reading source, which is
+        # what the table was added to stop.
+        table = readme.split("| parameter |", 1)[1].split("\n\n", 1)[0]
+        for name in load("nodemaven").known_params:
+            assert f"`{name}`" in table, name
+
+    def test_no_row_names_a_parameter_the_gateway_does_not_know(
+        self, readme: str
+    ):
+        # The other direction, and the one that matters more: a documented
+        # parameter this package refuses is a promise it breaks. `norotate` was
+        # exactly this between 2026-08-21 and 2026-08-26.
+        table = readme.split("| parameter |", 1)[1].split("\n\n", 1)[0]
+        known = load("nodemaven").known_params
+        for row in table.splitlines():
+            cells = [cell.strip() for cell in row.split("|")]
+            if len(cells) < 3 or not cells[1].startswith("`"):
+                continue
+            assert cells[1].strip("`") in known, cells[1]
+
+    def test_the_ttl_values_it_names_are_the_ones_the_definition_names(
+        self, readme: str
+    ):
+        # `ttl` is the only parameter with measured accepted values, measured
+        # refused values, and no `values` entry to enforce either - a list of
+        # four would refuse a fifth the gateway takes. So the README and the
+        # definition's notes are the only carriers of the unit rule, and nothing
+        # else makes them agree.
+        #
+        # Read out of the table rather than listed here: a list in this file
+        # would be a third copy of the same contract.
+        table = readme.split("| parameter |", 1)[1].split("\n\n", 1)[0]
+        row = next(
+            line for line in table.splitlines() if line.startswith("| `ttl` |")
+        )
+        named = re.findall(r"`([^`]+)`", row.rsplit("|", 2)[1])
+        assert len(named) >= 2, named
+
+        notes = load("nodemaven").notes
+        assert [value for value in named if value not in notes] == []
+
+
+class TestTheUnknownParameterMessage:
+    def test_the_documentation_quotes_it_word_for_word(self, corpus: str):
+        # This is the quotation that drifted, and the test that would have caught
+        # it. It is built from the shipped definition, so adding a parameter to
+        # the TOML fails here until the documentation is updated too.
+        #
+        # Every block is checked, not the first one. This test used to pin
+        # `quoting[0]` against a message raised from a typo hardcoded here, so it
+        # verified whichever block happened to come first and ignored the rest. A
+        # second quotation was then added to the quickstart with a different
+        # typo, and the version of the paragraph before it had an invented
+        # message in it - "Did you mean 'filter'?", which this library does not
+        # say and never has. That is the failure this test exists to catch and it
+        # caught it, but only because the new block landed first in the file.
+        #
+        # It runs over the corpus from 2026-09-10: the two quotations now live in
+        # two different files, and a scan of README.md alone would have stopped
+        # checking one of them without failing.
+        from nodemaven import ParamError
+
+        blocks = re.findall(r"```[a-z]*\n(.*?)```", corpus, re.DOTALL)
+        quoting = [body for body in blocks if "ParamError:" in body]
+        assert len(quoting) >= 2, (
+            "fewer ParamError quotations than there are documents that carry "
+            "one, so at least one stopped being checked"
+        )
+
+        for body in quoting:
+            typo = re.search(r"does not know the parameter '([^']+)'", flat(body))
+            assert typo, f"a ParamError block naming no parameter:\n{body}"
+            with pytest.raises(ParamError) as caught:
+                Proxy(login="u", password="p", **{typo.group(1): "us"})
+            assert flat(str(caught.value)) in flat(body)
+
+
+class TestTheFoldedRegionExample:
+    def test_the_username_in_the_readme_is_what_the_code_builds(self, corpus: str):
+        # `region-district_of_columbia` is not an invention: it is the form the
+        # dashboard itself emitted in a username for a real account, read
+        # 2026-09-07. The example is the one place the fold is shown, so it is
+        # the one place a change to the fold has to be reflected.
+        built = Proxy(
+            login="u", password="p", region="District of Columbia"
+        ).username
+        assert built == "u-region-district_of_columbia"
+        assert built in corpus
+
+
+class TestTheCheckOutput:
+    """The two blocks in the quickstart.
+
+    Built here rather than captured from the gateway, and that is what makes them
+    checkable: a `Check` is a plain frozen object, so the README is quoting a
+    real `__str__` of a real instance and not a hand-typed approximation of one.
+
+    They stay in the README rather than moving to `docs/` with the rest of the
+    gateway material, because `check()` is now the first call the quickstart
+    makes: it needs nothing but the package, so it is the one first run that
+    cannot fail on a missing dependency.
+    """
+
+    def test_the_200_line(self, readme: str):
+        result = Check(
+            status=200,
+            reason="Connection established",
+            server="gate.nodemaven.com:8080",
+            elapsed=0.42,
+            headers={"x-proxy-exit-ip": "203.0.113.7"},
+            exit_ip="203.0.113.7",
+            meaning=load("nodemaven").reaction(200),
+        )
+        assert flat(str(result)) in flat(readme)
+
+    def test_the_407_block_including_the_gateways_own_explanation(
+        self, readme: str
+    ):
+        # The explanation comes from the provider definition, so this asserts the
+        # README and the TOML agree. They are two files and one of them is
+        # published to PyPI.
+        result = Check(
+            status=407,
+            reason="Proxy Authentication Required",
+            server="gate.nodemaven.com:8080",
+            elapsed=0.19,
+            headers={},
+            meaning=load("nodemaven").reaction(407),
+        )
+        assert flat(str(result)) in flat(readme)
+
+    def test_a_200s_explanation_is_not_printed_and_the_readme_says_why(
+        self, readme: str
+    ):
+        # `__str__` shows the meaning only for a non-200, so the 200 block above
+        # must not carry the 200 explanation. This pins the asymmetry rather than
+        # leaving it as a coincidence of the two fixtures.
+        result = Check(
+            status=200,
+            reason="Connection established",
+            server="gate.nodemaven.com:8080",
+            elapsed=0.42,
+            headers={},
+            meaning=load("nodemaven").reaction(200),
+        )
+        assert "\n" not in str(result)
+
+    def test_the_default_target_named_in_the_readme_is_the_default(
+        self, readme: str
+    ):
+        from nodemaven.check import DEFAULT_TARGET
+
+        assert f"`{DEFAULT_TARGET}`" in readme
+
+    def test_the_documented_timeout_is_the_default(self, readme: str):
+        import inspect
+
+        from nodemaven.check import connect
+
+        default = inspect.signature(connect).parameters["timeout"].default
+        assert default == 15.0
+        assert "defaults to 15 seconds" in readme
+
+
+class TestTheReferenceMatchesTheCode:
+    """`docs/api-reference.md` is a contract, so it gets the same treatment as a
+    quoted output: it is compared against the real thing rather than read.
+
+    Added with the section itself, 2026-09-08, when it was the second half of
+    the README; it became its own file on 2026-09-10. The section exists because
+    an external review said the documentation was overloaded with
+    justifications; measuring that turned up the sharper version of the
+    complaint - the package exports 18 names and the README gave a signature for
+    none of them, so for several calls the rationale was the only coverage there
+    was. A reference written once and never checked would have been a worse
+    answer than no reference, because it reads as authoritative.
+    """
+
+    def test_the_proxy_signature_names_every_real_argument(self, reference: str):
+        import inspect
+
+        block = reference.split("## `Proxy`", 1)[1].split("```", 2)[1]
+        for name in inspect.signature(Proxy.__init__).parameters:
+            if name == "self":
+                continue
+            assert name in block, name
+
+    def test_the_client_signature_names_every_real_argument(self, reference: str):
+        import inspect
+
+        from nodemaven import Client
+
+        block = reference.split("## `Client` and `Page`", 1)[1].split("```", 2)[1]
+        for name in inspect.signature(Client.__init__).parameters:
+            if name == "self":
+                continue
+            assert name in block, name
+
+    def test_every_public_proxy_call_is_in_the_reference(self, reference: str):
+        section = reference.split("## `Proxy`", 1)[1].split("## `Check`", 1)[0]
+        missing = [
+            name
+            for name in dir(Proxy)
+            if not name.startswith("_") and f"`.{name}" not in section
+        ]
+        assert missing == [], f"public on Proxy and undocumented: {missing}"
+
+    def test_every_public_client_call_is_in_the_reference(self, reference: str):
+        from nodemaven import Client
+
+        section = reference.split("## `Client` and `Page`", 1)[1]
+        section = section.split("## `Provider`", 1)[0]
+        missing = [
+            name
+            for name in dir(Client)
+            if not name.startswith("_") and f"`.{name}" not in section
+        ]
+        assert missing == [], f"public on Client and undocumented: {missing}"
+
+    def test_every_exported_name_appears_in_the_documentation(self, corpus: str):
+        # The gap that produced this test: `available()` was exported and
+        # appeared nowhere in 625 lines, so the only way to find it was to read
+        # `__init__.py`.
+        import nodemaven
+
+        missing = [
+            name
+            for name in nodemaven.__all__
+            if not name.startswith("_") and f"`{name}" not in corpus
+        ]
+        assert missing == [], f"exported and unmentioned: {missing}"
+
+
+class TestTheAttributesTheReadmePromises:
+    def test_every_field_a_check_carries_is_in_the_reference_table(
+        self, reference: str
+    ):
+        """Derived from the dataclass, not from a list written here.
+
+        This test used to carry the seven names by hand and look for
+        ``result.<name>`` anywhere in the file, which matched a code block that
+        said the same thing as the reference table. Two copies of one contract
+        with the test pinning one of them is how the other drifts - it is the
+        failure this whole file was written after. The block is gone, the table
+        is the one copy, and the names now come from the type so that adding a
+        field fails here until it is documented.
+        """
+        import dataclasses
+
+        names = [field.name for field in dataclasses.fields(Check)]
+        # `ok` is a property rather than a field, and is the one a caller reads
+        # first, so it is named explicitly rather than left to the derivation.
+        names.append("ok")
+        table = reference.split("## `Check`", 1)[1].split("\n## ", 1)[0]
+        missing = [name for name in names if f"`.{name}`" not in table]
+        assert missing == [], f"a Check field the reference does not list: {missing}"
+
+    @pytest.mark.parametrize(
+        "attribute",
+        ["ok", "status", "reason", "exit_ip", "elapsed", "headers", "meaning"],
+    )
+    def test_each_one_exists_on_check(self, attribute, reference: str):
+        result = Check(
+            status=200, reason="OK", server="h:1", elapsed=0.0, headers={}
+        )
+        assert hasattr(result, attribute)
+
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "me",
+            "countries",
+            "regions",
+            "cities",
+            "isps",
+            "isp_regions",
+            "isp_cities",
+            "zip_codes",
+            "zip_code_regions",
+            "zip_code_cities",
+            "statistics_data",
+            "statistics_requests",
+            "domain_statistics",
+            "sub_users",
+            "create_sub_user",
+            "update_sub_user",
+            "delete_sub_user",
+            "reset_sub_user_usage",
+            "whitelist_ips",
+            "whitelist_ip",
+            "upsert_whitelist_ip",
+            "delete_whitelist_ip",
+            "iterate",
+            "validate",
+        ],
+    )
+    def test_every_client_method_the_readme_shows_exists(self, method, corpus: str):
+        from nodemaven import Client
+
+        assert hasattr(Client, method)
+        assert f"client.{method}(" in corpus or f"`{method}()`" in corpus
+
+
+class TestTheEnvironmentVariableNames:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "NODEMAVEN_LOGIN",
+            "NODEMAVEN_PASSWORD",
+            "NODEMAVEN_HOST",
+            "NODEMAVEN_PORT",
+            "NODEMAVEN_APIKEY",
+        ],
+    )
+    def test_each_one_the_readme_names_is_read_by_the_code(self, name, readme: str):
+        # A documented variable the code does not read is worse than an
+        # undocumented one: it silently does nothing and the developer concludes
+        # their credentials are wrong.
+        import nodemaven.api
+        import nodemaven.proxy
+
+        sources = "".join(
+            Path(module.__file__).read_text(encoding="utf-8")
+            for module in (nodemaven.proxy, nodemaven.api)
+        )
+        assert name in readme
+        assert name in sources
