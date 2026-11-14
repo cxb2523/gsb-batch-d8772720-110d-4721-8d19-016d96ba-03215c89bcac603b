@@ -22,19 +22,32 @@ REGEX_VIDEO_RATING = re.compile(r'<span class="rate">(.*?)</span>')
 REGEX_VIDEO_AUTHOR = re.compile(r'<span class="name">(.*?)</span>')
 REGEX_VIDEO_LENGTH = re.compile(r"'length'\s*:\s*(\d+)")
 
-def extractor(content: str, base_url: str = "https://spankbang.com") -> list[dict[str, object]]:
-    video_data = []
-    parser = LexborHTMLParser(content)
+def select_video_nodes(content: str) -> tuple[object, tuple, tuple]:
+    """Locate the list container and the video item nodes inside parsed HTML.
 
-    video_soups = parser.css('div[x-data="videoList"]')
-    if video_soups:
+    Returns a ``(parser, containers, items)`` tuple. ``containers`` holds every
+    ``div[x-data="videoList"]`` element found (possibly empty) and ``items`` holds
+    the video item elements selected according to the same rules as
+    :func:`extractor`. Callers use the container/item combination to distinguish
+    an intentionally empty listing from a page whose markup can no longer be
+    parsed.
+    """
+    parser = LexborHTMLParser(content)
+    containers = parser.css('div[x-data="videoList"]')
+    if containers:
         soup_items = [
             s.css("div.js-video-item") or s.css('div[data-testid="video-item"]')
-            for s in video_soups
+            for s in containers
         ]
         divs = max(soup_items, key=len)
     else:
         divs = parser.css("div.js-video-item") or parser.css('div[data-testid="video-item"]')
+    return parser, tuple(containers), tuple(divs)
+
+
+def extractor(content: str, base_url: str = "https://spankbang.com") -> list[dict[str, object]]:
+    video_data = []
+    parser, _containers, divs = select_video_nodes(content)
 
     for div in divs:
         a_tag = div.css_first('a[href*="/video/"]') or div.css_first("a")

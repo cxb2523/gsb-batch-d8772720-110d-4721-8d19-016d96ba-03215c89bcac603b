@@ -31,7 +31,6 @@ from base_api import (
     ScrapeErrorContext,
     ScrapeResult,
     media_field,
-    make_iterator_config,
     is_resource_gone,
     default_on_error,
     scrape_stream,
@@ -64,6 +63,11 @@ from spankbang_api.modules.errors import (NetworkError, NotFound, UnknownNetwork
                                           VideoIsProcessing, ProxyError, DownloadFailed)
 from spankbang_api.modules.consts import (headers, REGEX_VIDEO_AUTHOR, REGEX_VIDEO_LENGTH, REGEX_VIDEO_RATING,
                                           PATTERN_RESOLUTION, extractor, cookies)
+from spankbang_api.modules.pagination import (
+    PageResultCallback,
+    paginate,
+    scrape_listing_pages,
+)
 
 
 logger = get_logger(__name__)
@@ -171,7 +175,21 @@ class PornstarHelper(BaseMedia):
         self,
         pages: int = 0,
         iterator_config: IteratorConfig | None = None,
+        resume_from: int = 1,
+        on_page_result: PageResultCallback | None = None,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        """Iterate the videos listed on a channel/creator/pornstar profile.
+
+        :param pages: Total number of pages to consider (page 1 .. ``pages``).
+        :param iterator_config: Iterator concurrency, loading, ordering, and
+            error behavior for the per-page video item pipeline.
+        :param resume_from: 1-based page number to start from, inclusive.
+            ``resume_from=3, pages=5`` requests only pages 3, 4 and 5. When it
+            exceeds ``pages`` no request is made and no callback is fired.
+        :param on_page_result: Optional callback invoked once per requested page
+            with a :class:`PageResult`. Exceptions raised by the callback are
+            logged and swallowed so they never interrupt the iteration.
+        """
         source_url = self.resolved_url or self.url
         parts = [p for p in urlsplit(source_url).path.strip("/").split("/") if p]
         entity_keywords = {"creator", "profile", "channel", "pornstar"}
@@ -181,26 +199,36 @@ class PornstarHelper(BaseMedia):
                 depth = idx + 2
                 break
         url = profile_base_url(source_url, depth=depth)
-        page_urls = [url] + [append_url_path(url, page) for page in range(2, max(1, pages) + 1)]
-        
+
+        def build_page_url(page: int) -> str:
+            if page == 1:
+                return url
+            return append_url_path(url, page)
+
+        page_numbers, page_urls = paginate(
+            pages=max(1, pages),
+            resume_from=resume_from,
+            build_url=build_page_url,
+        )
+        if not page_urls:
+            # Nothing to resume: produce an empty stream without any requests.
+            return
+
         base_url = f"https://{urlsplit(url).netloc}"
         video_extractor = functools.partial(extractor, base_url=base_url)
-        helper = Helper(core=self.core, constructor=Video)
 
-        if iterator_config is None:
-            iterator_config = make_iterator_config(
-                max_item_concurrency=2,
-                max_page_concurrency=1,
-            )
-
-        stream = helper.iterator(
+        async for result in _scrape_stream(
+            core=self.core,
+            constructor=Video,
             target_page_urls=page_urls,
+            page_numbers=page_numbers,
             item_extractor=video_extractor,
             iterator_config=iterator_config,
-        )
-        async with stream:
-            async for result in stream:
-                yield result
+            fetch_html=get_html_content,
+            fetch_owner=self,
+            on_page_result=on_page_result,
+        ):
+            yield result
 
 
 class Channel(PornstarHelper):
@@ -517,6 +545,8 @@ class Client:
                  date: Literal["d", "w", "m", "y"] | None = None,
                  pages: int = 2,
                  iterator_config: IteratorConfig | None = None,
+                 resume_from: int = 1,
+                 on_page_result: PageResultCallback | None = None,
                  ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         :param query:
@@ -524,8 +554,14 @@ class Client:
         :param quality: hd = 720p, fhd = 1080p, uhd = 4k ->: DEFAULT: All qualities
         :param duration: 10 = 10 min, 20 = 20 min, 40 = 40+ min ->: DEFAULT: All durations
         :param date: "d" = day, "w" = week, "m" = month, "y" = year -->: DEFAULT: All dates
-        :param pages: How many pages to fetch
+        :param pages: How many pages to consider (page 1 .. ``pages``).
         :param iterator_config: Iterator concurrency, loading, ordering, and error behavior.
+        :param resume_from: 1-based page number to start from, inclusive.
+            ``resume_from=3, pages=5`` requests only pages 3, 4 and 5. When it
+            exceeds ``pages`` no request is made and no callback is fired.
+        :param on_page_result: Optional callback invoked once per requested page
+            with a :class:`PageResult`. Exceptions raised by the callback are
+            logged and swallowed so they never interrupt the iteration.
         """
 
         BASE_HOST = "spankbang.com"
@@ -546,31 +582,76 @@ class Client:
 
         query_str = urlencode(params, doseq=True)
         base_first_url = urlunsplit(("https", BASE_HOST, path, query_str, ""))
-        page_urls = [base_first_url]
 
         parts = urlsplit(base_first_url)
         base_path = parts.path.rstrip("/")
-        for page in range(2, max(1, pages) + 1):
+
+        def build_page_url(page: int) -> str:
+            if page == 1:
+                return base_first_url
+            # Preserve the existing /s/<keyword>/<page>/ rule (query kept last).
             page_path = f"{base_path}/{page}/"
-            p_url = urlunsplit((parts.scheme, parts.netloc, page_path, parts.query, parts.fragment))
-            page_urls.append(p_url)
+            return urlunsplit((parts.scheme, parts.netloc, page_path, parts.query, parts.fragment))
+
+        page_numbers, page_urls = paginate(
+            pages=max(1, pages),
+            resume_from=resume_from,
+            build_url=build_page_url,
+        )
+        if not page_urls:
+            # resume_from beyond pages: an empty stream, no requests, no callbacks.
+            return _empty_stream()
 
         base_url = f"https://{urlsplit(base_first_url).netloc}"
         video_extractor = functools.partial(extractor, base_url=base_url)
 
-        if iterator_config is None:
-            iterator_config = make_iterator_config(
-                max_item_concurrency=2,
-                max_page_concurrency=1,
-            )
-
-        return scrape_stream(
+        return _scrape_stream(
             core=self.core,
             constructor=Video,
             target_page_urls=page_urls,
+            page_numbers=page_numbers,
             item_extractor=video_extractor,
             iterator_config=iterator_config,
+            fetch_html=get_html_content,
+            fetch_owner=None,
+            on_page_result=on_page_result,
         )
+
+
+async def _empty_stream():
+    """A genuinely empty async generator used when a resumed range is empty."""
+    if False:  # pragma: no cover - never yields, only establishes generator semantics
+        yield
+
+
+def _scrape_stream(
+    *,
+    core: BaseCore,
+    constructor,
+    target_page_urls,
+    page_numbers,
+    item_extractor,
+    iterator_config,
+    fetch_html,
+    on_page_result: PageResultCallback | None,
+    fetch_owner=None,
+) -> AsyncGenerator[ScrapeResult, None]:
+    """Module-level seam for the resumable, per-page classified listing stream.
+
+    Kept as a thin wrapper over the pagination engine so callers (and tests)
+    can patch a single provider-level function, mirroring ``base_api.scrape_stream``.
+    """
+    return scrape_listing_pages(
+        core=core,
+        constructor=constructor,
+        target_page_urls=target_page_urls,
+        page_numbers=page_numbers,
+        item_extractor=item_extractor,
+        iterator_config=iterator_config,
+        fetch_html=fetch_html,
+        on_page_result=on_page_result,
+        fetch_owner=fetch_owner,
+    )
 
 
 
