@@ -196,6 +196,14 @@ const LINE_EXCERPT_LENGTH = 120
  * A response cut inside a block once is requested again from that block.
  */
 export class MalformedPortalResponseError extends PipeError {
+  /**
+   * Why the line is not a block. `cut-twice` is a truncation the re-request could not get past;
+   * the other problems are malformed data from the portal itself.
+   */
+  readonly problem: MalformedLine
+  /** The block the failed response was expected to continue at. */
+  readonly fromBlock: number
+
   constructor({ problem, fromBlock, line }: { problem: MalformedLine; fromBlock: number; line?: string }) {
     super('E1007', SdkErrorName.PortalContract, [
       malformedLineReason(problem, fromBlock),
@@ -204,6 +212,9 @@ export class MalformedPortalResponseError extends PipeError {
       '',
       'Report it against the portal. A restart resumes from the persisted cursor.',
     ])
+
+    this.problem = problem
+    this.fromBlock = fromBlock
   }
 }
 
