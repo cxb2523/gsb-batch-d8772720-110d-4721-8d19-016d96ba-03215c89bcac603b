@@ -39,6 +39,7 @@
   },
   "scripts": {
     "postinstall": "node postInstall.js",
+    "test": "node --test",
     "inspect": "npx @modelcontextprotocol/inspector node index.js",
     "inspect2": "CLIENT_PORT=5174 SERVER_PORT=5175 npx @modelcontextprotocol/inspector node index.js",
     "publishNew": "npm run build:types && npm publish",

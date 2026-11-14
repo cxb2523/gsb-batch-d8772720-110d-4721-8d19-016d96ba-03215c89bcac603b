@@ -13,29 +13,24 @@
 import fs from "fs";
 import path from "path";
 import {spawn} from "child_process";
-import {CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema,} from "@modelcontextprotocol/sdk/types.js";
-import {Server} from "@modelcontextprotocol/sdk/server/index.js";
 import {StdioServerTransport} from "@modelcontextprotocol/sdk/server/stdio.js";
 import {Client} from "@modelcontextprotocol/sdk/client/index.js";
 import {StreamableHTTPClientTransport} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {getAppBinPath, getFirstFreePort, waitForHttpServer} from "./helper.js";
 import {extractedPath, npxDirname, preferredPort} from "./config.js";
 import {ensureBinary} from "./downloadeBinary.js";
+import {AppConnection} from "./connection.js";
+import {createProxyServer} from "./proxyServer.js";
 import printAfterStart from "./consoleOutput.js";
 
 
 const toolList = JSON.parse(fs.readFileSync(path.join(npxDirname, 'toolList.json'), 'utf-8'));
 
-let appProcess = null;
-let mcpClient = null;
-let appPort = null;
-let connectPromise = null;
-
 const appBinPath = getAppBinPath(extractedPath);
 
 
-function getMcpUrl() {
-    return `http://localhost:${appPort}/mcp`;
+function getMcpUrl(port) {
+    return `http://localhost:${port}/mcp`;
 }
 
 async function ensureAppInstalled() {
@@ -45,9 +40,14 @@ async function ensureAppInstalled() {
     await ensureBinary();
 }
 
+/**
+ * Spawns the desktop app and exposes a small handle the connection supervisor
+ * can use, independent of Node's ChildProcess event details.
+ *
+ * @param {number} port
+ * @returns {import("./connection.js").AppProcessHandle}
+ */
 function startApp(port) {
-    console.error(`[Proxy] Starting election app on port ${port}...`);
-
     const child = spawn(appBinPath, [`--`, `--mcp`, `--no-auto-update`, `--mcpPort=${port}`], {
         stdio: ["ignore", "ignore", "inherit"],
     });
@@ -58,89 +58,100 @@ function startApp(port) {
     //     cwd: path.resolve("../../desktop-client"),
     // });
 
+    const exitHandlers = [];
+    let exited = false;
+    /** @type {Error | null} */
+    let exitReason = null;
+
+    const notifyExited = () => {
+        if (exited) {
+            return;
+        }
+        exited = true;
+        for (const handler of exitHandlers) {
+            try {
+                handler();
+            } catch (error) {
+                console.error("[Proxy] App exit handler failed:", error);
+            }
+        }
+        exitHandlers.length = 0;
+    };
+
     child.on("error", (err) => {
         console.error("[Proxy] Failed to start election app:", err);
+        // A failed spawn may never emit "exit"; treat it as gone so waiters
+        // stop waiting and the next tool call retries.
+        exitReason = err;
+        notifyExited();
     });
 
-    child.on("exit", () => {
-        console.error("[Proxy] Election app exited.");
-        appProcess = null;
-        // Drop the client so the next request reconnects to a fresh app instance.
-        mcpClient = null;
-    });
-
-    return child;
-}
-
-
-async function connectToApp() {
-    if (!appProcess || appProcess.exitCode !== null) {
-        // Resolve the port only right before spawning, so a slow download in
-        // ensureAppInstalled() cannot leave us with a port that got taken.
-        appPort = await getFirstFreePort(preferredPort);
-        appProcess = startApp(appPort);
-
-        try {
-            await waitForHttpServer(getMcpUrl());
-        } catch (error) {
-            if (appProcess) appProcess.kill();
-            appProcess = null;
-            throw error;
+    child.on("exit", (code, signal) => {
+        console.error(`[Proxy] Election app exited (code=${code}, signal=${signal}).`);
+        if (!exitReason) {
+            exitReason = new Error(`The election app exited (code=${code}, signal=${signal}).`);
         }
+        notifyExited();
+    });
 
-        mcpClient = null;
-    }
-
-    if (!mcpClient) {
-        console.error("[Proxy] Establishing MCP connection...");
-        const client = new Client({name: "kogiqa-webbrowser-mcp-server-client", version: "1.0.0"});
-        client.onclose = () => {
-            console.error("[Proxy] MCP connection closed.");
-            mcpClient = null;
-        };
-        client.onerror = (error) => {
-            console.error("[Proxy] MCP connection error:", error);
-            mcpClient = null;
-        };
-
-        await client.connect(new StreamableHTTPClientTransport(new URL(getMcpUrl())));
-        mcpClient = client;
-
-        console.error("[Proxy] Connected to Election App HTTP endpoint.");
-    }
-
-    return mcpClient;
+    return {
+        port,
+        kill() {
+            if (!exited) {
+                child.kill();
+            }
+        },
+        onExit(handler) {
+            if (exited) {
+                // Already gone: report it asynchronously so the caller sees the
+                // same ordering as a live exit event.
+                queueMicrotask(handler);
+            } else {
+                exitHandlers.push(handler);
+            }
+        },
+        exitReason() {
+            return exitReason;
+        },
+    };
 }
 
-
-async function ensureConnection() {
-    // Serialize concurrent tool calls so they cannot spawn the app twice or
-    // race on the shared client.
-    if (!connectPromise) {
-        connectPromise = connectToApp().finally(() => {
-            connectPromise = null;
-        });
-    }
-    return connectPromise;
+/**
+ * Opens a fresh MCP client against the app's HTTP endpoint.
+ *
+ * @param {string} url
+ * @returns {Promise<Client>}
+ */
+async function connectClient(url) {
+    const client = new Client({name: "kogiqa-webbrowser-mcp-server-client", version: "1.0.0"});
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), {
+        // Reconnection is handled at the tool-call level (restart app, new
+        // client), so the transport must not keep retrying against a port whose
+        // app is gone. Retries are still bounded to one attempt so a
+        // half-delivered SSE response cannot hang the call indefinitely.
+        reconnectionOptions: {
+            initialReconnectionDelay: 1000,
+            maxReconnectionDelay: 30000,
+            reconnectionDelayGrowFactor: 1.5,
+            maxRetries: 0,
+        },
+    }));
+    return client;
 }
+
+const appConnection = new AppConnection({
+    preferredPort,
+    findFreePort: getFirstFreePort,
+    spawnApp: startApp,
+    waitForAppReady: (url) => waitForHttpServer(url),
+    createClient: connectClient,
+    buildMcpUrl: getMcpUrl,
+});
+
 
 async function startProxy() {
 
-    const mcpServer = new Server(
-        {name: 'kogiqa-webbrowser-mcp-server', version: "1.0.0"},
-        {capabilities: {tools: {}}}
-    );
-
-    mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
-        return toolList;
-    });
-
-
-    mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-        const client = await ensureConnection();
-
-        return client.request(request, CallToolResultSchema);
-    });
+    const mcpServer = createProxyServer({connection: appConnection, toolList});
 
     const stdioTransport = new StdioServerTransport();
     await mcpServer.connect(stdioTransport);
@@ -154,7 +165,9 @@ async function main() {
         await ensureAppInstalled();
 
         process.on("exit", () => {
-            if (appProcess) appProcess.kill();
+            // Best-effort synchronous cleanup: close() would need to await, and
+            // Node does not run async work on "exit". child.kill() is sync.
+            appConnection.killApp();
         });
         process.on("SIGINT", () => process.exit());
         process.on("SIGTERM", () => process.exit());
@@ -167,5 +180,3 @@ async function main() {
 }
 
 main();
-
-

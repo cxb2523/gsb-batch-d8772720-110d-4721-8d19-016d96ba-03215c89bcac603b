@@ -29,6 +29,8 @@
     "node_modules/**/**",
     ".pnpm",
     "**/*.test.js",
+    "test",
+    "test-support",
     "types",
     "kogiqa-extracted",
   ]

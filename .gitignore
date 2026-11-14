@@ -1,0 +1,4 @@
+node_modules/
+.kogiqa-mcp/
+kogiqa-extracted/
+*.log
