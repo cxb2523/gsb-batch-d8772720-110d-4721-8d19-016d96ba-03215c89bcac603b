@@ -63,6 +63,10 @@ the fields, and saves two files in the folder you are in: the data, and a small 
 *   **Records in two parts.** A title row followed by a details row (Hacker News), or a `dt`
     followed by its `dd` (arXiv), is read as one row.
 *   **All the pages.** Follows "next" links, numbered pages, "load more" buttons and infinite scroll.
+*   **Says how a run ended.** A "load more" button that disappears, a click or scroll that adds
+    nothing, or two pages with no new rows is reported as an early stop — with the rows read so
+    far kept — instead of quietly looking like a complete run. (`RunResult.stop`/`aborted`; `ok`
+    still means only "no check failed".)
 *   **Item pages.** `--follow` opens each item's own page and adds what it holds: labelled rows,
     embedded structured data, the description.
 *   **Teach by example.** If it picks the wrong list, show it a value you can see on the page:

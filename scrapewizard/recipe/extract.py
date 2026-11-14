@@ -10,7 +10,10 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
 from scrapewizard.core.logging import log
-from scrapewizard.recipe.fetch import BrowserSession, FetchError, fetch
+from scrapewizard.recipe.fetch import (
+    GROWTH_MISSING, GROWTH_UNUSABLE,
+    BrowserSession, FetchError, MoreOutcome, fetch,
+)
 from scrapewizard.recipe.embedded import DATA_PREFIX, data_items, read_data_value
 from scrapewizard.recipe.model import IN_PLACE_PAGINATION, Field, Recipe, RecipeError
 from scrapewizard.recipe.types import clean_text, convert
@@ -23,15 +26,56 @@ ITEM_PAGE_WORKERS = 4
 # A required field may be empty in a few records before the check fails.
 DEFAULT_REQUIRED_COVERAGE = 0.9
 
+# How a run ended. "complete" means the recipe was followed as far as it goes:
+# the page limit was reached or there was no next page. Every other value names
+# a reason the run stopped itself early, and is worth showing to the caller.
+STOP_COMPLETE = "complete"
+STOP_CONTROL_MISSING = "control_missing"      # "load more" control no longer on the page
+STOP_CONTROL_UNUSABLE = "control_unusable"    # control present but hidden, disabled or unclickable
+STOP_NO_GROWTH = "no_growth"                  # click or scroll did not add content
+STOP_NO_NEW_RECORDS = "no_new_records"        # two pages in a row added nothing new
+ABNORMAL_STOPS = (STOP_CONTROL_MISSING, STOP_CONTROL_UNUSABLE, STOP_NO_GROWTH, STOP_NO_NEW_RECORDS)
+
 
 @dataclass
 class RunResult:
     records: List[Dict[str, Any]]
     pages: int
     failures: List[str] = field(default_factory=list)
+    # Why pagination ended, and the same thing as a sentence fit to show a user.
+    stop: str = STOP_COMPLETE
+    stop_detail: str = ""
+
+    @property
+    def aborted(self) -> bool:
+        """True when pagination stopped itself instead of reaching the list's end."""
+        return self.stop in ABNORMAL_STOPS
+
+    @property
+    def stop_reason(self) -> str:
+        """The stop code under a more explicit name."""
+        return self.stop
+
+    @property
+    def completed(self) -> bool:
+        """True when the list was followed as far as it goes."""
+        return not self.aborted
+
+    @property
+    def stop_message(self) -> str:
+        """One plain sentence about how the run ended, for a log or a person."""
+        noun = "page" if self.pages == 1 else "pages"
+        rows = "record" if len(self.records) == 1 else "records"
+        reason = self.stop_detail or ("the list ended" if self.completed else "pagination stopped")
+        verb = "Read" if self.completed else "Stopped after"
+        return f"{verb} {self.pages} {noun} with {len(self.records)} {rows}: {reason}."
 
     @property
     def ok(self) -> bool:
+        # Deliberately unchanged: ok still means "no check failed", exactly as
+        # before. The stop fields are added beside it and never overwrite it,
+        # so ok is neither loosened into "always success" nor silently redefined.
+        # Whether the list was followed to its end is read from ``aborted``.
         return not self.failures
 
 
@@ -217,7 +261,7 @@ def run_recipe(
     fetcher: Optional[Callable[[str, str], str]] = None,
     delay: float = 0.3,
     on_page: Optional[Callable[[int, int], None]] = None,
-    session_factory: Callable[[], Any] = BrowserSession,
+    session_factory: Optional[Callable[[], Any]] = None,
     on_item: Optional[Callable[[int, int], None]] = None,
 ) -> RunResult:
     """Run a recipe and return its records with any failed checks.
@@ -228,16 +272,30 @@ def run_recipe(
     Args:
         max_pages: Pages to read. Defaults to the recipe's ``pagination.max_pages`` (1 if unset).
         fetcher: ``(url, mode) -> html``. When given it is used for every page
-            and no browser is opened; meant for tests.
+            and no session is opened for fetching. A list that grows in place
+            still needs a session for its "load more" clicks or scrolls, so pass
+            one through ``session_factory`` to test that path offline.
         delay: Seconds to wait between pages, to be polite to the site.
         on_page: Called with (pages read, records so far) after each page.
         session_factory: Creates the browser session. Replaceable for tests.
         on_item: Called with (item pages read, total) while following items.
+
+    Returns:
+        A ``RunResult`` whose ``records`` and ``pages`` hold what was read even
+        when the run stopped early, and whose ``stop``/``stop_detail`` say why.
     """
     limit = max_pages if max_pages is not None else int(recipe.pagination.get("max_pages") or 1)
     in_place = recipe.pagination.get("type") in IN_PLACE_PAGINATION
-    if fetcher is None and (recipe.fetch == "browser" or in_place):
-        with session_factory() as session:
+    factory = session_factory or BrowserSession
+    # A growing list needs a session for its clicks or scrolls. Pages still come
+    # from the fetcher when one is given, so tests can drive that path offline
+    # by passing a fake session as well.
+    if in_place and (fetcher is None or session_factory is not None):
+        with factory() as session:
+            open_url = (lambda url: fetcher(url, recipe.fetch)) if fetcher is not None else session.open
+            return _read_pages(recipe, limit, open_url, session, delay, on_page, on_item)
+    if fetcher is None and recipe.fetch == "browser":
+        with factory() as session:
             return _read_pages(recipe, limit, session.open, session, delay, on_page, on_item)
     fetch_page = fetcher or fetch
     return _read_pages(recipe, limit, lambda url: fetch_page(url, recipe.fetch), None, delay, on_page, on_item)
@@ -304,6 +362,9 @@ def _read_pages(
     html = open_url(url)
     pages = 0
     stale_pages = 0  # consecutive pages that added nothing new
+    stop = STOP_COMPLETE
+    stop_detail = ""
+    in_place_run = kind in IN_PLACE_PAGINATION and session is not None
 
     while True:
         soup = parse(html)
@@ -320,19 +381,45 @@ def _read_pages(
         # One repeat is tolerated (some sites link page 1 to itself); two in a row is a loop.
         stale_pages = stale_pages + 1 if len(records) == before else 0
         if not page_records or stale_pages >= 2 or pages >= limit:
+            if pages >= limit:
+                stop_detail = f"the page limit of {limit} was reached"
+            elif stale_pages >= 2:
+                # For a list that grows in place, the control worked but the site
+                # stopped offering new rows: that is the run stalling, not the end.
+                # A recipe that moves to a new address keeps its old behaviour.
+                stop_detail = "two pages in a row held no new records"
+                if in_place_run:
+                    stop = STOP_NO_NEW_RECORDS
+            elif not page_records:
+                stop_detail = "the page held no records"
             break
 
-        if kind in IN_PLACE_PAGINATION and session is not None:
+        if in_place_run:
             # The page itself grows: every read returns all items so far, and duplicates are skipped.
             grown = session.click_more(recipe.pagination.get("select") or "") if kind == "load_more" \
                 else session.scroll_more()
+            if isinstance(grown, MoreOutcome):
+                if grown.grown:
+                    html = grown.html
+                    continue
+                stop, stop_detail = _growth_stop(kind, grown)
+                break
+            # A session that still answers the old way: None means nothing more loaded.
             if grown is None:
+                stop = STOP_NO_GROWTH
+                stop_detail = ("clicking \"load more\" did not add anything to the page" if kind == "load_more"
+                               else "scrolling to the bottom did not add anything to the page")
                 break
             html = grown
             continue
 
         next_url = next_page_url(soup, recipe, url)
-        if not next_url or next_url in visited:
+        if not next_url:
+            stop_detail = "the last page had no next page"
+            break
+        if next_url in visited:
+            # Sites commonly point the last page's "next" back at itself; that is the end, not a stop.
+            stop_detail = "the next page was one already read"
             break
         time.sleep(delay)
         url = next_url
@@ -342,4 +429,21 @@ def _read_pages(
     if recipe.follow and recipe.detail_fields:
         _follow_items(records, recipe, open_url, min(delay, 0.2), on_item, parallel=session is None)
 
-    return RunResult(records=records, pages=pages, failures=evaluate_checks(records, recipe))
+    return RunResult(records=records, pages=pages, failures=evaluate_checks(records, recipe),
+                     stop=stop, stop_detail=stop_detail)
+
+
+def _growth_stop(kind: str, outcome: MoreOutcome) -> Tuple[str, str]:
+    """Name the stop reason for a click or scroll that added nothing, in plain words."""
+    if outcome.problem == GROWTH_MISSING:
+        if kind == "load_more":
+            return (STOP_CONTROL_MISSING,
+                    'the "load more" control was not found on the page; the list may have ended '
+                    "or the site stopped showing it")
+        return STOP_NO_GROWTH, "the page offered nothing more to scroll to"
+    if outcome.problem == GROWTH_UNUSABLE:
+        return (STOP_CONTROL_UNUSABLE,
+                outcome.detail or 'the "load more" control is hidden, disabled or could not be clicked')
+    return (STOP_NO_GROWTH,
+            outcome.detail or ('clicking "load more" added nothing to the page' if kind == "load_more"
+                               else "scrolling to the bottom added nothing to the page"))

@@ -218,11 +218,12 @@ def _build_signed_in(url: str, likes: List[str], wait: Callable[[Any], None] = _
 
 def _detect_scrolling(session: BrowserSession, result: BuildResult) -> None:
     """Scroll once: if more items appear, the list is an infinite scroll."""
-    grown = session.scroll_more()
-    if grown is None:
+    outcome = session.scroll_more()
+    html = getattr(outcome, "html", outcome)  # a MoreOutcome, or a plain page string
+    if not isinstance(html, str) or not html:
         return
     try:
-        now = len(parse(grown).select(result.recipe.container))
+        now = len(parse(html).select(result.recipe.container))
     except Exception:
         return
     if now > len(result.records):
@@ -420,9 +421,12 @@ def get(
             console.print("Following it needs a browser. Starting one ...")
             recipe.fetch = "browser"
         try:
-            records = _run_pages(recipe, wanted if more_pages else 1, storage).records
+            outcome = _run_pages(recipe, wanted if more_pages else 1, storage)
         except FetchError as e:
             raise _fail(str(e))
+        records = outcome.records
+        if more_pages and outcome.aborted:
+            console.print(f"[yellow]Pagination stopped:[/yellow] {outcome.stop_detail or outcome.stop}")
         if more_pages:
             recipe.pagination["max_pages"] = wanted
             recipe.checks["min_records"] = max(1, len(records) // 2)
@@ -525,6 +529,9 @@ def run(
     changes = compare(state, result.records, page_limit)
     summary = f"{recipe.name}   {len(result.records)} rows from {result.pages} {page_word}"
     console.print(f"{summary}   {changes}" if changes else summary, soft_wrap=True)
+    if result.aborted:
+        # The rows already read are kept and saved; the caller is told why pagination stopped.
+        console.print(f"[yellow]Pagination stopped:[/yellow] {result.stop_detail or result.stop}")
     if not result.records:
         raise _fail("No records were found, so nothing was saved.",
                     "The site may have changed. Build a fresh recipe with: scrapewizard " + recipe.url)
@@ -536,4 +543,9 @@ def run(
         raise typer.Exit(code=1)
     # Only a run that passed its checks becomes the memory the next run is compared with.
     save_state(recipe_path, recipe, result.records, page_limit)
-    console.print("       all checks passed")
+    if result.aborted:
+        # The rows read were saved above; saying "all checks passed" alone would
+        # hide that the list was not followed to its end.
+        console.print("       checks passed, but the list was not followed to its end")
+    else:
+        console.print("       all checks passed")

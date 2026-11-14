@@ -1,6 +1,7 @@
 """Getting a page: plain HTTP first, a real browser only when needed."""
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -22,6 +23,30 @@ BROWSER_HEADERS = {
 # New elements a page must gain before "load more" or scrolling counts as having loaded content.
 MIN_GROWTH = 5
 META_CHARSET_RE = re.compile(rb"<meta[^>]+charset\s*=\s*[\"']?\s*([\w-]+)", re.I)
+
+# Why a click or scroll did not grow the page. These are kept apart because the
+# difference matters to the run: a control that is gone says the list ended, while
+# a control that was clicked and did nothing says the site stopped answering.
+GROWTH_MISSING = "missing"      # no element matches the control's selector
+GROWTH_UNUSABLE = "unusable"    # the control is there but hidden, disabled or not clickable
+GROWTH_NO_CHANGE = "no_change"  # the click happened but the page did not gain content
+
+
+@dataclass
+class MoreOutcome:
+    """What a "load more" click or a scroll did.
+
+    ``html`` holds the grown page when content appeared. Otherwise it is None and
+    ``problem`` says which of the reasons above applies, with ``detail`` fit to
+    show to the user.
+    """
+    html: Optional[str] = None
+    problem: Optional[str] = None
+    detail: str = ""
+
+    @property
+    def grown(self) -> bool:
+        return self.html is not None
 
 
 class FetchError(Exception):
@@ -182,30 +207,44 @@ class BrowserSession:
                 return True
         return last >= before + MIN_GROWTH
 
-    def click_more(self, selector: str) -> Optional[str]:
-        """Click a "load more" control. Returns the grown page, or None if nothing more loaded."""
+    def click_more(self, selector: str) -> MoreOutcome:
+        """Click a "load more" control and report what happened.
+
+        The outcome says whether the page grew, and when it did not, whether the
+        control was missing, present but unusable, or clicked without effect.
+        """
         try:
             button = self.page.locator(selector).first
-            if button.count() == 0 or not button.is_visible() or not button.is_enabled():
-                return None
+            if button.count() == 0:
+                return MoreOutcome(problem=GROWTH_MISSING,
+                                   detail=f'no element matches "load more" control {selector!r}')
+            if not button.is_visible() or not button.is_enabled():
+                return MoreOutcome(problem=GROWTH_UNUSABLE,
+                                   detail=f'the "load more" control {selector!r} is hidden or disabled')
             before = self._element_count()
             button.click(timeout=5000)
             if not self._wait_for_growth(before):
-                return None
-            return self.page.content()
-        except self._error:
-            return None
+                return MoreOutcome(problem=GROWTH_NO_CHANGE,
+                                   detail="clicking \"load more\" did not add anything to the page")
+            return MoreOutcome(html=self.page.content())
+        except self._error as e:
+            message = str(e).splitlines()[0][:120] if str(e) else type(e).__name__
+            return MoreOutcome(problem=GROWTH_UNUSABLE,
+                               detail=f'the "load more" control could not be clicked ({message})')
 
-    def scroll_more(self) -> Optional[str]:
-        """Scroll to the bottom. Returns the grown page, or None if the page did not grow."""
+    def scroll_more(self) -> MoreOutcome:
+        """Scroll to the bottom and report what happened."""
         try:
             before = self._element_count()
             self.page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
             if not self._wait_for_growth(before):
-                return None
-            return self.page.content()
-        except self._error:
-            return None
+                return MoreOutcome(problem=GROWTH_NO_CHANGE,
+                                   detail="scrolling to the bottom did not add anything to the page")
+            return MoreOutcome(html=self.page.content())
+        except self._error as e:
+            message = str(e).splitlines()[0][:120] if str(e) else type(e).__name__
+            return MoreOutcome(problem=GROWTH_UNUSABLE,
+                               detail=f'the page could not be scrolled ({message})')
 
 
 def sign_in(url: str, wait: Callable[[Any], None], headless: bool = False,

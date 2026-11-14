@@ -219,6 +219,9 @@ if the menu is still all there is, says so.
 - **"Load more" and infinite scroll** are both waited on the same way: after the click or the
   scroll, wait until at least five new elements have appeared and the count has stopped
   growing. Page height and "network idle" turned out to be unreliable signals.
+  `click_more`/`scroll_more` return a `MoreOutcome` that says whether the page grew, and when
+  it did not, whether the control was missing, present but hidden/disabled/unclickable, or
+  clicked without any content appearing. The run turns that into a readable stop reason.
 - **Sign-in** (`--login`) opens a visible window, the user signs in, and the browser's session
   is saved to `.scrapewizard/<name>.session.json`. That folder writes its own `.gitignore`,
   because the file holds login cookies.
@@ -231,6 +234,17 @@ if the menu is still all there is, says so.
 page repeats. Rows are de-duplicated. Each value is converted by its type: numbers become
 numbers, links and images become full addresses; money and dates are kept as cleaned text so
 nothing is lost in conversion.
+
+A run also reports **how it ended**. `RunResult.stop` is `complete` when the list was followed
+as far as it goes (page limit reached, or no next page). For a list that grows in place, it
+names why pagination stopped instead: `control_missing` (the "load more" control is no longer
+there), `control_unusable` (it is hidden, disabled or could not be clicked), `no_growth` (the
+click or scroll added nothing) or `no_new_records` (two pages in a row held nothing new).
+`stop_detail` is the same reason as a sentence, and `aborted` is true for those four values.
+The rows read before stopping, and the page count, are always kept. `ok` keeps exactly its
+old meaning — no check failed — so it is never quietly turned into "always success"; a caller
+that also wants to know the list was followed to its end reads `aborted`/`completed`.
+On the command line, a stop is printed with its reason, and what was read is still saved.
 
 With `detail` in the recipe, each row's link is opened (four at a time over HTTP) and the
 item-page fields are merged into the row. Item-page fields can be a selector, a labelled table
