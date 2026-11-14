@@ -104,6 +104,8 @@ class _SourceState:
 
         self.sylvia_key_warned = False  # so the "no Sylvia key" skip logs once
 
+        self.last_fetch_outcome = None  # most recent per-source fetch outcome (see record_fetch_outcome)
+
     # --- fetch-success heartbeat / active source ---
     def record_fetch_success(self):
         self.last_fetch_success_ts = time.time()
@@ -161,6 +163,19 @@ class _SourceState:
         """Reset a source's backoff after it succeeds."""
         with self._lock:
             self.source_failures[name] = 0
+
+    # --- fetch-outcome record (what the last collection actually did) ---
+    def record_fetch_outcome(self, outcome):
+        """Store the outcome of one fetch chain run: an ordered per-source attempt list
+        plus the final result. `outcome` is a plain JSON-safe dict; it is treated as
+        immutable after recording (callers build a fresh one per run)."""
+        with self._lock:
+            self.last_fetch_outcome = outcome
+
+    def get_last_fetch_outcome(self):
+        """The most recently recorded fetch outcome, or None if no fetch has run yet."""
+        with self._lock:
+            return self.last_fetch_outcome
 
     # --- coalescing cache ---
     def coalesce(self, key, producer):
@@ -233,6 +248,12 @@ def get_last_fetch_success_ts():
 def get_active_source():
     """The data source currently serving data, or None."""
     return _state.active_source
+
+
+def get_last_fetch_outcome():
+    """Outcome of the most recent fetch chain run (per-source attempts + final result),
+    or None if no fetch has run yet. Safe to serialize to JSON."""
+    return _state.get_last_fetch_outcome()
 
 
 def _claim_auth_error_notification():
@@ -542,17 +563,45 @@ def fetch_posts(subreddit, limit, reddit):
     return _coalesce(('posts', subreddit, limit), lambda: _fetch_posts_impl(subreddit, limit, reddit))
 
 
+def _skip_status(source):
+    """Why a source was passed over without being tried: not configured (e.g. sylvia
+    without an API key) or cooling down after earlier failures."""
+    if source == 'sylvia' and not SYLVIA_API_KEY:
+        return 'skipped_unconfigured'
+    return 'skipped_cooldown'
+
+
+def _record_outcome(kind, subreddit, thread_id, attempts, final_source):
+    """Assemble and store the fetch-outcome record for one chain run. Error details are
+    limited to the exception type name — no tracebacks or request URLs (which could carry
+    proxy credentials) are exposed to the frontend."""
+    _state.record_fetch_outcome(
+        {
+            'timestamp': time.time(),
+            'kind': kind,  # 'posts' | 'comments'
+            'subreddit': subreddit,
+            'thread_id': thread_id,
+            'attempts': attempts,  # [{'source', 'status', 'error'?}, ...] in try order
+            'final_source': final_source,  # serving source name, or None when all failed
+            'ok': final_source is not None,
+        }
+    )
+
+
 def _fetch_posts_impl(subreddit, limit, reddit):
     """Try each configured source in order until one returns data.
 
     Returns (posts, source_name), or (None, None) if every source failed.
     """
+    attempts = []
     for source in config.get_source_order():
         if not _source_available(source):
+            attempts.append({'source': source, 'status': _skip_status(source)})
             continue
         try:
             if source == 'oauth':
                 if reddit is None:
+                    attempts.append({'source': source, 'status': 'skipped_unconfigured'})
                     continue
                 posts = _fetch_posts_oauth(reddit, subreddit, limit)
             elif source == 'rss':
@@ -571,22 +620,27 @@ def _fetch_posts_impl(subreddit, limit, reddit):
                         "Reddit API authentication failed (401). Falling back to alternative sources (RSS/JSON)."
                     )
             logging.warning(f"Reddit source '{source}' failed for r/{subreddit}: {e}")
+            attempts.append({'source': source, 'status': 'error', 'error': type(e).__name__})
             _mark_source_down(source)
             continue
 
         if posts is None:
             logging.warning(f"Reddit source '{source}' returned nothing for r/{subreddit}")
+            attempts.append({'source': source, 'status': 'empty'})
             _mark_source_down(source)
             continue
 
+        attempts.append({'source': source, 'status': 'success'})
         if source == 'oauth':
             _reset_auth_error_notification()
         _note_source_success(source)
         record_fetch_success()
         _set_active_source(source)
+        _record_outcome('posts', subreddit, None, attempts, source)
         return posts, source
 
     logging.error(f"All Reddit sources failed for r/{subreddit}")
+    _record_outcome('posts', subreddit, None, attempts, None)
     return None, None
 
 
@@ -600,12 +654,15 @@ def fetch_thread_comments(subreddit, thread_id, reddit):
 
 def _fetch_thread_comments_impl(subreddit, thread_id, reddit):
     """Fetch a thread's comments through the configured source chain (see config.get_source_order)."""
+    attempts = []
     for source in config.get_source_order():
         if not _source_available(source):
+            attempts.append({'source': source, 'status': _skip_status(source)})
             continue
         try:
             if source == 'oauth':
                 if reddit is None:
+                    attempts.append({'source': source, 'status': 'skipped_unconfigured'})
                     continue
                 submission = reddit.submission(id=thread_id)
                 submission.comment_sort = 'new'
@@ -629,16 +686,21 @@ def _fetch_thread_comments_impl(subreddit, thread_id, reddit):
                 continue
         except Exception as e:
             logging.warning(f"Comment source '{source}' failed for thread {thread_id}: {e}")
+            attempts.append({'source': source, 'status': 'error', 'error': type(e).__name__})
             _mark_source_down(source)
             continue
 
         if comments is None:
+            attempts.append({'source': source, 'status': 'empty'})
             _mark_source_down(source)
             continue
 
+        attempts.append({'source': source, 'status': 'success'})
         _note_source_success(source)
         record_fetch_success()
+        _record_outcome('comments', subreddit, thread_id, attempts, source)
         return comments
 
     logging.error(f"All sources failed fetching comments for thread {thread_id}")
+    _record_outcome('comments', subreddit, thread_id, attempts, None)
     return None

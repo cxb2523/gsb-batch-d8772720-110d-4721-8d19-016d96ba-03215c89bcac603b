@@ -17,6 +17,7 @@ from flask_cors import CORS
 from reddit_scraper import config as rs_config
 from reddit_scraper import credentials as rs_credentials
 from reddit_scraper import models
+from reddit_scraper import sources as rs_sources
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -96,6 +97,25 @@ def bot_status():
         status.setdefault('error', str(e))
 
     return jsonify(status)
+
+
+@app.route('/api/fetch-outcome', methods=['GET'])
+def fetch_outcome():
+    """Read-only view of the most recent fetch chain run: when it happened, which
+    subreddit/thread it covered, each source's status in try order, and the final
+    result. Returns an empty structure (not an error) when no fetch has run yet."""
+    outcome = rs_sources.get_last_fetch_outcome()
+    if not outcome:
+        return jsonify({'outcome': None, 'all_failed': False, 'degraded': False})
+    final = outcome.get('final_source')
+    return jsonify(
+        {
+            'outcome': outcome,
+            'all_failed': final is None,
+            # Degraded = served by a source without score/domain data (see config.RICH_SOURCES).
+            'degraded': final is not None and not rs_config.supports_rich_filters(final),
+        }
+    )
 
 
 @app.route('/api/subreddits/search', methods=['GET'])

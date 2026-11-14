@@ -8,6 +8,45 @@ import SetupRequired from '@/components/SetupRequired';
 import { Monitor } from '@/types/monitor';
 import { getApiUrl } from '@/lib/api';
 
+// Outcome of one fetch chain run, as returned by /api/fetch-outcome.
+interface FetchAttempt {
+  source: string;
+  status: 'success' | 'error' | 'empty' | 'skipped_cooldown' | 'skipped_unconfigured';
+  error?: string;
+}
+
+interface FetchOutcome {
+  timestamp: number;
+  kind: 'posts' | 'comments';
+  subreddit: string;
+  thread_id: string | null;
+  attempts: FetchAttempt[];
+  final_source: string | null;
+  ok: boolean;
+}
+
+interface FetchOutcomeResponse {
+  outcome: FetchOutcome | null;
+  all_failed: boolean;
+  degraded: boolean;
+}
+
+const ATTEMPT_STATUS_LABEL: Record<FetchAttempt['status'], string> = {
+  success: 'success',
+  error: 'failed (error)',
+  empty: 'failed (no data)',
+  skipped_cooldown: 'skipped (cooldown)',
+  skipped_unconfigured: 'skipped (not configured)',
+};
+
+const ATTEMPT_STATUS_STYLE: Record<FetchAttempt['status'], string> = {
+  success: 'bg-green-500/20 text-green-300 border-green-500/30',
+  error: 'bg-red-500/20 text-red-300 border-red-500/30',
+  empty: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+  skipped_cooldown: 'bg-white/10 text-white/50 border-white/10',
+  skipped_unconfigured: 'bg-white/10 text-white/50 border-white/10',
+};
+
 export default function Home() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,6 +62,7 @@ export default function Home() {
   // backend (config.RICH_SOURCES), so the UI never hardcodes which sources are "rich".
   const [activeSourceDegraded, setActiveSourceDegraded] = useState(false);
   const [richFiltersSupported, setRichFiltersSupported] = useState(true);
+  const [fetchOutcome, setFetchOutcome] = useState<FetchOutcomeResponse | null>(null);
 
   const checkCredentials = useCallback(() => fetch(`${getApiUrl()}/api/credentials/status`)
     .then(response => response.json())
@@ -45,6 +85,16 @@ export default function Home() {
     }
   };
 
+  const checkFetchOutcome = async () => {
+    try {
+      const response = await fetch(`${getApiUrl()}/api/fetch-outcome`);
+      const data: FetchOutcomeResponse = await response.json();
+      setFetchOutcome(data);
+    } catch {
+      // Ignore outcome check errors
+    }
+  };
+
     checkCredentials();
     void fetch(`${getApiUrl()}/api/monitors`)
       .then(response => {
@@ -55,6 +105,7 @@ export default function Home() {
       .catch(err => setError(err instanceof Error ? err.message : "Failed to load monitors"))
       .finally(() => setLoading(false));
     checkBotStatus();
+    checkFetchOutcome();
   }, [checkCredentials]);
 
   const fetchMonitors = async () => {
@@ -228,6 +279,56 @@ export default function Home() {
 
       {/* Content */}
       <div className="max-w-lg mx-auto px-4 py-6">
+        {/* Last Fetch Outcome */}
+        {fetchOutcome?.outcome && (
+          <div
+            className={`mb-6 rounded-lg border p-4 text-sm ${
+              fetchOutcome.all_failed
+                ? 'bg-red-500/10 border-red-500/40'
+                : fetchOutcome.degraded
+                  ? 'bg-amber-500/10 border-amber-500/40'
+                  : 'bg-white/5 border-white/10'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <h2 className="font-semibold">Last Fetch Outcome</h2>
+              <span className="text-xs text-white/50">
+                {new Date(fetchOutcome.outcome.timestamp * 1000).toLocaleString()}
+              </span>
+            </div>
+            <p className="text-white/70 mb-2">
+              {fetchOutcome.outcome.kind === 'comments'
+                ? `Comments for thread ${fetchOutcome.outcome.thread_id} in r/${fetchOutcome.outcome.subreddit}`
+                : `Posts from r/${fetchOutcome.outcome.subreddit}`}
+            </p>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {fetchOutcome.outcome.attempts.map((attempt, i) => (
+                <span
+                  key={`${attempt.source}-${i}`}
+                  className={`px-2 py-0.5 rounded-full border text-xs ${ATTEMPT_STATUS_STYLE[attempt.status]}`}
+                  title={attempt.error ? `${attempt.source}: ${attempt.error}` : undefined}
+                >
+                  {attempt.source}: {ATTEMPT_STATUS_LABEL[attempt.status]}
+                </span>
+              ))}
+            </div>
+            {fetchOutcome.all_failed ? (
+              <p className="font-semibold text-red-300">
+                ⛔ All sources failed — no data was collected this run.
+              </p>
+            ) : (
+              <p className="text-white/80">
+                Final source: <span className="font-semibold">{fetchOutcome.outcome.final_source}</span>
+              </p>
+            )}
+            {fetchOutcome.degraded && (
+              <p className="text-amber-200 mt-1">
+                ⚠️ Degraded source — score and domain data are unavailable from &quot;
+                {fetchOutcome.outcome.final_source}&quot;, so those filters won&apos;t be applied.
+              </p>
+            )}
+          </div>
+        )}
         {loading ? (
           <div className="space-y-4">
             {[1, 2, 3].map((i) => (
