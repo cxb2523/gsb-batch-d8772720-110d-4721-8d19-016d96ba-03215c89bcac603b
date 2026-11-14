@@ -300,7 +300,11 @@ The ones that save the most steps:
 - `ax_upload` sets files on a file input; a click that opens a file chooser
   is reported instead of hanging.
 - `ax_open_many` opens a bounded URL list sequentially, returns compact titles
-  and accessibility excerpts, and closes temporary tabs by default. It is the
+  and accessibility excerpts, and closes temporary tabs by default. Every input
+  URL gets one result row keyed by its input index with a definite status —
+  `opened`, `error` (with an `open`/`observe` phase), or `skipped` (empty or
+  unsupported scheme, with a reason) — and a failed tab close is reported as a
+  per-row `close_error` addendum. It is the
   batch equivalent of `ax_open` and avoids writing a custom MCP client.
 - JS dialogs and new tabs opened by an action are reported in its result.
 

@@ -579,11 +579,24 @@ export class Controller {
     const excerptChars = Math.min(Math.max(Math.floor(a.excerpt_chars ?? 1600), 0), 20_000);
     const results = [];
 
-    for (const url of a.urls) {
+    for (const [index, raw] of a.urls.entries()) {
+      const url = String(raw ?? "").trim();
+      // Never feed unusable addresses into the open flow: they get a stable
+      // skipped verdict with a reason instead of a confusing open error.
+      if (!url) {
+        results.push({ index, url: "", status: "skipped", reason: "empty URL" });
+        continue;
+      }
+      if (!URL_SCHEMES.test(url)) {
+        results.push({ index, url, status: "skipped",
+          reason: "unsupported scheme (expected http(s):, file:, about:, data: or blob:)" });
+        continue;
+      }
+
       const before = new Set(this.tabs.keys());
-      let opened = null;
+      let row;
       try {
-        opened = await this.$open({
+        const opened = await this.$open({
           url,
           headless: a.headless,
           cdp_url: a.cdp_url,
@@ -598,7 +611,8 @@ export class Controller {
         const obs = opened.observation ?? {};
         const body = String(obs.text ?? "").split("\n").slice(3).join("\n").trim();
         const excerpt = excerptChars ? body.slice(0, excerptChars) : "";
-        results.push({
+        row = {
+          index,
           url,
           final_url: obs.url ?? url,
           title: obs.title ?? "",
@@ -607,26 +621,47 @@ export class Controller {
           truncated: !!obs.truncated,
           ...(excerpt ? { excerpt } : {}),
           ...(!closeAfter ? { tab_id: opened.tab_id } : {}),
-        });
+        };
       } catch (e) {
         const created = [...this.tabs.keys()].filter((id) => !before.has(id));
         const error = typeof e?.toJSON === "function"
           ? e.toJSON()
           : { code: e?.code ?? Codes.INTERNAL, message: String(e?.message ?? e), retry: "never" };
-        results.push({
+        // Which stage failed: $open marks open-phase failures with
+        // facts.tab_closed (it already closed the tab it made) and
+        // observation-phase failures with facts.tab_id (tab kept alive). A
+        // leftover new tab means navigation had already succeeded.
+        const phase = e?.facts?.tab_closed ? "open"
+          : (e?.facts?.tab_id || created.length) ? "observe"
+          : "open";
+        row = {
+          index,
           url,
           status: "error",
+          phase,
+          // A tab_id is only handed back while the tab is actually alive;
+          // once close_after closes it the id would be a stale reference.
           ...(created.at(-1) && !closeAfter ? { tab_id: created.at(-1) } : {}),
           error,
-        });
-      } finally {
-        if (closeAfter) {
-          const created = [...this.tabs.keys()].filter((id) => !before.has(id));
-          for (const tabId of created) {
-            try { await this.$close({ tab_id: tabId }); } catch {}
+        };
+      }
+
+      if (closeAfter) {
+        const created = [...this.tabs.keys()].filter((id) => !before.has(id));
+        const closeErrors = [];
+        for (const tabId of created) {
+          try { await this.$close({ tab_id: tabId }); }
+          catch (ce) {
+            closeErrors.push({ tab_id: tabId, code: ce?.code ?? Codes.INTERNAL, message: String(ce?.message ?? ce) });
           }
         }
+        // A failed close must never rewrite the URL's real outcome — it
+        // rides along as an addendum. Its tab_id stays valid precisely
+        // because the close did not happen.
+        if (closeErrors.length === 1) row.close_error = closeErrors[0];
+        else if (closeErrors.length > 1) row.close_error = { code: closeErrors[0].code, message: closeErrors.map((ce) => `${ce.tab_id}: ${ce.message}`).join("; ") };
       }
+      results.push(row);
     }
 
     return {
@@ -634,6 +669,7 @@ export class Controller {
       count: results.length,
       opened: results.filter((r) => r.status === "opened").length,
       failed: results.filter((r) => r.status === "error").length,
+      skipped: results.filter((r) => r.status === "skipped").length,
       closed_after: closeAfter,
     };
   }

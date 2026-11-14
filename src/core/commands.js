@@ -44,9 +44,9 @@ export const Contract = Object.freeze({
   open_many: {
     group: "browser",
     title: "Open multiple URLs",
-    desc: "Open a bounded list of URLs sequentially and return compact page results. Tabs are closed after each URL by default, so this is safe for source lists and batch inspection. Use ax_open for interactive work on one page.",
+    desc: "Open a bounded list of URLs sequentially and return compact page results. Every input URL gets exactly one result row carrying its input `index` and a status: opened (title/final_url/excerpt), error (typed error plus `phase`: open vs observe), or skipped (empty or unsupported scheme, with reason — never opened). Tabs are closed after each URL by default, so this is safe for source lists and batch inspection; a failed close is reported as a per-row close_error addendum, never by rewriting the row's real outcome. Use ax_open for interactive work on one page.",
     params: {
-      urls: { t: "urls", req: true, desc: "Non-empty list of http(s), file, about, data or blob URLs (maximum 100)." },
+      urls: { t: "urls", req: true, desc: "Non-empty list of URLs (maximum 100). Empty entries and schemes other than http(s)/file/about/data/blob are not opened — each is reported as a skipped result with a reason." },
       headless: { t: "boolean", desc: "No window (cdp backend; display-less Linux servers auto-boot a virtual display instead)." },
       cdp_url: { t: "string", desc: 'Attach instead of launching, e.g. "http://127.0.0.1:9222".' },
       backend: { t: "enum", values: ["cdp", "extension"], desc: "Omit for auto (extension when connected, else cdp; AXUSE_BACKEND pins it). cdp = separate, not-signed-in browser." },
@@ -350,8 +350,10 @@ export function validate(name, args) {
         if (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string" || !x)) { problems.push(`${key} must be a non-empty array of paths`); continue; }
         break;
       case "urls":
-        if (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string" || !x)) {
-          problems.push(`${key} must be a non-empty array of URLs`); continue;
+        // Empty strings are allowed through: open_many records them as
+        // per-row "skipped" results instead of rejecting the whole batch.
+        if (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string")) {
+          problems.push(`${key} must be a non-empty array of URL strings`); continue;
         }
         break;
       case "any":

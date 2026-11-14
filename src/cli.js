@@ -226,6 +226,7 @@ async function openUrlsCmd() {
   writeFileSync(output, renderUrlReport({ results: batch.results, backend, source }) + "\n");
   console.log(`Wrote ${batch.opened}/${batch.count} opened URL results to ${resolve(output)}`);
   if (batch.failed) console.log(`${batch.failed} URL${batch.failed === 1 ? "" : "s"} failed; see the report for details.`);
+  if (batch.skipped) console.log(`${batch.skipped} URL${batch.skipped === 1 ? "" : "s"} skipped; see the report for details.`);
 }
 
 async function pluginsCmd() {

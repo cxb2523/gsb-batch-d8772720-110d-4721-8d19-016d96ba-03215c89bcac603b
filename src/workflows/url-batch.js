@@ -28,22 +28,24 @@ function mdText(value) {
 /** Render compact ax_open_many results as a useful, honest Markdown report. */
 export function renderUrlReport({ results, backend, source }) {
   const opened = results.filter((r) => r.status === "opened").length;
-  const failed = results.length - opened;
+  const failed = results.filter((r) => r.status === "error").length;
+  const skipped = results.filter((r) => r.status === "skipped").length;
   const lines = [
     "# axuse URL inspection report",
     "",
     `Generated: ${new Date().toISOString()}`,
     `Backend: ${backend ?? "cdp"}`,
     `Source: ${source}`,
-    `Results: ${opened} opened, ${failed} failed`,
+    `Results: ${opened} opened, ${failed} failed, ${skipped} skipped`,
     "",
     "> This report contains page titles, access status, and bounded accessibility-text excerpts. It is not an LLM-generated factual summary.",
     "",
   ];
 
   results.forEach((row, i) => {
-    const title = row.title || row.final_url || row.url;
-    lines.push(`## ${i + 1}. ${mdText(title)}`);
+    const n = row.index ?? i;
+    const title = row.title || row.final_url || row.url || "(empty URL)";
+    lines.push(`## ${n + 1}. ${mdText(title)}`);
     lines.push(`- Source: <${row.url}>`);
     if (row.status === "opened") {
       lines.push(`- Status: opened (${row.ref_count ?? 0} accessibility refs)`);
@@ -52,13 +54,20 @@ export function renderUrlReport({ results, backend, source }) {
       if (row.excerpt) {
         lines.push("", "```text", mdText(row.excerpt), "```");
       }
+    } else if (row.status === "skipped") {
+      lines.push(`- Status: skipped`);
+      lines.push(`- Reason: ${mdText(row.reason ?? "not eligible for opening")}`);
     } else {
       lines.push(`- Status: failed`);
+      if (row.phase) lines.push(`- Phase: ${row.phase === "observe" ? "observation (page opened, reading it failed)" : "open (page never loaded)"}`);
       const error = row.error?.code
         ? `${row.error.code}: ${row.error.message ?? "unknown error"}`
         : row.error?.message ?? "unknown error";
       lines.push(`- Error: ${mdText(error)}`);
       if (row.error?.hint) lines.push(`- Hint: ${mdText(row.error.hint)}`);
+    }
+    if (row.close_error) {
+      lines.push(`- Cleanup warning: closing the tab afterwards failed (${mdText(row.close_error.code ?? "ERROR")}: ${mdText(row.close_error.message ?? "unknown error")})`);
     }
     lines.push("");
   });

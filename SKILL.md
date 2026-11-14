@@ -42,8 +42,12 @@ the last resort.
    that must be literal Control (terminals, devtools). Plain `enter`,
    `escape`, arrows are identical everywhere; select-all is automatic.
 
-For a bounded source list, use `ax_open_many` with `urls: [...]`. It returns
-compact title/status/excerpt rows and closes its temporary tabs by default;
+For a bounded source list, use `ax_open_many` with `urls: [...]`. Every input
+URL gets exactly one result row keyed by its input `index`: `opened`
+(title/final_url/excerpt), `error` (typed error plus `phase`: `open` vs
+`observe`), or `skipped` (empty or unsupported scheme, with a reason). It
+closes its temporary tabs by default — a failed close is reported as a
+per-row `close_error` addendum, never by rewriting the row's outcome;
 reserve repeated `ax_open` calls for pages that need interactive follow-up.
 
 ## CAPTCHA solving (only with a loaded solver plugin)
