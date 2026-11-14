@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
+import html
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import gradio as gr
 import requests
@@ -26,6 +27,13 @@ CACHE_DIR = Path("cache")
 QUICK_CACHE_DIR = CACHE_DIR / "quick_snapshot"
 SCRAPE_CACHE_DIR = CACHE_DIR / "scrape_pages"
 APP_THEME = gr.themes.Ocean()
+
+# Per-URL scrape outcome statuses. Every candidate URL produces exactly one
+# outcome record, so failures are never silently dropped.
+SCRAPE_STATUS_CACHED = "cache_hit"
+SCRAPE_STATUS_SUCCESS = "scraped"
+SCRAPE_STATUS_FAILED = "failed"
+SCRAPE_STATUSES = (SCRAPE_STATUS_CACHED, SCRAPE_STATUS_SUCCESS, SCRAPE_STATUS_FAILED)
 FORCE_LIGHT_JS = """
 () => {
   try {
@@ -319,44 +327,198 @@ def _extract_candidate_urls(quick: dict[str, Any]) -> list[str]:
     return unique_http_urls(urls)[:3]
 
 
-def _scrape_sources_parallel(urls: list[str]) -> list[dict[str, Any]]:
-    if not urls:
+def _scrape_error_reason(exc: BaseException) -> str:
+    """Turn a scrape exception into a short, human-readable failure reason."""
+    if isinstance(exc, requests.HTTPError):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None:
+            return f"HTTP {status_code} while scraping page"
+        message = str(exc).strip()
+        return f"HTTP error while scraping page: {message}" if message else "HTTP error while scraping page"
+    if isinstance(exc, requests.RequestException):
+        message = str(exc).strip()
+        label = exc.__class__.__name__
+        return f"{label}: {message}" if message else label
+    message = str(exc).strip()
+    label = exc.__class__.__name__
+    return f"{label}: {message}" if message else label
+
+
+def _scrape_outcome(
+    url: str,
+    status: str,
+    *,
+    page: dict[str, Any] | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    return {
+        "url": url,
+        "status": status,
+        "page": page,
+        "error": error,
+    }
+
+
+def _scrape_sources_parallel(
+    urls: list[str],
+    scraper: Callable[[str], dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Scrape every candidate URL in parallel and report one outcome per URL.
+
+    Outcomes are returned in the original candidate order. Each outcome is a
+    dict with keys:
+      - ``url``: the candidate URL (each URL appears at most once)
+      - ``status``: one of :data:`SCRAPE_STATUS_CACHED` (served from
+        ``cache/scrape_pages``, no network call), :data:`SCRAPE_STATUS_SUCCESS`
+        (fetched live and written to cache) or :data:`SCRAPE_STATUS_FAILED`
+        (nothing is written to cache so the next run retries the URL)
+      - ``page``: cached/scraped page payload for cache-hit and success
+        outcomes, otherwise ``None``
+      - ``error``: readable failure reason for failed outcomes, otherwise ""
+
+    ``scraper`` defaults to the module-level ``olostep_scrape`` so tests can
+    replace the network call by monkeypatching ``app.olostep_scrape``.
+    """
+    if scraper is None:
+        scraper = olostep_scrape
+    # Candidate URLs are expected to be unique already, but guard against
+    # duplicates so the same URL never shows up twice in the outcome list.
+    ordered_urls: list[str] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        url = str(raw_url).strip()
+        if url and url not in seen:
+            seen.add(url)
+            ordered_urls.append(url)
+
+    if not ordered_urls:
         return []
 
-    pages_by_url: dict[str, dict[str, Any]] = {}
+    outcomes_by_url: dict[str, dict[str, Any]] = {}
     missing_urls: list[str] = []
 
-    # Reuse cached page content first.
-    for url in urls:
-        key = _stable_hash(url.strip())
-        cached = _cache_load(SCRAPE_CACHE_DIR, key)
+    # Reuse cached page content first; a cache hit must never hit the network.
+    for url in ordered_urls:
+        cached = _cache_load(SCRAPE_CACHE_DIR, _stable_hash(url))
         if isinstance(cached, dict) and isinstance(cached.get("url"), str):
-            pages_by_url[url] = cached
+            outcomes_by_url[url] = _scrape_outcome(url, SCRAPE_STATUS_CACHED, page=cached)
         else:
             missing_urls.append(url)
 
-    if not missing_urls:
-        return [pages_by_url[url] for url in urls if url in pages_by_url]
+    if missing_urls:
+        max_workers = min(4, len(missing_urls))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(scraper, url): url for url in missing_urls}
+            for future in as_completed(future_map):
+                url = future_map[future]
+                try:
+                    raw = future.result()
+                    result = raw.get("result") if isinstance(raw, dict) and isinstance(raw.get("result"), dict) else {}
+                    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+                    page_payload = {
+                        "url": url,
+                        "title": str(metadata.get("title") or ""),
+                        "content": compact_text(result.get("markdown_content") or result.get("text_content")),
+                    }
+                    # Only successful pages are cached, so failed URLs are
+                    # retried on the next run instead of being cached as errors.
+                    _cache_save(SCRAPE_CACHE_DIR, _stable_hash(url), page_payload)
+                    outcomes_by_url[url] = _scrape_outcome(
+                        url, SCRAPE_STATUS_SUCCESS, page=page_payload
+                    )
+                except Exception as exc:  # noqa: BLE001 - converted into a recorded outcome
+                    outcomes_by_url[url] = _scrape_outcome(
+                        url,
+                        SCRAPE_STATUS_FAILED,
+                        error=_scrape_error_reason(exc),
+                    )
 
-    max_workers = min(4, len(missing_urls))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(olostep_scrape, url): url for url in missing_urls}
-        for future in as_completed(future_map):
-            url = future_map[future]
-            try:
-                raw = future.result()
-                result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
-                metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-                page_payload = {
-                    "url": url,
-                    "title": str(metadata.get("title") or ""),
-                    "content": compact_text(result.get("markdown_content") or result.get("text_content")),
-                }
-                pages_by_url[url] = page_payload
-                _cache_save(SCRAPE_CACHE_DIR, _stable_hash(url.strip()), page_payload)
-            except Exception:
-                pass
-    return [pages_by_url[url] for url in urls if url in pages_by_url]
+    return [outcomes_by_url[url] for url in ordered_urls]
+
+
+def _summarize_scrape_outcomes(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-URL outcomes into counters and successful pages."""
+    cached = sum(1 for item in outcomes if item.get("status") == SCRAPE_STATUS_CACHED)
+    succeeded = sum(1 for item in outcomes if item.get("status") == SCRAPE_STATUS_SUCCESS)
+    failed = sum(1 for item in outcomes if item.get("status") == SCRAPE_STATUS_FAILED)
+    failures = [
+        {"url": str(item.get("url") or ""), "error": str(item.get("error") or "Unknown error")}
+        for item in outcomes
+        if item.get("status") == SCRAPE_STATUS_FAILED
+    ]
+    pages = [
+        item["page"]
+        for item in outcomes
+        if item.get("status") in (SCRAPE_STATUS_CACHED, SCRAPE_STATUS_SUCCESS)
+        and isinstance(item.get("page"), dict)
+    ]
+    return {
+        "total": len(outcomes),
+        "cached": cached,
+        "succeeded": succeeded,
+        "failed": failed,
+        "failures": failures,
+        "pages": pages,
+    }
+
+
+def _all_sources_failed_error(summary: dict[str, Any]) -> gr.Error:
+    failure_lines = "; ".join(
+        f"{entry['url']} ({entry['error']})" for entry in summary.get("failures", [])
+    )
+    detail = f" Failures: {failure_lines}" if failure_lines else ""
+    return gr.Error(
+        "All candidate source pages failed to scrape, so signal extraction cannot run "
+        f"on empty material.{detail} Fix the failing URLs (or retry) and try again."
+    )
+
+
+def _scrape_status_html(summary: dict[str, Any]) -> str:
+    """Build the status-area HTML shown after a Quick Snapshot."""
+    total = int(summary.get("total", 0))
+    cached = int(summary.get("cached", 0))
+    succeeded = int(summary.get("succeeded", 0))
+    failed = int(summary.get("failed", 0))
+    failures = summary.get("failures", [])
+
+    lines = [
+        "<div class='status-card'>",
+        "<div class='status-title'>Quick snapshot complete / 快速快照完成</div>",
+        "<div class='status-body'>",
+        (
+            f"Candidate URLs 候选网址: <b>{total}</b> &nbsp;|&nbsp; "
+            f"Succeeded 抓取成功: <b>{succeeded}</b> &nbsp;|&nbsp; "
+            f"Failed 抓取失败: <b>{failed}</b> &nbsp;|&nbsp; "
+            f"Cache hits 命中缓存: <b>{cached}</b>"
+        ),
+    ]
+
+    if failed:
+        lines.append("<div style='margin-top:.5rem;'><b>Failed URLs / 失败网址:</b><ul style='margin:.25rem 0 0 1.25rem;padding:0;'>")
+        for entry in failures:
+            safe_url = html.escape(str(entry.get("url") or ""))
+            safe_error = html.escape(str(entry.get("error") or "Unknown error"))
+            lines.append(f"<li>{safe_url} — {safe_error}</li>")
+        lines.append("</ul>")
+        lines.append(
+            "<div style='margin-top:.5rem;'>"
+            "Downstream analysis (Signals/Trends/Brief) uses only the successfully "
+            "scraped pages; failed URLs are not cached and will be retried next time. / "
+            "后续分析（信号/趋势/简报）仅基于抓取成功的页面；失败网址不会写入缓存，下次运行将重试。"
+            "</div>"
+        )
+    else:
+        lines.append(
+            "<div style='margin-top:.5rem;'>"
+            "All candidate pages are available (cache hits required no network calls). "
+            "Signals/Trends/Brief tabs are now unlocked. / "
+            "全部候选页面可用（缓存命中未发起网络请求），信号/趋势/简报标签已解锁。"
+            "</div>"
+        )
+
+    lines.append("</div></div>")
+    return "".join(lines)
 
 
 def _ensure_deep_research(topic: str, state: dict[str, Any]) -> dict[str, Any]:
@@ -370,7 +532,16 @@ def _ensure_deep_research(topic: str, state: dict[str, Any]) -> dict[str, Any]:
     if not candidate_urls:
         raise gr.Error("Quick Snapshot returned no usable sources for deep research. Try a different query.")
 
-    scraped_pages = _scrape_sources_parallel(candidate_urls)
+    # Re-run the scrape so URLs that failed last time are retried; cache hits
+    # still avoid any network request.
+    scrape_outcomes = _scrape_sources_parallel(candidate_urls)
+    scrape_summary = _summarize_scrape_outcomes(scrape_outcomes)
+    scraped_pages = scrape_summary["pages"]
+
+    if not scraped_pages:
+        # Every candidate failed: refuse to run analysis on empty material.
+        raise _all_sources_failed_error(scrape_summary)
+
     deep = {
         "initial_task": topic,
         "answer_summary": str(quick.get("quick_text") or ""),
@@ -378,8 +549,14 @@ def _ensure_deep_research(topic: str, state: dict[str, Any]) -> dict[str, Any]:
         "answer_sources": quick.get("sources", []) if isinstance(quick.get("sources"), list) else [],
         "top3_sources": candidate_urls,
         "scraped_pages": scraped_pages,
+        "scrape_outcomes": scrape_outcomes,
+        "scrape_summary": {
+            key: value for key, value in scrape_summary.items() if key != "pages"
+        },
     }
     state["deep_research"] = deep
+    state["scrape_outcomes"] = scrape_outcomes
+    state["scrape_summary"] = {key: value for key, value in scrape_summary.items() if key != "pages"}
     return deep
 
 
@@ -406,24 +583,33 @@ def run_quick_answer(topic: str, session: dict[str, Any] | None) -> tuple[Any, .
     sources = quick.get("sources", [])
     sources = sources if isinstance(sources, list) else []
 
+    # Eagerly scrape the top candidate sources so the status area can report
+    # per-URL outcomes (cache hit / success / failure) immediately.
+    candidate_urls = _extract_candidate_urls(quick)
+    scrape_outcomes = _scrape_sources_parallel(candidate_urls)
+    scrape_summary = _summarize_scrape_outcomes(scrape_outcomes)
+
     state: dict[str, Any] = dict(session or {})
     state.update(
         {
             "topic": cleaned,
             "quick_answer": quick,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "candidate_urls": candidate_urls,
+            "scrape_outcomes": scrape_outcomes,
+            "scrape_summary": {
+                key: value for key, value in scrape_summary.items() if key != "pages"
+            },
         }
     )
+    # Deep research is rebuilt lazily so failed URLs get retried on demand.
     state.pop("deep_research", None)
     state.pop("signals", None)
     state.pop("trends", None)
     state.pop("trend_summary", None)
     state.pop("brief_markdown", None)
 
-    status = _status_block(
-        "Quick snapshot complete",
-        f"Found {len(sources)} source(s). Signals/Trends/Brief tabs are now unlocked.",
-    )
+    status = _scrape_status_html(scrape_summary)
 
     return (
         state,

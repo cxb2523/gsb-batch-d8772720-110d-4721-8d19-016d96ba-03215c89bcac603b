@@ -129,6 +129,20 @@ python script.py
 2. Run **Signals**, **Trends**, or **Brief** tabs as needed.
 3. Download generated markdown/json files for each stage.
 
+## Tests
+Offline tests for the parallel scrape chain live in `tests/`. They replace the
+real Olostep network call with a local fake scraper and use an isolated
+temporary cache directory, so no API keys or network access are required:
+
+```bash
+python -m pytest tests/ -v
+```
+
+The suite covers per-URL outcome ordering and statuses (cache hit / scraped /
+failed), readable failure reasons, cache writes for successes only (failures are
+retried later), the status-area counters and failure list, and blocking signal
+extraction with a readable error when every candidate fails.
+
 ## Outputs
 - Web app stage files (timestamped):
   - `<timestamp>_<topic>_signals.md/.json`
@@ -143,6 +157,23 @@ python script.py
 - Scraped page cache: `cache/scrape_pages/`
 
 The app reuses cached payloads to reduce repeated API calls and latency.
+
+### Source scrape outcomes (web app)
+After a Quick Snapshot, each of the (up to three) candidate source URLs produces
+one outcome record, returned in the original candidate order:
+- **Cache hit (`cache_hit`)** — a JSON payload already exists in
+  `cache/scrape_pages/`, so no network request is made.
+- **Scraped (`scraped`)** — fetched live from Olostep and written to the cache.
+- **Failed (`failed`)** — the scrape raised an error; a readable reason is
+  recorded and shown in the status area, and **nothing is written to cache**, so
+  the same URL is retried on the next run.
+
+The status area shows the candidate count, success count, failure count and
+cache-hit count, lists every failed URL with its reason, and warns that
+Signals/Trends/Brief analysis is based only on the successfully scraped pages.
+If every candidate fails, the failure list is still shown, but clicking
+**Run Signals** (or Trends/Brief) is blocked with an explicit error instead of
+running on empty material.
 
 ## Reliability Notes
 - Olostep calls in `script.py` include retries for transient statuses (`408`, `429`, `5xx`) and network timeouts.
