@@ -387,7 +387,25 @@ HasData accesses publicly available data only. A platform's terms may restrict a
 
 This repository is configuration and documentation for a remote server. There is no build step and nothing to containerize.
 
-The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=booking` returns exactly two tools, that every tool still declares its required parameters, that no name changed, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason.
+### Batch collection
+
+Alongside the launcher, `collect.mjs` ships a reusable paginated collection flow for the search tool. Give it a destination, dates, occupancy and a page cap, and it turns pages automatically, records how every page ended (success, empty, rate-limited, invalid input, other failure), and returns a progress object you can pass back to resume an interrupted run from `nextPage` without refetching pages that already succeeded. Rate limits (`concurrency_limit`) are retried with growing waits before the run stops as resumable, an empty `results` array ends the run cleanly, and invalid input (for example `children > 0` without `childrenAges`, or a check-out that is not after the check-in) is rejected before any request — and any credits — are spent.
+
+```js
+import { collectBookingSearch } from '@hasdata/booking-mcp/collect.mjs';
+
+const progress = await collectBookingSearch({
+  keyword: 'Paris',
+  checkInDate: '2026-12-14',
+  checkOutDate: '2026-12-17',
+  rooms: 1, adults: 2, children: 0,
+  maxPages: 4,
+});
+// After a rate limit or a crash, continue where it stopped:
+const more = await collectBookingSearch({ ...sameInput, maxPages: 4, progress });
+```
+
+The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=booking` returns exactly two tools, that every tool still declares its required parameters, that no name changed, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason. The collection-flow tests in `test/collect.test.mjs` run against a local fake endpoint and need no key.
 
 ```bash
 # macOS and Linux

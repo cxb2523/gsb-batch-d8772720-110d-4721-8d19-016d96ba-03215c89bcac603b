@@ -9,6 +9,7 @@
   },
   "files": [
     "index.mjs",
+    "collect.mjs",
     "README.md",
     "LICENSE"
   ],
