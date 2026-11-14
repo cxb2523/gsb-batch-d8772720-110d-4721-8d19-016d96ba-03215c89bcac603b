@@ -11,24 +11,37 @@ from report import write_report, write_sorted_reports
 from scanners.scanner import App
 from scanners.fdroid_scanner import FDroidScanner
 from scanners.github_code_scanner import GithubCodeScanner
-from scanners.github_meta_scanner import GithubMetaScanner
+from scanners.github_meta_scanner import GithubMetaScanner, FailureLog, default_failures_path
 from scanners.shizuku_modules_scanner import ShizukuModulesScanner
 
 
-def scan_apps(github_auth: Optional[str]) -> List[App]:
+def scan_apps(github_auth: Optional[str], failure_log: Optional[FailureLog] = None) -> List[App]:
     """Run all configured scanners and return a deduplicated, name-sorted list of apps.
 
     If `github_auth` is false the GitHub scanners are skipped. Raise a TypeError if a scanner
     returns something that is not an `App` instance so later code can safely use direct attribute access.
+
+    Per-repository failures of the GitHub metadata scanners are collected in
+    `failure_log` (created if omitted); they are reported separately from the
+    application entries.
     """
     apps: List[App] = []
     apps.extend(FDroidScanner("https://f-droid.org/repo/index.xml").find_matching_apps())
     apps.extend(FDroidScanner("https://apt.izzysoft.de/fdroid/repo/index.xml").find_matching_apps())
 
     if github_auth:
+        owns_log = failure_log is None
+        if owns_log:
+            # No round-level log supplied: finish the log here so the result is
+            # reported once instead of letting each scanner overwrite the file.
+            failure_log = FailureLog(default_failures_path(), autosave=False)
         apps.extend(GithubCodeScanner(github_auth, exclude=apps, process_count=4).find_matching_apps())
-        apps.extend(GithubMetaScanner(github_auth, exclude=apps, process_count=4).find_matching_apps())
-        apps.extend(ShizukuModulesScanner(github_auth, exclude=apps, process_count=4).find_matching_apps())
+        apps.extend(GithubMetaScanner(github_auth, exclude=apps, process_count=4,
+                                      failure_log=failure_log).find_matching_apps())
+        apps.extend(ShizukuModulesScanner(github_auth, exclude=apps, process_count=4,
+                                          failure_log=failure_log).find_matching_apps())
+        if owns_log:
+            failure_log.finish()
     return sorted(set(apps), key=attrgetter('name'))
 
 
@@ -63,20 +76,35 @@ def main() -> None:
         return not (a.name in util.ignore_list or any(url in util.ignore_list for url in a.urls))
 
     apps: List[App] = []
-    if not args.offline:
-        # Run scanners and get current-run apps
-        apps = util.filter_known_apps(scan_apps(github_auth))
-        apps = list(filter(remove_ignored_entries, apps))
+    # Round-level failure report, kept inside the run cache but outside the
+    # clone cache (cache/repos/), so it never mixes with SUMMARY.md entries.
+    failure_log = FailureLog(os.path.join(cache_dir, "github_meta_failures.json"),
+                             autosave=False)
+    try:
+        if not args.offline:
+            # Run scanners and get current-run apps
+            apps = util.filter_known_apps(scan_apps(github_auth, failure_log))
+            apps = list(filter(remove_ignored_entries, apps))
 
-        # Ensure each app discovered in this run has a first_seen timestamp set to now (UTC)
-        now = datetime.now(timezone.utc)
-        for a in apps:
-            if a.first_seen is None:
-                a.first_seen = now
+            # Ensure each app discovered in this run has a first_seen timestamp set to now (UTC)
+            now = datetime.now(timezone.utc)
+            for a in apps:
+                if a.first_seen is None:
+                    a.first_seen = now
 
-        # Save current run to cache
-        cache.save_current_run(apps)
+            # Save current run to cache
+            cache.save_current_run(apps)
+            print()
+        # Persist the repository-level failure list. Offline runs perform no
+        # checks, so this also clears any stale list from a previous round.
+        failure_log.write()
+    except BaseException:
+        # A scanner crashed: still persist whatever was collected and leave a
+        # console record before propagating the error.
+        failure_log.write()
+        failure_log.print_summary()
         print()
+        raise
 
     # Merge duplicates by name, preserving the earliest first_seen date
     merged = {c.name: c for c in cached_apps}
@@ -121,6 +149,10 @@ def main() -> None:
     # Print to console
     for app in apps:
         print(f"{app.scanner}: {app.name} {app.urls}")
+
+    # Close the round with the repository failure summary (the JSON file was
+    # already written above; this is the console record).
+    failure_log.print_summary()
 
 
 if __name__ == '__main__':

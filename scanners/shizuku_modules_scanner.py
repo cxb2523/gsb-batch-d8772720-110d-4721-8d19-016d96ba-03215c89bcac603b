@@ -1,5 +1,3 @@
-import itertools
-import multiprocessing as mp
 import os
 from datetime import datetime
 
@@ -77,12 +75,9 @@ class ShizukuModulesScanner(GithubMetaScanner):
 
         # No stale clone cleanup here: it would delete GithubMetaScanner's freshly
         # cloned repositories. Its cleanup pass handles stale dirs on the next run.
-        pool = mp.Pool(self.process_count, maxtasksperchild=1)
-        apps = []
-        apps.extend(pool.map(self.check_repo, filtered_results))
-        pool.close()
-
-        return list(itertools.chain.from_iterable(apps))
+        # Per-repository failures are collected by the shared failure log instead
+        # of aborting the round; the skip logic in check_repo is unchanged.
+        return self._check_candidates(filtered_results)
 
     def check_repo(self, args: App):
         # GithubMetaScanner runs before this scanner and has already fetched and
