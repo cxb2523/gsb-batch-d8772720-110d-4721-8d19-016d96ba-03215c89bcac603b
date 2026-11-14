@@ -1,15 +1,27 @@
 import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-from crewai_tools import BrightDataWebUnlockerTool, BrightDataSearchTool
+from ai_content_optimization_agent.tools import TitleScraperTool
 from llms.gemini_google_search_llm import GeminiWithGoogleSearch
+
+try:
+    # Available in crewai_tools releases shipping the Bright Data extras.
+    from crewai_tools import BrightDataSearchTool
+except ImportError:  # pragma: no cover - exercised only without the extras
+    BrightDataSearchTool = None
 
 # Read the LLM model from the envs
 MODEL = os.getenv("MODEL")
 
-# Initialize the required Bright Data tools
-web_unlocker_tool = BrightDataWebUnlockerTool()
-serp_search_tool = BrightDataSearchTool()
+# Title scraper: wraps the Bright Data web unlocker with retry handling and
+# structured attempt records, and returns the plain-text title on success or
+# raises a TitleScrapeError (URL + attempt count) on failure.
+title_scraper_tool = TitleScraperTool()
+
+# Initialize the required Bright Data SERP search tool. The unlocker itself is
+# instantiated lazily inside TitleScraperTool, so no credentials are needed
+# just to import this module.
+serp_search_tool = BrightDataSearchTool() if BrightDataSearchTool is not None else None
 
 @CrewBase
 class AiContentOptimizationAgent:
@@ -21,7 +33,7 @@ class AiContentOptimizationAgent:
     def title_scraper_agent(self) -> Agent:
         return Agent(
             config=self.agents_config["title_scraper_agent"],
-            tools=[web_unlocker_tool],
+            tools=[title_scraper_tool],
             verbose=True,
             llm=MODEL,
         )
@@ -44,9 +56,10 @@ class AiContentOptimizationAgent:
 
     @agent
     def ai_overview_retriever_agent(self) -> Agent:
+        tools = [serp_search_tool] if serp_search_tool is not None else []
         return Agent(
             config=self.agents_config["ai_overview_retriever_agent"],
-            tools=[serp_search_tool],
+            tools=tools,
             verbose=True,
             llm=MODEL,
         )

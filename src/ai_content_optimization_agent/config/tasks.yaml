@@ -1,9 +1,9 @@
 scrape_title_task:
   description: |
     1. Visit the URL: '{url}'.
-    2. Scrape the page's full content using the Bright Data Web Unlocker tool (using the Markdown data format).
-    3. Locate and extract only the text within the `<h1>` tag. If no `<h1>` tag is present, infer a title from the page content.
-    4. Output the extracted text as a plain string.
+    2. Call the "Title Scraper" tool, which scrapes the page's full content using the Bright Data Web Unlocker tool (using the Markdown data format).
+    3. The tool locates and extracts only the text within the `<h1>` tag. If no `<h1>` tag is present, it infers a title from the page content.
+    4. Output the extracted text as a plain string. If the tool raises an error, stop: do not fabricate a title and do not pass an empty string to the next task.
   expected_output: "The plain string containing the extracted text from the specified URL."
 
 google_search_task:
