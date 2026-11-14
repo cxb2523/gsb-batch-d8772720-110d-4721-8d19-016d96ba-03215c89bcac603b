@@ -3958,6 +3958,138 @@ async function phase4() {
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 
+/* The deep scan must give every collection target a judged ending — success,
+   failure with a reason, or skip — and a failure must never be summed as zero.
+   The whole collector graph is stubbed here, including disk.targets() itself,
+   so the test runs identically on every OS and in well under a second:
+
+     normal  -> measured, enters the panel total, produces no outcome entry
+     throws  -> recorded in outcomes with its reason, absent from the total
+     empty   -> recorded in outcomes as a failure with its reason, absent too
+
+   A later run where every stub succeeds must leave outcomes EMPTY and the
+   total unchanged from what the successful data alone adds up to. */
+async function deepOutcomes() {
+  const os = require('node:os');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'reckon-deep-outcomes-'));
+  // HOME is redirected so writeCache() writes scan.json inside the sandbox,
+  // never into the real user's ~/.cache.
+  const savedEnv = [['HOME', process.env.HOME], ['USERPROFILE', process.env.USERPROFILE]];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+
+  const mod = (name) => require.resolve(path.join(ROOT, 'lib', name));
+  const keys = ['scan', 'disk', 'docker', 'repos', 'checks', 'decisions', 'memory', 'self', 'platform'].map(mod);
+  const saved = new Map(keys.map((k) => [k, require.cache[k]]));
+  const stub = (k, exports) => { require.cache[k] = { id: k, loaded: true, exports }; };
+  for (const k of keys) delete require.cache[k];
+
+  const GB = 1048576;   // KB
+  // Three fake targets: one normal, one whose measurement throws, one that
+  // comes back empty (exists but unreadable — the historic "reads as zero" bug).
+  const fakeTargets = [
+    { id: 'normal', label: 'Normal cache', path: path.join(home, 'normal'), verdict: 'disposable', lose: 'nothing', command: 'true', kb: 4 * GB },
+    { id: 'broken', label: 'Broken cache', path: path.join(home, 'broken'), verdict: 'disposable', lose: 'nothing', command: 'true' },
+    { id: 'empty', label: 'Empty-reading cache', path: path.join(home, 'empty'), verdict: 'disposable', lose: 'nothing', command: 'true' },
+  ];
+  const failureOutcomes = [
+    { scope: 'target', id: 'broken', label: 'Broken cache', path: fakeTargets[1].path, status: 'failed', reason: 'boom on purpose' },
+    { scope: 'target', id: 'empty', label: 'Empty-reading cache', path: fakeTargets[2].path, status: 'failed', reason: 'the size could not be read' },
+  ];
+  const diskOK = {
+    targets: async () => ({ list: [fakeTargets[0]], unmeasured: [], outcomes: [] }),
+    symlinkIndex: async () => ({ links: [], roots: ['/Applications'], truncated: false }),
+    linksTo: () => [],
+    hardlinks: async () => ({ suspect: false }),
+    homeTop: async () => [],
+    volume: async () => ({ usedKB: 100 * GB, freeKB: 50 * GB, totalKB: 150 * GB }),
+  };
+  const diskBad = {
+    ...diskOK,
+    targets: async () => ({ list: [fakeTargets[0]],
+      unmeasured: failureOutcomes.map((o) => ({ id: o.id, label: o.label, path: o.path })),
+      outcomes: failureOutcomes }),
+  };
+  const reposData = { repos: [], worktrees: [], vaults: [], outcomes: [] };
+  stub(mod('platform'), { id: 'fake', COMMAND_SHELL: null });
+  stub(mod('memory'), { collect: async () => ({ groups: [], vm: {}, swap: null, totalBytes: 1 }) });
+  stub(mod('self'), { markScan() {} });
+  stub(mod('docker'), { collect: async () => ({ running: false, why: 'Docker is not responding (stopped, or still starting).' }) });
+  stub(mod('repos'), { collect: async () => reposData });
+  stub(mod('checks'), { collect: async () => ({ items: [] }) });
+
+  const restore = () => {
+    for (const [k, v] of saved) { if (v) require.cache[k] = v; else delete require.cache[k]; }
+    for (const [k, v] of savedEnv) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    fs.rmSync(home, { recursive: true, force: true });
+  };
+
+  try {
+    // --- run 1: one normal target, one throwing, one empty ----------------
+    stub(mod('disk'), diskBad);
+    const scan = require(path.join(ROOT, 'lib', 'scan'));
+    const d = await scan.deep(() => {});
+
+    if (!Array.isArray(d.outcomes)) { fail('the scan result has no outcomes field'); restore(); return; }
+    ok('deep() returns an outcomes field');
+
+    const failed = d.outcomes.filter((o) => o.status === 'failed');
+    if (failed.length === 2 && failed.every((o) => /broken|empty/.test(o.id)) && failed.every((o) => o.reason))
+      ok('the throwing and the empty target both appear as failures, each with its reason');
+    else fail('the failure list is wrong', JSON.stringify(d.outcomes));
+
+    // Docker is not running: an ordinary skip, named rather than read as zero.
+    const skip = d.outcomes.find((o) => o.scope === 'docker' && o.status === 'skipped');
+    if (skip && skip.reason) ok('Docker not responding is recorded as a skip with the reason');
+    else fail('a stopped Docker was not recorded as a skip', JSON.stringify(d.outcomes));
+
+    // The normal target still reached the panel...
+    if (d.panel.out.some((row) => row.id === 'disk-normal')) ok('the healthy target is still counted despite the other two failing');
+    else fail('one failed target stopped the healthy one from being counted');
+
+    // ...and neither failed target did.
+    if (!d.panel.out.some((row) => /disk-(broken|empty)/.test(row.id))) ok('the failed targets do not become decisions');
+    else fail('a failed target reached the decision list');
+
+    // THE CORE RULE: the total holds the healthy 4 GB and nothing from the
+    // failures. An exact figure, not just "no error": a failure silently summed
+    // as zero would still pass a looser assertion.
+    if (d.panel.totalKB === 4 * GB) ok('the cleanable total contains only what was read — the failures add neither size nor zero');
+    else fail('the total was contaminated by a failed target', String(d.panel.totalKB));
+
+    // The same facts must be in the cache file, under the new field, with all
+    // the old fields still present alongside it.
+    const cached = JSON.parse(fs.readFileSync(path.join(home, '.cache', 'reckon', 'scan.json'), 'utf8'));
+    if (Array.isArray(cached.outcomes) && cached.outcomes.length === d.outcomes.length
+      && Array.isArray(cached.targets) && cached.panel && cached.docker && cached.repos)
+      ok('the cache file carries the outcomes field and keeps every old field');
+    else fail('the cache did not persist outcomes alongside the old fields', JSON.stringify(Object.keys(cached)));
+
+    // One target failing did not abort the scan: the stages after it ran.
+    if (d.checks && Array.isArray(d.homeTop) && d.type === 'deep') ok('the scan completes end to end when individual targets fail');
+    else fail('a single target failure aborted the scan');
+
+    // --- run 2: every collector succeeds. Outcomes must be EMPTY and the
+    // total must equal what the successful data alone sums to. -------------
+    delete require.cache[mod('scan')];
+    stub(mod('disk'), diskOK);
+    stub(mod('docker'), { collect: async () => ({ running: true, version: '9.9', counted: [], volumes: [], logs: [] }) });
+    const scanAllOK = require(path.join(ROOT, 'lib', 'scan'));
+    const d2 = await scanAllOK.deep(() => {});
+
+    if (d2.outcomes.length === 0) ok('when every collector succeeds the outcomes list is empty');
+    else fail('a fully successful scan produced outcome entries', JSON.stringify(d2.outcomes));
+    if (d2.panel.totalKB === 4 * GB) ok('with no failures the total is unchanged from the successful data');
+    else fail('the all-success total drifted', String(d2.panel.totalKB));
+    if (d2.targets.length === 1 && d2.targets[0].id === 'normal') ok('the old target field keeps its shape and content');
+    else fail('a compatibility field changed shape', JSON.stringify(d2.targets));
+  } catch (e) {
+    fail('deep() threw instead of recording the failure', String((e && e.stack) || e).split('\n').slice(0, 3).join(' | '));
+  } finally {
+    restore();
+  }
+}
+
 (async () => {
   await step('requires', async () => { await requires(); });
   await step('any platform', async () => { await loadsOnAnyPlatform(); });
@@ -3974,6 +4106,7 @@ async function phase4() {
   await step('only here', async () => { await onlyHere(); });
   await step('which shell', async () => { await whichShell(); });
   await step('batch sizing', async () => { await batchSizing(); });
+  await step('deep scan outcomes', async () => { await deepOutcomes(); });
   await step('grouping', async () => { await grouping(); });
   await step('cross-platform', async () => { await crossPlatformRender(); });
   await step('internet', async () => { await networkPromises(); });

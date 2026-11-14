@@ -146,6 +146,32 @@ function commandBlock(text, note) {
     el('div', { class: 'command-bar' }, btn, /\bsudo\b/.test(text) ? openBtn('terminal', 'open Terminal') : null, el('span', { class: 'note' }, note || 'this panel runs nothing. you run it.')));
 }
 
+/* The judged ending of every collection target. A scan that could not read
+   something used to leave a smaller number on screen with no way to tell
+   "this machine is genuinely small" from "this was never read". The scan now
+   records every failure and skip with its reason, and this is where that list
+   reaches the person. Nothing in it was counted as zero: the totals further
+   down contain only what was actually read. When everything succeeded the
+   list is empty and nothing is drawn — an empty list is the all-clear. */
+function scanOutcomes(c) {
+  const list = (c && c.outcomes) || [];
+  if (!list.length) return null;
+  const failed = list.filter((o) => o.status === 'failed');
+  const skipped = list.filter((o) => o.status !== 'failed');
+  const heading = [
+    failed.length && `${failed.length} part${failed.length === 1 ? '' : 's'} could not be read`,
+    skipped.length && `${skipped.length} skipped`,
+  ].filter(Boolean).join(' · ');
+  return el('div', { class: 'warn-box' },
+    el('h3', {}, heading),
+    el('p', { style: 'color:var(--ink2);font-size:13.8px;margin:0 0 10px' },
+      'None of these is counted as zero anywhere. The totals on this screen include only what the scan actually read, so a missing number never quietly shrinks them. Re-run the scan once the cause is fixed.'),
+    el('ul', {}, ...list.map((o) => el('li', {},
+      el('b', {}, o.label || o.id),
+      ` — ${o.status === 'failed' ? 'could not be read' : 'skipped'}. `,
+      o.reason || ''))));
+}
+
 /* ============================================================== OVERVIEW */
 function overview(c) {
   const root = $('#tab-overview');
@@ -194,6 +220,8 @@ function overview(c) {
           `, nothing is wrong with the command and nothing happened to your machine. You are in ${sh.notThis}. Open ${sh.name} and paste it again.`),
         el('li', {}, `A few commands below say they need an administrator. For those: ${sh.openAdmin || sh.open}`))));
   }
+  const outcomesBox = scanOutcomes(c);
+  if (outcomesBox) root.append(outcomesBox);
   root.append(el('div', { class: 'verdict' },
     nothing
       ? el('p', { class: 'headline' }, 'Nothing here is worth deleting.')
@@ -691,6 +719,11 @@ function disk(c) {
     el('p', { class: 'headline' }, 'Where the space went.'),
     el('p', { class: 'summary' }, 'Every folder with a verdict. ',
       el('b', {}, '"cannot judge"'), ' is an honest answer: this tool only calls something disposable when it can prove the machine rebuilds it.')));
+
+  // Folders that could not be measured at all are named here with the reason,
+  // rather than dropped from the table and read as "nothing there".
+  const outcomesBox = scanOutcomes(c);
+  if (outcomesBox) root.append(outcomesBox);
 
   const COLORS = { disposable: 'var(--s1)', yours: 'var(--s3)', unknown: 'var(--s2)' };
   const LABEL = { disposable: 'disposable', yours: 'yours', unknown: 'cannot judge' };
