@@ -89,14 +89,30 @@ def _links_summary(outcome: CrawlOutcome) -> str:
     return summary + "\n"
 
 
-def _skipped_summary(outcome: CrawlOutcome) -> str:
+def _skipped_summary(outcome: CrawlOutcome, results_dir: Path | None = None) -> str:
     skipped = outcome.get("skipped") or []
     if not skipped:
         return ""
     lines = [f"- {page['url']}: {page['reason']}" for page in skipped[:MAX_LISTED_SKIPPED]]
     if len(skipped) > MAX_LISTED_SKIPPED:
-        lines.append(f"- ... and {len(skipped) - MAX_LISTED_SKIPPED} more")
+        remaining = len(skipped) - MAX_LISTED_SKIPPED
+        lines.append(f"- ... and {remaining} more (the full per-page list is not capped)")
+        outcome_uri = _outcome_resource_uri(outcome, results_dir)
+        if outcome_uri:
+            lines.append(
+                f"- Full list of all {len(skipped)} skipped pages and every page outcome: "
+                f"see the outcome file resource {outcome_uri}"
+            )
     return "\n## Skipped Pages\n" + "\n".join(lines) + "\n"
+
+
+def _outcome_resource_uri(outcome: CrawlOutcome, results_dir: Path | None) -> str | None:
+    """Resource URI of the JSON outcome file paired with this crawl's Markdown file."""
+    file_path = outcome.get("file_path")
+    if not file_path or results_dir is None:
+        return None
+    json_path = str(Path(file_path).with_suffix(".json"))
+    return result_uri(json_path, results_dir)
 
 
 def _content_section(outcome: CrawlOutcome, resource_uri: str | None = None) -> str:
@@ -122,6 +138,8 @@ def format_crawl_summary(url: str, outcome: CrawlOutcome, return_content: bool, 
     file_path = outcome["file_path"]
     resource_uri = result_uri(file_path, results_dir) if file_path and results_dir else None
     resource_line = f"\n- Resource: {resource_uri}" if resource_uri else ""
+    outcome_uri = _outcome_resource_uri(outcome, results_dir)
+    outcome_line = f"\n- Outcome file: {outcome_uri}" if outcome_uri else ""
     if stats["successful_pages"] == 0:
         heading = "## Crawl finished without any usable page"
     elif outcome.get("timed_out"):
@@ -132,11 +150,11 @@ def format_crawl_summary(url: str, outcome: CrawlOutcome, return_content: bool, 
     summary = f"""
 {heading}
 - URL: {url}
-- Result file: {file_path}{resource_line}
+- Result file: {file_path}{resource_line}{outcome_line}
 - Duration: {stats["duration_seconds"]:.2f} seconds
 - Pages processed: {stats["successful_pages"]} successful, {stats["failed_pages"]} failed,
   {stats["not_found_pages"]} not found (404), {stats["forbidden_pages"]} access forbidden (403)
-{_links_summary(outcome)}{_skipped_summary(outcome)}
+{_links_summary(outcome)}{_skipped_summary(outcome, results_dir)}
 The full results are saved in: {file_path}
 """
     if return_content:
@@ -195,7 +213,11 @@ async def crawl(
     launching a long crawl, and prefer `crawl_page` to read a single page.
 
     The full result is saved as Markdown and exposed as the MCP resource
-    `crawl://results/<file>` (listed by `crawl://results`).
+    `crawl://results/<file>` (listed by `crawl://results`). A same-named
+    `.json` outcome file (e.g. `notes.md` -> `notes.json`) is written next to
+    it: it records the url, outcome category (success, 404, 403, no_content,
+    interrupted) and reason of every processed page, including all failures,
+    and is readable through `crawl://results/<file>.json`.
 
     TIPS to speed up crawls:
     - `max_depth=0` fetches only the start page, `max_depth=1` also follows its links.
@@ -328,7 +350,10 @@ async def crawl_results() -> str:
     RESULTS_URI + "/{+path}",
     name="crawl-result",
     title="Saved crawl result",
-    description="Full Markdown content of a saved crawl result.",
+    description=(
+        "Full content of a saved crawl result: the Markdown page content (.md) "
+        "or the per-page outcome JSON (.json) with the status and reason of every page."
+    ),
     mime_type="text/markdown",
 )
 async def crawl_result(path: str) -> str:

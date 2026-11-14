@@ -154,8 +154,19 @@ def sanitize_filename(name: str) -> str:
     return cleaned or "crawl"
 
 
+def outcome_path_for(output_path: str | os.PathLike[str]) -> Path:
+    """Return the per-page outcome JSON path paired with a Markdown result path."""
+    return Path(output_path).with_suffix(".json")
+
+
 def resolve_output_path(output_file: str, results_dir: Path, *, overwrite: bool = False) -> Path:
-    """Map a user supplied output file to a safe ``.md`` path inside ``results_dir``."""
+    """Map a user supplied output file to a safe ``.md`` path inside ``results_dir``.
+
+    The paired ``.json`` outcome file is reserved at the same time: when
+    ``overwrite`` is false, an existing Markdown *or* outcome file rejects the
+    request before any browser activity, so a crawl can never leave a stale
+    outcome file next to a fresh Markdown file.
+    """
     candidate = Path(output_file)
     if not candidate.is_absolute():
         candidate = results_dir / candidate
@@ -167,4 +178,9 @@ def resolve_output_path(output_file: str, results_dir: Path, *, overwrite: bool 
         raise ValidationError(f"Invalid output path: {output_file}. Paths must be within {results_dir}")
     if candidate.exists() and not overwrite:
         raise ValidationError(f"Output file already exists: {candidate}. Pass overwrite=true or choose another name.")
+    outcome_path = outcome_path_for(candidate)
+    if outcome_path.exists() and not overwrite:
+        raise ValidationError(
+            f"Outcome file already exists: {outcome_path}. Pass overwrite=true or choose another name."
+        )
     return candidate

@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- Every `crawl` now writes a same-named `.json` outcome file next to its Markdown result (e.g. `notes.md` -> `notes.json`). It records the `url`, outcome category (`success`, `404`, `403`, `no_content`, `interrupted`) and reason of every processed page, successes included, with no 20-item cap, plus the crawl stats and the interruption reason on timeout or client cancellation.
+- The outcome file is exposed through the `crawl://results/{path}.json` resource (the result resource now serves both `.md` and `.json` files).
+- When more than 20 pages were skipped, the `crawl` summary keeps the existing statistics and resource lines and additionally points to the outcome file's resource URI for the complete list.
+
+### Changed
+- With `overwrite=false`, an existing paired outcome file now rejects the crawl before the browser starts (alongside the existing Markdown file check), so a crawl can never leave a stale outcome file next to a fresh Markdown file.
+- On client cancellation or `CRAWL4AI_MCP_CRAWL_TIMEOUT`, the outcomes of the pages already processed are flushed to the outcome file (the page in flight is marked `interrupted`); pages never reached are not recorded. `crawl_page` still writes no file at all.
+
 ## [0.2.2] - 2026-09-24
 
 ### Documentation

@@ -18,6 +18,7 @@ A powerful web crawling tool that integrates with AI assistants via the MCP (Mod
 - Extracts and surfaces internal/external links for AI navigation
 - Website crawling with configurable depth and page limit
 - Detailed crawl result statistics, including the list of skipped pages
+- A same-named `.json` outcome file next to every Markdown result, recording the status and reason of every processed page (successes included, no 20-item cap)
 - Live progress notifications during long crawls
 - Saved results exposed as MCP resources (`crawl://results/...`)
 - Error and not found page handling
@@ -128,6 +129,9 @@ Once configured, you can use the crawler by asking your AI assistant to perform 
 |----------|---------|
 | `crawl://results` | JSON list of saved results (URI, name, size, date, source URL), newest first |
 | `crawl://results/{path}` | Full Markdown of a saved result, e.g. `crawl://results/crawl_example_com_20260101_120000_ab12cd.md` |
+| `crawl://results/{path}.json` | Per-page outcome JSON of a crawl, e.g. `crawl://results/notes.json` for `notes.md` |
+
+Each `crawl` writes two files with the same base name in the results directory: the Markdown result (`notes.md`) and an **outcome file** (`notes.json`). The outcome file lists every page the crawl actually processed — successes as well as failures — with its `url`, an `outcome` category (`success`, `404`, `403`, `no_content`, `interrupted`) and a `reason` (`null` for successes), plus the crawl-level stats and whether the crawl was interrupted by a timeout or a client cancellation. Unlike the tool summary, this list is never truncated: when more than 20 pages were skipped, the summary points to this file's resource URI for the complete list. If a crawl is cancelled or hits `CRAWL4AI_MCP_CRAWL_TIMEOUT`, the outcomes of the pages already processed are still flushed (with the interrupted page marked), and pages never reached do not appear. `crawl_page` writes neither file.
 
 The `crawl` response includes the resource URI of its result: when the returned content is truncated, the assistant can read the complete file through that resource even if it has no access to the server's file system.
 
@@ -146,8 +150,8 @@ The `crawl` tool accepts the following parameters (`crawl_page` accepts `url`, `
 | `wait_for_selector` | string | CSS selector to wait for before extracting content. Useful for single-page applications. | None |
 | `return_content` | boolean | Return the extracted content directly in the MCP response | true |
 | `max_content_chars` | integer | Maximum number of content characters returned in the response (1,000-500,000); the file always holds everything | 50000 |
-| `output_file` | string | Markdown file name, always stored inside the results directory (`.md` is added if missing) | automatically generated |
-| `overwrite` | boolean | Allow replacing an existing `output_file` | false |
+| `output_file` | string | Markdown file name, always stored inside the results directory (`.md` is added if missing); a same-named `.json` outcome file is written next to it | automatically generated |
+| `overwrite` | boolean | Allow replacing an existing `output_file` (and its paired outcome file); otherwise an existing Markdown *or* outcome file makes the crawl fail before the browser starts | false |
 | `magic` | boolean | Enable crawl4ai magic mode (anti-bot heuristics) | false |
 | `css_selector` | string | Specific CSS selector to extract only targeted elements from the page | None |
 | `js_code` | string | Custom JavaScript code to execute before extraction (requires `CRAWL4AI_MCP_ALLOW_JS=true`) | None |
@@ -175,7 +179,7 @@ The AI assistant decides which URLs are crawled, and crawled pages may contain p
 
 - only accepts `http`/`https` URLs (no `file://`, `raw:`, `data:` ...), and rejects hosts resolving to loopback, private or link-local addresses unless `CRAWL4AI_MCP_ALLOW_PRIVATE_NETWORKS=true`;
 - runs no custom JavaScript (including `js:` wait conditions) unless `CRAWL4AI_MCP_ALLOW_JS=true`;
-- writes files only inside the results directory and never overwrites them without `overwrite=true`;
+- writes files only inside the results directory and never overwrites them (or their paired outcome files) without `overwrite=true`;
 - wraps returned page content in `<untrusted-web-content>` tags so the assistant treats it as data.
 
 Redirects and links discovered during a deep crawl are filtered on their URL only (no DNS lookup): keep private-network access disabled when the server can reach sensitive internal services.

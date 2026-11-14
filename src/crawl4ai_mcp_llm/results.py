@@ -41,7 +41,7 @@ def _resolve_result_path(relative_path: str, results_dir: Path) -> Path:
     if (
         not relative_path
         or Path(relative_path).is_absolute()
-        or candidate.suffix.lower() != ".md"
+        or candidate.suffix.lower() not in (".md", ".json")
         or not is_safe_path(candidate, results_dir)
     ):
         raise ResultNotFoundError(f"Invalid result path: {relative_path!r}")

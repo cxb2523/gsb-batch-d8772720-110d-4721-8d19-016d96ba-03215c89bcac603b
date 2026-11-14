@@ -1,14 +1,16 @@
 """Crawl orchestration: runs crawl4ai and writes the results as Markdown."""
 
+import json
 import logging
 import math
+import os
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NotRequired, TypedDict
+from typing import Any, Final, Literal, NamedTuple, NotRequired, TypedDict
 
 import anyio
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
@@ -21,6 +23,7 @@ from .markdown import format_page
 from .security import (
     SafeURLFilter,
     ValidationError,
+    outcome_path_for,
     resolve_output_path,
     validate_url,
     validate_wait_for,
@@ -35,6 +38,22 @@ CRAWL4AI_MCP_ALLOW_JS_ENV = ALLOW_JS_ENV
 DEFAULT_MAX_CONTENT_CHARS = 50_000
 UNTITLED_PAGE = "Untitled page"
 CANCELLED_MARKER = "\n<!-- Crawl cancelled by the client: the results above are partial. -->\n"
+
+# Values of a page outcome's ``outcome`` field:
+# success, 404, 403, no_content and interrupted.
+PageOutcomeType = Literal["success", "404", "403", "no_content", "interrupted"]
+
+# Per-page outcome categories written to the .json outcome file.
+OUTCOME_SUCCESS: Final[PageOutcomeType] = "success"
+OUTCOME_NOT_FOUND: Final[PageOutcomeType] = "404"
+OUTCOME_FORBIDDEN: Final[PageOutcomeType] = "403"
+OUTCOME_NO_CONTENT: Final[PageOutcomeType] = "no_content"
+OUTCOME_INTERRUPTED: Final[PageOutcomeType] = "interrupted"
+# Why a whole crawl was interrupted (top-level ``interruption_reason``).
+INTERRUPTION_CLIENT_CANCELLED: Final = "client_cancelled"
+INTERRUPTION_TIMEOUT: Final = "timeout"
+# Suffix of the temporary file the outcome JSON is atomically written through.
+OUTCOME_TMP_SUFFIX = ".json.tmp"
 
 # Awaited with (pages processed so far, url of the last page).
 ProgressCallback = Callable[[int, str], Awaitable[None]]
@@ -71,6 +90,14 @@ class SkippedPage(TypedDict):
     reason: str
 
 
+class PageOutcome(TypedDict):
+    """Final verdict for one URL the crawler actually processed."""
+
+    url: str
+    outcome: PageOutcomeType
+    reason: str | None
+
+
 class CrawlOutcome(TypedDict):
     error: str | None
     file_path: str | None
@@ -80,6 +107,10 @@ class CrawlOutcome(TypedDict):
     content: NotRequired[str]
     content_truncated: NotRequired[bool]
     timed_out: NotRequired[bool]
+    pages: NotRequired[list[PageOutcome]]
+    interrupted: NotRequired[bool]
+    interruption_reason: NotRequired[str | None]
+    outcome_file_path: NotRequired[str | None]
 
 
 class PageCheck(NamedTuple):
@@ -280,6 +311,44 @@ async def _notify_progress(on_page: ProgressCallback | None, done: int, url: str
         logger.debug("Progress callback failed", exc_info=True)
 
 
+def build_outcome_document(
+    start_url: str,
+    pages: list[PageOutcome],
+    stats: CrawlStats,
+    *,
+    interrupted: bool,
+    interruption_reason: str | None,
+) -> dict[str, Any]:
+    """Payload of the ``.json`` outcome file paired with a Markdown result."""
+    return {
+        "url": start_url,
+        "interrupted": interrupted,
+        "interruption_reason": interruption_reason,
+        "stats": dict(stats),
+        "pages": pages,
+    }
+
+
+async def _write_outcome_file(
+    outcome_path: str,
+    document: dict[str, Any],
+) -> None:
+    """Atomically write the outcome document inside its results directory.
+
+    Writing through a sibling temporary file and renaming it means a reader
+    never observes a half-written outcome file, and concurrent crawls using
+    different output names cannot touch each other's files.
+    """
+    path = anyio.Path(outcome_path)
+    tmp_path = anyio.Path(outcome_path + OUTCOME_TMP_SUFFIX)
+    payload = json.dumps(document, indent=2, ensure_ascii=False)
+    async with await tmp_path.open("w", encoding="utf-8") as handle:
+        await handle.write(payload)
+        await handle.flush()
+        await anyio.to_thread.run_sync(os.fsync, handle.wrapped.fileno())
+    await anyio.to_thread.run_sync(os.replace, tmp_path, path)
+
+
 async def results_to_markdown(
     results: Any,
     output_path: str | None,
@@ -287,6 +356,8 @@ async def results_to_markdown(
     max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
     deadline: float = math.inf,
     on_page: ProgressCallback | None = None,
+    start_url: str | None = None,
+    outcome_path: str | None = None,
 ) -> CrawlOutcome:
     """
     Write crawl results (a list or an async stream) to a Markdown file.
@@ -298,44 +369,84 @@ async def results_to_markdown(
     caller is cancelled, a marker is appended so the partial file is recognisable.
     With ``output_path=None`` nothing is written to disk.
 
+    Every processed page (successes included) is also recorded in memory and,
+    when ``outcome_path`` is set, flushed to the paired ``.json`` outcome file.
+    On cancellation or timeout the pages already processed are still written,
+    the interrupted page (if one was in flight) is marked ``interrupted`` and
+    pages never reached simply do not appear in the file.
+
     ``on_page(done, url)`` is awaited after each processed page (kept or skipped).
     """
     stats = _empty_stats()
     skipped: list[SkippedPage] = []
+    page_outcomes: list[PageOutcome] = []
     links = _LinkCollector()
     content_parts: list[str] = []
     content_len = 0
     truncated = False
     started = time.monotonic()
     processed = 0
+    interrupted = False
+    interruption_reason: str | None = None
+
+    def _record_interrupted(url: str) -> None:
+        """Mark the page that was in flight when the crawl was cut short."""
+        if not url or any(page["url"] == url for page in page_outcomes):
+            return
+        page_outcomes.append({"url": url, "outcome": OUTCOME_INTERRUPTED, "reason": interruption_reason})
+
+    async def _flush_outcomes() -> None:
+        """Persist the outcomes of the pages processed so far (best effort)."""
+        if outcome_path is None:
+            return
+        stats["duration_seconds"] = time.monotonic() - started
+        document = build_outcome_document(
+            start_url or "",
+            page_outcomes,
+            stats,
+            interrupted=interrupted,
+            interruption_reason=interruption_reason,
+        )
+        try:
+            with anyio.CancelScope(shield=True):
+                await _write_outcome_file(outcome_path, document)
+        except OSError:
+            logger.warning("Could not write outcome file %s", outcome_path, exc_info=True)
 
     try:
         async with _open_output(output_path) as md_file:
+            in_flight_url = ""
             try:
                 with anyio.CancelScope(deadline=deadline) as scope:
                     async for result in _iterate(results):
                         processed += 1
                         links.add(result)
-                        url = str(getattr(result, "url", ""))
+                        in_flight_url = str(getattr(result, "url", ""))
+                        url = in_flight_url
                         page = _extract_page_content_and_errors(result)
 
                         if page.error_type == "missing":
                             logger.info("No content found for %s (%s) - skipped", url, page.reason)
                             stats["failed_pages"] += 1
-                            skipped.append({"url": url, "reason": page.reason or "no content"})
+                            reason = page.reason or "no content"
+                            skipped.append({"url": url, "reason": reason})
+                            page_outcomes.append({"url": url, "outcome": OUTCOME_NO_CONTENT, "reason": reason})
                         elif page.error_type in ("404", "403"):
                             logger.info("%s page detected (%s) and skipped: %s", page.error_type, page.reason, url)
                             if page.error_type == "404":
                                 stats["not_found_pages"] += 1
                             else:
                                 stats["forbidden_pages"] += 1
-                            skipped.append({"url": url, "reason": f"{page.error_type} ({page.reason})"})
+                            reason = f"{page.error_type} ({page.reason})"
+                            skipped.append({"url": url, "reason": reason})
+                            page_outcomes.append({"url": url, "outcome": page.error_type, "reason": reason})
                         else:
                             content = page.content or ""
                             # Regex cleaning is CPU bound on large pages: keep the event loop free.
                             md_content = await anyio.to_thread.run_sync(_format_markdown_page, result, content)
                             await md_file.write(md_content)
                             stats["successful_pages"] += 1
+                            page_outcomes.append({"url": url, "outcome": OUTCOME_SUCCESS, "reason": None})
 
                             if content_len < max_content_chars:
                                 remaining = max_content_chars - content_len
@@ -345,19 +456,29 @@ async def results_to_markdown(
                             else:
                                 truncated = True
 
+                        in_flight_url = ""
                         await _notify_progress(on_page, processed, url)
             except anyio.get_cancelled_exc_class():
-                # The client cancelled the request: flag the partial file, release the stream.
+                # The client cancelled the request: flag the partial file, keep
+                # the processed outcomes, release the stream and re-raise.
+                interrupted = True
+                interruption_reason = INTERRUPTION_CLIENT_CANCELLED
                 with anyio.CancelScope(shield=True):
                     try:
                         await md_file.write(CANCELLED_MARKER)
                     except OSError:
                         logger.debug("Could not mark %s as cancelled", output_path, exc_info=True)
+                    _record_interrupted(in_flight_url)
                     await _close_results(results)
+                    await _flush_outcomes()
                 raise
 
             if scope.cancelled_caught:
+                # The crawl timeout fired between or around page processing.
+                interrupted = True
+                interruption_reason = INTERRUPTION_TIMEOUT
                 logger.warning("Crawl deadline reached, keeping %d page(s)", stats["successful_pages"])
+                _record_interrupted(in_flight_url)
                 await _close_results(results)
 
         logger.info(
@@ -366,6 +487,7 @@ async def results_to_markdown(
             stats["not_found_pages"] + stats["forbidden_pages"],
         )
         stats["duration_seconds"] = time.monotonic() - started
+        await _flush_outcomes()
         return {
             "error": None,
             "file_path": str(output_path) if output_path is not None else None,
@@ -375,6 +497,10 @@ async def results_to_markdown(
             "content": "".join(content_parts),
             "content_truncated": truncated,
             "timed_out": scope.cancelled_caught,
+            "pages": page_outcomes,
+            "interrupted": interrupted,
+            "interruption_reason": interruption_reason,
+            "outcome_file_path": outcome_path,
         }
 
     except OSError as e:
@@ -517,12 +643,21 @@ async def crawl_and_output_to_markdown(
                 output_path = resolve_output_path(output_file, results_dir, overwrite=overwrite)
             else:
                 output_path = results_dir / generate_filename_from_url(start_url)
+                # The generated name is unique; still refuse to trample an
+                # existing outcome file rather than leave mismatched pairs.
+                if outcome_path_for(output_path).exists():
+                    raise ValidationError(
+                        f"Outcome file already exists: {outcome_path_for(output_path)}. "
+                        "Pass overwrite=true or choose another name."
+                    )
     except ValidationError as e:
         return _error_outcome(str(e))
     except (TypeError, ValueError) as e:
         return _error_outcome(f"Invalid parameter: {e}")
     except OSError as e:
         return _error_outcome(f"Cannot prepare the results directory: {e}")
+
+    outcome_path: Path | None = outcome_path_for(output_path) if write_file and output_path is not None else None
 
     strategy_kwargs: dict[str, Any] = {"max_depth": max_depth, "include_external": include_external}
     if max_pages is not None:
@@ -555,6 +690,7 @@ async def crawl_and_output_to_markdown(
         start_url=start_url,
         config=config,
         output_path=str(output_path) if output_path is not None else None,
+        outcome_path=str(outcome_path) if outcome_path is not None else None,
         timeout_seconds=settings.crawl_timeout,
         max_content_chars=max_content_chars,
         on_page=on_page,
@@ -594,6 +730,7 @@ class _CrawlRun:
     max_content_chars: int
     on_page: ProgressCallback | None
     max_pages: int | None = None
+    outcome_path: str | None = None
 
     async def execute(self, crawler: Any) -> CrawlOutcome:
         deadline = anyio.current_time() + self.timeout_seconds
@@ -610,6 +747,8 @@ class _CrawlRun:
             max_content_chars=self.max_content_chars,
             deadline=deadline,
             on_page=self.on_page,
+            start_url=self.start_url,
+            outcome_path=self.outcome_path,
         )
         if outcome.get("timed_out"):
             logger.warning(

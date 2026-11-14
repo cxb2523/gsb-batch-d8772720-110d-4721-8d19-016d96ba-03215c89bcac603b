@@ -13,6 +13,7 @@ A powerful web crawling tool that integrates with AI assistants via the MCP (Mod
 - Extracts and surfaces internal/external links for AI navigation
 - Website crawling with configurable depth and page limit
 - Detailed crawl result statistics, including the list of skipped pages
+- A same-named `.json` outcome file next to every Markdown result, recording the status and reason of every processed page (successes included, no 20-item cap)
 - Live progress notifications during long crawls
 - Saved results exposed as MCP resources (`crawl://results/...`)
 - Error and not found page handling
@@ -99,6 +100,7 @@ Once configured, you can use the crawler by asking your AI assistant to perform 
 |----------|---------|
 | `crawl://results` | JSON list of saved results (URI, name, size, date, source URL), newest first |
 | `crawl://results/{path}` | Full Markdown of a saved result, e.g. `crawl://results/crawl_example_com_20260101_120000_ab12cd.md` |
+| `crawl://results/{path}.json` | Per-page outcome JSON: every processed page with its `outcome` (`success`, `404`, `403`, `no_content`, `interrupted`) and reason |
 
 The `crawl` response includes the resource URI of its result: when the returned content is truncated, the assistant can read the complete file through that resource even if it has no access to the server's file system.
 
