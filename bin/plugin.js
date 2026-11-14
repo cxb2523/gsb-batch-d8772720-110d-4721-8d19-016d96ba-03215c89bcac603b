@@ -92,19 +92,42 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function api(method, path, body) {
-  const { apiKey, apiBase } = resolveCredentials();
-  if (!apiKey) {
-    throw new Error("No Firecrawl credentials: set FIRECRAWL_API_KEY or run `firecrawl login`");
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function intEnv(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
+// Parse a Retry-After header (delta-seconds or HTTP-date) into milliseconds.
+function retryAfterMs(header) {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return null;
+}
+
+// Marks a failure the caller may retry: HTTP 429, HTTP 5xx, or request timeout.
+// Carries the server's Retry-After hint (ms) when one was sent.
+class TransientHttpError extends Error {
+  constructor(message, retryAfter = null) {
+    super(message);
+    this.name = "TransientHttpError";
+    this.retryAfterMs = retryAfter;
   }
+}
+
+// One HTTP attempt. Throws TransientHttpError for retryable failures, plain
+// Error for everything else (4xx other than 429, success:false bodies, ...).
+async function requestOnce(apiBase, apiKey, method, path, body, isForm, timeoutMs) {
   // Bound the request so a stalled call can't block the plugin from emitting
   // its single response. Overridable via FIRECRAWL_HTTP_TIMEOUT_MS.
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.FIRECRAWL_HTTP_TIMEOUT_MS) || 60000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  // FormData bodies (e.g. /v2/parse uploads) must keep fetch's auto-generated
-  // multipart Content-Type/boundary — only set JSON content-type otherwise.
-  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
   let res;
   try {
     res = await fetch(`${apiBase}${path}`, {
@@ -118,7 +141,7 @@ async function api(method, path, body) {
     });
   } catch (err) {
     if (err && err.name === "AbortError") {
-      throw new Error(`Firecrawl ${method} ${path} timed out after ${timeoutMs}ms`);
+      throw new TransientHttpError(`Firecrawl ${method} ${path} timed out after ${timeoutMs}ms`);
     }
     throw err;
   } finally {
@@ -131,11 +154,67 @@ async function api(method, path, body) {
   } catch {
     json = { raw: text };
   }
-  if (!res.ok || json.success === false) {
+  if (!res.ok) {
+    const msg = json && json.error ? json.error : `HTTP ${res.status}`;
+    if (res.status === 429 || res.status >= 500) {
+      throw new TransientHttpError(
+        `Firecrawl ${method} ${path} failed: ${msg}`,
+        retryAfterMs(res.headers.get("retry-after"))
+      );
+    }
+    throw new Error(`Firecrawl ${method} ${path} failed: ${msg}`);
+  }
+  if (json.success === false) {
     const msg = json && json.error ? json.error : `HTTP ${res.status}`;
     throw new Error(`Firecrawl ${method} ${path} failed: ${msg}`);
   }
   return json;
+}
+
+// Call the Firecrawl API with bounded retries for transient failures (429, 5xx,
+// timeouts). FIRECRAWL_MAX_RETRIES (default 2) caps how many extra attempts
+// follow the first; FIRECRAWL_RETRY_DELAY_MS (default 500) is the base for
+// exponential backoff — retry n waits base * 2^(n-1), unless the server sent a
+// Retry-After header, which takes precedence for that wait. Client errors
+// (401/403/404, ...) and success:false business errors fail immediately.
+// Resolves to { json, attempts } where attempts counts HTTP requests made.
+async function api(method, path, body) {
+  const { apiKey, apiBase } = resolveCredentials();
+  if (!apiKey) {
+    throw new Error("No Firecrawl credentials: set FIRECRAWL_API_KEY or run `firecrawl login`");
+  }
+  const timeoutMs = Number(process.env.FIRECRAWL_HTTP_TIMEOUT_MS) || 60000;
+  const maxRetries = intEnv("FIRECRAWL_MAX_RETRIES", 2);
+  const baseDelayMs = intEnv("FIRECRAWL_RETRY_DELAY_MS", 500);
+  // FormData bodies (e.g. /v2/parse uploads) must keep fetch's auto-generated
+  // multipart Content-Type/boundary — only set JSON content-type otherwise.
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
+
+  let attempts = 0;
+  let lastTransient = null;
+  for (let retry = 0; ; retry++) {
+    if (retry > 0) {
+      const wait =
+        lastTransient && lastTransient.retryAfterMs != null
+          ? lastTransient.retryAfterMs
+          : baseDelayMs * 2 ** (retry - 1);
+      if (wait > 0) await sleep(wait);
+    }
+    attempts++;
+    try {
+      const json = await requestOnce(apiBase, apiKey, method, path, body, isForm, timeoutMs);
+      return { json, attempts };
+    } catch (err) {
+      if (!(err instanceof TransientHttpError)) throw err;
+      if (retry >= maxRetries) {
+        throw new Error(
+          `Firecrawl ${method} ${path}: transient failure, retries exhausted after ` +
+            `${attempts} attempts. Last error: ${err.message}`
+        );
+      }
+      lastTransient = err;
+    }
+  }
 }
 
 // Forward only the session fields Firecrawl's POST /v2/interact understands.
@@ -182,10 +261,11 @@ async function handle(input) {
 
   // --- browser.provider ---
   if (type === "browser.launch") {
-    const session = await api("POST", "/v2/interact", browserCreateBody(input.request));
+    const { json: session, attempts } = await api("POST", "/v2/interact", browserCreateBody(input.request));
     if (!session.cdpUrl) throw new Error("Firecrawl did not return a cdpUrl");
     if (!session.id) throw new Error("Firecrawl did not return a session id");
     return ok({
+      attempts,
       browser: {
         cdpUrl: session.cdpUrl,
         directPage: false,
@@ -204,8 +284,12 @@ async function handle(input) {
   if (type === "browser.close") {
     const r = input.request && typeof input.request === "object" ? input.request : {};
     const id = r.sessionId || r.id;
-    if (id) await api("DELETE", `/v2/interact/${encodeURIComponent(id)}`);
-    return ok({});
+    let attempts = 0;
+    if (id) {
+      const res = await api("DELETE", `/v2/interact/${encodeURIComponent(id)}`);
+      attempts = res.attempts;
+    }
+    return ok({ attempts });
   }
 
   // --- command.run: parse a local document (multipart upload) ---
@@ -221,14 +305,14 @@ async function handle(input) {
     if (r.options != null) {
       form.append("options", JSON.stringify(r.options));
     }
-    const data = await api("POST", "/v2/parse", form);
-    return ok({ data });
+    const { json: data, attempts } = await api("POST", "/v2/parse", form);
+    return ok({ attempts, data });
   }
 
   // --- command.run (scrape/search/crawl/map) ---
   if (COMMANDS[type]) {
-    const data = await api("POST", COMMANDS[type], input.request || {});
-    return ok({ data });
+    const { json: data, attempts } = await api("POST", COMMANDS[type], input.request || {});
+    return ok({ attempts, data });
   }
 
   return fail(`unsupported request type: ${type}`);

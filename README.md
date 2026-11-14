@@ -103,6 +103,11 @@ The plugin reuses Firecrawl's standard env vars — the **same ones the Firecraw
 | `FIRECRAWL_API_URL` | no | `https://api.firecrawl.dev` | Override for self-hosted Firecrawl (no key required for local instances). |
 | `FIRECRAWL_PROFILE_NAME` | no | — | Persistent browser profile to load (cookies/localStorage/login state). |
 | `FIRECRAWL_PROFILE_SAVE_CHANGES` | no | `true` | Save browser state back to the profile on close. Set `false`/`0` for read-only. |
+| `FIRECRAWL_HTTP_TIMEOUT_MS` | no | `60000` | Per-request HTTP timeout. A timed-out request counts as a transient failure and is retried. |
+| `FIRECRAWL_MAX_RETRIES` | no | `2` | Extra attempts after the first for transient failures (HTTP 429, 5xx, timeouts). `0` disables retries. |
+| `FIRECRAWL_RETRY_DELAY_MS` | no | `500` | Base delay for exponential backoff — retry *n* waits `base * 2^(n-1)` ms. A `Retry-After` response header overrides the wait for that retry. |
+
+Client errors (401/403/404, …), Firecrawl `success: false` business errors, and local file-read failures in `firecrawl.parse` are never retried. Every success response that called the API carries a top-level `attempts` field (HTTP requests made; `1` = first try succeeded). When retries are exhausted the error message says so and includes the attempt count and the last failure reason.
 
 \* Not required if you've run `firecrawl login` (see below) or are pointing `FIRECRAWL_API_URL` at a self-hosted instance.
 

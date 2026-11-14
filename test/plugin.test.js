@@ -5,7 +5,7 @@
 // HTTP call is expected, FIRECRAWL_API_URL is pointed at a local mock server
 // that records the outgoing request. Run with `npm test` (`node --test`).
 
-const { test, before, after } = require("node:test");
+const { test, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert");
 const { spawn } = require("node:child_process");
 const http = require("node:http");
@@ -33,6 +33,8 @@ let baseUrl;
 let lastReq;
 let emptyHome; // HOME with no stored creds
 let credsHome; // HOME containing a firecrawl-cli credentials.json
+// Per-URL request counts, keyed by the JSON body's `url` field (retry tests).
+let requestCounts = new Map();
 
 before(async () => {
   // Isolated HOMEs so tests never read the dev machine's real ~/.../credentials.json
@@ -76,7 +78,32 @@ before(async () => {
       } else if (req.method === "DELETE" && req.url.startsWith("/v2/interact/")) {
         res.end(JSON.stringify({ success: true }));
       } else if (req.method === "POST" && req.url === "/v2/scrape") {
-        res.end(JSON.stringify({ success: true, data: { markdown: "# Mock" } }));
+        const target = parsed && parsed.url;
+        if (target) requestCounts.set(target, (requestCounts.get(target) || 0) + 1);
+        if (target === "https://mock.test/flaky-429") {
+          // Fail with 429 twice, then succeed (Retry-After: 0 keeps it fast).
+          if (requestCounts.get(target) <= 2) {
+            res.statusCode = 429;
+            res.setHeader("retry-after", "0");
+            res.end(JSON.stringify({ success: false, error: "rate limited" }));
+          } else {
+            res.end(JSON.stringify({ success: true, data: { markdown: "# Flaky" } }));
+          }
+        } else if (target === "https://mock.test/always-500") {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, error: "internal boom" }));
+        } else if (target === "https://mock.test/unauthorized") {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ success: false, error: "invalid api key" }));
+        } else if (target === "https://mock.test/slow") {
+          // Respond only after 300ms — pairs with a tiny FIRECRAWL_HTTP_TIMEOUT_MS.
+          res.on("error", () => {});
+          setTimeout(() => {
+            res.end(JSON.stringify({ success: true, data: { markdown: "# Slow" } }));
+          }, 300);
+        } else {
+          res.end(JSON.stringify({ success: true, data: { markdown: "# Mock" } }));
+        }
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ success: false, error: "not found" }));
@@ -84,6 +111,7 @@ before(async () => {
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  server.on("clientError", () => {}); // aborted (timed-out) requests are expected
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 
   // Plant a CLI credentials.json (apiUrl -> mock) in credsHome.
@@ -109,6 +137,9 @@ function run(envelope, extraEnv = {}) {
     "FIRECRAWL_API_URL",
     "FIRECRAWL_PROFILE_NAME",
     "FIRECRAWL_PROFILE_SAVE_CHANGES",
+    "FIRECRAWL_HTTP_TIMEOUT_MS",
+    "FIRECRAWL_MAX_RETRIES",
+    "FIRECRAWL_RETRY_DELAY_MS",
   ]) {
     delete env[k];
   }
@@ -135,6 +166,10 @@ function run(envelope, extraEnv = {}) {
 }
 
 const env = (extra) => ({ FIRECRAWL_API_URL: baseUrl, FIRECRAWL_API_KEY: "fc-test", ...extra });
+
+beforeEach(() => {
+  requestCounts = new Map();
+});
 
 // --- protocol / offline paths (no network) ---
 
@@ -262,9 +297,92 @@ test("firecrawl.scrape forwards payload and returns data", async () => {
     env()
   );
   assert.equal(json.success, true);
+  assert.equal(json.attempts, 1); // succeeded on the first HTTP request
   assert.equal(json.data.data.markdown, "# Mock");
   assert.equal(lastReq.url, "/v2/scrape");
   assert.equal(lastReq.body.url, "https://example.com");
+});
+
+// --- retry behavior for transient failures (429 / 5xx / timeout) ---
+
+test("two 429s then success: retried, attempts is 3, success true", async () => {
+  const { code, json } = await run(
+    {
+      protocol: PROTOCOL,
+      type: "firecrawl.scrape",
+      request: { url: "https://mock.test/flaky-429" },
+    },
+    env({ FIRECRAWL_RETRY_DELAY_MS: "10" })
+  );
+  assert.equal(code, 0);
+  assert.equal(json.success, true);
+  assert.equal(json.attempts, 3); // 1 initial + 2 retries
+  assert.equal(json.data.data.markdown, "# Flaky");
+  assert.equal(requestCounts.get("https://mock.test/flaky-429"), 3);
+});
+
+test("always 500: retries exhausted at the default limit, error is legible", async () => {
+  const { code, json } = await run(
+    {
+      protocol: PROTOCOL,
+      type: "firecrawl.scrape",
+      request: { url: "https://mock.test/always-500" },
+    },
+    env({ FIRECRAWL_RETRY_DELAY_MS: "10" })
+  );
+  assert.equal(code, 0);
+  assert.equal(json.success, false);
+  assert.equal(requestCounts.get("https://mock.test/always-500"), 3); // 1 + 2 default retries
+  assert.match(json.error, /transient/);
+  assert.match(json.error, /retries exhausted/);
+  assert.match(json.error, /3 attempts/);
+  assert.match(json.error, /internal boom/); // last failure reason preserved
+});
+
+test("FIRECRAWL_MAX_RETRIES=0 disables retries", async () => {
+  const { json } = await run(
+    {
+      protocol: PROTOCOL,
+      type: "firecrawl.scrape",
+      request: { url: "https://mock.test/always-500" },
+    },
+    env({ FIRECRAWL_MAX_RETRIES: "0", FIRECRAWL_RETRY_DELAY_MS: "10" })
+  );
+  assert.equal(json.success, false);
+  assert.equal(requestCounts.get("https://mock.test/always-500"), 1);
+  assert.match(json.error, /1 attempts?/);
+});
+
+test("401 is not retried: single request, no 'retries exhausted' wording", async () => {
+  const { json } = await run(
+    {
+      protocol: PROTOCOL,
+      type: "firecrawl.scrape",
+      request: { url: "https://mock.test/unauthorized" },
+    },
+    env({ FIRECRAWL_RETRY_DELAY_MS: "10" })
+  );
+  assert.equal(json.success, false);
+  assert.equal(requestCounts.get("https://mock.test/unauthorized"), 1);
+  assert.match(json.error, /invalid api key/);
+  assert.doesNotMatch(json.error, /retries exhausted/);
+});
+
+test("timeout is retried, then fails with a legible exhausted-retries error", async () => {
+  const { code, json } = await run(
+    {
+      protocol: PROTOCOL,
+      type: "firecrawl.scrape",
+      request: { url: "https://mock.test/slow" },
+    },
+    env({ FIRECRAWL_HTTP_TIMEOUT_MS: "50", FIRECRAWL_RETRY_DELAY_MS: "10" })
+  );
+  assert.equal(code, 0);
+  assert.equal(json.success, false);
+  assert.equal(requestCounts.get("https://mock.test/slow"), 3); // 1 + 2 default retries
+  assert.match(json.error, /retries exhausted/);
+  assert.match(json.error, /3 attempts/);
+  assert.match(json.error, /timed out after 50ms/);
 });
 
 test("firecrawl.parse uploads a local file as multipart with options", async () => {
