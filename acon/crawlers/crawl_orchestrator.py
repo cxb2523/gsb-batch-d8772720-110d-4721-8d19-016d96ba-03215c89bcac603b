@@ -10,11 +10,12 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import urlparse
 
 from .. import config as app_config
 from ..utils.failure_taxonomy import DegradedReason, normalize_failure, normalize_reason
 from .common import normalize_scan_mode
-from .crawler import CrawlQueueEntry, CrawlSession
+from .crawler import CrawlQueueEntry, CrawlSession, normalize_url_for_dedup
 from .page_selector import LiveDOMLinkExtractor, SelectedLink, select_links_for_enqueue
 from .site_aggregator import aggregate_site_issues
 from . import orchestrator_utils as utils
@@ -85,6 +86,7 @@ class CrawlConfig:
     use_stealth: bool = False  # If True, uses Camoufox for stealthy discovery
     db_path: str | None = None  # SQLite database path for session persistence
     post_process: Callable[[str], Any] | None = None  # Optional callable for extraction (e.g. Trafilatura)
+    uncrawled_links: list[dict[str, Any]] | None = None  # Resume input: previously uncrawled same-origin links
 
     def normalized(self) -> "CrawlConfig":
         scan_mode = normalize_scan_mode(self.scan_mode)
@@ -105,6 +107,29 @@ class CrawlConfig:
         global_timeout_s = self.global_timeout_s
         if global_timeout_s is None:
             global_timeout_s = int(max(30, min(300, max_pages * timeout_per_page_s)))
+
+        # Sanitize the resume manifest: keep only well-formed same-origin candidates.
+        # Entries still pass through max_depth and session dedup at enqueue time.
+        resume_links: list[dict[str, Any]] = []
+        for item in self.uncrawled_links or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                depth = max(0, int(item.get("depth") or 0))
+            except (TypeError, ValueError):
+                depth = 0
+            parent_url = item.get("parent_url")
+            resume_links.append(
+                {
+                    "url": url,
+                    "parent_url": str(parent_url) if parent_url else None,
+                    "depth": depth,
+                    "page_type": str(item.get("page_type") or "standard"),
+                }
+            )
 
         max_allowed_concurrency = 3 if scan_mode == "deep" else 2
 
@@ -130,7 +155,8 @@ class CrawlConfig:
             extract_content=self.extract_content,
             use_stealth=self.use_stealth,
             db_path=self.db_path,
-            post_process=self.post_process
+            post_process=self.post_process,
+            uncrawled_links=resume_links,
         )
 
 
@@ -217,6 +243,11 @@ class SiteCrawlOrchestrator:
         unique_signal_keys: set[str] = set()
         recent_signal_additions: deque[int] = deque(maxlen=cfg.low_information_window)
 
+        # Resumable manifest: same-origin links seen during the crawl that were never fetched.
+        uncrawled_links: list[dict[str, Any]] = []
+        uncrawled_keys: set[str] = set()
+        failed_pages: list[dict[str, Any]] = []
+
         seed_enqueued, seed_dedup_key = session.enqueue(
             fetch_url=seed_url,
             depth=0,
@@ -244,10 +275,10 @@ class SiteCrawlOrchestrator:
                         page_type=p["page_type"],
                         page_weight=p["page_weight"],
                     )
-                
+
                 if not session.has_pending:
                     raise ValueError(f"Invalid seed_url and no pending session to resume: {seed_url}")
-                
+
                 # Perform early topology detection if we have enough URLs
                 all_urls = [p["fetch_url"] for p in pending]
                 if len(all_urls) > 1:
@@ -256,6 +287,35 @@ class SiteCrawlOrchestrator:
                     logger.info(f"Restored session topology: {session.topology}")
             else:
                 raise ValueError(f"Invalid seed_url for crawl: {seed_url}")
+
+        # Resume support: re-enqueue a previously produced uncrawled manifest.
+        # Entries keep their original depth/page_type but cannot bypass max_depth or dedup.
+        seed_host = (urlparse(seed_url).hostname or "").lower()
+        for resume_item in cfg.uncrawled_links or []:
+            resume_url = str(resume_item.get("url") or "").strip()
+            resume_depth = int(resume_item.get("depth") or 0)
+            if not resume_url or resume_depth > cfg.max_depth:
+                continue
+            parsed_resume = urlparse(resume_url)
+            if (parsed_resume.scheme or "").lower() not in {"http", "https"}:
+                continue
+            if (parsed_resume.hostname or "").lower() != seed_host:
+                continue
+            enqueued, dedup_key = session.enqueue(
+                fetch_url=resume_url,
+                depth=resume_depth,
+                page_type=str(resume_item.get("page_type") or "standard"),
+                page_weight=0.7,
+                parent_url=resume_item.get("parent_url"),
+            )
+            if enqueued and self._persistence:
+                await self._persistence.save_queue_entry(
+                    resume_url,
+                    dedup_key,
+                    resume_depth,
+                    str(resume_item.get("page_type") or "standard"),
+                    0.7,
+                )
 
         await self._emit_event(
             "crawl_started",
@@ -385,6 +445,19 @@ class SiteCrawlOrchestrator:
                         )
                         processed.page_result["adaptive_action"] = adaptive_action
 
+                        # Preserve a normalized failure record for the resumable manifest.
+                        failed_pages.append(
+                            {
+                                "url": entry.fetch_url,
+                                "fetch_status": fetch_status,
+                                "failure_reason": normalized_failure,
+                                "adaptive_action": adaptive_action,
+                                "parent_url": entry.parent_url,
+                                "depth": entry.depth,
+                                "page_type": entry.page_type,
+                            }
+                        )
+
                         if self._persistence:
                             await self._persistence.mark_status(entry.fetch_url, f"failed:{normalized_failure}")
 
@@ -412,8 +485,25 @@ class SiteCrawlOrchestrator:
                     if fetch_status != "success":
                         pages_skipped_due_to_failure += len(processed.selected_links)
                     else:
+                        remaining_budget = max(0, effective_max_pages - pages_crawled)
+                        budget_exhausted = remaining_budget <= 0
                         for link in processed.selected_links:
-                            remaining_budget = max(0, effective_max_pages - pages_crawled)
+                            if budget_exhausted:
+                                # No budget left to fetch this link: still apply the session
+                                # dedup rule so the resume manifest records each unseen
+                                # same-origin link exactly once.
+                                self._record_uncrawled(
+                                    link.fetch_url,
+                                    parent_url=entry.fetch_url,
+                                    depth=entry.depth + 1,
+                                    page_type=link.page_type,
+                                    session=session,
+                                    uncrawled_links=uncrawled_links,
+                                    uncrawled_keys=uncrawled_keys,
+                                    check_seen=True,
+                                )
+                                continue
+
                             if (
                                 link.page_type == "standard"
                                 and remaining_budget <= cfg.standard_page_skip_budget_threshold
@@ -498,11 +588,35 @@ class SiteCrawlOrchestrator:
                 if stop_requested or early_stop_reason is not None or pages_crawled >= effective_max_pages:
                     break
 
+            # Capture queue state before draining so crawl_status keeps its
+            # original "partial" semantics when discovered pages remain unfetched.
+            queue_remaining = session.has_pending
+
+            # Anything still queued when the crawl stopped was discovered but never
+            # fetched. Surface it in the resume manifest as well.
+            while session.has_pending:
+                leftover = session.dequeue_prioritized()
+                if leftover is None:
+                    break
+                if leftover.depth > cfg.max_depth:
+                    session.pages_skipped_depth += 1
+                    continue
+                self._record_uncrawled(
+                    leftover.fetch_url,
+                    parent_url=leftover.parent_url,
+                    depth=leftover.depth,
+                    page_type=leftover.page_type,
+                    session=session,
+                    uncrawled_links=uncrawled_links,
+                    uncrawled_keys=uncrawled_keys,
+                    check_seen=False,
+                )
+
             crawl_duration_s = round(time.perf_counter() - start_time, 3)
             crawl_status = utils.derive_crawl_status(
                 early_stop_reason=early_stop_reason,
                 pages_failed=pages_failed,
-                queue_remaining=session.has_pending,
+                queue_remaining=queue_remaining,
             )
             
             reflection = self._reflect_on_efficiency(
@@ -539,6 +653,8 @@ class SiteCrawlOrchestrator:
                     "crawl_duration_s": crawl_duration_s,
                     "early_stop_reason": early_stop_reason,
                     "reflection": reflection,
+                    "uncrawled_links": uncrawled_links,
+                    "failed_pages": failed_pages,
                 },
             }
 
@@ -547,6 +663,46 @@ class SiteCrawlOrchestrator:
         finally:
             if created_extractor:
                 await link_extractor.close()
+
+    def _record_uncrawled(
+        self,
+        fetch_url: str,
+        *,
+        parent_url: str | None,
+        depth: int,
+        page_type: str,
+        session: CrawlSession,
+        uncrawled_links: list[dict[str, Any]],
+        uncrawled_keys: set[str],
+        check_seen: bool,
+    ) -> None:
+        """Record a discovered, same-origin link that will not be fetched this run.
+
+        Applies the same normalized dedup key used by CrawlSession. When
+        ``check_seen`` is True the link is only recorded if the session has not
+        seen it yet (and the key is marked seen so duplicates are never recorded
+        twice). Entries drained straight from the session queue have already
+        passed dedup at enqueue time, so they skip the seen check.
+        """
+        clean_url = str(fetch_url or "").strip()
+        dedup_key = normalize_url_for_dedup(clean_url)
+        if not dedup_key:
+            return
+        if dedup_key in uncrawled_keys:
+            return
+        if check_seen:
+            if dedup_key in session.seen_urls:
+                return
+            session.seen_urls.add(dedup_key)
+        uncrawled_keys.add(dedup_key)
+        uncrawled_links.append(
+            {
+                "url": clean_url,
+                "parent_url": parent_url,
+                "depth": int(depth),
+                "page_type": str(page_type or "standard"),
+            }
+        )
 
     def _dequeue_batch(
         self,

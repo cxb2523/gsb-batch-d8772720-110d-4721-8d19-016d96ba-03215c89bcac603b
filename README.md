@@ -181,10 +181,36 @@ if __name__ == "__main__":
       "intelligence_score": 0.33,
       "failure_rate": 0.0,
       "advice": "Continue current strategy."
-    }
+    },
+    "uncrawled_links": [
+      {
+        "url": "https://pypi.org/project/other/",
+        "parent_url": "https://pypi.org",
+        "depth": 1,
+        "page_type": "standard"
+      }
+    ],
+    "failed_pages": [
+      {
+        "url": "https://pypi.org/project/broken/",
+        "fetch_status": "error",
+        "failure_reason": "engine_error",
+        "adaptive_action": "continue",
+        "parent_url": "https://pypi.org",
+        "depth": 1,
+        "page_type": "standard"
+      }
+    ]
   }
 }
 ```
+
+`crawl_meta.uncrawled_links` lists every same-origin link that was discovered
+but not fetched because the page budget ran out or the crawl stopped early.
+Feed it back via `CrawlConfig(uncrawled_links=[...])` on the next run to
+resume; entries keep their original `depth`/`page_type` but still pass through
+`max_depth` and deduplication. `crawl_meta.failed_pages` keeps the normalized
+`failure_reason` and the `adaptive_action` taken for each failed page.
 
 ---
 
