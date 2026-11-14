@@ -7,8 +7,11 @@ pages via <a href> links AND interactive widgets (buttons, tabs, menus,
 accordions, SPA route changes) by actually clicking them. Builds a navigation
 graph of nodes (pages + SPA states) and edges (links + actions) and writes:
 
-  - <out>.json   : the graph data ({nodes, edges, meta})
-  - <out>.html   : a self-contained Cytoscape.js viewer (double-click to open)
+  - <out>.json          : the graph data ({nodes, edges, meta})
+  - <out>.html          : a self-contained Cytoscape.js viewer (double-click to open)
+  - <out>.progress.json : per-page outcome manifest (success / failed /
+                          auth_skipped / unprocessed), used by --resume to
+                          continue an interrupted crawl where it left off
 
 Design / safety:
   * Same-origin only by default (won't wander off the target site).
@@ -293,6 +296,8 @@ class Crawler:
         self.action_budget = args.max_actions
         self.auth_bounces = 0
         self.t0 = time.time()
+        self.outcomes = {}     # page_id -> this run's outcome entry (last one wins)
+        self.completed = {}    # page_id -> prior entry carried over by --resume
 
     # --- low-level browser ops ---------------------------------------------
     def nav(self, url):
@@ -399,6 +404,69 @@ class Crawler:
     def page_id(self, url):
         return normalize_url(url, self.a.strip_tracking)
 
+    # --- per-page outcome tracking (the .progress.json manifest) ------------
+    # Every URL pulled from the queue ends up with exactly one outcome:
+    #   success       page extracted and expanded (links/actions explored)
+    #   failed        navigation or extraction raised (error summary attached)
+    #   auth_skipped  page bounced to the --auth-path login redirect
+    #   unprocessed   still queued when the crawl stopped (e.g. --max-pages)
+    # --resume adds a fifth, carried-over status (never re-crawled this run):
+    #   completed     succeeded in a previous run (read from the old manifest)
+    def record_outcome(self, url, status, error=None, title=None):
+        pid = self.page_id(url)
+        entry = {"page_id": pid, "url": url, "status": status}
+        if title:
+            entry["title"] = title
+        if error:
+            entry["error"] = error
+        # keyed by normalized page_id: a page queued several times keeps only
+        # its LAST outcome
+        self.outcomes[pid] = entry
+
+    def _resume_queue(self):
+        """Build the starting queue from a previous run's .progress.json.
+
+        Pages that succeeded before are marked completed and never re-queued;
+        failed / auth_skipped / unprocessed pages are queued again. A missing
+        or unreadable manifest falls back to a fresh crawl (with a stderr
+        note — never silently)."""
+        path = self.a.resume if isinstance(self.a.resume, str) \
+            else self.a.out + ".progress.json"
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            entries = data["pages"]
+            if not isinstance(entries, list):
+                raise ValueError("'pages' is not a list")
+        except FileNotFoundError:
+            print("resume: %s not found — starting a fresh crawl" % path,
+                  file=sys.stderr)
+            return [self.start]
+        except (ValueError, TypeError, KeyError, OSError) as e:
+            print("resume: cannot parse %s (%s) — starting a fresh crawl"
+                  % (path, e), file=sys.stderr)
+            return [self.start]
+        retry = []
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            pid, status = e.get("page_id"), e.get("status")
+            if not pid:
+                continue
+            if status in ("success", "completed"):
+                self.completed[pid] = e
+                self.page_seen.add(pid)      # never queued again
+            elif status in ("failed", "auth_skipped", "unprocessed"):
+                retry.append(pid)
+                self.page_seen.add(pid)      # queued once, below
+        queue = list(retry)
+        if self.start not in self.completed and self.start not in retry:
+            queue.insert(0, self.start)      # start page has no outcome yet
+            self.page_seen.add(self.start)
+        self.log("resume: %d completed, %d to retry (from %s)"
+                 % (len(self.completed), len(retry), path))
+        return queue
+
     # --- crawl --------------------------------------------------------------
     def same_site(self, url):
         return host_key(url, self.a.include_subdomains) == self.base_host
@@ -418,9 +486,13 @@ class Crawler:
     def run(self):
         queue = [self.start]
         self.page_seen.add(self.start)
+        if getattr(self.a, "resume", False):
+            queue = self._resume_queue()
+        stop = None  # why the loop ended early (recorded on unprocessed pages)
         while queue:
             if len(self.nodes) >= self.a.max_pages:
-                self.log("reached --max-pages cap (%d)" % self.a.max_pages)
+                stop = "reached --max-pages cap (%d)" % self.a.max_pages
+                self.log(stop)
                 break
             url = queue.pop(0)
             self.log("PAGE %d/%d  %s" % (len(self.nodes) + 1, self.a.max_pages, url))
@@ -429,6 +501,7 @@ class Crawler:
                 info = self.extract()
             except Exception as e:
                 self.log("  ! skip (%s)" % e)
+                self.record_outcome(url, "failed", error=str(e)[:200])
                 self.add_node(self.page_id(url), url=url, title="(error)",
                               type="page", error=str(e)[:200])
                 continue
@@ -446,9 +519,13 @@ class Crawler:
             # the session likely died — stop before polluting the graph.
             if self._on_auth(info, url):
                 self.auth_bounces += 1
+                self.record_outcome(url, "auth_skipped",
+                                    error="redirected to auth path '%s'"
+                                          % self.a.auth_path)
                 self.log("  ! redirected to auth (%d) — possible session loss"
                          % self.auth_bounces)
                 if self.auth_bounces >= 3:
+                    stop = "repeated auth redirects — session lost"
                     self.log("STOP: repeated auth redirects — session lost. "
                              "Re-login (or pass --relogin-cmd) and re-run.")
                     break
@@ -458,6 +535,12 @@ class Crawler:
             sid = self.page_id(url)
             self.add_node(sid, url=info["url"], title=info["title"] or url, type="page")
             self.explore_state(sid, url, [], info, depth=0, queue=queue)
+            self.record_outcome(url, "success", title=info["title"] or url)
+        # Anything still queued when the crawl stopped was never processed.
+        for url in queue:
+            self.record_outcome(url, "unprocessed",
+                                error=stop or "crawl stopped before this page "
+                                              "was processed")
         return self.finish()
 
     def explore_state(self, node_id, entry_url, action_path, info, depth, queue):
@@ -583,6 +666,23 @@ class Crawler:
         if not self.a.quiet:
             print("[%5.1fs] %s" % (time.time() - self.t0, msg), file=sys.stderr)
 
+    def progress_report(self):
+        """The per-page outcome manifest: this run's outcomes plus any pages
+        a --resume carried over as already completed (kept visible, but under
+        a distinct 'completed' status so they never count as THIS run's
+        successes)."""
+        counts = {"success": 0, "failed": 0, "auth_skipped": 0,
+                  "unprocessed": 0, "completed": 0}
+        pages = list(self.outcomes.values())
+        for e in pages:
+            counts[e["status"]] = counts.get(e["status"], 0) + 1
+        for pid in sorted(self.completed):
+            pages.append({"page_id": pid,
+                          "url": self.completed[pid].get("url") or pid,
+                          "status": "completed"})
+        counts["completed"] = len(self.completed)
+        return {"start": self.start, "counts": counts, "pages": pages}
+
     def finish(self):
         meta = {
             "start": self.start,
@@ -599,15 +699,19 @@ class Crawler:
         }
         graph = {"nodes": list(self.nodes.values()), "edges": self.edges, "meta": meta}
         json_path = self.a.out + ".json"
-        with open(json_path, "w") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump(graph, f, indent=2)
         html_path = self.a.out + ".html"
-        with open(html_path, "w") as f:
+        with open(html_path, "w", encoding="utf-8") as f:
             f.write(render_html(graph))
+        progress_path = self.a.out + ".progress.json"
+        with open(progress_path, "w", encoding="utf-8") as f:
+            json.dump(self.progress_report(), f, indent=2)
         self.log("DONE  %d nodes (%d pages, %d states, %d skipped), %d edges"
                  % (len(self.nodes), meta["pages"], meta["states"],
                     meta["skipped"], meta["edges"]))
-        print("\nWrote:\n  %s\n  %s  <- open this in a browser" % (json_path, html_path))
+        print("\nWrote:\n  %s\n  %s  <- open this in a browser\n  %s"
+              % (json_path, html_path, progress_path))
         return graph
 
 
@@ -923,6 +1027,13 @@ def build_argparser():
                    help="command to run to re-authenticate when --auth-path is hit "
                         "(e.g. a login script); the crawl recovers and continues. Inherits "
                         "this process's env, so export PINCHTAB_CONFIG/TOKEN before running")
+    p.add_argument("--resume", nargs="?", const=True, default=False,
+                   metavar="PROGRESS_JSON",
+                   help="resume an interrupted crawl from a .progress.json manifest "
+                        "(default: <out>.progress.json): pages that already succeeded "
+                        "are treated as done and NOT re-visited; failed, auth-skipped "
+                        "and unprocessed pages are re-queued. A missing/unreadable "
+                        "manifest falls back to a fresh crawl (noted on stderr)")
     p.add_argument("--include-subdomains", action="store_true",
                    help="treat *.domain.tld as same site")
     p.add_argument("--no-strip-tracking", dest="strip_tracking", action="store_false",
