@@ -1,0 +1,12 @@
+{
+  "source": "https://aistudio.google.com/docs/api-errors",
+  "status": 401,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 401,
+      "message": "The API key is missing, invalid, or expired.",
+      "status": "UNAUTHENTICATED"
+    }
+  }
+}

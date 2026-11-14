@@ -1,0 +1,13 @@
+{
+  "source": "https://platform.claude.com/docs/en/api/errors",
+  "status": 529,
+  "headers": {},
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "overloaded_error",
+      "message": "Overloaded"
+    },
+    "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+  }
+}

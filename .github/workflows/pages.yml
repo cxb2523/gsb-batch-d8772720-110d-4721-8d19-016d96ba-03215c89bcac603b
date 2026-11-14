@@ -1,0 +1,71 @@
+name: Web demo (GitHub Pages)
+
+# Builds the static web demo (made-up data, no network: see web/vite.pages.config.ts) and
+# deploys it to https://joaquinruiz.github.io/mecha/. Every action is pinned by commit SHA
+# (Dependabot keeps them current) and no cache is used. The github-pages environment only
+# accepts deployments from tags v*.
+#
+# Reusable: release.yml calls it as its last job, on the tag, only after PyPI and the
+# GitHub release succeeded. (A `release: published` trigger would never fire: the release
+# is created with GITHUB_TOKEN, whose events do not start other workflows. `workflow_run`
+# would run in the context of main, which the environment rule rejects.)
+
+on:
+  workflow_call:
+  workflow_dispatch:  # re-run by hand: pick the release tag as the ref
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and test the web demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115  # v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+      - run: pnpm -C web install --frozen-lockfile
+      - run: uv sync --locked
+      - name: Demo data matches mecha serve --demo
+        run: uv run python scripts/dump_demo.py --check
+      - name: Build the real app and the web demo
+        run: |
+          pnpm -C web build
+          pnpm -C web build:pages
+      - name: The real app has no demo code; the demo has no /api client and a strict CSP
+        run: uv run python scripts/check_web_builds.py
+      - run: pnpm -C web size:pages
+      - run: pnpm -C web exec playwright install --with-deps chromium
+      - name: Playwright against the static build (no request leaves the demo)
+        run: pnpm -C web e2e:pages
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: web/dist-pages
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

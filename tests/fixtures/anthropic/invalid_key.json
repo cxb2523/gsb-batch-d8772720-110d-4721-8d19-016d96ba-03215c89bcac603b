@@ -1,0 +1,13 @@
+{
+  "source": "https://platform.claude.com/docs/en/api/errors",
+  "status": 401,
+  "headers": {},
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "authentication_error",
+      "message": "invalid x-api-key"
+    },
+    "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+  }
+}

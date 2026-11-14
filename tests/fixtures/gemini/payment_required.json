@@ -1,0 +1,12 @@
+{
+  "source": "https://aistudio.google.com/docs/api-errors",
+  "status": 402,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 402,
+      "message": "Your Prepay credit balance is depleted.",
+      "status": "PAYMENT_REQUIRED"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "source": "https://developers.openai.com/api/docs/guides/error-codes",
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "Your organization has no prepaid credits remaining.",
+      "type": "insufficient_quota",
+      "param": null,
+      "code": "credit_balance_exhausted"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "source": "https://developers.openai.com/api/docs/guides/error-codes (variant: type only)",
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "You exceeded your current quota, please check your plan and billing details.",
+      "type": "insufficient_quota",
+      "param": null,
+      "code": null
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "source": "https://developers.openai.com/api/docs/guides/error-codes",
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "Your project reached its enforced spend limit.",
+      "type": "insufficient_quota",
+      "param": null,
+      "code": "project_spend_limit_exceeded"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "source": "SPEC.md variant (substring 'insufficient credits')",
+  "status": 400,
+  "headers": {},
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "invalid_request_error",
+      "message": "Insufficient credits for this request."
+    },
+    "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+  },
+  "note": "Second documented-in-spec variant of the credit error."
+}

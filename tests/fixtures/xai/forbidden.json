@@ -1,0 +1,9 @@
+{
+  "source": "https://docs.x.ai/developers/debugging.md",
+  "status": 403,
+  "headers": {},
+  "body": {
+    "code": "The caller does not have permission to execute the specified operation",
+    "error": "Ask your team admin for permission."
+  }
+}

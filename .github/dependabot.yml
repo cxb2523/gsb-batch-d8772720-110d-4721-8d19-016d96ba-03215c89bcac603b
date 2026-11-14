@@ -1,0 +1,12 @@
+# Keep the SHA-pinned GitHub Actions current (each pin carries its version as a comment).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "CI"

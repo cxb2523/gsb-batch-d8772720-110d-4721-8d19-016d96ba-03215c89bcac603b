@@ -1,0 +1,14 @@
+{
+  "source": "https://portkey.ai/error-library/anthropic-400-credit-balance-too-low (third-party)",
+  "status": 400,
+  "headers": {},
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "invalid_request_error",
+      "message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+    },
+    "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+  },
+  "note": "Message text from third-party reports; matched by substring 'credit balance'."
+}

@@ -1,0 +1,14 @@
+{
+  "source": "https://developers.openai.com/api/docs/guides/error-codes (401 'does not have the required permissions'; exact text undocumented)",
+  "status": 401,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "You have insufficient permissions for this operation. Missing scopes: api.model.read.",
+      "type": "invalid_request_error",
+      "param": null,
+      "code": null
+    }
+  },
+  "note": "Docs list missing permissions as a 401 cause; message text from user reports."
+}

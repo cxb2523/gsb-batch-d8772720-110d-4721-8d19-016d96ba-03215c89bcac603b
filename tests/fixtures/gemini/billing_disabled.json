@@ -1,0 +1,23 @@
+{
+  "source": "googleapis google/api/error_reason.proto (google.api.ErrorReason) and the Google API error model",
+  "status": 400,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 400,
+      "message": "This API method requires billing to be enabled.",
+      "status": "FAILED_PRECONDITION",
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          "reason": "BILLING_DISABLED",
+          "domain": "googleapis.com",
+          "metadata": {
+            "service": "generativelanguage.googleapis.com",
+            "consumer": "projects/123"
+          }
+        }
+      ]
+    }
+  }
+}

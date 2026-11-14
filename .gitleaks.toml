@@ -1,0 +1,4 @@
+# Extends the default ruleset. Test fixtures must never contain real keys; if a fake
+# key shaped like a real one is needed, generate it at test time instead of allow-listing.
+[extend]
+useDefault = true

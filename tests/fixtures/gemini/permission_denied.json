@@ -1,0 +1,12 @@
+{
+  "source": "https://aistudio.google.com/docs/troubleshooting",
+  "status": 403,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 403,
+      "message": "Your project has been denied access. Please contact support.",
+      "status": "PERMISSION_DENIED"
+    }
+  }
+}

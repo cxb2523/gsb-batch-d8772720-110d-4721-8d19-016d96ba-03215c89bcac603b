@@ -1,0 +1,15 @@
+{
+  "source": "https://platform.claude.com/docs/en/api/errors",
+  "status": 429,
+  "headers": {
+    "retry-after": "12"
+  },
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "rate_limit_error",
+      "message": "Number of requests has exceeded your rate limit."
+    },
+    "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+  }
+}

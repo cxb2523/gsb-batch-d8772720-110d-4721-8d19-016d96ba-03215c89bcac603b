@@ -1,0 +1,23 @@
+{
+  "source": "live response to a deliberately fake key, 2026-11-04 (no real credential); also reported for real keys in https://discuss.ai.google.dev/t/account-restricted-to-aq-keys-all-return-401-access-token-type-unsupported-on-generativelanguage-googleapis-com-requesting-fix-aiza-restoration/175424",
+  "status": 401,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 401,
+      "message": "API key not valid. Please pass a valid API key.",
+      "status": "UNAUTHENTICATED",
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          "reason": "ACCESS_TOKEN_TYPE_UNSUPPORTED",
+          "metadata": {
+            "service": "generativelanguage.googleapis.com",
+            "method": "google.ai.generativelanguage.v1beta.ModelService.ListModels"
+          }
+        }
+      ]
+    }
+  },
+  "note": "Any invalid AQ. key returns this reason, so it cannot be told apart from the known account issue."
+}

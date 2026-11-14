@@ -1,0 +1,13 @@
+{
+  "source": "https://discuss.ai.google.dev/t/429-resource-exhausted-prepayment-credits-are-depleted-prepay-balance-reads-r-0-00-despite-funded-billing-account/170005 (forum; variant)",
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 429,
+      "message": "Your prepayment credits are depleted. Please add credits to continue.",
+      "status": "RESOURCE_EXHAUSTED"
+    }
+  },
+  "note": "Third-party report; official behaviour is HTTP 402."
+}

@@ -1,0 +1,23 @@
+{
+  "source": "googleapis google/api/error_reason.proto (google.api.ErrorReason) and the Google API error model",
+  "status": 403,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 403,
+      "message": "Permission denied: Consumer 'projects/123' has been suspended.",
+      "status": "PERMISSION_DENIED",
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          "reason": "CONSUMER_SUSPENDED",
+          "domain": "googleapis.com",
+          "metadata": {
+            "service": "generativelanguage.googleapis.com",
+            "consumer": "projects/123"
+          }
+        }
+      ]
+    }
+  }
+}

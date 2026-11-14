@@ -1,0 +1,10 @@
+{
+  "source": "live response to a deliberately fake key, 2026-11-04 (no real credential) (management API)",
+  "status": 401,
+  "headers": {},
+  "body": {
+    "code": 16,
+    "message": "Invalid bearer token. Please ensure you use a valid management key.",
+    "details": []
+  }
+}

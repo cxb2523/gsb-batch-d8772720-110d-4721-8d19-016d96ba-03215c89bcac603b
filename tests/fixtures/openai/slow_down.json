@@ -1,0 +1,13 @@
+{
+  "source": "https://developers.openai.com/api/docs/guides/rate-limits",
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "Your request rate increased too quickly.",
+      "type": "rate_limit_error",
+      "param": null,
+      "code": "slow_down"
+    }
+  }
+}

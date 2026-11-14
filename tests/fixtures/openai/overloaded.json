@@ -1,0 +1,13 @@
+{
+  "source": "https://developers.openai.com/api/docs/guides/rate-limits",
+  "status": 503,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "The requested model is temporarily overloaded.",
+      "type": "service_unavailable_error",
+      "param": null,
+      "code": "server_is_overloaded"
+    }
+  }
+}

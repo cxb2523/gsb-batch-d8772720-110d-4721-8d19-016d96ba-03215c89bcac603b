@@ -1,0 +1,96 @@
+# Capability matrix (SPEC.md, "Capacidades por proveedor"). This file is the contract:
+# GET /api/providers, the UI texts and the README table (scripts/gen_capabilities.py)
+# come from it, and nothing promises what is not here. `passive` lists the free endpoint
+# used per credential kind; tests check it against each plugin.
+#
+# Values for validate/funds/expiry: "yes", "no", "admin_key", "management_key",
+# "admin_estimate" (estimated from a manual budget and the Costs API), "error_only".
+
+[providers.anthropic]
+name = "Anthropic"
+validate = "yes"
+funds = "error_only"        # no endpoint; shows up when generating (active probe)
+expiry = "admin_key"        # expires_at via the Admin API
+active_probe = "POST /v1/messages, max_tokens 1"
+passive = { api_key = "GET /v1/models", admin_key = "GET /v1/organizations/api_keys" }
+
+[providers.openai]
+name = "OpenAI"
+validate = "yes"
+funds = "admin_estimate"    # manual budget minus the Costs API (admin key); never red
+expiry = "admin_key"
+active_probe = "POST /v1/embeddings, one word"
+passive = { api_key = "GET /v1/models", admin_key = "GET /v1/organization/admin_api_keys" }
+
+[providers.gemini]
+name = "Google Gemini"
+validate = "yes"
+funds = "error_only"        # prepay has no read API; 402 when depleted
+expiry = "no"
+active_probe = "generateContent, maxOutputTokens 1"
+passive = { api_key = "GET /v1beta/models" }
+
+[providers.xai]
+name = "xAI"
+validate = "yes"
+funds = "management_key"    # prepaid balance via the management API
+expiry = "management_key"   # expireTime via the management API
+active_probe = "POST /v1/chat/completions, minimal"
+passive = { api_key = "GET /v1/api-key", management_key = "GET /auth/management-keys/validation" }
+
+[providers.openrouter]
+name = "OpenRouter"
+validate = "yes"
+funds = "yes"               # limit_remaining with the key itself
+expiry = "yes"              # expires_at with the key itself
+active_probe = "not needed"
+passive = { api_key = "GET /api/v1/key" }
+
+# --- Active probes (opt-in per credential) --------------------------------------------
+# Default model and prices per 1M tokens, from the official pricing pages on the date in
+# `prices_checked`. The cost shown in the UI is an estimate from this table; `model = auto`
+# picks the cheapest suitable model from the provider's free model list at probe time.
+# `free_probe` is an alternative free endpoint (opt-in): whether it reflects an exhausted
+# balance is not documented (docs/providers.md).
+
+[probes.anthropic]
+endpoint = "POST /v1/messages"
+default_model = "claude-haiku-5-5"
+input_tokens = 10
+output_tokens = 1
+input_usd_per_mtok = 0.10
+output_usd_per_mtok = 0.50
+prices_checked = "2026-11-06"
+prices_source = "https://platform.claude.com/docs/en/about-claude/pricing"
+free_probe = "POST /v1/messages/count_tokens"
+
+[probes.openai]
+endpoint = "POST /v1/embeddings"
+default_model = "text-embedding-3-small"
+input_tokens = 1
+output_tokens = 0
+input_usd_per_mtok = 0.02
+output_usd_per_mtok = 0.0
+prices_checked = "2026-11-06"
+prices_source = "https://developers.openai.com/api/docs/pricing"
+
+[probes.gemini]
+endpoint = "POST /v1beta/models/{model}:generateContent"
+default_model = "gemini-3.5-flash-lite"
+input_tokens = 5
+output_tokens = 1
+input_usd_per_mtok = 0.30
+output_usd_per_mtok = 2.50
+prices_checked = "2026-11-06"
+prices_source = "https://aistudio.google.com/docs/pricing"
+free_probe = "POST /v1beta/models/{model}:countTokens"
+
+[probes.xai]
+endpoint = "POST /v1/chat/completions"
+default_model = "grok-4.20-0309-non-reasoning"  # cheapest non-reasoning chat model
+input_tokens = 10
+output_tokens = 1
+input_usd_per_mtok = 1.25
+output_usd_per_mtok = 2.50
+prices_checked = "2026-11-06"
+prices_source = "https://docs.x.ai/developers/pricing"

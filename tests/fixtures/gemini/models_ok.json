@@ -1,0 +1,32 @@
+{
+  "source": "https://aistudio.google.com/api-reference/models/list-models (Model resource fields)",
+  "status": 200,
+  "headers": {},
+  "body": {
+    "models": [
+      {
+        "name": "models/gemini-3.8-flash",
+        "baseModelId": "gemini-3.8-flash",
+        "version": "3.8",
+        "displayName": "Gemini 3.8 Flash",
+        "inputTokenLimit": 1048576,
+        "outputTokenLimit": 65536,
+        "supportedGenerationMethods": [
+          "generateContent",
+          "countTokens"
+        ]
+      },
+      {
+        "name": "models/gemini-embedding-2",
+        "baseModelId": "gemini-embedding-2",
+        "version": "2",
+        "displayName": "Gemini Embedding 2",
+        "inputTokenLimit": 8192,
+        "outputTokenLimit": 1,
+        "supportedGenerationMethods": [
+          "embedContent"
+        ]
+      }
+    ]
+  }
+}

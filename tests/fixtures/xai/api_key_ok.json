@@ -1,0 +1,22 @@
+{
+  "source": "https://docs.x.ai/developers/rest-api-reference/inference/other.md",
+  "status": 200,
+  "headers": {},
+  "body": {
+    "redacted_api_key": "xai-...b14o",
+    "user_id": "59fbe5f2-040b-46d5-8325-868bb8f23eb2",
+    "name": "My API Key",
+    "create_time": "2024-01-01T12:55:18.139305Z",
+    "modify_time": "2024-08-28T17:20:12.343321Z",
+    "modified_by": "3d38b4dc-4eb7-4785-ae26-c3fa8997ffc7",
+    "team_id": "5ea6f6bd-7815-4b8a-9135-28b2d7ba6722",
+    "acls": [
+      "api-key:model:*",
+      "api-key:endpoint:*"
+    ],
+    "api_key_id": "ae1e1841-4326-4b36-a8a9-8a1a7237db11",
+    "team_blocked": false,
+    "api_key_blocked": false,
+    "api_key_disabled": false
+  }
+}

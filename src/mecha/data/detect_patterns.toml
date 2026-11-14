@@ -1,0 +1,132 @@
+# Offline credential detection patterns (SPEC.md, "Detección offline del tipo de credencial").
+#
+# A new key format is added here, not in code. Each [[pattern]] has:
+#   id         stable identifier, stored with the credential
+#   provider   anthropic | openai | gemini | xai | openrouter
+#   kind       api_key | admin_key | management_key | oauth_token
+#   label      human readable type
+#   prefix     literal prefix (longest prefix wins), or
+#   regex      full-match regular expression (checked before prefixes)
+#   min_body   minimum characters after the prefix (default 16)
+#   storable   false = never stored (e.g. refresh tokens); default true
+#   retiring   true = key type being phased out (amber)
+#   ambiguous  true = provider must be confirmed by the user
+#   exclude    prefixes that must not match this pattern
+#   verified   true only if the prefix/format appears in the provider's official docs
+#   reference  where `verified` was checked (see docs/providers.md)
+#
+# Body characters are [A-Za-z0-9_-] unless the pattern has a regex.
+
+[[pattern]]
+id = "anthropic_api_key"
+provider = "anthropic"
+kind = "api_key"
+label = "Anthropic API key"
+prefix = "sk-ant-api03-"
+verified = true
+reference = "https://platform.claude.com/docs/en/api/admin/api_keys/list (partial_key_hint example), 2026-11-04"
+
+[[pattern]]
+id = "anthropic_admin_key"
+provider = "anthropic"
+kind = "admin_key"
+label = "Anthropic Admin key"
+prefix = "sk-ant-admin01-"
+verified = false
+reference = "Not found in the official Admin API pages checked on 2026-11-04"
+
+[[pattern]]
+id = "anthropic_oauth_access"
+provider = "anthropic"
+kind = "oauth_token"
+label = "Claude subscription OAuth token"
+prefix = "sk-ant-oat01-"
+verified = false
+reference = "Undocumented; third-party sources only"
+
+[[pattern]]
+id = "anthropic_oauth_refresh"
+provider = "anthropic"
+kind = "oauth_token"
+label = "Claude OAuth refresh token"
+prefix = "sk-ant-ort01-"
+storable = false
+verified = false
+reference = "Undocumented; third-party sources only (SPEC: verificar)"
+
+[[pattern]]
+id = "openai_project_key"
+provider = "openai"
+kind = "api_key"
+label = "OpenAI project key"
+prefix = "sk-proj-"
+verified = false
+reference = "Not found in the official Admin API reference checked on 2026-11-04"
+
+[[pattern]]
+id = "openai_service_account_key"
+provider = "openai"
+kind = "api_key"
+label = "OpenAI service account key"
+prefix = "sk-svcacct-"
+verified = false
+reference = "Not found in the official Admin API reference checked on 2026-11-04"
+
+[[pattern]]
+id = "openai_admin_key"
+provider = "openai"
+kind = "admin_key"
+label = "OpenAI Admin key"
+prefix = "sk-admin-"
+verified = true
+reference = "https://developers.openai.com/api/reference/resources/admin/subresources/organization.md, 2026-11-04"
+
+[[pattern]]
+id = "openai_legacy_key"
+provider = "openai"
+kind = "api_key"
+label = "Legacy user key (probably OpenAI)"
+prefix = "sk-"
+min_body = 20
+ambiguous = true
+# Unknown variants of other providers' sk- families are not OpenAI.
+exclude = ["sk-ant-", "sk-or-"]
+verified = false
+reference = "Other providers also use sk-; the user must confirm"
+
+[[pattern]]
+id = "gemini_auth_key"
+provider = "gemini"
+kind = "api_key"
+label = "Gemini auth key"
+regex = '^AQ\.[A-Za-z0-9_.\-]{16,}$'
+verified = false
+reference = "Official docs describe auth keys but not their format; prefix from third-party sources"
+
+[[pattern]]
+id = "gemini_standard_key"
+provider = "gemini"
+kind = "api_key"
+label = "Gemini standard key (retiring)"
+regex = '^AIza[0-9A-Za-z_\-]{35}$'
+retiring = true
+verified = false
+reference = "Official docs: the API 'will move from standard keys to auth keys'; format from third-party sources"
+
+[[pattern]]
+id = "xai_api_key"
+provider = "xai"
+kind = "api_key"
+label = "xAI API key"
+prefix = "xai-"
+verified = true
+reference = "https://docs.x.ai/developers/rest-api-reference/management/auth.md (examples), 2026-11-04"
+
+[[pattern]]
+id = "openrouter_api_key"
+provider = "openrouter"
+kind = "api_key"
+label = "OpenRouter API key"
+prefix = "sk-or-v1-"
+verified = true
+reference = "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key.md (masked labels), 2026-11-04"

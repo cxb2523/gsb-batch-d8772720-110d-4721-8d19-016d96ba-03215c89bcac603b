@@ -1,0 +1,22 @@
+{
+  "source": "https://docs.x.ai/developers/rest-api-reference/management/auth.md (expireTime added; documented field)",
+  "status": 200,
+  "headers": {},
+  "body": {
+    "apiKeys": [
+      {
+        "redactedApiKey": "xai-a**b",
+        "userId": "12106c22-fa54-4255-9887-6eb73c55787f",
+        "apiKeyId": "faf5f6c2-5322-4793-9b74-23129addca0c",
+        "teamId": "fef05426-f6a4-4242-b9a6-b1a0ea5dc5fd",
+        "disabled": "false",
+        "tpm": "100000",
+        "acl_strings": [
+          "api-key:endpoint:*",
+          "api-key:model:*"
+        ],
+        "expireTime": "2026-01-01T00:00:00Z"
+      }
+    ]
+  }
+}

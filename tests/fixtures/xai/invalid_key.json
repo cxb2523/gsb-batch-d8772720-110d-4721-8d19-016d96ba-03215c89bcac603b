@@ -1,0 +1,9 @@
+{
+  "source": "live response to a deliberately fake key, 2026-11-04 (no real credential); the docs (debugging.md) say 401",
+  "status": 400,
+  "headers": {},
+  "body": {
+    "code": "invalid-argument",
+    "error": "Incorrect API key provided. You can obtain an API key from https://console.x.ai."
+  }
+}

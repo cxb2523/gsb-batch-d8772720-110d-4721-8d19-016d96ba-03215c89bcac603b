@@ -1,0 +1,21 @@
+{
+  "source": "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key.md",
+  "status": 200,
+  "headers": {},
+  "body": {
+    "data": {
+      "label": "sk-or-v1-au7...890",
+      "limit": 100,
+      "limit_remaining": 74.5,
+      "limit_reset": "monthly",
+      "usage": 25.5,
+      "usage_daily": 25.5,
+      "usage_weekly": 25.5,
+      "usage_monthly": 25.5,
+      "is_free_tier": false,
+      "is_management_key": false,
+      "expires_at": "2027-12-31T23:59:59Z",
+      "include_byok_in_limit": false
+    }
+  }
+}

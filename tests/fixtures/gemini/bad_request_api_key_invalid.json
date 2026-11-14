@@ -1,0 +1,19 @@
+{
+  "source": "live response to a deliberately fake key, 2026-11-04 (no real credential) (AIza key); matches the Google API error model",
+  "status": 400,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 400,
+      "message": "API key not valid. Please pass a valid API key.",
+      "status": "INVALID_ARGUMENT",
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          "reason": "API_KEY_INVALID",
+          "domain": "googleapis.com"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "source": "https://docs.x.ai/developers/debugging.md",
+  "status": 429,
+  "headers": {},
+  "body": {
+    "code": "Some resource has been exhausted",
+    "error": "You are sending requests too frequently and have reached the rate limit."
+  }
+}
