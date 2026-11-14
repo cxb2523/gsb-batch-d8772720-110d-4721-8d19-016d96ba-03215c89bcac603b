@@ -94,12 +94,23 @@ class Skipped:
         return sum(vars(self).values())
 
 
+@dataclass(frozen=True)
+class SkipRecord:
+    """One skipped file or folder: what was not read, and why. Never any content."""
+
+    path: Path  # resolved (a symlink's own path, not its target, for symlink_outside)
+    reason: str  # a `Skipped` counter name: protected_dir, excluded_dir, cloud_only, …
+
+
 @dataclass
 class ScanReport:
     roots: list[Path]
     findings: list[Finding] = field(default_factory=list)
     files_scanned: int = 0
     skipped: Skipped = field(default_factory=Skipped)
+    # Every skipped file or folder, once per path, in the order met: the per-item account
+    # behind the `skipped` counters. Kept after `forget_paths` (it is the user's report).
+    skip_records: list[SkipRecord] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     store_checked: bool = False  # False when the store was locked: no cross-reference
     scanned_at: datetime | None = None  # set by the cross-reference (seen_at of locations)

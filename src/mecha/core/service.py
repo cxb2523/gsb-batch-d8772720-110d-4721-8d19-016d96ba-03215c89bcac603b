@@ -63,7 +63,7 @@ from mecha.providers.base import ChildRef, KeyUpdate, Provider, ProviderContext,
 from mecha.scan.model import Confidence as ScanConfidence
 from mecha.scan.model import Finding, ScanReport
 from mecha.scan.places import Env as ScanEnv
-from mecha.scan.walk import NotReadable, Scanner, read_token
+from mecha.scan.walk import Checkpoint, NotReadable, Scanner, read_token
 from mecha.scan.walk import Options as ScanOptions
 from mecha.store.db import Store
 
@@ -814,12 +814,14 @@ class MechaService:
         *,
         use_store: bool = True,
         stop: Callable[[], bool] | None = None,
+        resume: Checkpoint | None = None,
     ) -> ScanReport:
         """Find plaintext keys (offline). Locations of keys Mecha manages are kept encrypted;
         the rest only appear in the returned report. With a locked store the scan still
-        runs, without the cross-reference, and says so."""
+        runs, without the cross-reference, and says so. ``resume`` continues a cancelled
+        scan from its checkpoint: the final report matches one uninterrupted run."""
         store = self.scan_store(use_store)
-        report = self.read_files(options, store, env, progress, stop)
+        report = self.read_files(options, store, env, progress, stop, resume=resume)
         return self.cross_reference(report, store, use_store=use_store)
 
     # The scan in three steps, so the server can read files in a worker thread while every
@@ -850,12 +852,13 @@ class MechaService:
         env: ScanEnv | None = None,
         progress: Callable[[int, Path], None] | None = None,
         stop: Callable[[], bool] | None = None,
+        resume: Checkpoint | None = None,
     ) -> ScanReport:
         """Read the files and report what is found. Safe in another thread: from the store
         it only uses the fingerprint key (an HMAC in memory), never the database."""
         fingerprint = store.cipher.fingerprint if store is not None else (lambda _s: None)
         env = env or self.scan_env or ScanEnv.current()
-        return Scanner(env, options, fingerprint, progress, stop).run()
+        return Scanner(env, options, fingerprint, progress, stop, resume=resume).run()
 
     def cross_reference(
         self, report: ScanReport, store: Store | None, *, use_store: bool = True

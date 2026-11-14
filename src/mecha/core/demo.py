@@ -577,6 +577,7 @@ class DemoService(MechaService):
         env: object = None,
         progress: Callable[[int, Path], None] | None = None,
         stop: Callable[[], bool] | None = None,
+        resume: object = None,  # the demo's canned scan never resumes
     ) -> ScanReport:
         return demo_report(options.roots, progress, stop, self.scan_seconds)
 

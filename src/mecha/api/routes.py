@@ -388,6 +388,7 @@ def _scan_json(ctx: ApiContext, report: ScanReport) -> dict[str, Any]:
         "warnings": report.warnings,
         "files_scanned": report.files_scanned,
         "skipped": vars(report.skipped),
+        "skipped_items": [{"path": str(r.path), "reason": r.reason} for r in report.skip_records],
         "finished_at": finished.isoformat() if finished else None,
         "expires_at": (
             (finished + timedelta(seconds=SCAN_TTL_SECONDS)).isoformat() if finished else None

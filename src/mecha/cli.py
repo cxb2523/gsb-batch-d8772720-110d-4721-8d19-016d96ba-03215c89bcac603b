@@ -909,6 +909,9 @@ def scan_cmd(
                     "warnings": report.warnings,
                     "files_scanned": report.files_scanned,
                     "skipped": vars(report.skipped),
+                    "skipped_items": [
+                        {"path": str(r.path), "reason": r.reason} for r in report.skip_records
+                    ],
                     "findings": [_finding_json(f) for f in report.findings],
                     "imported": imported,
                 },

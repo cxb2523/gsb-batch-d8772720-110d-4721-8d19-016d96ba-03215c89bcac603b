@@ -3,6 +3,11 @@
 Secrets only exist while a line is processed: each hit goes to ``fingerprint`` (the
 store's HMAC, or nothing when the store is locked) and is then dropped. Findings carry
 where the key is and its redacted form, never the key or the line.
+
+Every skipped file or folder leaves a `SkipRecord` (resolved path and reason) in the
+report, once per path. A scan stops between two files when ``stop()`` says so, raising
+`ScanCancelled` with a `Checkpoint`; passing it back as ``resume`` continues where it
+stopped, and the final report matches one uninterrupted run.
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ from pathlib import Path
 
 from mecha.scan import fsio
 from mecha.scan.find import hits
-from mecha.scan.model import Finding, Location, PlaceKind, Risk, ScanReport
+from mecha.scan.model import Finding, Location, PlaceKind, Risk, ScanReport, SkipRecord
 from mecha.scan.places import (
     EXCLUDED_NAMES,
     Env,
@@ -36,8 +41,24 @@ Progress = Callable[[int, Path], None]
 Stop = Callable[[], bool]
 
 
+@dataclass
+class Checkpoint:
+    """Where a scan stopped, by processed-file count. Holds the partial report and the
+    files already seen, so a resumed scan never reads them twice and the final report
+    matches one uninterrupted run. Paths and redacted findings only: never a secret."""
+
+    files_done: int
+    report: ScanReport
+    seen: frozenset[Path]
+
+
 class ScanCancelled(Exception):
-    """Raised between two files when ``stop()`` says so. A cancelled scan reports nothing."""
+    """Raised between two files when ``stop()`` says so. Carries the checkpoint at that
+    moment: pass it back as ``resume`` to continue where the scan stopped."""
+
+    def __init__(self, checkpoint: Checkpoint | None = None) -> None:
+        super().__init__(checkpoint.files_done if checkpoint else 0)
+        self.checkpoint = checkpoint
 
 
 @dataclass
@@ -56,6 +77,7 @@ class Scanner:
         fingerprint: Fingerprint,
         progress: Progress | None = None,
         stop: Stop | None = None,
+        resume: Checkpoint | None = None,
     ) -> None:
         self.env = env
         self.options = options
@@ -71,10 +93,19 @@ class Scanner:
         self.git = GitIndex()
         self.readability = Readability()
         self.others = other_people(env)
-        self._seen: set[Path] = set()
-        self.report = ScanReport(
-            roots=self.roots, max_size=options.max_size, max_notebook=options.max_notebook
-        )
+        if resume is not None:
+            # Continue the cancelled scan's own report: what was done stays done.
+            self.report = resume.report
+            self._seen = set(resume.seen)
+            self._files_done = resume.files_done
+        else:
+            self.report = ScanReport(
+                roots=self.roots, max_size=options.max_size, max_notebook=options.max_notebook
+            )
+            self._seen = set()
+            self._files_done = 0
+        self._skip_recorded = {r.path for r in self.report.skip_records}
+        self.checkpoint = Checkpoint(self._files_done, self.report, frozenset(self._seen))
         # Protected folders the walk never reaches because they sit inside an excluded one
         # (iCloud Drive and ~/Library/CloudStorage, inside ~/Library): with the flag they are
         # walked as extra starting points. report.roots stays what was asked.
@@ -105,8 +136,7 @@ class Scanner:
                 if match.is_file():
                     yield match, place.kind
         except OSError:
-            self.report.skipped.unreadable += 1
-            self._not_read(place.path)
+            self._record_skip(self._resolve(place.path), "unreadable")
 
     def _under_roots(self, folder: Path) -> bool:
         """Strictly below a root, and no root inside it (a root inside it is asked for)."""
@@ -123,18 +153,26 @@ class Scanner:
 
     def _skip_protected(self, folder: Path) -> None:
         """Count a protected folder as skipped, once. Never looks inside it."""
-        real = folder.resolve()
-        if real in self.report.protected_skipped:
-            return
-        self.report.skipped.protected_dir += 1
-        self.report.not_read.add(real)
+        real = self._resolve(folder)
         self.report.protected_skipped.add(real)
+        self._record_skip(real, "protected_dir")
 
-    def _not_read(self, path: Path) -> None:
+    def _resolve(self, path: Path) -> Path:
         try:
-            self.report.not_read.add(path.resolve())
+            return path.resolve()
         except OSError:
-            self.report.not_read.add(path.absolute())
+            return path.absolute()
+
+    def _record_skip(self, real: Path, reason: str, *, was_read: bool = False) -> None:
+        """The per-item account of a skip: the counter, a record (once per path, also
+        across a resume) and — unless the file was opened — the not-read set."""
+        if real in self._skip_recorded:
+            return
+        self._skip_recorded.add(real)
+        setattr(self.report.skipped, reason, getattr(self.report.skipped, reason) + 1)
+        self.report.skip_records.append(SkipRecord(real, reason))
+        if not was_read:
+            self.report.not_read.add(real)
 
     def _walk(self, root: Path) -> Iterator[Path]:
         try:
@@ -142,8 +180,7 @@ class Scanner:
         except (FileNotFoundError, NotADirectoryError):
             return  # gone: its stored locations go too
         except OSError:
-            self.report.skipped.unreadable += 1
-            self._not_read(root)
+            self._record_skip(self._resolve(root), "unreadable")
             return
         if not stat.S_ISDIR(st.st_mode):
             yield root
@@ -155,8 +192,7 @@ class Scanner:
             try:
                 entries = sorted(os.scandir(folder), key=lambda e: e.name)
             except OSError:
-                self.report.skipped.unreadable += 1
-                self._not_read(folder)
+                self._record_skip(self._resolve(folder), "unreadable")
                 continue
             for entry in entries:
                 path = Path(entry.path)
@@ -164,7 +200,8 @@ class Scanner:
                     if entry.is_symlink():
                         target = path.resolve()
                         if not any(inside(target, [r]) for r in self.roots):
-                            self.report.skipped.symlink_outside += 1
+                            # The link's own path: resolving it would leave the roots.
+                            self._record_skip(Path(os.path.abspath(path)), "symlink_outside")
                         continue  # inside a root it is scanned at its real place
                     if entry.is_dir(follow_symlinks=False):
                         if self._skip_dir(path, root):
@@ -173,13 +210,12 @@ class Scanner:
                     elif entry.is_file(follow_symlinks=False):
                         yield path
                 except OSError:
-                    self.report.skipped.unreadable += 1
-                    self._not_read(path)
+                    self._record_skip(self._resolve(path), "unreadable")
 
     def _skip_dir(self, path: Path, root: Path) -> bool:
         if path.name in EXCLUDED_NAMES or path in self.excluded:
-            self.report.skipped.excluded_dir += 1
-            self._not_read(path)  # known places inside are read anyway (and count as read)
+            # Known places inside are read anyway (and count as read).
+            self._record_skip(self._resolve(path), "excluded_dir")
             return True
         # Asked for explicitly (the root is inside it): scanned. Otherwise only with the flag.
         if path in self.protected and not inside(root, [path]):
@@ -189,9 +225,10 @@ class Scanner:
 
     # --- reading ----------------------------------------------------------------------
     def run(self) -> ScanReport:
-        if self.others is None:
+        # Warnings once, also when resuming the cancelled scan's own report.
+        if self.others is None and "readable_by_others_not_checked" not in self.report.warnings:
             self.report.warnings.append("readable_by_others_not_checked")
-        if self.git.git is None:
+        if self.git.git is None and "git_not_available" not in self.report.warnings:
             self.report.warnings.append("git_not_available")
         # Without the flag every protected folder under the roots counts as skipped, also
         # those the walk would never reach (inside ~/Library): a stored location there must
@@ -209,35 +246,40 @@ class Scanner:
 
     def _check_stop(self) -> None:
         if self.stop is not None and self.stop():
-            raise ScanCancelled
+            raise ScanCancelled(self.checkpoint)
 
     def _file(self, path: Path, kind: PlaceKind) -> None:
+        """One file, once: after it the checkpoint moves past it. Files seen in the
+        cancelled run (the checkpoint's `seen`) are not even stat()ed again."""
         self._check_stop()
         real = path.resolve()
         if real in self._seen:
             return
         self._seen.add(real)
+        self._process(real, path, kind)
+        self._files_done += 1
+        self.checkpoint = Checkpoint(self._files_done, self.report, frozenset(self._seen))
+
+    def _process(self, real: Path, path: Path, kind: PlaceKind) -> None:
         st, reason = check_file(real, kind, self.options.max_size, self.options.max_notebook)
         if reason == "gone" or reason == "not_regular":
             return
         if reason is not None:
-            setattr(self.report.skipped, reason, getattr(self.report.skipped, reason) + 1)
-            self.report.not_read.add(real)
+            self._record_skip(real, reason)
             return
         if st is None:
             return
         try:
             candidate, binary = fsio.prefilter(real)
         except OSError:
-            self.report.skipped.unreadable += 1
-            self.report.not_read.add(real)
+            self._record_skip(real, "unreadable")
             return
         self.report.read.add(real)
         self.report.files_scanned += 1
         if self.progress is not None:
             self.progress(self.report.files_scanned, real)
         if binary:
-            self.report.skipped.binary += 1
+            self._record_skip(real, "binary", was_read=True)
             return
         if not candidate:
             return
@@ -264,9 +306,8 @@ class Scanner:
                         )
                     )
         except OSError:
-            self.report.skipped.unreadable += 1
             self.report.read.discard(real)  # half read: what was there is not known
-            self.report.not_read.add(real)
+            self._record_skip(real, "unreadable")
             self.report.findings = [f for f in self.report.findings if f.location.path != real]
 
     def _risks(
