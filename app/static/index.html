@@ -1122,9 +1122,17 @@
       postJson("/api/deep-research", {})
         .then(r => {
           setBusy(false);
+          const s = r.source_summary || {};
+          const failed = (r.sources || []).filter(x => x.status === "error");
+          const d = r.dedup || {};
           setMsg(
             `Deep research done: ${r.raw_hits} raw hits → ${r.gateway_candidates} candidates → ` +
-            `${r.new_candidates} new (scanned ${r.scanned}, ${r.alive} alive).` +
+            `${r.new_candidates} new (scanned ${r.scanned}, ${r.alive} alive). ` +
+            `Sources: ${s.ok || 0} ok / ${s.empty || 0} empty / ${s.error || 0} failed` +
+            (s.skipped ? ` / ${s.skipped} skipped` : "") + "." +
+            (d.duplicate_in_round ? ` ${d.duplicate_in_round} dupes in round,` : "") +
+            (d.already_known_domain_skipped ? ` ${d.already_known_domain_skipped} already known.` : "") +
+            (failed.length ? ` Failed: ${failed.slice(0, 5).map(x => x.name).join(", ")}${failed.length > 5 ? " …" : ""}.` : "") +
             (r.new_domains && r.new_domains.length
               ? ` New: ${r.new_domains.slice(0, 8).join(", ")}${r.new_domains.length > 8 ? " …" : ""}`
               : "")

@@ -244,16 +244,22 @@ SKIP_NETLOCS = ("github.com", "docs.", "medium.com", "segmentfault", "cnblogs", 
                 "facebook.com", "telegram.org", "t.me", "wikipedia.org", "weibo.com",
                 "reddit.com", "huggingface.co", "cloud.tencent.com")
 
-async def discover_directory(url: str) -> list[str]:
+async def discover_directory(url: str, raise_errors: bool = False) -> list[str]:
     """Crawl a directory page and extract outbound provider-looking links.
 
     Two signals: (1) links labelled 注册/register/sign-up/前往 or carrying aff=/ref=
     params; (2) external links whose label or domain looks like an AI gateway
     (api/ai/token/relay/... keywords) — this is what makes apiindex.me /
-    apisou.com / baipiao.org style listing pages yield candidates."""
+    apisou.com / baipiao.org style listing pages yield candidates.
+
+    With ``raise_errors=True`` a non-2xx response or transport error is raised
+    instead of being collapsed to an empty list, so callers can tell "no links
+    here" apart from "the page could not be fetched"."""
     async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": UA}) as client:
         try:
             r = await client.get(url, follow_redirects=True)
+            if r.status_code >= 400 and raise_errors:
+                raise RuntimeError(f"HTTP {r.status_code}")
             soup = BeautifulSoup(r.text, "html.parser"); base = str(r.url)
             own = urlparse(base).netloc.lower()
             out = []
@@ -270,6 +276,8 @@ async def discover_directory(url: str) -> list[str]:
                     out.append(href)
             return list(dict.fromkeys(out))
         except Exception:
+            if raise_errors:
+                raise
             return []
 
 async def discover_all(directory_urls: list[str], queries: list[str] | None = None, scan=False) -> list[str]:

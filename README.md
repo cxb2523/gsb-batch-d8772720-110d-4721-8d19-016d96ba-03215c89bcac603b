@@ -273,13 +273,67 @@ python -m app.cli merge-seeds new_candidates.txt
 | `POST` | `/api/scan-text` | Same, but from pasted text (URLs get extracted automatically). |
 | `POST` | `/api/scan-seeds` | Scan `data/seeds.txt`. |
 | `POST` | `/api/discover` | Crawl directories or run a search query for new gateways. |
-| `POST` | `/api/deep-research` | Run the full pipeline. |
+| `POST` | `/api/deep-research` | Run the full pipeline. Returns per-source outcomes plus dedup accounting — see below. |
 | `GET` | `/api/aliases` | See detected mirror/alias groups. |
 | `GET` | `/api/jobs/{id}` | Check on a background job. |
 | `GET` | `/api/export.omniroute` | OmniRoute JSON export. |
 | `GET` | `/api/export.csv` | CSV export. |
 | `GET` | `/api/export.txt` | Plain text list of alive providers. |
 | `GET` | `/api/research.md` | Markdown report. |
+
+### `POST /api/deep-research` response
+
+Alongside the original counters (`raw_hits`, `gateway_candidates`, `new_candidates`,
+`context_pages_expanded`, `scanned`, `alive`, `new_domains`) — whose meaning is unchanged —
+the response now explains *why* those numbers came out as they did.
+
+**`sources`** — one entry per source attempted in the pass (5 search backends, the GitHub
+feed, linux.do, and each directory):
+
+```json
+{
+  "kind": "search_backend",       // search_backend | community_feed | directory
+  "name": "searxng",
+  "status": "ok",                 // ok | empty | error | skipped
+  "candidates": 3,                // distinct gateway-looking URLs this source produced
+  "new_candidates": 1,            // of those, domains not already in the database
+  "raw_results": 14,              // distinct URLs returned before gateway filtering
+  "attempts": 9,                  // times it was called (one per query for backends)
+  "failed_attempts": 0,
+  "error": ""
+}
+```
+
+Status meanings:
+
+| Status | Meaning |
+|---|---|
+| `ok` | At least one result came back |
+| `empty` | Answered normally but yielded nothing |
+| `error` | Every attempt failed — `error` carries a short `ExceptionType: message` |
+| `skipped` | Known source not configured for this run (e.g. Brave without `BRAVE_SEARCH_API_KEY`) |
+
+A source that fails is logged and skipped; the rest of the pass continues, and any
+candidates the healthy sources found are still scanned. `source_summary` gives the
+`{attempted, ok, empty, error, skipped}` roll-up.
+
+**`dedup`** — reconciles "how much we grabbed" against "how much is genuinely new":
+
+| Field | Meaning |
+|---|---|
+| `raw_hits` | Everything the sources returned, duplicates included (same as top-level `raw_hits`) |
+| `invalid_or_non_gateway` | Hits dropped as un-normalizable or not gateway-looking |
+| `duplicate_in_round` | Same URL seen again later in this pass |
+| `already_known_domain_skipped` | Gateway candidate whose domain is already in the database |
+| `unique_gateway_candidates` | Distinct gateway candidates from the source phase |
+| `new_before_expansion` | Of those, domains not already tracked |
+| `expansion_added` | Extra candidates found by one-hop page expansion |
+| `new_candidates_total` | Same as top-level `new_candidates` |
+| `not_scanned_due_to_max_scan` | New candidates beyond the `max_scan` cap |
+
+The tests in `tests/test_deep_research_sources.py` exercise the three-way
+ok/empty/error split against faked backends and a loopback HTML directory, with no
+outbound network access.
 
 ---
 
