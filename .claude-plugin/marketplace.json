@@ -1,0 +1,19 @@
+{
+  "name": "scrapeatlas",
+  "owner": {
+    "name": "ScrapeAtlas",
+    "url": "https://scrapeatlas.com"
+  },
+  "metadata": {
+    "description": "Social media research skills for AI agents: find outlier posts, mine comments, analyze transcripts, tear down Facebook, Instagram and LinkedIn ads, prospect influencers, run social listening and validate product demand with public data from TikTok, Instagram, YouTube, X, Reddit, LinkedIn and 40+ platforms through the ScrapeAtlas MCP server.",
+    "version": "1.2.0",
+    "repository": "https://github.com/ScrapeAtlas/social-media-agent-skills"
+  },
+  "plugins": [
+    {
+      "name": "scrapeatlas",
+      "source": "./",
+      "description": "Social media research skills for AI agents: find outlier posts, mine comments, analyze transcripts, tear down Facebook, Instagram and LinkedIn ads, prospect influencers, run social listening and validate product demand with public data from TikTok, Instagram, YouTube, X, Reddit, LinkedIn and 40+ platforms through the ScrapeAtlas MCP server."
+    }
+  ]
+}
