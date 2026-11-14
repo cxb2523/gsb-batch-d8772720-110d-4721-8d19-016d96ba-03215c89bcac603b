@@ -1,0 +1,6 @@
+{
+  "name": "情形四 · 空清单",
+  "description": "清单为空时页面直接落到空态，不停留在加载中。",
+  "defaultTimeoutMs": 8000,
+  "items": []
+}

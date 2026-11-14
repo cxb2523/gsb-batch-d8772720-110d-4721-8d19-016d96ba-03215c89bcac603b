@@ -1,0 +1,55 @@
+{
+  "name": "情形一 · 全部成功",
+  "description": "四路本地样例来源全部可访问且字段齐全，整轮采集可信。",
+  "defaultTimeoutMs": 8000,
+  "items": [
+    {
+      "id": "line-status",
+      "source": "产线状态服务",
+      "url": "data/line-status.json",
+      "required": true,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "lineName", "label": "产线名称" },
+        { "path": "status", "label": "运行状态" },
+        { "path": "shift", "label": "班次" }
+      ]
+    },
+    {
+      "id": "output",
+      "source": "产量计数器",
+      "url": "data/output.json",
+      "required": true,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "planned", "label": "计划产量" },
+        { "path": "actual", "label": "实际产量" },
+        { "path": "unit", "label": "单位" }
+      ]
+    },
+    {
+      "id": "quality",
+      "source": "质量检测系统",
+      "url": "data/quality.json",
+      "required": true,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "inspected", "label": "检验数" },
+        { "path": "defects", "label": "缺陷数" },
+        { "path": "fpyPercent", "label": "一次通过率(%)" }
+      ]
+    },
+    {
+      "id": "equipment",
+      "source": "设备 OEE 服务",
+      "url": "data/equipment.json",
+      "required": false,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "equipmentId", "label": "设备编号" },
+        { "path": "oeePercent", "label": "OEE(%)" },
+        { "path": "mtbfHours", "label": "MTBF(小时)" }
+      ]
+    }
+  ]
+}

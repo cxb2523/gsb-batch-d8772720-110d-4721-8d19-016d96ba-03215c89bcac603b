@@ -1,0 +1,50 @@
+{
+  "name": "情形三 · 全部失败",
+  "description": "清单内所有地址均不可达或响应不合法，顶部给出失败提示并将整轮标记为不可信；其中一项为跳过示例。",
+  "defaultTimeoutMs": 8000,
+  "items": [
+    {
+      "id": "line-status",
+      "source": "产线状态服务（地址不可达）",
+      "url": "data/down-line-status.json",
+      "required": true,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "lineName", "label": "产线名称" },
+        { "path": "status", "label": "运行状态" }
+      ]
+    },
+    {
+      "id": "output",
+      "source": "产量计数器（地址不可达）",
+      "url": "data/down-output.json",
+      "required": true,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "planned", "label": "计划产量" },
+        { "path": "actual", "label": "实际产量" }
+      ]
+    },
+    {
+      "id": "quality",
+      "source": "质量检测系统（响应体超限样例）",
+      "url": "data/equipment-oversize.json",
+      "required": true,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "inspected", "label": "检验数" },
+        { "path": "defects", "label": "缺陷数" }
+      ]
+    },
+    {
+      "id": "skipped-optional",
+      "source": "暂未配置地址的巡检服务（跳过示例）",
+      "url": "",
+      "required": false,
+      "timeoutMs": 4000,
+      "fields": [
+        { "path": "roundId", "label": "巡检轮次" }
+      ]
+    }
+  ]
+}
