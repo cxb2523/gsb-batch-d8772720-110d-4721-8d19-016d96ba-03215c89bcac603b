@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use Reader in your research or project, please cite it."
+title: "Reader: Open-source, production-grade web scraping engine built for LLMs"
+type: software
+authors:
+  - family-names: Kaul
+    given-names: Nihal
+license: Apache-2.0
+url: "https://github.com/vakra-dev/reader"
+repository-code: "https://github.com/vakra-dev/reader"
