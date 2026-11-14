@@ -6,7 +6,7 @@ import random
 import subprocess
 import time
 import webbrowser
-from typing import Union, Tuple, Optional, List, Dict, Generator, Any
+from typing import Union, Tuple, Optional, List, Dict, Generator, Any, NamedTuple
 
 from numpy import ndarray
 
@@ -39,6 +39,26 @@ except ImportError:
     MAESTRO_AVAILABLE = False
 
 
+class FindResult(NamedTuple):
+    """
+    Outcome of a :meth:`DesktopBot.find_until_result` search.
+
+    Attributes:
+        found (bool): Whether or not a match was found.
+        element (cv2find.Box | None): The coordinates of the match when found, None otherwise.
+        best_score (float): Highest template matching score (0 to 1) observed across all
+            screenshots taken during the wait, even when it did not reach `matching`.
+        attempts (int): Number of screenshots taken during the search.
+        elapsed_ms (float): Total elapsed time in milliseconds.
+    """
+
+    found: bool
+    element: Optional["cv2find.Box"]
+    best_score: float
+    attempts: int
+    elapsed_ms: float
+
+
 class DesktopBot(BaseBot):
     """
     Base class for Desktop Bots.
@@ -56,6 +76,8 @@ class DesktopBot(BaseBot):
         self.state = State()
         self.maestro = BotMaestroSDK() if MAESTRO_AVAILABLE else None
         self._interval = 0.005 if platform.system() == "Darwin" else 0.0
+        # Interval (ms) between screenshots while polling in find_until_result.
+        self._find_result_poll_interval = config.DEFAULT_FIND_RESULT_POLL_INTERVAL
         # For parity with Java
         self.addImage = self.add_image
         self.getImageFromMap = self.get_image_from_map
@@ -402,6 +424,138 @@ class DesktopBot(BaseBot):
                 ele = self._fix_retina_element(ele)
                 self.state.element = ele
                 return ele
+
+    def find_until_result(
+        self,
+        label: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        *,
+        matching: float = 0.9,
+        waiting_time: int = 10000,
+        grayscale: bool = False,
+    ) -> FindResult:
+        """
+        Find an element defined by label on screen until a timeout happens, reporting the
+        search outcome even when nothing is found.
+
+        ``find_until_result`` is the diagnostic counterpart of :meth:`find_until`. While
+        ``find_until`` returns ``None`` both when the template is absent and when something
+        merely similar did not reach ``matching``, this method always reports how close the
+        search got: ``best_score`` is the highest template matching score seen in any
+        screenshot taken during the wait (a value between 0 and 1, coming from the actual
+        OpenCV template matching), and ``attempts`` / ``elapsed_ms`` tell how much searching
+        was performed.
+
+        The search stops and returns immediately on the first match. Screenshots are taken
+        repeatedly until ``waiting_time`` is reached; the search is throttled between
+        screenshots so a fast machine does not spin through thousands of attempts.
+
+        ``find_until``, ``find`` and ``find_text`` are not affected by this method.
+
+        Args:
+            label (str): The image identifier
+            x (int, optional): Search region start position x. Defaults to 0.
+            y (int, optional): Search region start position y. Defaults to 0.
+            width (int, optional): Search region width. Defaults to screen width.
+            height (int, optional): Search region height. Defaults to screen height.
+            matching (float, optional): The matching index ranging from 0 to 1. Scores below
+                it are not considered a hit. Defaults to 0.9.
+            waiting_time (int, optional): Maximum wait time (ms) to search for a hit.
+                Defaults to 10000ms (10s).
+            grayscale (bool, optional): Whether or not to convert to grayscale before searching.
+                Defaults to False.
+
+        Returns:
+            result (FindResult): A named tuple with the fields:
+                * ``found`` (bool): whether or not a hit was found.
+                * ``element`` (Box | None): the hit coordinates, or None if not found.
+                * ``best_score`` (float): highest match score (0 to 1) across all screenshots
+                  taken during the wait, even when below ``matching``.
+                * ``attempts`` (int): number of screenshots taken.
+                * ``elapsed_ms`` (float): elapsed time in milliseconds.
+
+        Raises:
+            FileNotFoundError: If no image file can be found for the given label.
+            ValueError: If the template image exists but cannot be read, or if the template
+                is larger than the search region.
+        """
+        self.state.element = None
+        screen_w, screen_h = self._fix_display_size()
+        x = x or 0
+        y = y or 0
+        w = width or screen_w
+        h = height or screen_h
+
+        region = (x, y, w, h)
+
+        element_path = self._search_image_file(label)
+        if not element_path:
+            raise FileNotFoundError(
+                f"Template image for label {label!r} could not be found."
+            )
+        if not os.path.isfile(element_path):
+            raise FileNotFoundError(
+                f"Template image for label {label!r} does not exist at "
+                f"{element_path!r}."
+            )
+
+        try:
+            element_image = self._image_path_as_image(element_path)
+            # Force PIL to decode the file now so an unreadable template fails loudly
+            # instead of being reported as a regular miss. The copy keeps the decoded
+            # pixels in memory so the file handle can be released.
+            element_image.load()
+            element_image = element_image.copy()
+        except Exception as exc:
+            raise ValueError(
+                f"Template image for label {label!r} could not be read from "
+                f"{element_path!r}."
+            ) from exc
+
+        start_time = time.perf_counter()
+        attempts = 0
+        best_score = 0.0
+
+        while True:
+            haystack = self.get_screenshot()
+            attempts += 1
+
+            ele, score = cv2find.locate_best_opencv(
+                element_image,
+                haystack_image=haystack,
+                region=region,
+                confidence=matching,
+                grayscale=grayscale,
+            )
+            best_score = max(best_score, score)
+
+            if ele is not None:
+                ele = self._fix_retina_element(ele)
+                self.state.element = ele
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                return FindResult(
+                    found=True,
+                    element=ele,
+                    best_score=best_score,
+                    attempts=attempts,
+                    elapsed_ms=elapsed_ms,
+                )
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            if elapsed_ms >= waiting_time:
+                return FindResult(
+                    found=False,
+                    element=None,
+                    best_score=best_score,
+                    attempts=attempts,
+                    elapsed_ms=elapsed_ms,
+                )
+
+            remaining = waiting_time - elapsed_ms
+            self.sleep(min(self._find_result_poll_interval, max(0, remaining)))
 
     def find_all(
         self,

@@ -93,26 +93,36 @@ def _load_cv2(
     return img_cv
 
 
-def locate_all_opencv(
+def _match_template(
     needle_image: Union[Image, numpy.ndarray, str],
     haystack_image: Union[Image, numpy.ndarray, str],
     grayscale: bool = False,
-    limit: int = 10000,
     region: Optional[Tuple[int, int, int, int]] = None,
     step: int = 1,
     confidence: float = 0.999,
-) -> Generator[Box, Any, None]:
+) -> Tuple[numpy.ndarray, int, int, int, Tuple[int, int, int, int], float]:
     """
-    TODO - rewrite this
-        faster but more memory-intensive than pure python
-        step 2 skips every other row and column = ~3x faster but prone to miss;
-            to compensate, the algorithm automatically reduces the confidence
-            threshold by 5% (which helps but will not avoid all misses).
-        limitations:
-          - OpenCV 3.x & python 3.x not tested
-          - RGBA images are treated as RBG (ignores alpha channel)
-    """
+    Prepare the images and run the OpenCV template matching used by the locate functions.
 
+    Args:
+        needle_image (Image | numpy.ndarray | str): The template to search for.
+        haystack_image (Image | numpy.ndarray | str): The image to search into.
+        grayscale (bool, optional): Whether or not to convert to grayscale before matching.
+            Defaults to False.
+        region (tuple, optional): The (x, y, width, height) search region. Defaults to the
+            whole haystack image.
+        step (int, optional): If 2, skip every other row/column and reduce the confidence
+            by 5%. Any other value is treated as 1. Defaults to 1.
+        confidence (float, optional): The minimum score to consider a match. Defaults to 0.999.
+
+    Returns:
+        result (numpy.ndarray): The `cv2.matchTemplate` result matrix.
+        needle_width (int): The original template width.
+        needle_height (int): The original template height.
+        step (int): The step actually used.
+        region (tuple): The normalized search region (x, y, width, height).
+        confidence (float): The confidence actually used (may be reduced for step=2).
+    """
     confidence = float(confidence)
 
     needle_image = _load_cv2(needle_image, grayscale)
@@ -142,9 +152,107 @@ def locate_all_opencv(
     else:
         step = 1
 
-    # get all matches at once, credit:
+    # credit:
     # https://stackoverflow.com/questions/7670112/finding-a-subimage-inside-a-numpy-image/9253805#9253805
     result = cv2.matchTemplate(haystack_image, needle_image, cv2.TM_CCOEFF_NORMED)
+    return result, needle_width, needle_height, step, region, confidence
+
+
+def locate_best_opencv(
+    needle_image: Union[Image, numpy.ndarray, str],
+    haystack_image: Union[Image, numpy.ndarray, str],
+    grayscale: bool = False,
+    region: Optional[Tuple[int, int, int, int]] = None,
+    step: int = 1,
+    confidence: float = 0.999,
+) -> Tuple[Optional[Box], float]:
+    """
+    Locate the best match for a template and report its score.
+
+    Unlike :func:`locate_all_opencv`, this always computes the highest match score of the
+    template against the haystack, even when that score is below ``confidence``. This makes
+    it possible to tell "nothing similar on screen" apart from "something similar, but not
+    good enough to be considered a match".
+
+    Args:
+        needle_image (Image | numpy.ndarray | str): The template to search for.
+        haystack_image (Image | numpy.ndarray | str): The image to search into.
+        grayscale (bool, optional): Whether or not to convert to grayscale before matching.
+            Defaults to False.
+        region (tuple, optional): The (x, y, width, height) search region. Defaults to the
+            whole haystack image.
+        step (int, optional): If 2, skip every other row/column. Defaults to 1.
+        confidence (float, optional): The minimum score to consider a match. Defaults to 0.999.
+
+    Returns:
+        element (Box | None): The best match coordinates, or None when the best score is
+            below ``confidence``.
+        score (float): The highest match score found, clamped to the 0..1 range (matching is
+            performed with `cv2.TM_CCOEFF_NORMED`).
+    """
+    result, needle_width, needle_height, step, region, confidence = _match_template(
+        needle_image,
+        haystack_image,
+        grayscale=grayscale,
+        region=region,
+        step=step,
+        confidence=confidence,
+    )
+
+    if result.size == 0:
+        return None, 0.0
+
+    _, max_score, _, max_location = cv2.minMaxLoc(result)
+    max_score = float(max_score)
+    if not numpy.isfinite(max_score):
+        # TM_CCOEFF_NORMED may produce non-finite values for degenerate (constant)
+        # templates or patches. Treat those as "no similarity" instead of leaking NaN.
+        max_score = 0.0
+    score = max(0.0, min(1.0, max_score))
+
+    if score < confidence:
+        return None, score
+
+    x = max_location[0] * step + region[0]
+    y = max_location[1] * step + region[1]
+    return Box(x, y, needle_width, needle_height), score
+
+
+def locate_all_opencv(
+    needle_image: Union[Image, numpy.ndarray, str],
+    haystack_image: Union[Image, numpy.ndarray, str],
+    grayscale: bool = False,
+    limit: int = 10000,
+    region: Optional[Tuple[int, int, int, int]] = None,
+    step: int = 1,
+    confidence: float = 0.999,
+) -> Generator[Box, Any, None]:
+    """
+    TODO - rewrite this
+        faster but more memory-intensive than pure python
+        step 2 skips every other row and column = ~3x faster but prone to miss;
+            to compensate, the algorithm automatically reduces the confidence
+            threshold by 5% (which helps but will not avoid all misses).
+        limitations:
+          - OpenCV 3.x & python 3.x not tested
+          - RGBA images are treated as RBG (ignores alpha channel)
+    """
+
+    (
+        result,
+        needle_width,
+        needle_height,
+        step,
+        region,
+        confidence,
+    ) = _match_template(
+        needle_image,
+        haystack_image,
+        grayscale=grayscale,
+        region=region,
+        step=step,
+        confidence=confidence,
+    )
     match_indices = numpy.arange(result.size)[(result > confidence).flatten()]
     matches = numpy.unravel_index(match_indices[:limit], result.shape)
 
