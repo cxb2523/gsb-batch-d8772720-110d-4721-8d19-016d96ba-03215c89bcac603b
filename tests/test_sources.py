@@ -1,0 +1,492 @@
+"""Tests for the data-source pathways and dispatcher (reddit_scraper.sources)."""
+
+import pytest
+import responses
+
+from reddit_scraper import config, sources
+
+
+@pytest.fixture(autouse=True)
+def reset_source_state():
+    """Source state is module-global; reset it (and disable RSS throttling/caching) per test."""
+    sources._state.reset()  # fresh runtime state (cooldowns, cache, proxy, flags)
+    sources.RSS_MIN_INTERVAL = 0
+    sources.FETCH_CACHE_TTL = 0  # disable caching by default; coalescing tests opt back in
+    sources._PROXIES = []  # no proxy by default; proxy tests opt back in
+    sources.SYLVIA_API_KEY = None  # sylvia disabled by default; its tests set a key
+    config.set_source_order(None)  # back to default oauth -> json -> rss
+    yield
+
+
+POST_FEED = b'''<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+ <entry>
+  <author><name>/u/dealhunter</name></author>
+  <category term="Expired" label="r/gamedeals"/>
+  <content type="html">&lt;a href="https://store.example.com/x"&gt;[link]&lt;/a&gt;</content>
+  <id>t3_abc123</id>
+  <link href="https://www.reddit.com/r/gamedeals/comments/abc123/red_dead_redemption_75_off/"/>
+  <updated>2026-06-29T19:00:00+00:00</updated>
+  <title>Red Dead Redemption 75% off</title>
+ </entry>
+</feed>'''
+
+COMMENT_FEED = b'''<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+ <entry>
+  <id>t3_abc123</id><title>the post itself</title>
+  <link href="https://www.reddit.com/r/x/comments/abc123/"/>
+ </entry>
+ <entry>
+  <author><name>/u/seller</name></author>
+  <content type="html">&lt;p&gt;WTS shirt size &lt;b&gt;Small&lt;/b&gt; $20&lt;/p&gt;</content>
+  <id>t1_def456</id>
+  <link href="https://www.reddit.com/r/x/comments/abc123/_/def456/"/>
+  <title>comment title</title>
+ </entry>
+</feed>'''
+
+
+class TestFetchPostsRss:
+    @responses.activate
+    def test_parses_and_normalizes_fields(self):
+        responses.add(responses.GET, 'https://www.reddit.com/r/gamedeals/new/.rss', body=POST_FEED, status=200)
+        posts = sources.fetch_posts_rss('gamedeals', limit=10)
+
+        assert len(posts) == 1
+        p = posts[0]
+        assert p['id'] == 'abc123'  # t3_ prefix stripped
+        assert p['title'] == 'Red Dead Redemption 75% off'
+        assert p['author'] == 'dealhunter'  # /u/ stripped
+        assert p['link_flair_text'] == 'Expired'  # from <category term=...>
+        assert p['permalink'] == '/r/gamedeals/comments/abc123/red_dead_redemption_75_off/'
+        assert p['score'] == 0  # not exposed via RSS
+        assert p['domain'] == ''  # not exposed via RSS
+
+    @responses.activate
+    def test_raises_on_403(self):
+        responses.add(responses.GET, 'https://www.reddit.com/r/gamedeals/new/.rss', status=403)
+        with pytest.raises(RuntimeError):
+            sources.fetch_posts_rss('gamedeals')
+
+    @responses.activate
+    def test_raises_on_429(self):
+        responses.add(responses.GET, 'https://www.reddit.com/r/gamedeals/new/.rss', status=429)
+        with pytest.raises(RuntimeError):
+            sources.fetch_posts_rss('gamedeals')
+
+
+class TestFetchThreadCommentsRss:
+    @responses.activate
+    def test_filters_post_entry_and_strips_html(self):
+        responses.add(responses.GET, 'https://www.reddit.com/r/x/comments/abc123/.rss', body=COMMENT_FEED, status=200)
+        comments = sources.fetch_thread_comments_rss('x', 'abc123')
+
+        assert len(comments) == 1  # the t3_ post entry is skipped
+        c = comments[0]
+        assert c['id'] == 'def456'
+        assert c['author'] == 'seller'
+        assert c['body'] == 'WTS shirt size Small $20'  # HTML tags stripped
+
+
+def _post():
+    return [
+        {
+            'id': '1',
+            'title': 't',
+            'url': '',
+            'score': 0,
+            'permalink': '/p',
+            'domain': '',
+            'link_flair_text': '',
+            'author': 'a',
+        }
+    ]
+
+
+def _raises(*a, **k):
+    raise RuntimeError("blocked")
+
+
+class TestFetchPostsDispatcher:
+    """Tests set source order explicitly so they don't depend on the production default."""
+
+    def test_skips_oauth_when_no_reddit_and_uses_next_source(self, monkeypatch):
+        config.set_source_order(['oauth', 'json', 'rss'])
+        monkeypatch.setattr(sources, 'fetch_posts_json', lambda sub, lim: _post())
+        monkeypatch.setattr(sources, 'fetch_posts_rss', lambda sub, lim: _post())
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=None)
+        assert source == 'json'  # oauth skipped (no reddit), json is next
+        assert sources.get_active_source() == 'json'
+
+    def test_falls_through_on_failure_and_cools_down(self, monkeypatch):
+        config.set_source_order(['json', 'rss'])
+        monkeypatch.setattr(sources, 'fetch_posts_json', _raises)
+        monkeypatch.setattr(sources, 'fetch_posts_rss', lambda sub, lim: [])
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=None)
+        assert source == 'rss'
+        assert posts == []
+        assert not sources._source_available('json')  # failed source on cooldown
+
+    def test_returns_none_when_all_sources_fail(self, monkeypatch):
+        config.set_source_order(['json', 'rss'])
+        monkeypatch.setattr(sources, 'fetch_posts_json', _raises)
+        monkeypatch.setattr(sources, 'fetch_posts_rss', lambda sub, lim: None)
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=None)
+        assert posts is None and source is None
+
+    def test_cooldown_source_is_skipped(self, monkeypatch):
+        config.set_source_order(['json', 'rss'])
+        sources._mark_source_down('json', 300)
+        called = {'json': False}
+
+        def json_fetch(sub, lim):
+            called['json'] = True
+            return _post()
+
+        monkeypatch.setattr(sources, 'fetch_posts_json', json_fetch)
+        monkeypatch.setattr(sources, 'fetch_posts_rss', lambda sub, lim: _post())
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=None)
+        assert source == 'rss'  # json skipped due to cooldown
+        assert called['json'] is False
+
+    def test_oauth_success_sets_active_source_and_records_success(self, monkeypatch):
+        monkeypatch.setattr(sources, '_fetch_posts_oauth', lambda r, sub, lim: _post())
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=object())
+        assert source == 'oauth'
+        assert sources.get_active_source() == 'oauth'
+        assert sources.get_last_fetch_success_ts() is not None
+
+
+class TestAuthErrorNotificationGuard:
+    def test_concurrent_401s_notify_only_once(self, monkeypatch):
+        """6 monitors hitting the same OAuth 401 in parallel must produce one alert."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(
+            sources,
+            '_fetch_posts_oauth',
+            lambda reddit, sub, lim: (_ for _ in ()).throw(RuntimeError("received 401 HTTP response")),
+        )
+        # next source serves so the chain completes (stub both to avoid the network)
+        monkeypatch.setattr(sources, 'fetch_posts_json', lambda sub, lim: _post())
+        monkeypatch.setattr(sources, 'fetch_posts_rss', lambda sub, lim: _post())
+
+        calls = []
+        monkeypatch.setattr(sources.notifications, 'notify_error', lambda msg: calls.append(msg))
+
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            list(ex.map(lambda i: sources.fetch_posts('gamedeals', 10, reddit=object()), range(6)))
+
+        assert len(calls) == 1
+
+
+class TestCoalescing:
+    def test_duplicate_subreddit_shares_one_request(self, monkeypatch):
+        sources.FETCH_CACHE_TTL = 90
+        calls = {'n': 0}
+
+        def served(sub, lim):
+            calls['n'] += 1
+            return _post()
+
+        monkeypatch.setattr(sources, 'fetch_posts_json', served)
+
+        r1 = sources.fetch_posts('frugalmalefashion', 10, None)
+        r2 = sources.fetch_posts('frugalmalefashion', 10, None)
+        assert calls['n'] == 1  # second served from cache
+        assert r1 == r2
+
+    def test_concurrent_duplicates_coalesce_to_one(self, monkeypatch):
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        sources.FETCH_CACHE_TTL = 90
+        calls = {'n': 0}
+
+        def served(sub, lim):
+            calls['n'] += 1
+            time.sleep(0.05)  # widen the race window
+            return _post()
+
+        monkeypatch.setattr(sources, 'fetch_posts_json', served)
+
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            list(ex.map(lambda i: sources.fetch_posts('frugalmalefashion', 10, None), range(5)))
+        assert calls['n'] == 1
+
+    def test_different_subreddits_not_shared(self, monkeypatch):
+        sources.FETCH_CACHE_TTL = 90
+        calls = {'n': 0}
+        monkeypatch.setattr(
+            sources, 'fetch_posts_json', lambda sub, lim: calls.__setitem__('n', calls['n'] + 1) or _post()
+        )
+        sources.fetch_posts('gamedeals', 10, None)
+        sources.fetch_posts('apphookup', 10, None)
+        assert calls['n'] == 2
+
+    def test_whole_chain_is_coalesced(self, monkeypatch):
+        """Coalescing wraps the entire chain, so every source (incl. JSON) fires once per burst."""
+        sources.FETCH_CACHE_TTL = 90
+        config.set_source_order(['json', 'rss'])
+        json_calls = {'n': 0}
+        rss_calls = {'n': 0}
+        monkeypatch.setattr(
+            sources, 'fetch_posts_json', lambda sub, lim: json_calls.__setitem__('n', json_calls['n'] + 1) or _raises()
+        )
+        monkeypatch.setattr(
+            sources, 'fetch_posts_rss', lambda sub, lim: rss_calls.__setitem__('n', rss_calls['n'] + 1) or _post()
+        )
+        sources.fetch_posts('gamedeals', 10, None)
+        sources.fetch_posts('gamedeals', 10, None)
+        assert json_calls['n'] == 1 and rss_calls['n'] == 1  # whole chain ran once, then cached
+
+
+class TestBackoff:
+    def test_exponential_backoff_on_consecutive_failures(self):
+        import time
+
+        sources._mark_source_down('rss')  # 1st: base (300s)
+        first = sources._state.source_cooldown_until['rss'] - time.time()
+        sources._mark_source_down('rss')  # 2nd: 2x (600s)
+        second = sources._state.source_cooldown_until['rss'] - time.time()
+        assert 290 < first <= sources.SOURCE_COOLDOWN_SECONDS
+        assert second > first * 1.5  # roughly doubled
+
+    def test_success_resets_backoff(self):
+        sources._mark_source_down('rss')
+        sources._mark_source_down('rss')
+        assert sources._state.source_failures['rss'] == 2
+        sources._note_source_success('rss')
+        assert sources._state.source_failures['rss'] == 0
+
+    def test_backoff_capped(self, monkeypatch):
+        monkeypatch.setattr(sources, 'SOURCE_COOLDOWN_MAX', 1000)
+        import time
+
+        for _ in range(10):
+            sources._mark_source_down('rss')
+        assert sources._state.source_cooldown_until['rss'] - time.time() <= 1000
+
+    def test_explicit_seconds_does_not_increment_failures(self):
+        sources._mark_source_down('rss', 50)
+        assert sources._state.source_failures.get('rss', 0) == 0
+
+
+class TestActiveSourceFallbackFlag:
+    """The bot_status 'using_fallback' flag must track config.RICH_SOURCES, so the Sylvia
+    gateway isn't mislabeled as a degraded fallback in the UI."""
+
+    def _capture(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            sources.status, 'save_bot_status', lambda using_fallback, *a, **k: calls.append(using_fallback)
+        )
+        return calls
+
+    def test_sylvia_is_not_fallback(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        sources._set_active_source('sylvia')
+        assert calls == [False]
+
+    def test_oauth_is_not_fallback(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        sources._set_active_source('oauth')
+        assert calls == [False]
+
+    def test_rss_is_fallback(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        sources._set_active_source('rss')
+        assert calls == [True]
+
+    def test_json_is_fallback(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        sources._set_active_source('json')
+        assert calls == [True]
+
+
+class TestProxying:
+    def _record_get(self, monkeypatch):
+        """Replace requests.get with a recorder returning a trivial 200 response."""
+        calls = []
+
+        class _Resp:
+            status_code = 200
+            content = POST_FEED
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {'data': {'children': []}}
+
+        def fake_get(url, headers=None, timeout=None, proxies=None):
+            calls.append(proxies)
+            return _Resp()
+
+        monkeypatch.setattr(sources.requests, 'get', fake_get)
+        return calls
+
+    def test_no_proxy_makes_direct_request(self, monkeypatch):
+        calls = self._record_get(monkeypatch)
+        sources.fetch_posts_rss('gamedeals')
+        assert calls == [None]  # proxies kwarg never passed
+
+    def test_single_proxy_is_used(self, monkeypatch):
+        calls = self._record_get(monkeypatch)
+        sources._PROXIES = ['http://proxy.local:8000']
+        sources.fetch_posts_rss('gamedeals')
+        assert calls == [{'http': 'http://proxy.local:8000', 'https': 'http://proxy.local:8000'}]
+
+    def test_pool_rotates_across_requests(self, monkeypatch):
+        calls = self._record_get(monkeypatch)
+        sources._PROXIES = ['http://p1:8000', 'http://p2:8000']
+        sources.fetch_posts_rss('a')
+        sources.fetch_posts_rss('b')
+        sources.fetch_posts_rss('c')
+        used = [c['http'] for c in calls]
+        assert used == ['http://p1:8000', 'http://p2:8000', 'http://p1:8000']
+
+    def test_dead_proxy_is_skipped_and_next_tried(self, monkeypatch):
+        sources._PROXIES = ['http://dead:8000', 'http://good:8000']
+        attempts = []
+
+        class _Resp:
+            status_code = 200
+            content = POST_FEED
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, headers=None, timeout=None, proxies=None):
+            attempts.append(proxies['http'])
+            if proxies['http'] == 'http://dead:8000':
+                raise sources.requests.exceptions.ProxyError("boom")
+            return _Resp()
+
+        monkeypatch.setattr(sources.requests, 'get', fake_get)
+        posts = sources.fetch_posts_rss('gamedeals')
+        assert attempts == ['http://dead:8000', 'http://good:8000']
+        assert 'http://dead:8000' in sources._state.proxy_cooldown_until  # cooled down
+        assert posts is not None
+
+    def test_all_proxies_down_raises_no_direct_leak(self, monkeypatch):
+        sources._PROXIES = ['http://p1:8000']
+
+        def fake_get(url, headers=None, timeout=None, proxies=None):
+            if proxies is None:
+                raise AssertionError("must never fall back to a direct request")
+            raise sources.requests.exceptions.ProxyError("down")
+
+        monkeypatch.setattr(sources.requests, 'get', fake_get)
+        with pytest.raises(sources.requests.exceptions.ProxyError):
+            sources.fetch_posts_rss('gamedeals')
+
+    def test_credentials_redacted_in_logs(self):
+        assert sources._redact_proxy('http://user:secret@host:8000') == 'http://***@host:8000'
+        assert sources._redact_proxy('socks5://127.0.0.1:9050') == 'socks5://127.0.0.1:9050'
+
+
+SYLVIA_POSTS = {
+    "success": True,
+    "data": {
+        "after": "t3_zzz",
+        "posts": [
+            {
+                "id": "abc123",
+                "title": "Red Dead Redemption 75% off",
+                "url": "https://store.example.com/x",
+                "score": 42,
+                "permalink": "/r/gamedeals/comments/abc123/rdr/",
+                "domain": "store.example.com",
+                "link_flair_text": None,
+                "author": "dealhunter",
+            },
+        ],
+    },
+}
+
+SYLVIA_THREAD = {
+    "success": True,
+    "data": {
+        "thread": [
+            {"data": {"children": [{"kind": "t3", "data": {"id": "abc123", "title": "the post"}}]}},
+            {
+                "data": {
+                    "children": [
+                        {
+                            "kind": "t1",
+                            "data": {
+                                "id": "def456",
+                                "body": "WTS shirt $20",
+                                "author": "seller",
+                                "score": 3,
+                                "permalink": "/r/x/comments/abc123/_/def456/",
+                            },
+                        },
+                        {"kind": "more", "data": {"id": "ghi789"}},
+                    ]
+                }
+            },
+        ]
+    },
+}
+
+
+class TestSylvia:
+    BASE = 'https://api.sylvia-api.com/v1/reddit'
+
+    @responses.activate
+    def test_posts_parse_and_normalize(self):
+        sources.SYLVIA_API_KEY = 'syl_test'
+        responses.add(responses.GET, f'{self.BASE}/r/gamedeals/new', json=SYLVIA_POSTS, status=200)
+        posts = sources.fetch_posts_sylvia('gamedeals', limit=10)
+
+        assert len(posts) == 1
+        p = posts[0]
+        assert p['id'] == 'abc123'
+        assert p['score'] == 42  # full data, unlike RSS
+        assert p['domain'] == 'store.example.com'
+        assert p['link_flair_text'] == ''  # None normalized to ''
+        # the key is sent in the X-API-KEY header
+        assert responses.calls[0].request.headers['X-API-KEY'] == 'syl_test'
+
+    @responses.activate
+    def test_comments_read_second_listing_t1_only(self):
+        sources.SYLVIA_API_KEY = 'syl_test'
+        responses.add(responses.GET, f'{self.BASE}/submission/abc123/full', json=SYLVIA_THREAD, status=200)
+        comments = sources.fetch_thread_comments_sylvia('x', 'abc123')
+
+        assert len(comments) == 1  # 'more' child dropped, post listing ignored
+        assert comments[0]['id'] == 'def456'
+        assert comments[0]['author'] == 'seller'
+
+    @responses.activate
+    def test_auth_failure_raises_for_backoff(self):
+        sources.SYLVIA_API_KEY = 'syl_bad'
+        responses.add(responses.GET, f'{self.BASE}/r/gamedeals/new', json={"error": {"code": "FORBIDDEN"}}, status=403)
+        with pytest.raises(RuntimeError):
+            sources.fetch_posts_sylvia('gamedeals')
+
+    @responses.activate
+    def test_rate_limit_raises_for_backoff(self):
+        sources.SYLVIA_API_KEY = 'syl_test'
+        responses.add(responses.GET, f'{self.BASE}/r/gamedeals/new', status=429)
+        with pytest.raises(RuntimeError):
+            sources.fetch_posts_sylvia('gamedeals')
+
+    def test_source_skipped_when_no_key(self):
+        sources.SYLVIA_API_KEY = None
+        config.set_source_order(['sylvia'])  # only sylvia, but no key
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=None)
+        assert (posts, source) == (None, None)  # skipped, never requested
+
+    @responses.activate
+    def test_dispatcher_uses_sylvia_when_ordered_and_keyed(self, monkeypatch):
+        sources.SYLVIA_API_KEY = 'syl_test'
+        config.set_source_order(['sylvia', 'json'])
+        responses.add(responses.GET, f'{self.BASE}/r/gamedeals/new', json=SYLVIA_POSTS, status=200)
+        # json must not be reached if sylvia succeeds
+        monkeypatch.setattr(sources, 'fetch_posts_json', lambda *a, **k: pytest.fail("json should not be called"))
+        posts, source = sources.fetch_posts('gamedeals', 10, reddit=None)
+        assert source == 'sylvia' and posts[0]['id'] == 'abc123'

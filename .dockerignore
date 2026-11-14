@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.git
+.gitignore
+.png
+.md
+.env.example
+*.pkl
+*.tar
+search.json
