@@ -7,6 +7,10 @@ import os
 import sys
 import subprocess
 
+from .collect import collect_comments
+
+__all__ = ["collect_comments", "main"]
+
 URL = "https://mcp.hasdata.com/mcp?apis=tiktok"
 
 

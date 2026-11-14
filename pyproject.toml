@@ -7,7 +7,10 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["mcp", "tiktok", "social-media", "model-context-protocol", "hasdata"]
 # mcp is pinned below 2 because mcp-proxy 0.12.0 imports request_ctx, removed in the mcp 2.x SDK.
-dependencies = ["mcp-proxy>=0.12.0", "mcp>=1.28.1,<2"]
+dependencies = ["mcp-proxy>=0.12.0", "mcp>=1.28.1,<2", "httpx>=0.24"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
 
 [project.urls]
 Homepage = "https://hasdata.com/apis/tiktok-scraper-api"
@@ -22,3 +25,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["hasdata_tiktok_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

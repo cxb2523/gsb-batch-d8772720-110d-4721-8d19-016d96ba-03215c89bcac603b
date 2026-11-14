@@ -505,6 +505,19 @@ $env:HASDATA_API_KEY="your_key_here"; npm test
 
 The same suite runs in CI on every push and once a week on a schedule, because the upstream tool list can change without anyone touching this repository. A failure means the tool list moved, the key stopped working, or the endpoint was unreachable, and the assertion message says which.
 
+### Two-level comment collection
+
+The Python package also ships `hasdata_tiktok_mcp.collect_comments(video_id, pages, expand_top=3)`, an async orchestration over the comments endpoint for callers that want whole threads rather than one layer at a time. It pages top-level comments (up to `pages` pages), then expands the `expand_top` most-liked comments that have a non-zero `replyCount`, paging each one's replies (again up to `pages` pages) with the comment's `id` as `commentId`. It returns `comments` (top-level, in original order), `threads` (one entry per expanded comment with its `commentId`, `replies`, per-page detail and `status`), an overall `status`, and `total` from the first page's `pagination.total` (`None` when absent).
+
+Every fetched page is recorded with an outcome: `ok`, `empty` (the response had no data key — a normal end of data, and paging stops without treating it as an error), `rate_limited` or `error`. A collection is `complete` when no page failed, `partial` when some pages succeeded before a failure, and `failed` when the very first page failed; each thread gets the same verdict over its own reply pages. Whatever was fetched before a failure is kept, never discarded. A 429 or a `concurrency_limit` response is retried with 1, 2 and 4 second backoffs, three retries at most, then the page is marked `rate_limited` and that thread stops paging. The key comes from `HASDATA_API_KEY` and goes out as the `x-api-key` header; with no key set the function raises before any request is sent. `videoId` and `commentId` stay strings throughout.
+
+The Python tests in `test/test_collect_comments.py` cover this orchestration against fabricated responses and never touch the network:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest test/test_collect_comments.py
+```
+
 ## Contributing
 
 Corrections to the tool tables and the response samples are the most useful contribution, because those are the parts that drift. Include the call you made and the response you got. Pull requests from forks run the suite without a key, and the live checks skip instead of going red.
