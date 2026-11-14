@@ -1,4 +1,5 @@
 from ccencrypt.adyen import ccadyen, ccadyen_cse
+from ccencrypt.batch import resume_batch, run_batch
 from ccencrypt.adyen_cse import CSE_VERSIONS, cse_encrypt
 from ccencrypt.braintree import ccbraintree
 from ccencrypt.cybersource import CardTypes, card_type, cccybersource, cccybersource_token
@@ -20,6 +21,8 @@ __all__ = [
     "ccbraintree",
     "ccshopify",
     "ccpaydock",
+    "run_batch",
+    "resume_batch",
     "CardTypes",
     "card_type",
 ]
