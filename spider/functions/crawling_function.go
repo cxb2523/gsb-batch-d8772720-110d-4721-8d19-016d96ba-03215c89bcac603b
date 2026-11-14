@@ -3,6 +3,7 @@ package functions
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -46,6 +47,12 @@ type SitemapReference struct {
 	LastMod string `xml:"lastmod"`
 }
 
+// pageOutcome records what happened when a single page URL was crawled.
+type pageOutcome struct {
+	status models.SeedStatus
+	reason string
+}
+
 type Crawler struct {
 	BaseDomain   string
 	LinksQueue   *[]models.Link
@@ -56,11 +63,23 @@ type Crawler struct {
 	cancel       context.CancelFunc
 	shutdownChan chan os.Signal
 	httpClient   *http.Client
+	// PageOutcomes maps each crawled page URL to its outcome for the seed
+	// currently being processed. It is reset before every seed.
+	PageOutcomes map[string]pageOutcome
+	// inFlight counts pages that have been dequeued but not finished yet.
+	// Workers may only exit when the queue is empty AND inFlight is zero,
+	// otherwise they could miss links enqueued by a page still being parsed.
+	inFlight int
 }
 
 var robotsCache = make(map[string]*robotstxt.RobotsData)
 var robotsCacheMu sync.RWMutex
 var transport = ProxyTransport()
+
+// ErrRobotsBlocked marks a genuine robots.txt disallow. Other errors while
+// checking robots.txt (e.g. the site is unreachable) are fetch failures,
+// not blocks, and are classified accordingly.
+var ErrRobotsBlocked = errors.New("blocked by robots.txt")
 
 var (
 	timesleep    = 2 * time.Second
@@ -89,6 +108,7 @@ func NewCrawler() *Crawler {
 	crawler := &Crawler{
 		QueuedUrls:   make(map[string]bool),
 		VisitedUrls:  make(map[string]struct{}),
+		PageOutcomes: make(map[string]pageOutcome),
 		Mu:           &sync.Mutex{},
 		LinksQueue:   &linksQueue,
 		Ctx:          ctx,
@@ -107,76 +127,114 @@ func NewCrawler() *Crawler {
 	return crawler
 }
 
-func (c *Crawler) Start(workerCount int, seedUrls ...string) {
+// Start processes each seed URL one by one and records a final outcome
+// (success / robots blocked / fetch failed / content too short / ...) per seed.
+// It returns one SeedResult per seed, in the same order as the input.
+func (c *Crawler) Start(workerCount int, seedUrls ...string) []models.SeedResult {
 	if c == nil {
 		log.Fatal("Crawler instance is nil")
-		return
+		return nil
 	}
 	if c.Mu == nil {
 		log.Fatal("Crawler mutex is nil")
-		return
+		return nil
 	}
 
 	if len(seedUrls) == 0 {
 		logText := "No seed URLs provided."
 		log.Println(logText)
 		appendLog(logText)
-		return
+		return nil
 	}
 
-	// Set BaseDomain from the first URL for compatibility
-	if parsedURL, err := url.Parse(seedUrls[0]); err == nil {
-		c.BaseDomain = parsedURL.Host
-		log.Printf("Set BaseDomain to: %s", c.BaseDomain)
-		appendLog(fmt.Sprintf("Set BaseDomain to: %s", c.BaseDomain))
-	}
+	// Start shutdown monitor once for the whole run
+	go c.monitorShutdown()
 
-	// Process each seed URL individually
+	results := make([]models.SeedResult, 0, len(seedUrls))
+
 	for i, seedURL := range seedUrls {
-		parsedURL, err := url.Parse(seedURL)
-		if err != nil {
-			log.Printf("Failed to parse seed URL %s: %v, skipping", seedURL, err)
-			appendLog(fmt.Sprintf("Failed to parse seed URL %s: %v, skipping", seedURL, err))
-			continue
-		}
-
-		baseURL := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
 		log.Printf("Processing seed URL %d/%d: %s", i+1, len(seedUrls), seedURL)
 		appendLog(fmt.Sprintf("Processing seed URL %d/%d: %s", i+1, len(seedUrls), seedURL))
 
-		// Try to crawl from sitemap for this specific domain
-		if err := c.crawlFromSitemap(baseURL); err != nil {
-			log.Printf("Failed to crawl from sitemap for %s: %v, using original URL as fallback", baseURL, err)
-			appendLog(fmt.Sprintf("Failed to crawl from sitemap for %s: %v, using original URL as fallback", baseURL, err))
+		result := c.processSeed(seedURL, workerCount)
+		results = append(results, result)
 
-			// Fall back to the original seed URL if sitemap fails
-			c.safeEnqueue(models.Link{URL: seedURL})
-			log.Printf("Added fallback URL to queue: %s", seedURL)
-			appendLog(fmt.Sprintf("Added fallback URL to queue: %s", seedURL))
-		} else {
-			log.Printf("Successfully loaded sitemap for %s", baseURL)
-			appendLog(fmt.Sprintf("Successfully loaded sitemap for %s", baseURL))
-		}
+		log.Printf("Seed %d/%d finished: %s -> %s (%s)", i+1, len(seedUrls), result.SeedURL, result.Status, result.Reason)
+		appendLog(fmt.Sprintf("Seed finished: %s -> %s (%s)", result.SeedURL, result.Status, result.Reason))
 	}
 
-	// Check if we have any URLs in the queue after processing all seeds
+	log.Printf("All seeds finished. Total pages crawled: %d", pagesCrawled)
+	PrintSeedSummary(results)
+
+	return results
+}
+
+// processSeed crawls a single seed URL to completion and classifies its outcome.
+func (c *Crawler) processSeed(seedURL string, workerCount int) models.SeedResult {
+	if c.Ctx.Err() != nil {
+		return models.SeedResult{SeedURL: seedURL, Status: models.SeedStatusSkipped, Reason: "shutdown requested before this seed was processed"}
+	}
+
+	parsedURL, err := url.Parse(seedURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		reason := fmt.Sprintf("invalid seed URL %q", seedURL)
+		if err != nil {
+			reason = fmt.Sprintf("invalid seed URL %q: %v", seedURL, err)
+		}
+		log.Printf("Failed to parse seed URL %s: %v", seedURL, err)
+		appendLog(fmt.Sprintf("Failed to parse seed URL %s: %v", seedURL, err))
+		return models.SeedResult{SeedURL: seedURL, Status: models.SeedStatusParseFailed, Reason: reason}
+	}
+
+	// Each seed gets its own base domain so same-domain link following
+	// stays scoped to the site currently being crawled.
+	c.BaseDomain = parsedURL.Host
+	baseURL := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
+	log.Printf("Set BaseDomain to: %s", c.BaseDomain)
+	appendLog(fmt.Sprintf("Set BaseDomain to: %s", c.BaseDomain))
+
+	// Reset per-seed page outcomes
+	c.Mu.Lock()
+	c.PageOutcomes = make(map[string]pageOutcome)
+	c.Mu.Unlock()
+
+	// Try to crawl from sitemap for this specific domain
+	if err := c.crawlFromSitemap(baseURL); err != nil {
+		log.Printf("Failed to crawl from sitemap for %s: %v, using original URL as fallback", baseURL, err)
+		appendLog(fmt.Sprintf("Failed to crawl from sitemap for %s: %v, using original URL as fallback", baseURL, err))
+
+		// Fall back to the original seed URL if sitemap fails
+		c.safeEnqueue(models.Link{URL: seedURL})
+		log.Printf("Added fallback URL to queue: %s", seedURL)
+		appendLog(fmt.Sprintf("Added fallback URL to queue: %s", seedURL))
+	} else {
+		log.Printf("Successfully loaded sitemap for %s", baseURL)
+		appendLog(fmt.Sprintf("Successfully loaded sitemap for %s", baseURL))
+	}
+
 	c.Mu.Lock()
 	queueSize := len(*c.LinksQueue)
 	c.Mu.Unlock()
 
 	if queueSize == 0 {
-		log.Println("No URLs were added to the queue from any source. Exiting.")
-		appendLog("No URLs were added to the queue from any source. Exiting.")
-		return
+		reason := "no URLs could be queued from the sitemap or the seed URL"
+		log.Printf("Seed %s: %s. Skipping.", seedURL, reason)
+		appendLog(fmt.Sprintf("Seed %s: %s. Skipping.", seedURL, reason))
+		return models.SeedResult{SeedURL: seedURL, Status: models.SeedStatusNoURLs, Reason: reason}
 	}
 
-	log.Printf("Starting crawl with %d URLs in queue", queueSize)
-	appendLog(fmt.Sprintf("Starting crawl with %d URLs in queue", queueSize))
+	log.Printf("Starting crawl of %s with %d URLs in queue", seedURL, queueSize)
+	appendLog(fmt.Sprintf("Starting crawl of %s with %d URLs in queue", seedURL, queueSize))
 
+	c.runWorkers(workerCount)
+
+	return c.classifySeedResult(seedURL)
+}
+
+// runWorkers runs the worker pool until the queue is drained and no page
+// is still being processed, then returns.
+func (c *Crawler) runWorkers(workerCount int) {
 	var wg sync.WaitGroup
-
-	// Start shutdown monitor
-	go c.monitorShutdown()
 
 	// Start workers
 	for i := range workerCount {
@@ -199,6 +257,14 @@ func (c *Crawler) Start(workerCount int, seedUrls ...string) {
 
 				link, ok := c.safeDequeue()
 				if !ok {
+					// safeDequeue increments inFlight atomically with the
+					// dequeue, so an empty queue with inFlight == 0 means no
+					// new work can appear anymore and it is safe to exit.
+					if c.inFlightCount() == 0 {
+						log.Printf("Worker %d: Queue empty and no pages in flight, exiting", id)
+						return
+					}
+
 					consecutiveEmptyAttempts++
 					if consecutiveEmptyAttempts >= maxEmptyAttempts {
 						log.Printf("Worker %d: No work for %d attempts, exiting", id, maxEmptyAttempts)
@@ -217,10 +283,13 @@ func (c *Crawler) Start(workerCount int, seedUrls ...string) {
 
 				consecutiveEmptyAttempts = 0
 
-				log.Printf("Worker %d: Processing %s", id, link.URL)
-				if err := c.CrawlPage(link.URL); err != nil {
-					log.Printf("Worker %d: Error crawling %s: %v", id, link.URL, err)
-				}
+				func() {
+					defer c.addInFlight(-1)
+					log.Printf("Worker %d: Processing %s", id, link.URL)
+					if err := c.CrawlPage(link.URL); err != nil {
+						log.Printf("Worker %d: Error crawling %s: %v", id, link.URL, err)
+					}
+				}()
 
 				select {
 				case <-c.Ctx.Done():
@@ -233,7 +302,38 @@ func (c *Crawler) Start(workerCount int, seedUrls ...string) {
 	}
 
 	wg.Wait()
-	log.Printf("All workers finished. Total pages crawled: %d", pagesCrawled)
+}
+
+func (c *Crawler) addInFlight(delta int) {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	c.inFlight += delta
+}
+
+func (c *Crawler) inFlightCount() int {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	return c.inFlight
+}
+
+// recordPageOutcome stores the outcome of crawling a single page so the
+// seed-level result can be classified once the seed's crawl finishes.
+// A stored success is never overwritten, a decisive failure is only
+// overwritten by a later success, and a "skipped" outcome is overwritten by
+// anything — pages are often re-dequeued after being stored and must not
+// downgrade their own result.
+func (c *Crawler) recordPageOutcome(pageURL string, status models.SeedStatus, reason string) {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	if existing, ok := c.PageOutcomes[pageURL]; ok {
+		if existing.status == models.SeedStatusSuccess {
+			return
+		}
+		if existing.status != models.SeedStatusSkipped && status != models.SeedStatusSuccess {
+			return
+		}
+	}
+	c.PageOutcomes[pageURL] = pageOutcome{status: status, reason: reason}
 }
 
 // crawlFromSitemap attempts to populate the queue from sitemap.xml
@@ -330,6 +430,7 @@ func (c *Crawler) safeDequeue() (models.Link, bool) {
 
 	*c.LinksQueue = newQueue
 	delete(c.QueuedUrls, link.URL)
+	c.inFlight++
 
 	log.Printf("Dequeued: %s, Queue size: %d", link.URL, len(*c.LinksQueue))
 	return link, true
@@ -368,18 +469,21 @@ func (c *Crawler) CrawlPage(websiteUrl string) error {
 	if _, visited := c.VisitedUrls[websiteUrl]; visited {
 		log.Printf("%s already visited, skipping", websiteUrl)
 		appendLog(fmt.Sprintf("%s already visited, skipping", websiteUrl))
+		c.recordPageOutcome(websiteUrl, models.SeedStatusSkipped, "already visited")
 		return nil
 	}
 
 	// Skip non-HTML content based on URL patterns
 	if c.shouldSkipURL(websiteUrl) {
 		log.Printf("Skipping non-HTML content: %s", websiteUrl)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusSkipped, "non-HTML file type")
 		return nil
 	}
 
 	parsedURL, err := url.Parse(websiteUrl)
 	if err != nil {
 		log.Printf("Failed to parse URL %s: %v", websiteUrl, err)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusParseFailed, fmt.Sprintf("failed to parse URL: %v", err))
 		return fmt.Errorf("failed to parse URL: %w", err)
 	}
 
@@ -390,6 +494,11 @@ func (c *Crawler) CrawlPage(websiteUrl string) error {
 	if err := c.CheckingRobotsRules((protocol + domain), targetPath); err != nil {
 		log.Printf("Robots.txt blocked %s: %v", websiteUrl, err)
 		appendLog(fmt.Sprintf("Robots.txt blocked %s: %v", websiteUrl, err))
+		if errors.Is(err, ErrRobotsBlocked) {
+			c.recordPageOutcome(websiteUrl, models.SeedStatusRobotsBlocked, err.Error())
+		} else {
+			c.recordPageOutcome(websiteUrl, models.SeedStatusFetchFailed, fmt.Sprintf("robots.txt check failed: %v", err))
+		}
 		return fmt.Errorf("robots.txt blocked: %w", err)
 	}
 
@@ -402,6 +511,7 @@ func (c *Crawler) CrawlPage(websiteUrl string) error {
 	request, err := http.NewRequestWithContext(ctx, "GET", websiteUrl, nil)
 	if err != nil {
 		log.Printf("Failed to create request for %s: %v", websiteUrl, err)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusFetchFailed, fmt.Sprintf("failed to create request: %v", err))
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -414,12 +524,14 @@ func (c *Crawler) CrawlPage(websiteUrl string) error {
 
 	if err != nil {
 		log.Printf("Failed to fetch %s: %v", websiteUrl, err)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusFetchFailed, fmt.Sprintf("failed to fetch page: %v", err))
 		return fmt.Errorf("failed to fetch page: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("Skipped %s, status: %d", websiteUrl, resp.StatusCode)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusFetchFailed, fmt.Sprintf("non-200 status code: %d", resp.StatusCode))
 		return fmt.Errorf("non-200 status code: %d", resp.StatusCode)
 	}
 
@@ -427,6 +539,7 @@ func (c *Crawler) CrawlPage(websiteUrl string) error {
 	contentType := resp.Header.Get("Content-Type")
 	if !c.isHTMLContent(contentType) {
 		log.Printf("Skipping non-HTML content: %s (Content-Type: %s)", websiteUrl, contentType)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusSkipped, fmt.Sprintf("non-HTML content type: %s", contentType))
 		return nil
 	}
 
@@ -435,28 +548,34 @@ func (c *Crawler) CrawlPage(websiteUrl string) error {
 	bodyData, err := io.ReadAll(limitedReader)
 	if err != nil {
 		log.Printf("Failed to read body for %s: %v", websiteUrl, err)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusFetchFailed, fmt.Sprintf("failed to read body: %v", err))
 		return fmt.Errorf("failed to read body: %w", err)
 	}
 
 	pageData, err := c.extractPageData(string(bodyData), websiteUrl, domain, protocol, resp, responseTime)
 	if err != nil {
 		log.Printf("Failed to extract page data for %s: %v", websiteUrl, err)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusParseFailed, fmt.Sprintf("failed to extract page data: %v", err))
 		return fmt.Errorf("failed to extract page data: %w", err)
 	}
 
 	// Check content length requirement
 	if len(pageData.MainContent) < minContentLength {
-		log.Printf("Skipping %s: content too short (%d characters, minimum %d)", websiteUrl, len(pageData.MainContent), minContentLength)
+		reason := fmt.Sprintf("content too short (%d characters, minimum %d)", len(pageData.MainContent), minContentLength)
+		log.Printf("Skipping %s: %s", websiteUrl, reason)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusTooShort, reason)
 		return nil
 	}
 
 	// Store data with retry logic and exponential backoff
 	if err := c.storePageDataWithRetry(pageData, 3); err != nil {
 		log.Printf("Failed to store page data after retries for %s: %v", websiteUrl, err)
+		c.recordPageOutcome(websiteUrl, models.SeedStatusStoreFailed, fmt.Sprintf("failed to store page data: %v", err))
 		return fmt.Errorf("failed to store page data: %w", err)
 	}
 
 	log.Printf("Successfully processed %s, found %d outbound links", websiteUrl, len(pageData.OutboundLinks))
+	c.recordPageOutcome(websiteUrl, models.SeedStatusSuccess, "page stored")
 	return nil
 }
 
@@ -765,7 +884,7 @@ func (c *Crawler) CheckingRobotsRules(domain string, targetPath string) error {
 	if exists {
 		group := robotsData.FindGroup("*")
 		if !group.Test(targetPath) {
-			return fmt.Errorf("blocked by robots.txt: %s", targetPath)
+			return fmt.Errorf("%w: %s", ErrRobotsBlocked, targetPath)
 		}
 		return nil
 	}
@@ -789,7 +908,7 @@ func (c *Crawler) CheckingRobotsRules(domain string, targetPath string) error {
 	canFetch := group.Test(targetPath)
 
 	if !canFetch {
-		return fmt.Errorf("not allowed to fetch %s (blocked by robots.txt)", targetPath)
+		return fmt.Errorf("%w: not allowed to fetch %s", ErrRobotsBlocked, targetPath)
 	}
 
 	robotsCacheMu.Lock()

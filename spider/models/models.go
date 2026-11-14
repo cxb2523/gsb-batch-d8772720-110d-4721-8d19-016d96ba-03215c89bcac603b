@@ -33,3 +33,24 @@ type EmbeddingModel struct {
 	Dims       int32     `json:"dims"`
 	ELAPSED_MS float32   `json:"elapsed_ms"`
 }
+
+// SeedStatus describes the final outcome of crawling a single seed URL.
+type SeedStatus string
+
+const (
+	SeedStatusSuccess       SeedStatus = "success"
+	SeedStatusRobotsBlocked SeedStatus = "robots_blocked"
+	SeedStatusFetchFailed   SeedStatus = "fetch_failed"
+	SeedStatusTooShort      SeedStatus = "content_too_short"
+	SeedStatusParseFailed   SeedStatus = "parse_failed"
+	SeedStatusStoreFailed   SeedStatus = "store_failed"
+	SeedStatusNoURLs        SeedStatus = "no_urls"
+	SeedStatusSkipped       SeedStatus = "skipped"
+)
+
+// SeedResult is the final outcome recorded for one seed URL.
+type SeedResult struct {
+	SeedURL string
+	Status  SeedStatus
+	Reason  string
+}

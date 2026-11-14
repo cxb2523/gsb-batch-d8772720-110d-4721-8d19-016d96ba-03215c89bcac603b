@@ -127,6 +127,7 @@ func (p *PostgresHandler) createTables() error {
 		url TEXT NOT NULL UNIQUE,
 		title TEXT,
 		status_code INTEGER,
+		favicon TEXT,
 		crawl_date TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);`
