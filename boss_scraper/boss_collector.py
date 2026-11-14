@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import time
 import random
 import csv
@@ -25,6 +26,14 @@ except ImportError:
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(CURRENT_DIR)
 DB_PATH = os.path.join(PARENT_DIR, 'data', 'job_hunter.db')
+
+# 🌟 统一单页采集小结（三平台字段与状态取值一致）
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+from common.page_summary import (
+    process_page_jobs, emit_page_summary, abort_page,
+    STATUS_LAST_PAGE, STATUS_LOAD_FAILED,
+)
 
 # 🌟 升级：支持自定义浏览器来源（chrome/edge/firefox），默认 edge
 def refresh_edge_session():
@@ -186,48 +195,43 @@ def collect_single_page(keyword, city, salary, target_page):
         cmd.extend(["--salary", salary])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         print(f"❌ 第 {target_page} 页列表抓取失败: {result.stderr}")
+        abort_page('BOSS直聘', target_page, STATUS_LOAD_FAILED,
+                   f"boss export 命令执行失败: {(result.stderr or '').strip()[:200]}")
         return
-        
+
     csv_content = result.stdout.strip()
     reader = csv.DictReader(io.StringIO(csv_content))
     jobs_list = list(reader)
-    
+
     if not jobs_list:
         print(f"⚠️ 第 {target_page} 页无数据返回，可能已到底部。")
+        abort_page('BOSS直聘', target_page, STATUS_LAST_PAGE,
+                   "boss export 返回空列表，判定已到最后一页")
         return
 
     print(f"✅ 成功锁定本页的 {len(jobs_list)} 个岗位。")
-    
-    success_count = 0
-    skip_count = 0
-    
-    for i, row in enumerate(jobs_list):
-        security_id = row.get('securityId', row.get('\ufeffsecurityId', row.get('职位ID', '')))
-        if not security_id: continue
-            
+
+    def identity_fn(row):
         job_title = row.get('职位', row.get('职位名称', '未知岗位'))
         company_name = row.get('公司', row.get('公司名称', '未知公司'))
         current_city = row.get('地区', city)
-        
-        if check_job_exists(company_name, job_title, current_city):
-            print(f"   ⏩ [拦截] [{i+1}/{len(jobs_list)}] {company_name} - {job_title} | 数据库已存在，跳过！")
-            skip_count += 1
-            continue
-        
-        print(f"   🔍 [{i+1}/{len(jobs_list)}] 正在抓取详情: {company_name} - {job_title}")
-        
-        # 详情下钻
+        return company_name, job_title, current_city
+
+    def detail_fn(row):
+        security_id = row.get('securityId', row.get('﻿securityId', row.get('职位ID', '')))
+        if not security_id:
+            return None
+        company_name, job_title, current_city = identity_fn(row)
         # 详情下钻
         full_desc, address, encrypt_id, extra_info = fetch_job_detail(
-            security_id, on_captcha_callback=refresh_edge_session 
+            security_id, on_captcha_callback=refresh_edge_session
         )
-        
-        if not full_desc: continue
-            
-        job_data = {
+        if not full_desc:
+            return None
+        return {
             'job_link': f"https://www.zhipin.com/job_detail/{encrypt_id}.html",
             'job_title': job_title, 'company_name': company_name, 'city': current_city,
             'jd_text': full_desc, 'salary': row.get('薪资', ''), 'work_address': address,
@@ -235,16 +239,19 @@ def collect_single_page(keyword, city, salary, target_page):
             'welfare_tags': extra_info.get("welfare", ""), 'company_size': extra_info.get("scale", ""),
             'education_req': row.get('学历', extra_info.get("degree", "")),
             'experience_req': row.get('经验', extra_info.get("experience", "")),
-            'hr_skill_tags': extra_info.get("hr_skills", ""), 'company_intro': '', 
+            'hr_skill_tags': extra_info.get("hr_skills", ""), 'company_intro': '',
             'role': '', 'publish_date': datetime.now().strftime("%Y-%m-%d"),
         }
-        
-        if save_single_job_to_db(job_data): success_count += 1
-        
+
+    summary = process_page_jobs(
+        'BOSS直聘', target_page, jobs_list,
+        identity_fn=identity_fn, exists_fn=check_job_exists,
+        detail_fn=detail_fn, save_fn=save_single_job_to_db,
         # ⚠️ 必须保留的微观休眠：下钻动作之间的安全间隔
-        time.sleep(random.randint(20, 35))
-        
-    print(f"🎯 第 {target_page} 页处理完毕。新增入库 {success_count} 个，跳过 {skip_count} 个。")
+        sleep_fn=lambda: time.sleep(random.randint(20, 35)),
+    )
+    emit_page_summary(summary)
+
 
 def start_auto_patrol(target_page, platform="boss", keyword=None, city=None, salary=None):
     """主控引擎：读取飞书任务，按平台和页码执行"""

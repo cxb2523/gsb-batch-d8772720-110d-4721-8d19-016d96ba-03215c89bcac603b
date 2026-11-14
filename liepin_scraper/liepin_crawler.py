@@ -12,6 +12,7 @@
 
 import json
 import os
+import sys
 import time
 import random
 import sqlite3
@@ -34,6 +35,14 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(CURRENT_DIR)
 DB_PATH = os.path.join(PARENT_DIR, 'data', 'job_hunter.db')
 COOKIE_FILE = os.path.join(CURRENT_DIR, 'liepin_cookies.json')
+
+# 🌟 统一单页采集小结（三平台字段与状态取值一致）
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+from common.page_summary import (
+    PageSummary, process_page_jobs, emit_page_summary, abort_page,
+    STATUS_OK, STATUS_PACKET_MISSING,
+)
 
 # 🌟 更新后的猎聘城市代码映射表 (结合了链接提取规律与原有数据)
 LIEPIN_CITY_MAP = {
@@ -289,6 +298,8 @@ def start_auto_collector(target_page, keyword=None, city=None, salary=None):
             if target_packet is None:
                 print("❌ 在 30 秒内未截获到包含 'jobCardList' 的核心数据包。")
                 print("   可能原因：1. 遇到了滑块验证码 2. 该搜索条件下确实没有岗位 3. 网络极度卡顿。")
+                abort_page('猎聘', target_page, STATUS_PACKET_MISSING,
+                           "30 秒内未截获包含 jobCardList 的核心数据包（可能滑块验证码/无岗位/网络卡顿）")
                 if i < len(tasks) - 1:
                     print("💤 任务切换，休眠 60 秒...")
                     time.sleep(60)
@@ -297,48 +308,51 @@ def start_auto_collector(target_page, keyword=None, city=None, salary=None):
             job_items = raw_body.get('data', {}).get('data', {}).get('jobCardList', [])
             print(f"✅ 成功截获 {len(job_items)} 个符合薪资区间的岗位，开启蜜罐防御扫描...")
 
-            success_count = skip_count = 0
-            
-            for idx, item in enumerate(job_items):
+            # ⏳ 过期拦截：先过滤超过 180 天未刷新的僵尸岗位（计入跳过数）
+            expired_count = 0
+            active_items = []
+            for item in job_items:
+                _job = item.get('job', {})
+                _comp = item.get('comp', {})
+                raw_time_check = str(_job.get('refreshTime', ''))
+                is_expired = False
+                if raw_time_check and len(raw_time_check) >= 8:
+                    try:
+                        job_date = datetime.datetime.strptime(raw_time_check[:8], "%Y%m%d")
+                        days_ago = (datetime.datetime.now() - job_date).days
+                        if days_ago > 180:
+                            print(f"   ⏳ [过期拦截] 岗位已 {days_ago} 天未刷新 (超过180天阈值)，跳过: {_comp.get('compName', '未知')} - {_job.get('title', '未知')}")
+                            is_expired = True
+                    except Exception:
+                        pass
+                if is_expired:
+                    expired_count += 1
+                else:
+                    active_items.append(item)
+
+            def identity_fn(item):
+                return (item.get('comp', {}).get('compName', '未知'),
+                        item.get('job', {}).get('title', '未知'),
+                        item.get('job', {}).get('dq', ''))
+
+            def detail_fn(item):
                 job_info = item.get('job', {})
                 comp_info = item.get('comp', {})
                 recruiter = item.get('recruiter', {})
 
-                title = job_info.get('title', '未知')
-                company = comp_info.get('compName', '未知')
-                city = job_info.get('dq', '')
+                company, title, city = identity_fn(item)
                 link = job_info.get('link', '')
-                job_id = str(job_info.get('jobId', ''))
-
-                # ⏳ 过期拦截：只过滤超过 180 天未刷新的僵尸岗位
                 raw_time = str(job_info.get('refreshTime', ''))
-                if raw_time and len(raw_time) >= 8:
-                    try:
-                        job_date = datetime.datetime.strptime(raw_time[:8], "%Y%m%d")
-                        days_ago = (datetime.datetime.now() - job_date).days
-                        if days_ago > 180:
-                            print(f"   ⏳ [过期拦截] 岗位已 {days_ago} 天未刷新 (超过180天阈值)，跳过: {company} - {title}")
-                            skip_count += 1
-                            continue
-                    except Exception:
-                        pass
-
-                if check_exists(company, title, city):
-                    print(f"   ⏩ [{idx+1}/{len(job_items)}] 跳过已收录: {company} - {title}")
-                    skip_count += 1
-                    continue
 
                 recruiter_title = recruiter.get('title', '未知')
                 role = determine_role(company, recruiter_title)
                 is_headhunter = (role == "猎头")
 
-                print(f"   🔍 [{idx+1}/{len(job_items)}] 提取详情: {company} - {title} ({role})")
-                
                 jd_text, exact_addr = fetch_liepin_detail(page, link, is_headhunter)
-                
+
                 pub_date = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]}" if len(raw_time)>=8 else datetime.datetime.now().strftime("%Y-%m-%d")
 
-                job_data = {
+                return {
                     'job_link': link,
                     'job_title': title,
                     'company_name': company,
@@ -358,14 +372,30 @@ def start_auto_collector(target_page, keyword=None, city=None, salary=None):
                     'publish_date': pub_date,
                 }
 
-                if save_to_raw_db(job_data): 
-                    success_count += 1
-                
+            def stealth_sleep():
                 sleep_time = random.randint(30, 60)
                 print(f"   💤 深度潜行，随机休眠 {sleep_time} 秒...")
                 time.sleep(sleep_time)
 
-            print(f"🎯 第 {target_page} 页处理完毕！新增入库 {success_count} 个，拦截/跳过 {skip_count} 个。")
+            if active_items:
+                summary = process_page_jobs(
+                    '猎聘', target_page, active_items,
+                    identity_fn=identity_fn, exists_fn=check_exists,
+                    detail_fn=detail_fn, save_fn=save_to_raw_db,
+                    sleep_fn=stealth_sleep,
+                )
+            elif job_items:
+                # 本页有岗位但全部被过期拦截：仍属正常完成，新增为 0
+                summary = PageSummary('猎聘', target_page, status=STATUS_OK)
+            else:
+                # 数据包中没有任何岗位：判定已到最后一页
+                summary = process_page_jobs('猎聘', target_page, [],
+                                            identity_fn=identity_fn, exists_fn=check_exists,
+                                            detail_fn=detail_fn, save_fn=save_to_raw_db)
+            # 捕获数含被过期拦截的岗位，过期拦截计入跳过数
+            summary.captured = len(job_items)
+            summary.skipped += expired_count
+            emit_page_summary(summary)
 
             if i < len(tasks) - 1:
                 print("💤 任务切换，休眠 60 秒...")

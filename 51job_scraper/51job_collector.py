@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import time
 import random
 import sqlite3
@@ -21,6 +22,14 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(CURRENT_DIR)
 DB_PATH = os.path.join(PARENT_DIR, 'data', 'job_hunter.db')
 COOKIE_FILE = os.path.join(CURRENT_DIR, '51job_cookies.json')
+
+# 🌟 统一单页采集小结（三平台字段与状态取值一致）
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+from common.page_summary import (
+    process_page_jobs, emit_page_summary, abort_page,
+    STATUS_LAST_PAGE, STATUS_LOAD_FAILED, STATUS_PACKET_MISSING,
+)
 
 # 51job 城市代码字典
 CITY_CODE_MAP = {
@@ -170,6 +179,8 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary):
     except Exception:
         print("      ⚠️ 页面加载超时，可能网络卡顿或该关键词无任何岗位数据。")
         search_page.close()
+        abort_page('51job', target_page, STATUS_LOAD_FAILED,
+                   "页面加载超时，职位列表或分页条未渲染")
         return
 
     if target_page > 1:
@@ -200,6 +211,8 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary):
                 else:
                     print(f"      ⚠️ 无法继续翻页，在第 {step} 页卡住：已到达最后一页（没有更多数据了）。")
                     search_page.close()
+                    abort_page('51job', target_page, STATUS_LAST_PAGE,
+                               f"翻到第 {step} 页后下一页按钮不可用，判定已到最后一页")
                     return
             
             # 到达目标页后，稍微缓冲一下
@@ -208,11 +221,15 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary):
         except Exception as e:
             print(f"      ❌ 翻页操作出现异常: {e}")
             search_page.close()
+            abort_page('51job', target_page, STATUS_LOAD_FAILED,
+                       f"翻页操作异常: {e}")
             return
 
     if not captured_data:
         print("      ⚠️ 未捕获到 API 数据。请检查页面是否弹出了滑动验证码或网络超时。")
         search_page.close()
+        abort_page('51job', target_page, STATUS_PACKET_MISSING,
+                   "未捕获到 api/job/search 数据包，可能触发滑动验证码或网络超时")
         return
         
     try:
@@ -221,27 +238,22 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary):
     except IndexError:
         print("      ⚠️ API 数据解析异常，跳过本页处理。")
         search_page.close()
+        abort_page('51job', target_page, STATUS_PACKET_MISSING,
+                   "api/job/search 数据包解析异常，无法提取岗位列表")
         return
-        
-    job_items = captured_data[-1].get('resultbody', {}).get('job', {}).get('items', [])
+
     print(f"      ✅ 成功到达目标第 {target_page} 页！本页捕获到 {len(job_items)} 个岗位，开始深度处理...")
 
-    success_count = 0
-    for item in job_items:
-        title = item.get('jobName', '未知')
-        company = item.get('companyName', '未知')
-        city = item.get('jobAreaString', '')
+    def identity_fn(item):
+        return (item.get('companyName', '未知'),
+                item.get('jobName', '未知'),
+                item.get('jobAreaString', ''))
+
+    def detail_fn(item):
+        company, title, city = identity_fn(item)
         link = item.get('jobHref')
-
-        if check_exists(company, title, city):
-            print(f"      ⏩ [跳过] {company} - {title} (已在库)")
-            continue
-
-        print(f"      🔍 [下钻] 获取详情页精确地址: {company} - {title}")
-        
         exact_addr = fetch_exact_address(context, link)
-        
-        job_data = {
+        return {
             'job_link': link,
             'job_title': title,
             'company_name': company,
@@ -261,14 +273,18 @@ def collect_51job_task(context, keyword, city_name, target_page, target_salary):
             'publish_date': item.get('issueDateString', '').split(' ')[0] if item.get('issueDateString') else datetime.datetime.now().strftime("%Y-%m-%d"),
         }
 
-        if save_to_raw_db(job_data):
-            success_count += 1
-        
+    def stealth_sleep():
         sleep_time = random.randint(15, 35) # 原来是 5-15，现在改为 15-35
         print(f"   💤 深度潜行，随机休眠 {sleep_time} 秒...")
         time.sleep(sleep_time)
 
-    print(f"      🎯 本页成功采集并入库 {success_count} 条数据。")
+    summary = process_page_jobs(
+        '51job', target_page, job_items,
+        identity_fn=identity_fn, exists_fn=check_exists,
+        detail_fn=detail_fn, save_fn=save_to_raw_db,
+        sleep_fn=stealth_sleep,
+    )
+    emit_page_summary(summary)
     search_page.close()
 
 
