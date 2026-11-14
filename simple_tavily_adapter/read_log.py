@@ -6,7 +6,10 @@ every step. 90 days are kept. Writes run in a thread; a failed write never break
 a read.
 
   sqlite3 jobs/page_read_log.sqlite3 \
-    "select path, count(*), round(avg(total_ms)) from page_read_log group by 1"
+    "select outcome, count(*), round(avg(total_ms)) from page_read_log group by 1"
+
+outcome is a stable short label of how the cascade ended (reader.OUTCOMES): the
+path column alone cannot tell a missing reader from an anti-bot refusal or a stub.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ DDL = """
 CREATE TABLE IF NOT EXISTS page_read_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  source TEXT, caller TEXT, url TEXT, host TEXT, path TEXT,
+  source TEXT, caller TEXT, url TEXT, host TEXT, path TEXT, outcome TEXT,
   fast_status INTEGER, fast_error TEXT, fast_via_proxy INTEGER, fast_chars INTEGER, fast_ms INTEGER,
   gate_decision TEXT, gate_reason TEXT, extractor TEXT, signals TEXT,
   judge_ok INTEGER, judge_reason TEXT, judge_ms INTEGER,
@@ -44,12 +47,20 @@ def _path() -> str:
     return os.environ.get("READ_LOG_DB", "/srv/searxng-docker/jobs/page_read_log.sqlite3")
 
 
+_MIGRATIONS = (
+    ("extractor", "TEXT"),  # the extractor choice landed 2026-09-30
+    ("outcome", "TEXT"),    # the cascade outcome landed 2026-11-14
+)
+
+
 def init() -> None:
     with _lock, sqlite3.connect(_path()) as db:
         db.executescript(DDL)
-        # logs created before the extractor choice (2026-09-30) lack the column
-        if "extractor" not in {r[1] for r in db.execute("PRAGMA table_info(page_read_log)")}:
-            db.execute("ALTER TABLE page_read_log ADD COLUMN extractor TEXT")
+        # Every Trace field must have a column: a missing one fails the INSERT.
+        have = {r[1] for r in db.execute("PRAGMA table_info(page_read_log)")}
+        for name, sql_type in _MIGRATIONS:
+            if name not in have:
+                db.execute(f"ALTER TABLE page_read_log ADD COLUMN {name} {sql_type}")
         db.execute(RETENTION)
 
 

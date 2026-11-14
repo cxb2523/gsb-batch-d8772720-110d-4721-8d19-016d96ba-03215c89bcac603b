@@ -15,6 +15,9 @@ Foreign sites that refuse a direct request are retried through PROXY_URL, if set
 Russian sites never go through it: they block foreign IPs.
 
 Every call is logged (sqlite, see read_log.py) so the gate can be tuned on data.
+Each row also carries Trace.outcome, a stable short label for how the cascade
+ended (fast_accepted, reader_recovered, not_found, …), so an operator can group
+"why did this read fail" without reading the raw per-step columns.
 """
 
 from __future__ import annotations
@@ -504,6 +507,7 @@ class Trace:
     browser_ms: Optional[int] = None
     browser_error: Optional[str] = None
     path: str = ""
+    outcome: str = ""          # stable short label for how the cascade ended, see outcome_of()
     final_chars: int = 0
     total_ms: int = 0
     snippet: str = ""
@@ -514,6 +518,60 @@ BrowserFn = Callable[[str, bool], Awaitable[dict]]
 LogFn = Callable[[Trace], Awaitable[None]]
 
 
+class StepUnavailable(Exception):
+    """A cascade step cannot run because it is not configured (no reader key, no
+    browser URL). Different from a transport error: retrying is pointless until
+    the deployment is fixed, and the read log must say so."""
+
+
+# Stable values of Trace.outcome, meant for SQL group-by and for tests. Never
+# built from exception messages or timings: the label is the whole point.
+OUTCOMES = (
+    "fast_accepted",               # the free fast path passed the gate, nothing paid ran
+    "reader_recovered",            # the gate rejected the fast text, the reader had the content
+    "reader_fallback",             # the fast path got no usable HTML, the reader had the content
+    "browser_recovered",           # only the browser rendered the content
+    "not_found",                   # the origin itself answered 404/410
+    "unsafe_url",                  # the safety check refused the URL; nothing paid ran
+    "failed_reader_unconfigured",  # nothing worked and the reader step could not run at all
+    "failed_network",              # nothing worked and a step failed at the transport level
+    "failed_site_refused",         # nothing worked and the origin refused us (401/403/429/451/498)
+    "failed_no_content",           # every step answered, none returned enough text
+)
+
+
+def outcome_of(tr: Trace, *, reader_unavailable: bool = False,
+               browser_unavailable: bool = False) -> str:
+    """The short label of how the cascade ended (Trace.outcome).
+
+    Same path means different things: path=reader is "the gate rejected the fast
+    text" or "the fast path never got HTML", and path="" is a missing reader, a
+    transport failure, a refusal or a stub page. This derives which one it was
+    from the per-step fields, so one query can answer "why did reads fail".
+
+    An unconfigured step is not a network error even though it raises: it is
+    recorded in reader_error/browser_error like any other, and only these flags
+    tell the operator to fix the deployment rather than retry.
+    """
+    if tr.path:
+        if tr.path == "reader":
+            return "reader_recovered" if tr.fast_chars is not None else "reader_fallback"
+        return "fast_accepted" if tr.path == "fast" else "browser_recovered"
+    if tr.fast_status in (404, 410):
+        return "not_found"
+    if tr.fast_error == "unsafe_url":
+        return "unsafe_url"
+    if reader_unavailable:
+        return "failed_reader_unconfigured"
+    real_errors = (bool(tr.fast_error) or (bool(tr.reader_error) and not reader_unavailable)
+                   or (bool(tr.browser_error) and not browser_unavailable))
+    if real_errors:
+        return "failed_network"
+    if tr.fast_status in _REFUSAL_STATUSES:
+        return "failed_site_refused"
+    return "failed_no_content"
+
+
 async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: BrowserFn,
                     return_format: str = "markdown", source: str = "read", caller: str = "",
                     log_fn: Optional[LogFn] = None) -> ReadResult:
@@ -521,6 +579,7 @@ async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: Brow
     tr = Trace(source=source, url=url[:2000], caller=caller[:64])
     res = ReadResult(final_url=url)
     proxy = getattr(settings, "proxy_url", "") or None
+    reader_unavailable = browser_unavailable = False
     try:
         # 1. fast path
         t0 = time.monotonic()
@@ -573,6 +632,7 @@ async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: Brow
                 if len(r.get("content") or "") >= MIN_PROVIDER_TEXT:
                     res.content, res.path = r["content"], "reader"
             except Exception as e:
+                reader_unavailable = isinstance(e, StepUnavailable)
                 tr.reader_error = f"{type(e).__name__}: {e}"[:200]
             tr.reader_ms = int((time.monotonic() - t0) * 1000)
 
@@ -593,15 +653,19 @@ async def read_page(url: str, settings, *, reader_fn: ReaderFn, browser_fn: Brow
                         res.content, res.path = b["content"], "browser"
                         break
                 except Exception as e:
+                    browser_unavailable = isinstance(e, StepUnavailable)
                     tr.browser_error = f"{type(e).__name__}: {e}"[:200]
             tr.browser_ms = int((time.monotonic() - t0) * 1000)
         return res
     finally:
         tr.path = res.path
+        tr.outcome = outcome_of(tr, reader_unavailable=reader_unavailable,
+                                browser_unavailable=browser_unavailable)
         tr.final_chars = len(res.content)
         tr.total_ms = int((time.monotonic() - t_start) * 1000)
         tr.snippet = res.content[:300]
-        logger.info(f"page read {tr.source}: path={tr.path or 'none'} gate={tr.gate_decision}/{tr.gate_reason} "
+        logger.info(f"page read {tr.source}: path={tr.path or 'none'} outcome={tr.outcome} "
+                    f"gate={tr.gate_decision}/{tr.gate_reason} "
                     f"judge={tr.judge_ok} {tr.final_chars} chars {tr.total_ms} ms {url[:120]}")
         if log_fn:
             asyncio.create_task(_safe_log(log_fn, tr))

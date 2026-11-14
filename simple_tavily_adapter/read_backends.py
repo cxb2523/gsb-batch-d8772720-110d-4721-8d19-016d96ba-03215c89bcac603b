@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from reader import StepUnavailable
+
 
 @dataclass
 class ReaderSettings:
@@ -56,7 +58,7 @@ class ReaderSettings:
         return bool(self.judge_llm_api_key)
 
 
-class ReaderUnavailable(Exception):
+class ReaderUnavailable(StepUnavailable):
     """The step is not configured; the cascade treats it as a failed step."""
 
 

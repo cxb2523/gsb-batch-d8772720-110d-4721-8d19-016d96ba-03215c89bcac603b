@@ -357,6 +357,90 @@ def test_everything_down(monkeypatch):
     assert logged[0].reader_error and logged[0].browser_error
 
 
+# ── cascade outcome label ──────────────────────────────────────────────────
+
+def test_outcome_labels_are_stable_and_documented():
+    assert len(set(reader.OUTCOMES)) == len(reader.OUTCOMES)
+    for label in reader.OUTCOMES:
+        assert label == label.lower() and " " not in label
+    # the cases the read log must be able to tell apart
+    assert {"fast_accepted", "reader_recovered", "browser_recovered",
+            "failed_reader_unconfigured", "failed_network", "not_found"} <= set(reader.OUTCOMES)
+
+
+def test_outcome_fast_accepted(monkeypatch):
+    _, _, logged = cascade(monkeypatch, fetched=ok_html, gate_result=("ok", "long_clean_text"))
+    assert logged[0].outcome == "fast_accepted"
+
+
+def test_outcome_judge_accepted_is_fast_accepted(monkeypatch):
+    _, _, logged = cascade(monkeypatch, fetched=ok_html, gate_result=("judge", "gray_zone"),
+                           judge_result=(True, "article", 10))
+    assert logged[0].outcome == "fast_accepted"
+
+
+def test_outcome_reader_recovers_from_gate_rejection(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=ok_html, gate_result=("reject", "spa_shell"),
+                             reader_out={"content": "article text " * 20})
+    assert res.path == "reader"
+    assert logged[0].outcome == "reader_recovered"
+
+
+def test_outcome_reader_recovers_after_empty_fast_path(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=reader.Fetched(status=403),
+                             reader_out={"content": "article text " * 20})
+    assert res.path == "reader" and logged[0].outcome == "reader_fallback"
+
+
+def test_outcome_browser_rescues(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=ok_html, gate_result=("reject", "too_short"),
+                             reader_out={"content": ""}, browser_out={"content": "rendered " * 20})
+    assert res.path == "browser" and logged[0].outcome == "browser_recovered"
+
+
+def test_outcome_all_failed_reader_unconfigured(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=reader.Fetched(error="timeout"),
+                             reader_out=reader.StepUnavailable("no NEURALDEEP_API_KEY"),
+                             browser_out=reader.StepUnavailable("no PLAYWRIGHT_URL"))
+    assert res.path == ""
+    assert logged[0].outcome == "failed_reader_unconfigured"
+    assert logged[0].reader_error.startswith("StepUnavailable")
+
+
+def test_outcome_all_failed_with_network_error(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=reader.Fetched(error="timeout"),
+                             reader_out=httpx.ConnectError("no route"),
+                             browser_out=TimeoutError("browser hung"))
+    assert res.path == ""
+    assert logged[0].outcome == "failed_network"
+
+
+def test_outcome_all_failed_site_refused_without_transport_error(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=reader.Fetched(status=403),
+                             reader_out={"content": ""}, browser_out={"content": ""})
+    assert res.path == "" and logged[0].outcome == "failed_site_refused"
+
+
+def test_outcome_all_answered_but_empty(monkeypatch):
+    res, _, logged = cascade(monkeypatch, fetched=reader.Fetched(status=200),
+                             reader_out={"content": ""}, browser_out={"content": ""})
+    assert res.path == "" and logged[0].outcome == "failed_no_content"
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_outcome_not_found(monkeypatch, status):
+    res, calls, logged = cascade(monkeypatch, fetched=reader.Fetched(status=status),
+                                 reader_out={"content": "must not be asked " * 20})
+    assert res.not_found and logged[0].outcome == "not_found"
+    assert ("reader",) not in calls and not any(c[0] == "browser" for c in calls)
+
+
+def test_outcome_unsafe_url_label():
+    """read_page raises before any step, so the label comes from the trace alone."""
+    tr = reader.Trace(source="extract", url="http://127.0.0.1/", fast_error="unsafe_url")
+    assert reader.outcome_of(tr) == "unsafe_url"
+
+
 def test_unsafe_url_raises_and_calls_nothing_paid(monkeypatch):
     with pytest.raises(reader.UnsafeURL):
         cascade(monkeypatch, fetched=reader.Fetched(error="unsafe_url"), reader_out={"content": "x"})
@@ -378,6 +462,60 @@ def test_read_log_writes_every_trace_field(tmp_path, monkeypatch):
         host, signals = db.execute("select host, signals from page_read_log").fetchone()
     assert {f.name for f in fields(reader.Trace)} <= cols
     assert host == "example.com" and '"chars": 10' in signals
+
+
+def test_read_log_writes_the_outcome_of_each_ending(tmp_path, monkeypatch):
+    """The outcome label of a real cascade run reaches the log row, not just the Trace."""
+    import sqlite3
+
+    import read_log
+    monkeypatch.setenv("READ_LOG_DB", str(tmp_path / "log.sqlite3"))
+    read_log.init()
+
+    cases = [
+        (lambda mc: cascade(mc, fetched=ok_html, gate_result=("ok", "long_clean_text")), "fast_accepted"),
+        (lambda mc: cascade(mc, fetched=ok_html, gate_result=("reject", "spa_shell"),
+                            reader_out={"content": "reader text " * 40}), "reader_recovered"),
+        (lambda mc: cascade(mc, fetched=reader.Fetched(error="timeout"),
+                            reader_out=reader.StepUnavailable("no key"),
+                            browser_out={"content": ""}), "failed_reader_unconfigured"),
+        (lambda mc: cascade(mc, fetched=reader.Fetched(error="timeout"),
+                            reader_out=RuntimeError("down"),
+                            browser_out=RuntimeError("down")), "failed_network"),
+        (lambda mc: cascade(mc, fetched=reader.Fetched(status=404)), "not_found"),
+    ]
+    for build, expected in cases:
+        res, _, logged = build(monkeypatch)
+        asyncio.run(read_log.log(logged[0]))
+        with sqlite3.connect(tmp_path / "log.sqlite3") as db:
+            row = db.execute("select path, outcome, total_ms, snippet from page_read_log "
+                             "order by id desc limit 1").fetchone()
+        assert row[0] == res.path and row[1] == expected
+        assert isinstance(row[2], int) and isinstance(row[3], str)
+
+
+def test_old_read_log_gets_the_outcome_column(tmp_path, monkeypatch):
+    """A log file from before this change lacks outcome: init must add it, or the
+    INSERT would fail for every read."""
+    import sqlite3
+
+    import read_log
+    db = tmp_path / "old.sqlite3"
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE page_read_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, source TEXT, "
+                  "caller TEXT, url TEXT, host TEXT, path TEXT, fast_status INTEGER, fast_error TEXT, "
+                  "fast_via_proxy INTEGER, fast_chars INTEGER, fast_ms INTEGER, gate_decision TEXT, "
+                  "gate_reason TEXT, extractor TEXT, signals TEXT, judge_ok INTEGER, judge_reason TEXT, "
+                  "judge_ms INTEGER, reader_called INTEGER, reader_chars INTEGER, reader_ms INTEGER, "
+                  "reader_error TEXT, browser_called INTEGER, browser_via_proxy INTEGER, browser_chars INTEGER, "
+                  "browser_ms INTEGER, browser_error TEXT, final_chars INTEGER, total_ms INTEGER, snippet TEXT)")
+    monkeypatch.setenv("READ_LOG_DB", str(db))
+    read_log.init()
+    tr = reader.Trace(source="extract", url="https://example.com/a", outcome="fast_accepted")
+    asyncio.run(read_log.log(tr))
+    with sqlite3.connect(db) as c:
+        assert "outcome" in {r[1] for r in c.execute("PRAGMA table_info(page_read_log)")}
+        assert c.execute("select outcome from page_read_log").fetchone() == ("fast_accepted",)
 
 
 def test_fetch_through_proxy_keeps_the_name(monkeypatch):
