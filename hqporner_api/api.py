@@ -15,9 +15,9 @@ try:
 except ImportError:
     Console = None
     Table = None
-from enum import Enum
+from enum import Enum, StrEnum
 from random import choice
-from typing import Any, AsyncGenerator, ClassVar
+from typing import Any, AsyncGenerator, ClassVar, Sequence
 from dataclasses import dataclass
 from curl_cffi import AsyncSession
 from selectolax.lexbor import LexborHTMLParser
@@ -134,6 +134,66 @@ def build_page_urls(base: str, pagination: Pagination = Pagination.QUERY, pages:
     return page_urls
 
 
+def _validate_pagination(pages: int, start_page: int) -> None:
+    """Reject invalid pagination before any network request is issued."""
+    if not isinstance(pages, int) or pages < 1:
+        raise ValueError(f"pages must be a positive integer, got {pages!r}")
+    if not isinstance(start_page, int) or start_page < 1:
+        raise ValueError(f"start_page must be a positive integer, got {start_page!r}")
+
+
+class PageStatus(StrEnum):
+    """Outcome of fetching and parsing one listing page."""
+
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class PageResult:
+    """
+    Per-page outcome yielded by :meth:`Client.iter_pages`.
+
+    A failed page is reported explicitly (``status``/``error``) instead of being
+    silently turned into an empty page; its ``videos`` list stays empty so callers
+    can distinguish a parseable page without results from a page that errored.
+    """
+
+    page: int
+    url: str
+    status: PageStatus
+    error: BaseException | str | None
+    videos: tuple[Video, ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.status is PageStatus.SUCCESS
+
+
+@dataclass(frozen=True, slots=True)
+class PageReport:
+    """Aggregate of a full :meth:`Client.iter_pages` run, built by :meth:`Client.collect_pages`."""
+
+    pages: tuple[PageResult, ...]
+
+    @property
+    def failed_pages(self) -> set[int]:
+        """Page numbers that failed and therefore need a retry run."""
+        return {result.page for result in self.pages if not result.ok}
+
+    @property
+    def succeeded_pages(self) -> set[int]:
+        return {result.page for result in self.pages if result.ok}
+
+    @property
+    def videos(self) -> tuple[Video, ...]:
+        """All videos from successful pages, in page/extractor order."""
+        return tuple(video for result in self.pages if result.ok for video in result.videos)
+
+    @property
+    def next_resume_page(self) -> int | None:
+        """Smallest failed page number, suitable as ``start_page`` of a retry run."""
+        return min(self.failed_pages, default=None)
 
 
 @dataclass(kw_only=True, slots=True)
@@ -350,16 +410,20 @@ class Client:
         name: str,
         pages: int = 5,
         iterator_config: IteratorConfig | None = None,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         :param pages: (int) The number of pages to fetch
         :param name: The actress name or the URL
         :param iterator_config: Iterator concurrency, loading, ordering, and error behavior.
+        :param start_page: (int) The 1-based page number to start fetching from (default: 1)
         :return: Video object
         """
+        _validate_pagination(pages, start_page)
         name = Checks().check_actress(name)
         final_url = f"{root_url_actress}{name}"
-        page_urls = build_page_urls(pagination=Pagination.PATH, base=final_url, pages=pages)
+        page_urls = build_page_urls(pagination=Pagination.PATH, base=final_url, pages=pages,
+                                    start_page=start_page)
         return self._video_stream(page_urls, iterator_config=iterator_config)
 
     def get_videos_by_category(
@@ -367,15 +431,19 @@ class Client:
         category: Category | str,
         pages: int = 5,
         iterator_config: IteratorConfig | None = None,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         :param pages: (int) The number of pages to fetch
         :param category: Category: The video category
         :param iterator_config: Iterator concurrency, loading, ordering, and error behavior.
+        :param start_page: (int) The 1-based page number to start fetching from (default: 1)
         :return: Video object
         """
+        _validate_pagination(pages, start_page)
         url = f"{root_url_category}{category}"
-        page_urls = build_page_urls(pagination=Pagination.PATH, base=url, pages=pages)
+        page_urls = build_page_urls(pagination=Pagination.PATH, base=url, pages=pages,
+                                    start_page=start_page)
         return self._video_stream(page_urls, iterator_config=iterator_config)
 
     def search_videos(
@@ -383,16 +451,20 @@ class Client:
         query: str,
         pages: int = 5,
         iterator_config: IteratorConfig | None = None,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         :param query:
         :param pages: (int) How many pages to fetch
         :param iterator_config: Iterator concurrency, loading, ordering, and error behavior.
+        :param start_page: (int) The 1-based page number to start fetching from (default: 1)
         :return: Video object
         """
+        _validate_pagination(pages, start_page)
         query = quote_plus(query)
         url = f"{root_url}?q={query}"
-        page_urls = build_page_urls(pagination=Pagination.QUERY, base=url, pages=pages, start_page=1)
+        page_urls = build_page_urls(pagination=Pagination.QUERY, base=url, pages=pages,
+                                    start_page=start_page)
         return self._video_stream(page_urls, iterator_config=iterator_config)
 
     def get_top_porn(
@@ -400,18 +472,22 @@ class Client:
         sort_by: Sort | str,
         pages: int = 5,
         iterator_config: IteratorConfig | None = None,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         :param pages: (int) How many pages to fetch
         :param sort_by: all_time, month, week
         :param iterator_config: Iterator concurrency, loading, ordering, and error behavior.
+        :param start_page: (int) The 1-based page number to start fetching from (default: 1)
         :return: Video object
         """
+        _validate_pagination(pages, start_page)
         if sort_by in ("all_time", "all-time"):
             url = root_url_top
         else:
             url = f"{root_url_top}{sort_by}"
-        page_urls = build_page_urls(base=url, pagination=Pagination.PATH, pages=pages)
+        page_urls = build_page_urls(base=url, pagination=Pagination.PATH, pages=pages,
+                                    start_page=start_page)
         return self._video_stream(page_urls, iterator_config=iterator_config)
 
     async def get_all_categories(self) -> list[str]:
@@ -441,14 +517,91 @@ class Client:
         self,
         pages: int = 5,
         iterator_config: IteratorConfig | None = None,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         """
         :param pages: (int) How many pages to fetch
         :param iterator_config: Iterator concurrency, loading, ordering, and error behavior.
+        :param start_page: (int) The 1-based page number to start fetching from (default: 1)
         :return: Video object
         """
-        page_urls = build_page_urls(pagination=Pagination.PATH, pages=pages, base=root_brazzers)
+        _validate_pagination(pages, start_page)
+        page_urls = build_page_urls(pagination=Pagination.PATH, pages=pages, base=root_brazzers,
+                                    start_page=start_page)
         return self._video_stream(page_urls, iterator_config=iterator_config)
+
+    def iter_pages(
+        self,
+        page_urls: Sequence[str],
+        *,
+        start_page: int = 1,
+    ) -> AsyncGenerator[PageResult, None]:
+        """
+        Yield one :class:`PageResult` per listing page, without letting a single
+        page failure abort the remaining pages.
+
+        :param page_urls: Listing page URLs, typically produced by :func:`build_page_urls`.
+        :param start_page: 1-based page number assigned to the first entry of
+            ``page_urls``; later entries are numbered consecutively.
+        :return: An async generator yielding a :class:`PageResult` for every URL.
+            Each result carries ``page``, ``url``, ``status``, ``error`` (set on
+            failure) and the parsed ``videos`` (empty on failure, never faked).
+
+        A page failure is captured into the result instead of being raised, so the
+        caller can collect :attr:`PageReport.failed_pages` afterwards and re-run the
+        same entry with ``start_page`` pointing at the smallest failed page. Only
+        listing pages are fetched here; each :class:`Video` keeps the same lazy
+        parsing and :meth:`Video.download` behavior as elsewhere in the API.
+        """
+        if not isinstance(start_page, int) or start_page < 1:
+            raise ValueError(f"start_page must be a positive integer, got {start_page!r}")
+        urls = tuple(page_urls)
+        if any(not isinstance(url, str) or not url for url in urls):
+            raise ValueError("page_urls must contain non-empty strings")
+        return self._iter_pages(urls, start_page)
+
+    async def _iter_pages(
+        self,
+        page_urls: tuple[str, ...],
+        start_page: int,
+    ) -> AsyncGenerator[PageResult, None]:
+        for offset, url in enumerate(page_urls):
+            page = start_page + offset
+            try:
+                _, html_content = await get_html_content(core=self.core, url=url, owner=self)
+                entries = await asyncio.to_thread(extractor_html, html_content)
+                videos = tuple(Video(core=self.core, **entry) for entry in entries)
+                yield PageResult(
+                    page=page,
+                    url=url,
+                    status=PageStatus.SUCCESS,
+                    error=None,
+                    videos=videos,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("Page %s (%s) failed: %s", page, url, error, exc_info=True)
+                yield PageResult(
+                    page=page,
+                    url=url,
+                    status=PageStatus.FAILED,
+                    error=error,
+                    videos=(),
+                )
+
+    async def collect_pages(
+        self,
+        page_urls: Sequence[str],
+        *,
+        start_page: int = 1,
+    ) -> PageReport:
+        """
+        Drain :meth:`iter_pages` into a :class:`PageReport` whose
+        :attr:`~PageReport.failed_pages` drives a retry run via ``start_page``.
+        """
+        results = [result async for result in self.iter_pages(page_urls, start_page=start_page)]
+        return PageReport(pages=tuple(results))
 
 
 def create_parser() -> argparse.ArgumentParser:
