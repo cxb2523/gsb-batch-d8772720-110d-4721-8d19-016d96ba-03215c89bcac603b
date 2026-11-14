@@ -133,6 +133,33 @@ async def main():
 asyncio.run(main())
 ```
 
+#### Per-source outcomes (optional)
+
+By default `scrape()` returns the same `protocol -> set of proxies` mapping it
+always has. To learn how *each* source ended the round — success with the
+parsed count, HTTP non-200, request error/timeout, empty body, content with
+no parseable proxies, or auto-skip after five consecutive failures — pass
+`return_results=True` to get a `ScrapeReport`:
+
+```python
+report = await scraper.scrape(sources, return_results=True)
+proxies = report.proxies            # the usual protocol -> set mapping
+for r in report.results:            # one SourceResult per source, in order
+    print(r.url, r.protocol.value, r.outcome.value, "-", r.detail)
+    # r.to_dict() gives a JSON-serializable record
+```
+
+Alternatively, pass a list as the `results` sink; it is filled with the
+outcome records while the return value stays the plain mapping:
+
+```python
+outcomes: list = []
+proxies = await scraper.scrape(sources, results=outcomes)
+```
+
+Skipped sources never receive a network request and keep their existing
+consecutive-failure count; successful sources still reset theirs to zero.
+
 ---
 
 ## Output formats

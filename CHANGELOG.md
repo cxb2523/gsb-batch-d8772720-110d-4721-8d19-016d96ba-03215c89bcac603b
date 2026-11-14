@@ -18,6 +18,15 @@ All notable changes to this project are documented here. The format follows
 - **CLI via argparse**, with non-interactive mode for automation / CI.
 
 ### Added
+- **Per-source scrape outcomes (opt-in).** `scraper.scrape()` now accepts
+  `return_results=True` (returns a `ScrapeReport` with the proxy mapping plus
+  one `SourceResult` per source) or a `results` list sink (mapping return
+  unchanged). Each record carries the source url, protocol, outcome category
+  (`success` / `http_error` / `request_error` / `empty_response` /
+  `no_proxies` / `skipped`) and a short detail string. Auto-skipped sources
+  issue no request and keep their consecutive-failure count; the health-book
+  JSON format and the five-failure threshold are unchanged. An injectable
+  `session` parameter makes the scraper testable without network access.
 - **Anonymity classification** (transparent / anonymous / elite) via
   ``httpbin.org/headers`` probing.
 - **Country lookup** via ip-api.com batch endpoint (only for the working
