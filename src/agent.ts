@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { PROJECT, projectMeta } from "./credits.js";
-import { crawlSite } from "./crawler.js";
+import { crawlSite, resumeCrawl } from "./crawler.js";
 import { createCache, WorkerQueue } from "./adapters.js";
 import { applyPluginEnrichers, listPlugins, runPluginAction } from "./plugins.js";
 import { auditQuality, auditSecurity, auditSeo, auditTrust, buildEntityGraph, buildRagDocuments, detectTechnologies, discoverCompetitors, extractBrand, profileCompleteness } from "./analyzers.js";
@@ -13,7 +13,7 @@ import { exportProvJson, buildProvenanceReport, inspectProvenance, provenanceCon
 import { renderUrl } from "./render.js";
 import { researchExternalWeb } from "./research.js";
 import { buildUrlIntelligenceExtension } from "./intelligence-v15.js";
-import type { CrawlPolicy, EvidenceField, IntelligenceResult, JsonValue, PageSignal, ProvenanceReport, Snapshot, WebResearchReport } from "./types.js";
+import type { CrawlPolicy, CrawlResumeInput, CrawlResult, EvidenceField, IntelligenceResult, JsonValue, PageSignal, ProvenanceReport, Snapshot, WebResearchReport } from "./types.js";
 
 const cache = createCache();
 const unique = <T>(items: T[]): T[] => [...new Set(items)];
@@ -149,19 +149,42 @@ function findContradictions(pages: PageSignal[], name: EvidenceField<string>, pr
   return unique(out);
 }
 
+/** Outcome summary so callers can tell a complete crawl from a truncated/failed one. */
+function crawlStatus(crawl: CrawlResult) {
+  return {
+    outcome: crawl.outcome,
+    complete: !crawl.truncated && crawl.retryableErrors.length === 0,
+    truncated: crawl.truncated,
+    truncatedByMaxPages: crawl.truncatedByMaxPages,
+    pagesCollected: crawl.pages.length,
+    maxPages: crawl.policy.maxPages,
+    pendingUrls: crawl.pendingUrls,
+    pendingCount: crawl.pendingUrls.length,
+    retryableErrors: crawl.retryableErrors,
+    retryableCount: crawl.retryableErrors.length,
+    skipped: crawl.skipped,
+    skippedCount: crawl.skipped.length,
+    visitedUrls: crawl.visitedUrls,
+    errors: crawl.errors
+  };
+}
+
 function disabledWebResearch(): WebResearchReport {
   return { enabled: false, searchConfigured: false, queries: [], candidateUrls: 0, fetchedSources: 0, thirdPartySources: 0, thirdPartyDomains: 0, corroboratingThirdPartySources: 0, corroboratingThirdPartyDomains: 0, platformSources: 0, sourceCoverageScore: 0, coverageLevel: "none", sources: [], notes: ["External web research was not requested for this action."] };
 }
 
-export type InvestigateOptions = { profile?: string; crawl?: Partial<CrawlPolicy>; force?: boolean; externalResearch?: boolean; searchProvider?: string };
+export type InvestigateOptions = { profile?: string; crawl?: Partial<CrawlPolicy>; force?: boolean; externalResearch?: boolean; searchProvider?: string; resume?: CrawlResumeInput };
 
 export async function investigate(rawUrl: string, profileOrOptions: string | InvestigateOptions = process.env.URL_AGENT_PROFILE || "full-intelligence"): Promise<IntelligenceResult> {
   const options: InvestigateOptions = typeof profileOrOptions === "string" ? { profile: profileOrOptions } : profileOrOptions;
   const profile = options.profile || process.env.URL_AGENT_PROFILE || "full-intelligence";
   const externalResearch = options.externalResearch ?? profile === "full-intelligence";
-  const cacheKey = `investigate:${rawUrl}:${profile}:${externalResearch ? "web" : "site"}:${options.searchProvider || "default"}:${JSON.stringify(options.crawl || {})}`;
+  const cacheKey = `investigate:${rawUrl}:${profile}:${externalResearch ? "web" : "site"}:${options.searchProvider || "default"}:${JSON.stringify(options.crawl || {})}:${options.resume ? JSON.stringify(options.resume) : "fresh"}`;
   if (!options.force) { const hit = await cache.get<IntelligenceResult>(cacheKey); if (hit) return hit; }
-  const crawl = await crawlSite(rawUrl, options.crawl); const pages = crawl.pages; const root = pages[0]; if (!root) throw new Error("No page could be collected");
+  const crawl = options.resume
+    ? await resumeCrawl({ ...options.resume, rootUrl: options.resume.rootUrl || rawUrl }, options.crawl)
+    : await crawlSite(rawUrl, options.crawl);
+  const pages = crawl.pages; const root = pages[0]; if (!root) throw new Error("No page could be collected");
   const provenance = buildProvenanceReport(pages);
   const name = resolveName(pages, provenance); const type = resolveType(pages); const description = findDescription(pages, provenance);
   const webResearch = externalResearch ? await researchExternalWeb(root.url, name.value, pages, options.searchProvider) : disabledWebResearch();
@@ -184,7 +207,7 @@ export async function investigate(rawUrl: string, profileOrOptions: string | Inv
   const provenanceFingerprint = createHash("sha256").update(JSON.stringify(provenance.claims.map(x => ({ predicate: x.predicate, value: x.displayValue, status: x.status })).sort((a, b) => a.predicate.localeCompare(b.predicate)))).digest("hex");
   const fingerprint = createHash("sha256").update(JSON.stringify({ finalUrl: root.url, name: name.value, type: type.value, socials: socials.sort(), contacts: [...emails, ...phones].sort(), importantPages: crawl.importantPages, technologies: technologies.map(x => x.name).sort(), contentFingerprint, provenanceFingerprint })).digest("hex");
   const webWarnings = webResearch.notes.filter(x => /search query failed|unverified/i.test(x)).map(x => `Web research: ${x}`);
-  let result: IntelligenceResult = { meta: { ...projectMeta(), provenanceSchema: provenance.schemaVersion }, inputUrl: rawUrl, finalUrl: root.url, profile, entity: { type, name, description }, confidenceAssessment, webResearch, provenance, seo, security, quality, trust, socials, contacts: { emails, phones }, importantPages: crawl.importantPages, pages, sitemapUrls: crawl.sitemapUrls, technologies, brand, graph: { nodes: [], edges: [] }, competitors: competitorList, rag, contradictions: findContradictions(pages, name, provenance), warnings: [...crawl.errors.map(x => `${x.url}: ${x.error}`), ...(crawl.robotsText ? [] : ["robots.txt was not available or could not be read"]), ...provenanceWarnings(provenance), ...webWarnings].slice(0, 150), fingerprint, contentFingerprint, observedAt: new Date().toISOString() };
+  let result: IntelligenceResult = { meta: { ...projectMeta(), provenanceSchema: provenance.schemaVersion, crawl: crawlStatus(crawl) }, inputUrl: rawUrl, finalUrl: root.url, profile, entity: { type, name, description }, confidenceAssessment, webResearch, provenance, seo, security, quality, trust, socials, contacts: { emails, phones }, importantPages: crawl.importantPages, pages, sitemapUrls: crawl.sitemapUrls, technologies, brand, graph: { nodes: [], edges: [] }, competitors: competitorList, rag, contradictions: findContradictions(pages, name, provenance), warnings: [...crawl.errors.map(x => `${x.url}: ${x.error}`), ...(crawl.robotsText ? [] : ["robots.txt was not available or could not be read"]), ...provenanceWarnings(provenance), ...webWarnings].slice(0, 150), fingerprint, contentFingerprint, observedAt: new Date().toISOString() };
   result.graph = buildEntityGraph(result);
   result = await applyPluginEnrichers(result, { profile });
   const currentExtensions = result.meta && typeof result.meta.extensions === "object" && result.meta.extensions ? result.meta.extensions as Record<string, unknown> : {};
@@ -215,7 +238,7 @@ export async function runAction(name: string, args: Record<string, any>): Promis
   if (name === "compare_urls") return compareResults(await investigate(args.url, { profile: args.profile, externalResearch: false }), await investigate(args.url2, { profile: args.profile, externalResearch: false }));
   if (name === "batch_investigate") { const urls = Array.isArray(args.urls) ? args.urls : []; const queue = new WorkerQueue(Number(args.concurrency || process.env.URL_AGENT_WORKER_CONCURRENCY || 4)); urls.forEach((url: string) => queue.add("investigate", { url, profile: args.profile })); return queue.run(async job => investigate((job.payload as any).url, { profile: (job.payload as any).profile, externalResearch: false })); }
   const externalResearch = args.externalResearch !== undefined ? Boolean(args.externalResearch) : (name === "investigate_url" || name === "resolve_entity");
-  const result = await investigate(args.url, { profile: args.profile, force: Boolean(args.force), crawl: args.crawl, externalResearch, searchProvider: args.searchProvider });
+  const result = await investigate(args.url, { profile: args.profile, force: Boolean(args.force), crawl: args.crawl, externalResearch, searchProvider: args.searchProvider, resume: args.resume });
   if (name === "investigate_url") return result;
   if (name === "inspect_provenance") return { meta: result.meta, provenance: inspectProvenance(result.provenance, args.predicate, Number(args.limit || 100)), ...(String(args.format || "").toLowerCase() === "prov" ? { prov: exportProvJson(result.provenance) } : {}) };
   if (name === "verify_claim") {
@@ -223,7 +246,10 @@ export async function runAction(name: string, args: Record<string, any>): Promis
     if (args.value === undefined) throw new Error("verify_claim requires value");
     return { meta: result.meta, verification: verifyClaim(result.provenance, String(args.predicate), args.value as JsonValue) };
   }
-  if (name === "map_site" || name === "deep_crawl") return { meta: result.meta, rootUrl: result.finalUrl, importantPages: result.importantPages, sitemapUrls: result.sitemapUrls, pages: result.pages, provenance: result.provenance.summary };
+  if (name === "map_site" || name === "deep_crawl") {
+    const crawl = result.meta.crawl as Record<string, unknown> | undefined;
+    return { meta: result.meta, rootUrl: result.finalUrl, importantPages: result.importantPages, sitemapUrls: result.sitemapUrls, pages: result.pages, provenance: result.provenance.summary, ...(crawl ? { crawl } : {}) };
+  }
   if (name === "resolve_entity") return { meta: result.meta, entity: result.entity, confidenceAssessment: result.confidenceAssessment, webResearch: result.webResearch, provenance: inspectProvenance(result.provenance, "name", 25), contradictions: result.contradictions, graph: result.graph };
   if (name === "find_social_profiles") return { meta: result.meta, socials: result.socials };
   if (name === "find_contacts") return { meta: result.meta, contacts: result.contacts, contactPage: result.importantPages.contact, people: extractPeople(result.pages) };

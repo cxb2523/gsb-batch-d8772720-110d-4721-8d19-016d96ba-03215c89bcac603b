@@ -65,6 +65,67 @@ const crawlProperty = {
   }
 } as const;
 
+const resumeUrlEntry = {
+  type: "object",
+  additionalProperties: false,
+  required: ["url"],
+  properties: {
+    url: urlProperty,
+    depth: { type: "integer", minimum: 0, maximum: 10 },
+    error: { type: "string", maxLength: 2000 }
+  }
+} as const;
+
+const resumeProperty = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    rootUrl: urlProperty,
+    pendingUrls: { type: "array", items: resumeUrlEntry, maxItems: 5000 },
+    pending: { type: "array", items: resumeUrlEntry, maxItems: 5000 },
+    retryableErrors: { type: "array", items: resumeUrlEntry, maxItems: 500 },
+    failed: { type: "array", items: resumeUrlEntry, maxItems: 500 },
+    visitedUrls: { type: "array", items: urlProperty, maxItems: 5000 }
+  }
+} as const;
+
+const crawlPendingEntrySchema = {
+  type: "object",
+  required: ["url", "depth", "priority"],
+  properties: {
+    url: urlProperty,
+    depth: { type: "integer", minimum: 0 },
+    priority: { type: "number" }
+  }
+} as const;
+
+const crawlStatusSchema = {
+  type: "object",
+  additionalProperties: true,
+  required: ["outcome", "complete", "truncated", "pendingUrls", "retryableErrors"],
+  properties: {
+    outcome: { type: "string", enum: ["complete", "truncated", "retryable-errors"] },
+    complete: { type: "boolean" },
+    truncated: { type: "boolean" },
+    truncatedByMaxPages: { type: "boolean" },
+    pagesCollected: { type: "integer", minimum: 0 },
+    maxPages: { type: "integer", minimum: 1 },
+    pendingCount: { type: "integer", minimum: 0 },
+    pendingUrls: { type: "array", items: crawlPendingEntrySchema },
+    retryableCount: { type: "integer", minimum: 0 },
+    retryableErrors: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["url", "error"],
+        properties: { url: urlProperty, error: { type: "string" }, depth: { type: "integer", minimum: 0 } }
+      }
+    },
+    skippedCount: { type: "integer", minimum: 0 },
+    visitedUrls: { type: "array", items: urlProperty }
+  }
+} as const;
+
 function objectSchema(properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
   return { type: "object", additionalProperties: false, properties, ...(required.length ? { required } : {}) };
 }
@@ -79,8 +140,8 @@ export function schemaFor(name: string): Record<string, unknown> {
   if (name === "check_links") return objectSchema({ url: urlProperty, profile: profileProperty, limit: { type: "integer", minimum: 1, maximum: 300 }, concurrency: { type: "integer", minimum: 1, maximum: 20 }, external: { type: "boolean" } }, ["url"]);
   if (name === "diff_snapshot") return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, snapshot: { type: "string" }, webhook: { type: "boolean" }, crawl: crawlProperty }, ["url"]);
   if (name === "ai_reason") return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, instruction: { type: "string", maxLength: 8000 }, crawl: crawlProperty }, ["url"]);
-  if (name === "investigate_url" || name === "resolve_entity") return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, externalResearch: { type: "boolean" }, searchProvider: { type: "string", maxLength: 80 }, crawl: crawlProperty, sync: { type: "boolean" } }, ["url"]);
-  if (name === "map_site" || name === "deep_crawl") return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, crawl: crawlProperty, sync: { type: "boolean" } }, ["url"]);
+  if (name === "investigate_url" || name === "resolve_entity") return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, externalResearch: { type: "boolean" }, searchProvider: { type: "string", maxLength: 80 }, crawl: crawlProperty, resume: resumeProperty, sync: { type: "boolean" } }, ["url"]);
+  if (name === "map_site" || name === "deep_crawl") return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, crawl: crawlProperty, resume: resumeProperty, sync: { type: "boolean" } }, ["url"]);
   return objectSchema({ url: urlProperty, profile: profileProperty, force: { type: "boolean" }, crawl: crawlProperty }, ["url"]);
 }
 
@@ -327,6 +388,16 @@ function outputSchemaFor(name: string): Record<string, unknown> {
         provenance: provenanceSchema
       }
     };
+  }
+  if (name === "map_site" || name === "deep_crawl") {
+    return objectSchema({
+      meta: { type: "object" },
+      rootUrl: urlProperty,
+      importantPages: { type: "object" },
+      sitemapUrls: { type: "array", items: urlProperty },
+      pages: { type: "array", items: { type: "object" } },
+      crawl: crawlStatusSchema
+    });
   }
   return { type: "object", additionalProperties: true };
 }

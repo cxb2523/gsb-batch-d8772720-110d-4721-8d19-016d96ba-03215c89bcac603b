@@ -3,6 +3,18 @@
 All notable changes to URL Intelligence Agent are documented here.
 
 
+## Unreleased
+
+### Deep crawl outcome and resume
+- `CrawlResult` now distinguishes a completed crawl from one truncated by `maxPages` and from one with retryable failures via `outcome` (`complete` / `truncated` / `retryable-errors`), `truncated`, `truncatedByMaxPages`, `complete`, `visitedUrls`, `retryableErrors` and `pendingUrls`.
+- `pendingUrls` reports the unprocessed frontier, deduplicated and ordered by priority then depth; `retryableErrors` reports failed URLs with their error reason.
+- Adds `resumeCrawl(previous, overrides)` plus a `resume` input on `deep_crawl`, `map_site` and `investigate_url`, reusing the previous pending queue and retryable failures.
+- Resumed links are revalidated against same-origin, robots, allow/deny, non-HTML asset and `maxDepth` rules; violations are reported in `skipped` with a reason.
+- Previously visited URLs are never re-collected; a resumed run is still bounded by `maxPages` and reports its remaining queue when truncated again.
+- Adds local HTML fixtures with a stubbed network layer covering truncation, resume and out-of-policy skips.
+- `map_site`/`deep_crawl` expose the crawl status as `meta.crawl` and `crawl`.
+
+
 ## 1.5.0 — Evidence Intelligence & Compatibility Release
 
 ### Compatibility and contracts

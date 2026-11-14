@@ -161,6 +161,32 @@ always
 playwright
 ```
 
+### Resuming a bounded crawl
+
+A crawl result reports whether it finished, was truncated by `maxPages`, or left
+retryable failures. Feed the remaining work straight back in:
+
+```ts
+import { crawlSite, resumeCrawl } from "./src/crawler.js";
+
+const first = await crawlSite("https://example.com", { maxPages: 30 });
+if (first.truncated) {
+  // first.pendingUrls: unprocessed queue, deduplicated, priority then depth
+  // first.retryableErrors: failures worth retrying, with reasons
+  const next = await resumeCrawl(first, { maxPages: 30 });
+  if (next.truncated) {
+    // still more work — resume again with next
+  }
+}
+```
+
+`resumeCrawl` accepts either a previous `CrawlResult` or an explicit
+`CrawlResumeInput` (`rootUrl`, `pendingUrls`, `retryableErrors`, `visitedUrls`).
+Previously collected URLs are carried into the new result and never fetched again.
+Resumed links are revalidated against same-origin, robots, allow/deny, non-HTML
+asset and `maxDepth` rules; violations appear in `skipped` with a reason instead of
+being dropped silently.
+
 ## Rendering
 
 Rendering is optional.

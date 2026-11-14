@@ -207,6 +207,54 @@ export type CrawlPolicy = {
   renderMode: "off" | "auto" | "always" | "playwright";
 };
 
+/** A queue entry that was discovered but not collected before the run stopped. */
+export type CrawlPendingUrl = {
+  url: string;
+  depth: number;
+  /** The same priority used to order the crawl frontier (higher first). */
+  priority: number;
+};
+
+export type CrawlError = {
+  url: string;
+  error: string;
+  depth?: number;
+  /** False when the failure is deterministic for this URL (invalid/blocked URL, redirect loop, ...). */
+  retryable?: boolean;
+};
+
+export type CrawlRetryableError = {
+  url: string;
+  error: string;
+  depth?: number;
+};
+
+export type CrawlResumeInput = {
+  /** Origin anchor for same-origin and robots checks. Usually the previous result's rootUrl. */
+  rootUrl?: string;
+  /** Unprocessed frontier from a previous run. */
+  pendingUrls?: { url: string; depth?: number }[];
+  /** Ergonomic alias for `pendingUrls`. */
+  pending?: { url: string; depth?: number }[];
+  /** Failures that are safe to retry, with their error context. */
+  retryableErrors?: { url: string; error?: string; depth?: number }[];
+  /** Alias for `retryableErrors`. */
+  failed?: { url: string; error?: string; depth?: number }[];
+  /** Full previous errors list; only used when no retryableErrors/failed is supplied. */
+  errors?: { url: string; error?: string; depth?: number }[];
+  /** URLs already collected/attempted in the previous run; never fetched again by the resumed run. */
+  visitedUrls?: string[];
+  /** Ergonomic alias for `visitedUrls`. */
+  visited?: string[];
+  /** Previous pages, carried into the resumed result and used to seed the visited set. */
+  pages?: PageSignal[];
+  sitemapUrls?: string[];
+  importantPages?: Record<string, string>;
+  robotsText?: string;
+};
+
+export type CrawlOutcome = "complete" | "truncated" | "retryable-errors";
+
 export type CrawlResult = {
   rootUrl: string;
   pages: PageSignal[];
@@ -215,8 +263,22 @@ export type CrawlResult = {
   robotsUrl?: string;
   robotsText?: string;
   skipped: { url: string; reason: string }[];
-  errors: { url: string; error: string }[];
+  errors: CrawlError[];
   policy: CrawlPolicy;
+  /** Single discriminator: "truncated" wins over "retryable-errors", else "complete". */
+  outcome: CrawlOutcome;
+  /** True when the run stopped because maxPages was reached while work remained queued. */
+  truncated: boolean;
+  /** Explicit alias of `truncated`, naming the cause. */
+  truncatedByMaxPages: boolean;
+  /** True when no work remains queued and no retryable failures are left. */
+  complete: boolean;
+  /** Every URL the run fetched or attempted; pass to a resumed run to prevent re-collection. */
+  visitedUrls: string[];
+  /** Deduplicated, still-unprocessed queue ordered by priority (desc) then depth (asc). */
+  pendingUrls: CrawlPendingUrl[];
+  /** Failed URLs that are worth retrying, including the error reason. */
+  retryableErrors: CrawlRetryableError[];
 };
 
 export type TechnologySignal = {

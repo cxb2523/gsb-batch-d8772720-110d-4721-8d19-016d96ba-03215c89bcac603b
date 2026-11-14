@@ -112,6 +112,9 @@ Responsibilities:
 - collect robots.txt and sitemap signals;
 - queue same origin pages with bounded depth/page count;
 - honor crawl allow/deny rules;
+- report whether a run completed, was truncated by `maxPages`, or left retryable failures;
+- expose the unprocessed frontier (deduplicated, priority then depth) and retryable errors;
+- resume a previous run from that frontier while revalidating every link against the same policy;
 - classify important pages;
 - preserve raw/source representation evidence;
 - invoke rendering based on the per request crawl policy;

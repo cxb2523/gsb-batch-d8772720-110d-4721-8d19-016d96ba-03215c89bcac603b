@@ -186,6 +186,71 @@ always
 playwright
 ```
 
+### Crawl outcome
+
+`deep_crawl` and `map_site` return a `crawl` status object so callers can tell the
+three possible endings apart:
+
+```json
+{
+  "crawl": {
+    "outcome": "truncated",
+    "complete": false,
+    "truncated": true,
+    "pagesCollected": 30,
+    "maxPages": 30,
+    "pendingCount": 42,
+    "pendingUrls": [{ "url": "https://example.com/docs", "depth": 1, "priority": 77 }],
+    "retryableCount": 1,
+    "retryableErrors": [{ "url": "https://example.com/about", "error": "Request timed out after 10000ms", "depth": 1 }],
+    "skippedCount": 3
+  }
+}
+```
+
+| `outcome` | Meaning |
+| --- | --- |
+| `complete` | The frontier drained; every discovered page was collected. |
+| `truncated` | `maxPages` was reached while unprocessed URLs remained. |
+| `retryable-errors` | The frontier drained, but some URLs failed in a way that may succeed on retry. |
+
+`truncated` (and its explicit alias `truncatedByMaxPages`) is only true when the
+run stopped at `maxPages` with a non-empty queue. `pendingUrls` is deduplicated and
+ordered by priority (descending), then depth (ascending). `retryableErrors` excludes
+deterministic failures such as invalid or non-public URLs, redirect loops and
+oversized responses; those stay in `errors` with `retryable: false`.
+
+### Resume
+
+Pass the previous `pendingUrls` and `retryableErrors` back through the `resume`
+input to continue a bounded crawl:
+
+```json
+{
+  "url": "https://example.com",
+  "crawl": { "maxPages": 30 },
+  "resume": {
+    "rootUrl": "https://example.com/",
+    "pendingUrls": [{ "url": "https://example.com/docs", "depth": 1 }],
+    "retryableErrors": [{ "url": "https://example.com/about", "error": "Request timed out after 10000ms", "depth": 1 }],
+    "visitedUrls": ["https://example.com/"]
+  }
+}
+```
+
+Every resumed URL is revalidated against the same same-origin, robots,
+allow/deny, non-HTML asset and `maxDepth` rules before it is queued. Previously
+visited URLs are never fetched again; a resumed link that now violates the policy
+is reported in `skipped` with a reason (`external-origin`, `robots-disallow`,
+`deny-pattern`, `non-html-asset`, `not-allowlisted`, `depth-exceeded`,
+`already-visited`). A resumed run is still bounded by `maxPages` — when it hits the
+bound again it returns a fresh `pendingUrls` queue.
+
+In the TypeScript API, `resumeCrawl(previousResult, overrides)` accepts a previous
+`CrawlResult` directly, and `crawlSite(url, overrides, { fetch })` accepts a
+network stub for tests. From the CLI, `url-agent crawl https://example.com --resume previous.json`
+reads a previous JSON result (or its `crawl` status block) and continues from it.
+
 Browser rendering requires a configured remote renderer or Playwright installation and should be deployed with an appropriate network isolation model.
 
 ## Search providers

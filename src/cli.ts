@@ -92,6 +92,25 @@ function argValue(args: string[], name: string): string | undefined { const i = 
 function urlArg(args: string[]): string | undefined { return args.find(x => /^https?:\/\//i.test(x)); }
 async function readBatch(path: string): Promise<string[]> { const text = await readFile(path, "utf8"); if (path.endsWith(".json")) { const parsed = JSON.parse(text); if (Array.isArray(parsed)) return parsed.map(String); if (Array.isArray(parsed.urls)) return parsed.urls.map(String); } return text.split(/\r?\n/).map(x => x.trim()).filter(x => /^https?:\/\//i.test(x)); }
 
+/**
+ * Read a previous crawl result (or its `crawl` status block) and keep the parts
+ * needed to continue: unprocessed URLs, retryable failures and visited URLs.
+ */
+async function readResume(path: string): Promise<Record<string, unknown>> {
+  const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, any>;
+  const source = parsed && typeof parsed.crawl === "object" && parsed.crawl ? parsed.crawl : parsed;
+  return {
+    rootUrl: parsed.rootUrl || parsed.finalUrl || source.rootUrl,
+    pendingUrls: source.pendingUrls || [],
+    retryableErrors: source.retryableErrors || [],
+    visitedUrls: parsed.visitedUrls || source.visitedUrls || parsed.pages?.map((page: any) => page?.url).filter(Boolean) || [],
+    pages: parsed.pages,
+    sitemapUrls: parsed.sitemapUrls,
+    robotsText: parsed.robotsText,
+    importantPages: parsed.importantPages
+  };
+}
+
 async function main(args: string[]): Promise<void> {
   const raw = args.includes("--raw"); const clean = args.filter(x => x !== "--raw"); const [cmd = "", ...rest] = clean;
   if (!cmd) { await interactive(); return; }
@@ -110,7 +129,9 @@ async function main(args: string[]): Promise<void> {
   if (cmd === "report") { const result = await investigate(url, profile); await writeReports(result, argValue(rest, "--out") || `url-intelligence-${Date.now()}`); console.log(renderTerminal(result)); return; }
   const commandMap: Record<string, string> = { investigate: "investigate_url", probe: "probe_url", domain: "domain_intelligence", render: "render_page", "map-site": "map_site", crawl: "deep_crawl", entity: "resolve_entity", socials: "find_social_profiles", contacts: "find_contacts", technologies: "detect_technologies", brand: "brand_intelligence", seo: "audit_seo", security: "audit_security", quality: "audit_quality", trust: "audit_trust", graph: "entity_graph", competitors: "competitor_intelligence", structured: "structured_data", apis: "api_discovery", compliance: "compliance_signals", people: "people_team", commerce: "commerce_intelligence", freshness: "content_freshness", links: "link_intelligence", "check-links": "check_links", listing: "generate_listing", rag: "rag_export", knowledge: "knowledge_export", snapshot: "create_snapshot", diff: "diff_snapshot", reason: "ai_reason" };
   const action = commandMap[cmd] || (actionNames().includes(cmd) ? cmd : undefined); if (!action) throw new Error(`Unknown command: ${cmd}. Run 'url-agent actions'.`);
-  const value = await runAction(action, { url, profile, force: rest.includes("--force"), snapshot: argValue(rest, "--snapshot"), webhook: !rest.includes("--no-webhook"), instruction: argValue(rest, "--instruction"), limit: Number(argValue(rest, "--limit") || 50), concurrency: Number(argValue(rest, "--concurrency") || 5), includeHtml: !rest.includes("--no-html") });
+  const resumePath = argValue(rest, "--resume");
+  const resume = resumePath ? await readResume(resumePath) : undefined;
+  const value = await runAction(action, { url, profile, force: rest.includes("--force"), snapshot: argValue(rest, "--snapshot"), webhook: !rest.includes("--no-webhook"), instruction: argValue(rest, "--instruction"), limit: Number(argValue(rest, "--limit") || 50), concurrency: Number(argValue(rest, "--concurrency") || 5), includeHtml: !rest.includes("--no-html"), ...(resume ? { resume } : {}) });
   if (action === "investigate_url" && !raw) console.log(renderTerminal(value as any) + "\n"); console.log(JSON.stringify(value, null, 2)); if (!raw) console.log(`\n${creditsLine()}`);
 }
 
