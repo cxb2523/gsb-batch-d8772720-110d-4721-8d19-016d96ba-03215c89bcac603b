@@ -1,0 +1,90 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "tui",
+  "tasks": {
+    "build:types": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/types/**"]
+    },
+    "build": {
+      "dependsOn": ["^build", "build:types"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck:watch": {
+      "dependsOn": ["^build"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true,
+      "inputs": [".env*"]
+    },
+    "create:migration": {
+      "inputs": [".env*"],
+      "cache": false,
+      "persistent": true
+    },
+    "migrate": {
+      "inputs": [".env*"],
+      "cache": false
+    },
+    "import:legacy": {
+      "inputs": [".env*"],
+      "cache": false
+    },
+    "seed": {
+      "inputs": [".env*"],
+      "cache": false
+    },
+    "drizzle-studio": {
+      "inputs": [".env*"],
+      "cache": false
+    },
+    "test:unit": {
+      "inputs": [".env*"],
+      "persistent": true
+    }
+  },
+  "globalEnv": [
+    "APP_URL",
+    "CLOUDFLARE_WEB_ANALYTICS_TOKEN",
+    "AUTH_BASE_URL",
+    "BETTER_AUTH_SECRET",
+    "CI",
+    "DATABASE_URL",
+    "DATABASE_SCHEMA",
+    "DATABASE_SSL",
+    "INTERNAL_FRONTEND_URL",
+    "INTERNAL_BACKEND_URL",
+    "NODE_ENV",
+    "RUNTIME_KIND",
+    "WEB_RUNTIME",
+    "OWNER_EMAIL",
+    "OWNER_USER_ID",
+    "SCRAPING_ENABLED",
+    "PORT",
+    "WEB_PORT",
+    "SCAN_DIR",
+    "SCAN_EXCLUDE",
+    "TRUSTED_ORIGINS",
+    "DEV_USE_INTERNAL_BACKEND_URL_IN_FRONTEND",
+    "DATABASE_HOST",
+    "DATABASE_PORT",
+    "DATABASE_USER",
+    "DATABASE_PASSWORD",
+    "DATABASE_NAME",
+    "MEDIA_ENCRYPTION_KEY",
+    "MEDIA_PLUGIN_PATHS",
+    "LEGACY_SERVER_DATA_DIR",
+    "INITIAL_USER_EMAIL",
+    "INITIAL_USER_NAME",
+    "INITIAL_USER_PASSWORD",
+    "RYM_REPLAY_DATABASE_URL"
+  ]
+}

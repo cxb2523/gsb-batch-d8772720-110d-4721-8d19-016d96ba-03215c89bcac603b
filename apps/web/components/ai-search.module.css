@@ -1,0 +1,58 @@
+.popover .panel {
+  width: min(430px, calc(100vw - 36px));
+  gap: 10px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.popover > summary {
+  justify-content: center;
+  padding: 5px;
+}
+
+.result {
+  display: grid;
+  gap: 10px;
+}
+
+.result ul {
+  padding-left: 18px;
+  list-style: disc;
+}
+
+.result li + li {
+  margin-top: 3px;
+}
+
+.note {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.error {
+  color: #9f303b;
+}
+
+.spinner {
+  margin: 0 6px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .popover .panel {
+    width: auto;
+  }
+}

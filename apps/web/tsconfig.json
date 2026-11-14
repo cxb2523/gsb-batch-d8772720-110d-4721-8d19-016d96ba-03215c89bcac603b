@@ -1,0 +1,36 @@
+{
+  "extends": "@repo/typescript-config/nextjs.json",
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "noEmit": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@repo/schemas/*": ["../../packages/schemas/src/*"],
+      "@repo/ui/*": ["../../packages/ui/src/*"],
+      "@/*": ["./*"],
+      "~/*": ["./*"]
+    },
+    "strictNullChecks": true
+  },
+  "include": [
+    "next-env.d.ts",
+    "cloudflare-env.d.ts",
+    "open-next-worker.d.ts",
+    "open-next.config.ts",
+    "worker.ts",
+    "next.config.mjs",
+    "tailwind.config.ts",
+    "env.ts",
+    "middleware.ts",
+    "app/**/*",
+    "components/**/*",
+    "utils/**/*",
+    "hooks/**/*",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", ".next"]
+}

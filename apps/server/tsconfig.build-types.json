@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist/types",
+    "declaration": true,
+    "declarationMap": false,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "composite": false,
+    "rootDir": ".",
+    "noEmitOnError": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "src/cloudflare",
+    "**/*.test.ts",
+    "**/__tests__/**"
+  ]
+}
