@@ -5,8 +5,9 @@ import json5
 import asyncio
 import logging
 
-from typing import AsyncGenerator, ClassVar
-from dataclasses import dataclass
+from typing import Any, AsyncGenerator, ClassVar, Callable
+from dataclasses import dataclass, replace
+from inspect import isawaitable
 from selectolax.lexbor import LexborHTMLParser
 from base_api.modules.config import IteratorConfig, RuntimeConfig
 from base_api import (
@@ -18,9 +19,11 @@ from base_api import (
     Helper,
     MediaLoadError,
     MediaLoadErrors,
+    ResultOrder,
     RetryPolicy,
     ScrapeErrorContext,
     ScrapeResult,
+    ScrapeStage,
     media_field,
     make_iterator_config,
     is_resource_gone,
@@ -363,20 +366,121 @@ class ChannelModelHelper(BaseMedia):
         self,
         pages: int = 2,
         iterator_config: IteratorConfig | None = None,
+        start_page: int = 1,
+        on_page: Callable[[int, bool, int, Exception | None], Any] | None = None,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        """
+        Stream the videos listed on this channel/model profile.
+
+        ``start_page`` is the first page number to request, which allows resuming
+        a failed batch without re-fetching earlier pages. ``pages`` remains the
+        last page number, so ``videos(pages=3, start_page=2)`` requests pages 2
+        and 3 only. Page numbers are still zero-padded into the ``from`` query.
+
+        ``on_page``, when given, is called once per page after that page has been
+        processed with ``(page_number, succeeded, item_count, error)``. ``error``
+        is the failure exception for an unsuccessful page and ``None`` otherwise.
+        A failed page is reported as unsuccessful with its error; collection keeps
+        going with the following pages. Both synchronous and asynchronous
+        callbacks are supported, and an exception raised by the callback is logged
+        and never interrupts the remaining pages.
+        """
         from urllib.parse import parse_qs
+        if start_page < 1:
+            raise ValueError("start_page must be at least 1")
         url = self.resolved_url or self.url
         sort_by = parse_qs(urlsplit(url).query).get("sort_by", ["post_date"])[0]
         page_urls = [update_url_query(url, mode="async", function="get_block",
                      block_id="list_videos_common_videos_list_norm", sort_by=sort_by,
-                     **{"from": f"{page:02d}", "_": None}) for page in range(1, pages + 1)]
-        return scrape_stream(
+                     **{"from": f"{page:02d}", "_": None})
+                     for page in range(start_page, pages + 1)]
+
+        if on_page is None:
+            return scrape_stream(
+                core=self.core,
+                constructor=Video,
+                target_page_urls=page_urls,
+                item_extractor=extractor_html,
+                iterator_config=iterator_config,
+            )
+
+        # Page outcomes can only be observed if Helper yields failures and emits
+        # results in page order, so pin those settings for this reporting mode.
+        if iterator_config is None:
+            reporting_config = make_iterator_config(
+                page_error_mode=ErrorMode.YIELD,
+                order=ResultOrder.ORIGINAL,
+            )
+        else:
+            reporting_config = replace(
+                iterator_config,
+                page_error_mode=ErrorMode.YIELD,
+                order=ResultOrder.ORIGINAL,
+            )
+
+        stream = scrape_stream(
             core=self.core,
             constructor=Video,
             target_page_urls=page_urls,
             item_extractor=extractor_html,
-            iterator_config=iterator_config,
+            iterator_config=reporting_config,
         )
+        return self._stream_with_page_outcomes(
+            stream,
+            start_page=start_page,
+            end_page=pages,
+            on_page=on_page,
+        )
+
+    async def _stream_with_page_outcomes(
+        self,
+        stream,
+        *,
+        start_page: int,
+        end_page: int,
+        on_page: Callable[[int, bool, int, Exception | None], Any],
+    ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        """
+        Forward item results while reporting one outcome per page.
+
+        ``ScrapeResult.page_index`` is positional, so it is offset by
+        ``start_page`` to recover the real page number. A page failure arrives as
+        a page-stage result; successful pages are closed once a later page starts
+        or the stream is exhausted.
+        """
+        item_counts: dict[int, int] = {}
+        page_errors: dict[int, Exception] = {}
+        next_page = start_page
+
+        async def report(page: int) -> None:
+            if page < start_page or page > end_page:
+                return
+            error = page_errors.get(page)
+            try:
+                outcome = on_page(page, error is None, item_counts.get(page, 0), error)
+                if isawaitable(outcome):
+                    await outcome
+            except Exception:
+                logger.exception("Page callback failed for page %s", page)
+
+        async def report_through(page: int) -> None:
+            nonlocal next_page
+            while next_page <= page:
+                await report(next_page)
+                next_page += 1
+
+        async for result in stream:
+            page = start_page + result.page_index
+            if result.stage is ScrapeStage.PAGE:
+                page_errors[page] = result.error
+                await report_through(page)
+                continue
+
+            item_counts[page] = item_counts.get(page, 0) + 1
+            await report_through(page - 1)
+            yield result
+
+        await report_through(end_page)
 
 
 @dataclass(kw_only=True, slots=True)
