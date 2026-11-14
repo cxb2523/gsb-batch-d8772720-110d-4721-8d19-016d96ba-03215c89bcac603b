@@ -1,0 +1,375 @@
+# Insufficient / No proper application for Shizuku
+https://github.com/Tornaco/Thanox
+https://github.com/strangerweather/rootless_ui_mods
+https://github.com/SagerNet/SagerNet
+https://github.com/Young-Lord/hideRecent
+https://github.com/dudu-Dev0/SuperToolBox
+https://github.com/freefeos/freefeos
+https://github.com/MosetiObadiah/IPHUNTER
+https://github.com/sbmatch/powersoundswitch
+https://github.com/Uvneshkumar/MyAOD
+https://github.com/theshoqanebi/simple-adb-wifi
+https://github.com/wayuto/ChatBot
+https://github.com/Mygod/reactmap-android
+https://github.com/pascua28/underclocker
+https://github.com/earnerbaymalay/LibreSwitch
+https://github.com/Ujhhgtg/PandorasBox
+https://github.com/mustakim-init/bokbok
+https://github.com/JANITH-DINUJAYA/zhex-mobile-application
+https://github.com/Linkolnn/-Launcher
+https://github.com/SYSU-Tang/Sysuer
+https://github.com/huhuswei/ankihelper-plus
+https://github.com/flxholle/ForensicEye
+https://github.com/Samuel095383/LauncherChanger
+https://github.com/1andrewprice6-jpg/android-pillar-stabilizer
+https://github.com/dbrodie/give_me_wifi
+https://github.com/NNdroid/Stun
+https://github.com/disclosurez/Lumora # Shizuku appears only in a side Android-Auto auto-installer tool, not the core app.
+https://github.com/misantronic/RAOfflineProxy # Shizuku covers only optional emulator manual patching; the offline proxy core never needs it.
+https://github.com/saappleg/Relay-Home-Launcher # Shizuku covers a single assisted launcher-switch setting; the beta media launcher stands without it.
+https://github.com/crtrrnln/cGallery # No APK or releases and v0.86 in development; Shizuku only optional inbox enforcement.
+https://github.com/tonysmith1sme/BYD_DGLAB_Integration # WIP test integration with no releases APK license and Chinese-only docs; warns against main-driver use.
+https://github.com/ook826092-cloud/naigen-app # Shizuku is passive keepalive/status only (no shell exec by design); image-gen core never needs it.
+https://github.com/diegonmarcos/cloud-u-android # Sprawling infra monorepo where Shizuku is only a planned fallback with no Shizuku-app APK in releases
+https://github.com/deniscerri/ytdlnis # Famous yt-dlp downloader (10k stars, F-Droid) but Shizuku only powers optional self-update APK installs, not the core downloader.
+https://github.com/ImCZFy/Kindle-of-Peiyang # Shizuku only powers one optional MIUI super-island notification extra; campus core works without it.
+https://github.com/StrideB/clicks # Denied in maintainer review
+https://github.com/mayusi/EmuTran # Denied in maintainer review
+https://github.com/SysAdminDoc/LocalAndroidStore # Denied in maintainer review
+https://github.com/Kakathic/Tool-Tree # Denied in maintainer review
+https://github.com/willygailo/BETA-MANAGER # Denied in maintainer review
+https://github.com/meowarex/rl-mobile # Denied in maintainer review
+https://github.com/Dreamucxe/APKStudio # Denied in maintainer review
+https://github.com/FZ1010/FingerTheGame # Denied in maintainer review
+https://github.com/shugi12345/xreal-show-taps # Denied in maintainer review
+https://github.com/alamien060512-alt/MC-Bedrock-Launcher # Denied in maintainer review
+https://github.com/VilinkoStudio/Synap # Denied in maintainer review
+https://github.com/Endiq-jar/TurtleLauncher # Denied in maintainer review
+https://github.com/Endda/BTMicFix # Denied in maintainer review
+https://github.com/IstarVin/skin-script-installer # Denied in maintainer review
+https://github.com/212duo/GRIDLegendsGraphicsTool # Denied in maintainer review
+https://github.com/Q9550xRX570/MaiWoL # Denied in maintainer review
+https://github.com/Sakayorii/tacet-manager # Denied in maintainer review
+https://github.com/MRAKS05/Browser-Limit # Denied in maintainer review
+https://github.com/clinal/cordis-android # Denied in maintainer review
+https://github.com/Zheke32174/understory-browser # Denied in maintainer review
+https://github.com/Kifranei/Halcyon # Denied in maintainer review
+https://github.com/Im-Monee/RiiSync # Denied in maintainer review
+https://github.com/Amethyst666/mlbb-history-analyst # Denied in maintainer review
+https://github.com/DynamycSound/claude-routine-sched # Denied in maintainer review
+https://github.com/xchacha20-poly1305/husi # only used for self-updating
+https://github.com/amamiyakokoro/KokoroBox-Android # only used for self-updating
+https://github.com/markvoronin354/WheelReels # Shizuku used only for input injection; insufficient Shizuku application.
+https://github.com/rossignol6712/ai-phone-bridge # Architecture-reference repo, not a runnable app; Shizuku exists only in a snippet file.
+https://github.com/bindassrkks-cell/Knight-server # Effectively no README (15 bytes) and no app description; Shizuku use cannot be established.
+https://github.com/rhuancheats/OtimizadorFF6 # No README and no app description; Shizuku use undocumented.
+https://github.com/Niko0518/time-bank # No README/docs at all; Shizuku use cannot be established.
+https://github.com/Mikelee8810/RelationshipRadar # Relationship-tracking prototype whose core works via public APIs; Shizuku only provides 'enhanced device access' and there is no license.
+https://github.com/drkvvk2015/vk-s-NeuroAmpDSP # Audio DSP app where Shizuku only gates an optional Pro mode; the core EQ/limiter works without it and there is no license.
+https://github.com/ServerReset/Bloo # Hyundai/Genesis/Kia telematics client whose core works without Shizuku; Shizuku only enables optional silent self-updates.
+https://github.com/ferdausfs/Dogs-of-KAHAF # Accessibility-based NSFW/parental content blocker; Shizuku only self-grants permissions and is not documented for users.
+https://github.com/Halo0sama/ExpressAssistant # Delivery aggregator whose Shizuku UserService only reads the advertising ID for Xiaomi account binding; the core tracking flow works without Shizuku.
+https://github.com/cernoh/quotes # Book-quote widget; Shizuku only powers an optional self-update install while the core app works without it.
+https://github.com/NotBlack777/victus-mobile-app # React/WebView shell for the Victus Cloud commercial portal; the only Shizuku use is silent self-updates, with no user-facing privileged feature.
+https://github.com/mingyu0401/EMOO # Denied in maintainer review
+https://github.com/yunfie-twitter/Palleria # Denied in maintainer review
+https://github.com/renkindevbugs/Renkin # Denied in maintainer review
+https://github.com/zy839971925-zyy/tingxiejian-android # Denied in maintainer review
+https://github.com/phsycologicalFudge/AvarionX-Manager # Denied in maintainer review
+
+# Insufficient documentation
+https://github.com/frap129/Machina
+https://github.com/ecosed/EcosedKit
+https://github.com/EcosedApps/EcosedKit
+https://github.com/libecosed/flutter_ecosed
+https://github.com/zacharee/OverlayManager
+https://github.com/virjarRatel/ratel-core
+https://github.com/Mufanc/NoJump
+https://github.com/fansangg/dex2oat
+https://github.com/ASL-19/paskoocheh-android
+https://github.com/sbmatch/uninstallBlackForUserApps
+https://github.com/Lyxot/HyLi-Connect
+https://github.com/keluokeda/Hs
+https://github.com/Hicores/FunLogCatcher
+https://github.com/ItosEO/OriginPlan
+https://github.com/ZhuRuoLing/ProberAssistant
+https://github.com/Huffmybird/Nh
+https://github.com/Connorxxx/FuckColorApp
+https://github.com/byzp/Genshin-Lyre-midi-player-server
+https://github.com/ItosEO/XSamsung
+https://github.com/printf172/majora-adr
+https://github.com/zmide/HoleConsoleApp
+https://github.com/MagicianGuo/Android-SettingTools
+https://github.com/OlegPV2/MahjongClubBooster
+https://github.com/Lorenzo-Guardabascio/Miohon-AT
+https://github.com/bluesky139/chibiko
+https://github.com/renzhidao/-sess_1760291856_92b0399c
+https://github.com/chankruze/DhupaKathi
+https://github.com/dhiiizt/Myflutter
+https://github.com/javaeryang/NPatch
+https://github.com/wreckage6716/safecleaner_projex
+https://github.com/lza6/AirFileEditor
+https://github.com/COLDESTBOW30654/Automatic-spark-renewal-APP
+https://github.com/GloriousTR/OmniAPK
+https://github.com/xksyu2021/MutiChannel-Alarm
+https://github.com/power690/XiaoAn
+https://github.com/khanh29204/unlock_fps_arena_of_valor
+https://github.com/MagicianGuo/Android-AccessibilityGrant
+https://github.com/ItosEO/VivoTools
+https://github.com/ParadiseZ/autodaily
+https://github.com/nai559/Accessibility-
+https://github.com/anhquan7826/ControllerMapper
+https://github.com/abusaeed-shuvo/File-Manager
+https://github.com/lyr341/ShizukuRefresher
+https://github.com/Rishcoden/Sih
+https://github.com/lumkit/Tweak-Android
+https://github.com/ngoloc2k4/physical_keyboard
+https://github.com/Fansirsqi/sen
+https://github.com/vmoeak/auto-ledger
+https://github.com/Com-kt/ShizukuUesrService
+https://github.com/RyanZhou416/ClipBridge
+https://github.com/xieerfan/DeadHand-
+https://github.com/Shakti-coding/FileVaultPro
+https://github.com/xXYxxdMC-GH/Hoshimager
+https://github.com/ZJDqtjs/Know_You
+https://github.com/hmode22222/ShizukuTerminal
+https://github.com/freude916/autoscroll
+https://github.com/Axel9813/dji-in-vjoi
+https://github.com/Teri1111/fenbihelper
+https://github.com/elkegacoran/iniespgwjir
+https://github.com/wunengweili/workflow
+https://github.com/ZyoungInc/Sunshine-android
+https://github.com/mikepty/QABlackBox
+https://github.com/SelectXn00b/AndroidForClaw
+https://github.com/badnng/Hyper-pick-up-code
+https://github.com/mim1012/TwinMe
+https://github.com/king0929zion/ZionCh
+https://github.com/wrfwdd/Pods-control
+https://github.com/Lyneon/Cytoid-Info-Querier-Android-Compose # Chinese README, no APK/releases; Shizuku only serves a level-import helper.
+https://github.com/dao-genesis/devin-remote # Chinese-only README with no license; Shizuku lives in an addon mobile IDE module.
+https://github.com/duringk/Examate # Chinese-only README with no license for an exam-detection-bypass and auto-answer tool.
+https://github.com/WOLFMARINERUS/GSwitchMoto_v1 # Empty/missing README with no license and no APK/releases.
+https://github.com/ahmetemrew/omniGFX # Turkish-only README with no license and no Releases page for a GFX booster.
+https://github.com/Acceleratorer/WUWA-VN-Android # Vietnamese-only README for a single-game translation patch installer.
+https://github.com/Dinico414/XenonStoreCompose # Missing README with no license and no APK/releases.
+https://github.com/Bhanu7773-dev/Onyx-Dailer # Default Flutter-template README with no docs or download; dialer stub with thin Shizuku evidence.
+https://github.com/tml123-ux/Sesame-AG-2026-fix # No README at all and no download; automation-script fix with zero usable docs.
+https://github.com/Ran-Mewo/NekoXRManager # Missing README and no releases; ARCore helper with no usable docs.
+https://github.com/Daaaus/auto-mode-pesawat # Indonesian-only README with no English docs; auto airplane-mode toggle via Shizuku.
+https://github.com/nrow1313-dev/coverscreen-mirror # Vietnamese-only README with no English docs and no APK/Releases; Z-Flip cover-screen tool.
+https://github.com/odorizzioficial/FechaTudoPlus # Portuguese-only README with no APK/Releases; background task killer duplicating listed shappky/KillMyApps.
+https://github.com/A113NWu/Humanaize2-Project # No README/docs and no APK/Releases; Shizuku shell executor unverifiable as an app.
+https://github.com/LuRen-Dmzm/LuRenDmzm-ToolBox # Chinese-only multi-toolbox (media/AI-audio/Python/task-manager); Shizuku per-feature, many English equivalents.
+https://github.com/HaoZai000/NexioSchedule # Chinese-only class-schedule app; Shizuku only powers an island-style notification extra.
+https://github.com/ModPVZRH/PVZRH.Android.Launcher # Game mod-manager/launcher with no README/docs and no APK/Releases.
+https://github.com/Sei-Sou-dev/SleepTimerBT # Music sleep timer with Shizuku Bluetooth-off path but no README/docs and no APK/Releases.
+https://github.com/Smart-Paocai/violet_Box # Chinese-only root-heavy toolbox; Shizuku only covers the shake-ad sensor block.
+https://github.com/AutoAccountingOrg/AutoAccounting # Chinese-only README; Shizuku is only one optional mode of an Xposed-first auto-bookkeeping module.
+https://github.com/andersonlucasg3/dilink-auto-android # Repository ships no README or docs and no download links despite Shizuku integration in code.
+https://github.com/Maicy0609/OpenOhohoho # Chinese-only README for a meme-text rewriter where Shizuku only auto-enables the accessibility service.
+https://github.com/kabzon93region/Quest-Task-Manager # Russian-only README with no English docs, failing the English-documentation requirement despite releases.
+https://github.com/theredstonee/redmonitor # German-only README with no English docs; Shizuku is optional (PD wattage) and no releases are published.
+https://github.com/qintaiyang/save_book_mobile # Chinese-only README for a Qidian bookshelf client with no published APK (repo states no binaries committed).
+https://github.com/KennyYang0726/White-Magic # Chinese-only README for an Arena of Valor (TW) skin/voice/lobby mod with no English docs.
+https://github.com/whmdg20090421/encryption # No README, no license and no download links; undocumented Shizuku file-operator code only.
+https://github.com/laoxinH/crosscore-mod-manager # Chinese-only README (latin 0.38, cjk 0.25) with no English version.
+https://github.com/optimus0701/Fix-Noti-Xiaomi # Vietnamese-only README, no license and no download artifacts.
+https://github.com/yc-2018/i-find # Chinese-only README (latin 0.48, cjk 0.22) and no license.
+https://github.com/Sight-wcg/KeyboardSwitcher # Empty readme_text in evidence; primary ReadMe.md is Chinese with no verifiable English docs.
+https://github.com/ZemerTeam/zemer-app # 407-byte README with no download; Shizuku only for self-update installer.
+https://github.com/angellsla/FFmepgTools # Chinese-only README (latin 0.48, cjk 0.16), no license and no releases page.
+https://github.com/3975380064-maker/plugin-framework # Chinese-only plugin-host README with no English docs.
+https://github.com/CHAOSLAO/SYSU_CourseSelection # No README and no download; Shizuku only in bundled Related_projects subfolder.
+https://github.com/The-boond/ClashNL # Root README is a 576-byte Chinese stub with no APK releases or English docs; Shizuku only for Play package query.
+https://github.com/wilson360-labs/CodeHub # Portfolio website repo in Spanish with no app download; Shizuku code lives in a subfolder only.
+https://github.com/adardev/whisper-parakeet-ahk # Empty README with no releases or downloads; cannot verify a usable Android app despite Shizuku code.
+https://github.com/MalikHw/com.malikhw.hosadvtexts # Genuine Shizuku use (requestPermission, pingBinder) in single MainActivity.kt; GPL-3.0 LICENSE; one release with APK but zero documentation.
+https://github.com/newyusir/chrono-s_camera_android # One-line README with no English documentation for game-camera helper.
+https://github.com/c0a22132/com.system.reschange # No README or documentation at all; Japanese-only UI strings for resolution tool.
+https://github.com/Build-with-Akshit/WizTree-for-Android # Image-only README with no English documentation; prototype-grade Flutter build.
+https://github.com/firerpa/app # One-line README, no license and no usable docs; not verifiable as a functional app.
+https://github.com/Smart-Home-User/XREAL-Beam-Pro-nebulaOS-Toolkit # Denied in maintainer review
+https://github.com/Ujwal223/Halter # Denied in maintainer review
+https://github.com/godmoon/AndroidResAdapter # Denied in maintainer review
+https://github.com/leehe-byte/scpAndroid # No README or documentation file exists anywhere in the repo; only a one-line Chinese GitHub description and a release APK.
+https://github.com/othma433-ai/BOBO # No README, no LICENSE and no download; insufficient documentation.
+https://github.com/shawtung/MobileClicker # No README, no LICENSE and no download; insufficient documentation.
+https://github.com/dgomon/SystemInsight # No README and no download; insufficient documentation.
+https://github.com/PYLinTech/cn.pylin.xycjd # README contains only contact info; insufficient documentation and no download.
+https://github.com/wilfredkimura/tiktok_sticker_extracter # No README, no LICENSE and no download; insufficient documentation.
+https://github.com/Aws12505/Aws_OS # Default Flutter template README, no license and no download/release.
+https://github.com/Yowkylito/BubuProtect # No README, no license and no release/download; undocumented personal project.
+https://github.com/Jay-Victor/Pient # No README, no license and no download/release.
+https://github.com/dan1t0/OB_full # No README, no license and no release/download.
+https://github.com/dogpoopy/toolkit # No README, no license and no release/download.
+https://github.com/coslatte/balatromp-local-port # No README, license or download for a Balatro mod port.
+https://github.com/laststudio/eauxiliary # No README and no download link/release.
+https://github.com/Sevilze/MiRearPlayback # No README, license or download.
+https://github.com/abricoshka/GlassFiles # No README, no license and no download; only an internal roadmap doc
+https://github.com/c0dev0id/androlyze # 32-byte README, no license and no download
+https://github.com/liteaworks/mountain # Default Flutter-template README, no license and no download
+https://github.com/WoShiYiGeManHuaJia/EarbudsPopup # README is a one-line title with no documentation; Redmi/Xiaomi earbud popup animation app described only in Chinese.
+https://github.com/theyusa/ShizukuDeviceList # No README, description or docs, only a Turkish AI app-generation prompt; the app's purpose and Shizuku use cannot be established.
+https://github.com/Sittirahmadia/MinecraftAntiCheat-Android # Zero-star Minecraft cheat scanner with a very short README and no license; too thin to evaluate.
+
+# Application without English translation and readme/documentation
+
+https://github.com/lcz-ok/Android # Chinese-only 98-char README, no license and no APK/releases.
+https://github.com/vexeno/AutoStopTimer # Chinese-only README with no license; force-stop timer overlaps listed sleep-timer.
+https://github.com/Doplars/DouyinCoinAssistant # Chinese-only README with no license and no APK/releases for a coin-farming bot.
+https://github.com/ChaYeWuu/HyperDay # Chinese-only README with no license; Shizuku only powers an optional island reminder.
+https://github.com/NoNameLeGo/nomedia-scan # Chinese-only beta README with no license and no APK/releases.
+https://github.com/FuYue-WanJie/quicklook # Chinese-only README for a file browser duplicating listed Shizuku file managers.
+https://github.com/ybhgl/Reminder # Chinese-only fork of lentikr/Reminder with no APK/releases; Shizuku only for notification bypass.
+https://github.com/WuDi-ZhanShen/Android-ActivityController # 109-byte Chinese-only README, no license and no download link.
+https://github.com/bszapp/android-wifi-pojie # Chinese-only README with no English docs; WiFi password brute-force tool.
+https://github.com/Rcaaal/Bilimerge # Chinese-only README with no English docs; overlaps listed BiliDownOut and hlbmerge_flutter.
+https://github.com/weinaoa/cebianlan_sidebar # Chinese-only README for a HyperOS-tablet-only sidebar overlapping listed Smart Edge.
+https://github.com/fullpie/Gakumas_apptest # Chinese-only README and no releases page; game-patch tool with unclear Shizuku role.
+https://github.com/nekobyran/lanzouplus # Chinese-only README; Lanzou cloud client whose Shizuku shell role is peripheral and undocumented.
+https://github.com/lladlam/MeloX-Android # Chinese-only README; music client where Shizuku is only an optional HyperOS compat path.
+https://github.com/Merrrrrrrrr/NcmDump-for-Android # Chinese-only README with no English docs; NCM decryptor using Shizuku for Android/data access.
+https://github.com/Escosis/ShizuBridge # Chinese-only README with no license; cross-user file bridge with AI-written code and no English docs.
+https://github.com/NeitherTourRest/SillyBilibili # Chinese-only README despite in-app English; overlaps listed BiliDownOut and hlbmerge_flutter.
+https://github.com/TitoTFP/WuwaIDMobile # Indonesian-only README with no English docs; Wuthering Waves patch launcher.
+https://github.com/fool593/ADBToolboxGlass # Chinese-only README and no releases page; ADB toolbox with one-click-root features.
+https://github.com/jfrmorales/crux # Spanish-only README with no English docs; Kodi remote whose Shizuku role is minor.
+https://github.com/mdhyy008/YinYangGate # Chinese-only README with no license or download; freezer overlapping listed Hail/FreezeYou.
+https://github.com/xrzcc/android-bg-keeper-flutter # Chinese-only README with no English docs.
+https://github.com/ppkkgzs/ceshi # Chinese-only README with no English docs.
+https://github.com/TensorHub-ORG/Coomi # Chinese-only README with no English docs.
+https://github.com/juren233/HyperLyrics-Enhanced # Chinese-only README; Shizuku use is optional.
+https://github.com/Yokin-XY/Kite # Chinese-only README with no English docs.
+https://github.com/Alisuuu/Mtzeditor # Portuguese-only README with no app download and no license.
+https://github.com/Yukstarlight/NekoType # Chinese-only README and no release download.
+https://github.com/odorizzioficial/otimizadordroid # Portuguese-only README with no app download link.
+https://github.com/minhhau361/test-volte # Vietnamese-only short README for a self-described side project; no download.
+https://github.com/debug-deng/TriggerFreeze # Chinese-only README; build-from-source only with no releases.
+https://github.com/ogatomo21/developerOptions # Japanese-only README; release APKs only via tags, none confirmed.
+https://github.com/zangcq/HeatRadar # Chinese-only README and no license file.
+https://github.com/xswl369/AndroidCodexAndroidAgentAndroidChat # Chinese-only README with no license; generic AI chat client with many English equivalents.
+https://github.com/aoooa101/aoooa-adb-android # Chinese-only ADB console docs; similar wireless ADB and terminal tools already listed.
+https://github.com/xiangsu1145/Auto-aim_android-yolo # Chinese-only FPS AI aimbot docs; game cheat with no English documentation.
+https://github.com/bufanchen121101/AxManagerD # Chinese-only Device Owner manager via Dhizuku; similar OwnDroid and Harbor tools already listed.
+https://github.com/PhuocTran95/DexAuto # Vietnamese-only Samsung DeX layout tool with no English docs.
+https://github.com/SiberiaApp/Maling-Island # Chinese-only pickup-code island tool with Quark-only download and no GitHub releases.
+https://github.com/czeyu31/RecentsHider # Chinese-only recents hider with ADB and manager extras; no English docs.
+https://github.com/wenrou6/setellan-for-shop # Chinese-only Unity Bundle shop tool with build-only APK and no releases.
+https://github.com/something-sth/Sth-Android-KeyStrokes # Chinese-primary key visualizer in development with no APK or releases.
+https://github.com/kernel2023/AndroidGetWiFiPassword # Chinese-only README; saved-WiFi viewer duplicates listed wifi-password-manager/WiFiList.
+https://github.com/wanan522z/Global-EQ # Chinese-only README with no APK/Releases; Shizuku only one of three EQ modes.
+https://github.com/zyf2007/HanakoAI # Chinese-only floating AI homework-solver; Shizuku only an optional screencap backend.
+https://github.com/lacunes/hyperos3-auto-refresh-rate # Chinese-only HyperOS refresh-rate switcher; listed Adaptive-Hz already covers the use-case in English.
+https://github.com/hidenobunagai/linkbridge # Japanese-only README (Rakuten-Link call redirector); no English docs despite MIT license.
+https://github.com/linlinya520/ShareKu # Chinese-only LAN file-share/WebDAV tool; Shizuku only unlocks Android/data browsing, equivalents exist.
+https://github.com/hiroki147/ShizukuBatteryChecker # Japanese-only battery-health checker; English battery monitors (BatStats, Battery-Monitor) already listed.
+https://github.com/UnknownObject777/droidvoice # Chinese-only voice automation agent derived from OpenDroid; Shizuku via inherited executor.
+https://github.com/yitong-ovo/ImeFloatingSwitcher # Chinese-only floating IME-switch button via Shizuku; build-from-source with no Releases.
+https://github.com/Bailan766/APKAgent # Chinese-only README with no English docs and no published releases.
+https://github.com/weixiansen574/HybridFileXfer # Chinese-only README with no English docs and no published download.
+https://github.com/OneDongua/SmartBrightness # Chinese-only README for an ambient-light brightness toggler; no English docs and no releases published.
+https://github.com/wysfjy/TimezoneAndLanguageSwitcher # Chinese-only README; per-app locale task already covered by English alternatives in this slice.
+https://github.com/Ynkcc/VirtualDisplay # Chinese-only README with no published download; author notes bugs and passive maintenance.
+https://github.com/abc1812645224-alt/pixel-toolbox # Chinese-only README with no English docs and no releases published.
+https://github.com/ChenAnZong/AndroidRPA # Chinese-only README (latin 0.34, cjk 0.33) with no English docs; fails English requirement.
+https://github.com/wsdx233/ApkMesh # Chinese-only README (latin 0.36, cjk 0.37) with no English docs.
+https://github.com/Astro-y/backcalling # Chinese-only README (latin 0.43, cjk 0.32), no license and no releases page.
+https://github.com/HotKids/EasyShare # Chinese-only README (latin 0.44, cjk 0.32) with no English docs; CatShare-based fork.
+https://github.com/mumingluan/lysk-ps-connector # Chinese-only README (latin 0.35, cjk 0.38); private-server game patching tool.
+https://github.com/WeiyePlayer/no-shakingAD # Chinese-only README (latin 0.25, cjk 0.33) and no license.
+https://github.com/GeekTimy/RedTriggerFix # Chinese-only README (latin 0.41, cjk 0.31); English equivalent RedTrigger already listed.
+https://github.com/android-tool-suite/app # Chinese-heavy host shell with no releases; requires separate plugin build and Studio install, no usable standalone download.
+https://github.com/hatchbackkorea-cmyk/JangsuBatteryPilot_v0.6 # Korean-only README (latin 0.17), no license and no releases page.
+https://github.com/xswl369/AndroidCodex # Genuine Shizuku code (ShizukuAutoStart, screencap helper, bundled shizuku-api-12.2.0.aar) but fails English-docs requirement; latin 0.21/cjk 0.51; no LICENSE; 28 releases with APKs.
+https://github.com/leandrosavn/haval-dock # Genuine Shizuku code (requestPermission, pm disable-user via ShizukuShell, vehicle HVAC service) but fails English requirement; MIT LICENSE; no releases.
+https://github.com/maynut02/astral-party-auto-patcher # Genuine Shizuku UserService use (Unity catalog read, patch install); MIT LICENSE; APK releases exist; fails English requirement.
+https://github.com/Ynkcc/AccountSwitcher # Genuine Shizuku mode code (ModeManager/QQControlManager) but fails English-docs requirement; 3 releases with APK; no LICENSE.
+https://github.com/evecus/FileLeader # Genuine Shizuku use (PermissionManager pingBinder, pm clear ADB mode) but fails English requirement; no LICENSE; no releases page.
+https://github.com/journey-ad/GhostLaunch # Chinese-only README with no English docs.
+https://github.com/lsfdc233/lsfTB # Chinese-only README with no English docs; Shizuku use is connection-status display only.
+https://github.com/jizizr/signaldock # Chinese-only README with no English docs.
+https://github.com/jinyinghua/AirMouse # Chinese-only README with no English docs.
+https://github.com/Ackites/Nrfr # Chinese-only README with no English docs.
+https://github.com/usertest001/startfrp # Chinese-only README with no English docs.
+https://github.com/oopnv70-lab/ghostlock-aak-apk # Chinese-only docs with no English page; unverified kernel-exploit PoC.
+https://github.com/Yukin0a/KireiBox # Chinese-only README with no English docs; English requirement unmet.
+https://github.com/Tamako21/FiveGCatRat # Japanese-only README with no English docs; no download.
+https://github.com/ruizhishenri-commits/KamiGAL # Chinese-only README with no English docs; no download.
+https://github.com/loongj-code/ZenTasker # Chinese-only README with no English docs despite genuine Shizuku use.
+https://github.com/EnderAvaritia/AzurLaneRenderer # Chinese-primary README with no English version; single-commit repo with rolling debug-APK release
+https://github.com/HuangZhuoRui/CastPigeon # Chinese-only README and architecture docs with no English page
+https://github.com/xiaohj233/ghostlock-x200-app # Fully Chinese README and docs with no English page
+https://github.com/yyzx2016lht/TapTapAccounting # Chinese-only docs and no license; Shizuku only aids overlay keepalive in an accounting app
+https://github.com/binhmod/AoVSkins # Vietnamese-only README with no English docs
+https://github.com/16rab/DeXKeyBoard # Chinese-only README and docs; README license link points to a missing LICENSE file
+https://github.com/laridzhang/OpenBeam # Chinese-only README for a self-described early-stage project
+https://github.com/ly7753/ZeroLink # 439-byte Chinese-only README with no English docs or usable documentation
+https://github.com/Jawiiki/UriRoute # Chinese-only README; author notes the project was fully generated by Claude Code
+https://github.com/PianoEthan/Orbit # Wear OS Bilibili client with Chinese-only README and docs; no English page despite GPL-3.0 license and 16 releases with APKs.
+https://github.com/marchunfen/sky-auto # Sky-game Operit ToolPkg + YOLO icon detector with Chinese-only docs and a custom non-commercial license; no English page.
+https://github.com/qinzuoyong/floating-data # Battery-temperature float overlay with Chinese-only README (latin 0.22/cjk 0.36) and no license file; no English page.
+https://github.com/rlin1538/Cfm_Joy_Manager # CFM game key-code tool with Chinese-only README and no license file; no English page despite releases with APKs.
+https://github.com/naijun0403/DunUnlocker # Korean-only README for a DUN APN unlocker; no English docs and no releases page despite GPL-3.0 license.
+https://github.com/deku772/Rbot # AstrBot one-click deploy shell with Chinese-primary README/docs (latin 0.33/cjk 0.23) and only incidental Shizuku strings; no English page.
+https://github.com/ferelking242/UsbDiskManager # USB OTG disk manager with French-only README and no license file; no English page despite real Shizuku command runner.
+https://github.com/yansheng1014/mihomo-watch-proxy # Chinese-only README and docs for Galaxy Watch proxy tool, no English page.
+https://github.com/WuDi-ZhanShen/Android-Gyroscope-MC # Chinese-only README for gyroscope-to-gamepad tool, no English page.
+https://github.com/MartinKayJr/AutoCheckinPlugin # Chinese-only README for WeChat-Work auto-checkin tool, no English page.
+https://github.com/aDovbiy/Fold7_ONE_UI_8.5_DPI_FIX # Russian-only README for Fold 7 DPI fix, no English page.
+https://github.com/li-junlei/scrollsnap # Chinese-only README and docs for long-screenshot tool, no English page.
+https://github.com/luo139-cn/kalipassthrough # Chinese-only README with no English docs.
+https://github.com/NanoTurtle1145/root-my-s24 # Chinese-only README and docs with no English version.
+https://github.com/liuyi-6699/AutoTask # Chinese-only README with no English docs; release ships no APK.
+https://github.com/AlphaBoom/fps_switcher # Chinese-only 176-byte README with no license and no releases/download.
+https://github.com/trikiersteam/haval # Portuguese-only docs for a bootstrap-stage Haval/GWM head-unit overlay prototype (authors call it a study copy/skeleton).
+https://github.com/yiguihai11/SmartProxy # Chinese-only README and docs with no English version (proxy/VPN app with Shizuku tethering).
+https://github.com/aaa1115910/GlyphRecorder # Chinese-only README with no English version (Ingress Glyph recognizer with Shizuku screencap mode).
+https://github.com/gao-gao-zai/SmartFlight # Chinese-only README and docs with no English version (rule-driven connectivity automation).
+https://github.com/kirenath/MoFont # Denied in maintainer review
+https://github.com/Miafetta/hikari-android # Denied in maintainer review
+https://github.com/omeryol/AkisGesture # Denied in maintainer review
+https://github.com/scroodge/VoltFlow-Nav # Denied in maintainer review
+https://github.com/dukangalex/AngelaBox # README is Chinese-only with no English documentation, and it re-wraps the already-listed sing-box core.
+https://github.com/755489724-lgtm/GazeScroll # README is Chinese-only with no English documentation, despite an English app.
+https://github.com/TG-Twilight/Any.ADB # README and all documentation are Chinese-only with no English translation.
+https://github.com/ryuya0124/sim-pilot # Japanese-only README and no English documentation or translation; Shizuku UserService SIM switching is real but the project is non-English only.
+https://github.com/KarinJS/KarinApp # README and docs are Chinese-only (cjk 0.43); no English translation, failing the English-documentation requirement.
+https://github.com/MeFax/StretchX # README is Turkish-only with no English docs; device-locked S25 Ultra tool with no license file.
+https://github.com/houfukude/UpdateJunkie # Chinese-only README/documentation; no English docs despite an English-capable UI.
+https://github.com/spideytznn/GlassProjection # Chinese-only README and docs (latin 0.21 / cjk 0.51) with no English page; fails the English-documentation requirement.
+https://github.com/powercess/mbrain # Chinese-only README and DESIGN docs; no English landing page or documentation.
+https://github.com/guanhan01/Yutu-Toolbox # Chinese-only README and DESIGN docs; no English documentation.
+https://github.com/qi-1021/AALC-Meow # Chinese-only README for a MaaFramework-based Limbus Company auto-farm tool; listed MAA-Meow covers the same approach.
+https://github.com/84593320z/gkd- # Chinese-only docs and UI for a MIUIX-themed GKD-X/GKD-Plus merge; no English README or docs.
+https://github.com/qi-1021/M9A-Meow # Chinese-only README and UI for a Reverse: 1999 daily-task automation; no English documentation.
+https://github.com/qi-1021/MAAend-Meow # Chinese-only README and UI for an Arknights: Endfield automation; no English documentation.
+https://github.com/WLudy1012/MSLX_APP-Android # Chinese-only README and docs for a Minecraft server console whose Shizuku use is an optional privileged Java subprocess.
+https://github.com/aleksandreev2/readerlb # Russian-only README and documentation; fails the English documentation requirement.
+https://github.com/xiaote-XT/xtsafe # Chinese-only README and docs for a generic security suite; only partial English app strings.
+https://github.com/Wayne1145/yachiyo-claw # Chinese-primary README and UI for an AI chat agent; no proper English documentation.
+https://github.com/shiyun-is-hub/Di_Ting # Chinese-only README and UI screen recorder; equivalent recorders are already listed with English docs.
+https://github.com/ZForest000/gpstest # Chinese-only README and UI GNSS debug tool; Shizuku only powers optional diagnostics.
+https://github.com/leandrosavn/haval-radio # Portuguese-only README and UI for a Haval/GWM head-unit FM radio app; no English docs.
+https://github.com/yangyixuan790/ShizukuTerminal # Chinese-only README and UI terminal; simple functionality already covered by the listed aShell and Haven terminals.
+https://github.com/winter-bit-cry/YSClaude # Chinese-only README, docs and UI; generic AI assistant with many English equivalents.
+https://github.com/maicongoe/AA-Cluster # Portuguese-only README and UI for a Haval/GWM head-unit Android Auto patch using Frida and bind mounts; no English docs.
+https://github.com/cnwhcmc/AppUsageWatch-v1.4.1-v1.0.0 # Chinese-only README and UI; self-declared AI-written generic app usage and file event monitor.
+https://github.com/AutoPhone-Org/call-forward-scheduler # Chinese-only README, wiki and UI for a shift-schedule call-forwarding automation; no English documentation.
+https://github.com/y-hattori/cover_display_rotator # Japanese-only README and docs for a Galaxy Z Flip 5 cover-display rotation controller; no English documentation.
+https://github.com/t12lve/Douzeninstaller # French-only README and UI for a batch app uninstaller; no English docs and Canta/AppControlX already listed.
+https://github.com/Qqv0V6ge/FolderSpan # Chinese-only 1.0 preview README with no releases or APK for a Kotlin Multiplatform project; no English documentation.
+https://github.com/hohofught/gf2-krpatch # Korean-only README and UI for a Girls' Frontline 2 CN translation-patch installer; no English documentation.
+https://github.com/FDzaki-dev/LagFix # Indonesian-only README and UI for a scheduled fstrim utility; no English documentation.
+https://github.com/27trongninh-cole/lobby-apk # Vietnamese-only README and UI for a Lien Quan music/video mod installer; no English documentation.
+https://github.com/sqdqzy/NetDoctor # Chinese-only README and UI for an opencode-generated network diagnostic/repair tool; no English documentation.
+https://github.com/xinxiangjueming/PowerMeter # Chinese-only README and UI for a power meter; no English docs and battery telemetry apps are already listed.
+https://github.com/ly5201314gjx/RatioFit # Chinese-only README and UI for an 8.4:9 screen adaptation layer; no English documentation.
+https://github.com/knowlily/sentinel52 # Chinese-only README and UI for a package-blocklist silent uninstaller; no English docs and uninstaller alternatives exist.
+https://github.com/ling552/TGmove # Chinese-only README/UI for a Telegram cache browser that moves media out of Android/data via Shizuku or root; no English documentation.
+https://github.com/TwilightRainDev/TwilightRainTimeTrack # Chinese-only README/UI for a screen-time heatmap tracker; no English documentation.
+https://github.com/suifonouyang-sudo/VirtualCast # Chinese-only README/UI for an on-device screen casting and touch-injection tool; no English documentation and display tools are already listed.
+https://github.com/wanfeng090525/Xiaomi-BiaoPan # Chinese-only README/UI and mostly root-based Xiaomi watch-face ID and Token extraction tool; no English documentation.
+https://github.com/Fernan20881208/Zaid-Density-Reset # Spanish-only README/UI for a Free Fire density-reset tool; no English documentation.
+https://github.com/whzxiaozhi/ETS-Answer-Cracker # Chinese-only README/UI for an ETS exam-answer extractor using root or Shizuku; no English documentation.
+https://github.com/Faraw4y/joycon-merge # Indonesian-only README for a root/Shizuku Joy-Con merge and remap tool; no English documentation.
+https://github.com/forjadaia/Shizuku-Shell # Portuguese-only README/UI for a simple Shizuku shell-command runner; no English documentation and ADB Captain already covers shell toolkits.

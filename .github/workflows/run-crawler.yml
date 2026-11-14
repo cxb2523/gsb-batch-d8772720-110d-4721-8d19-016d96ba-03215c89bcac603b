@@ -1,0 +1,92 @@
+name: Run scanner
+
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-workflow]
+  schedule:
+    - cron: '0 17 * * *'
+
+permissions:
+  contents: write
+  actions: write
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    env:
+      cache-key: crawler-cache-new
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: timschneeb/app-crawler
+
+    - uses: actions/checkout@v7
+      with:
+        repository: timschneeb/awesome-shizuku
+        path: './list'
+    
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Restore cache
+      id: cache-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: cache/
+        key: ${{ env.cache-key }}
+    
+    - name: Run crawler
+      env: 
+        GITHUB_AUTH: ${{ secrets.GH_PAT }}
+      run: |
+        python main.py ./list
+        cat SUMMARY.md >> $GITHUB_STEP_SUMMARY
+        # cat SUMMARY_RANKED.md >> $GITHUB_STEP_SUMMARY
+
+    - name: Delete previous cache
+      if: ${{ steps.cache-restore.outputs.cache-hit }}
+      continue-on-error: true
+      run: |
+          gh extension install actions/gh-actions-cache
+          gh actions-cache delete "${{ env.cache-key }}" --confirm
+      env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Save cache
+      uses: actions/cache/save@v6
+      with:
+        path: cache/
+        key: ${{ env.cache-key }}
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: cache-pkl
+        path: cache/*.pkl
+
+    - name: Publish summary changes
+      id: publish
+      uses: stefanzweifel/git-auto-commit-action@v7
+      with:
+        commit_message: Update SUMMARY*.md
+        file_pattern: ./SUMMARY*.md
+        commit_author: "Tim Schneeberger <38386967+timschneeb@users.noreply.github.com>"
+
+    - name: Cancel run if publish failed
+      if: ${{ failure() && steps.publish.outcome == 'failure' }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh api --method POST "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel" || true
+        sleep 30
+
