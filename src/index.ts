@@ -2,6 +2,7 @@
 export { clone, type CloneOptions, type CloneResult } from './pipeline/clone.js';
 export { cloneAndVerify, type RunOptions } from './pipeline/run.js';
 export { readManifest, readReport } from './pipeline/manifest.js';
+export { buildLedger, describeCrawl, type LedgerInput } from './pipeline/ledger.js';
 export { verify, type VerifyOptions } from './verify/verify.js';
 export { createServer } from './server/server.js';
 export { setupAgents } from './setup/setup.js';

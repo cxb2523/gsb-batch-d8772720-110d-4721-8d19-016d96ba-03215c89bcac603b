@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Crawl ledger: `--pages` crawls now record, per link, why it was followed or
+  skipped (`enqueued`, `duplicate`, `cross-origin`, `outside-scope`,
+  `skipped-extension`, `robots-disallowed`, `not-a-page`) and, per page, the
+  final URL, route, status (`ok`, `failed` with a reason, or `pending` when the
+  `--pages` limit was hit) and whether it was new or carried over. Written to
+  `dittu.json` under `crawl`, and updated after every page so an interrupted run
+  is still diagnosable.
+- Resume: re-running `dittu clone` with the same URL and output folder reuses
+  pages already captured in `<out>/capture/` instead of fetching them again,
+  retries failed and pending pages, and keeps their routes. `runs` counts the
+  attempts. Use `--pages` larger than the previous run to continue a crawl.
+- Pages that return HTTP 4xx/5xx are recorded as failed instead of being
+  exported as clones of the error page. Nothing changes for the first page,
+  which still fails the whole clone.
+
 ## 0.3.0 (2026-10-29)
 
 - `--pages` crawls stay inside the start URL's folder (like `wget --no-parent`): cloning `/au/` only follows links under `/au/`. Starting from `/` still crawls the whole site.

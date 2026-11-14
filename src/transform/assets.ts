@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { APIRequestContext } from 'playwright';
 import pLimit from 'p-limit';
@@ -65,6 +65,19 @@ export class AssetStore {
   /** Public path for an already-ensured URL, or undefined if it stays remote. */
   get(url: string): string | undefined {
     return this.map.get(url) ?? undefined;
+  }
+
+  /** Trust local files an earlier run downloaded, so a resumed clone does not fetch them again. */
+  seed(entries: Record<string, string>) {
+    for (const [url, path] of Object.entries(entries)) {
+      // Only when the file is still there; otherwise it is downloaded again.
+      if (!this.map.has(url) && existsSync(join(this.outDir, path.replace(/^\/+/, '')))) this.map.set(url, path);
+    }
+  }
+
+  /** Remote URL → public path for everything that is on disk (written to the page cache after a run). */
+  downloaded(): Record<string, string> {
+    return Object.fromEntries([...this.map].filter((e): e is [string, string] => e[1] !== null));
   }
 
   ensure(url: string, kind: AssetKind, referer?: string): Promise<string | null> {

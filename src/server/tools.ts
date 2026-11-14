@@ -82,6 +82,7 @@ export async function cloneTool(input: z.infer<typeof cloneInput>) {
     outDir,
     outputs: clone.outputs,
     pages: clone.manifest.pages,
+    crawl: clone.manifest.crawl?.summary,
     ...scoreTable(report),
     warnings: clone.warnings,
     failedAssets: clone.failedAssets.length,

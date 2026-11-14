@@ -28,15 +28,19 @@ export async function newContext(browser: Browser, viewport: Viewport, opts: { r
   return context;
 }
 
-export async function load(page: Page, url: string, waitMs: number) {
+/** Load a page; returns the main document's HTTP status (null when it never arrived). */
+export async function load(page: Page, url: string, waitMs: number): Promise<number | null> {
+  let status: number | null = null;
   try {
-    await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+    const res = await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+    status = res?.status() ?? null;
   } catch (err) {
     // Some sites never fire `load` (long-polling, stuck trackers).
     if (!page.url() || page.url() === 'about:blank') throw err;
   }
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
   await sleep(waitMs);
+  return status;
 }
 
 /** Scroll top → bottom → top so lazy content and scroll-triggered reveals all fire. */

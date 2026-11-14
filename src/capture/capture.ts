@@ -27,7 +27,10 @@ export async function capturePage(context: BrowserContext, url: string, opts: Ca
         mobile = null;
       }
     }
-    await load(page, url, opts.waitMs);
+    // A 4xx/5xx document is not the page: fail the capture so the crawl can
+    // record it (and continue with the rest) instead of exporting an error page.
+    const status = await load(page, url, opts.waitMs);
+    if (status !== null && status >= 400) throw new Error(`HTTP ${status} for ${url}`);
     await autoScroll(page);
     await settle(page);
     const links = await page.evaluate(() =>

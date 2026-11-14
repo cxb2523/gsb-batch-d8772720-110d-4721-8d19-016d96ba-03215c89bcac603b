@@ -29,7 +29,10 @@ framework question). `-y`/`--yes`, a non-interactive shell, or `CI=true`
 skip all questions and use flags + defaults. Ctrl+C cancels before anything is written.
 
 Re-cloning into an existing folder replaces the previous results
-(generated projects keep `node_modules`).
+(generated projects keep `node_modules`). With the same URL and capture
+settings it first resumes: pages captured earlier are reused without being
+fetched again, and pages that failed or did not fit under `--pages` are retried.
+See [the crawl ledger](cli.md#crawl-ledger) below.
 
 ## `clone [url]`
 
@@ -52,6 +55,26 @@ Capture, transform, export, then verify. `dittu <url>` is the same command.
 | `--no-format`                    |                    | skip prettier                                                                     |
 | `--no-verify`                    |                    | skip scoring                                                                      |
 | `-y, --yes`                      |                    | no questions: flags and defaults only                                             |
+
+## Crawl ledger
+
+`--pages` more than 1 crawls breadth-first from the start URL, staying on the
+same origin and inside the start URL's folder. `dittu.json` records the outcome
+of that crawl so every page (or missing page) can be explained:
+
+- `crawl.links` — one entry per inspected link: the normalized URL, the page it
+  was found on (`foundOn`), and an `outcome`: `enqueued`, `duplicate`,
+  `cross-origin`, `outside-scope`, `skipped-extension` (PDFs, images, …),
+  `robots-disallowed`, or `not-a-page` (mailto:, javascript:, unparsable).
+- `crawl.pages` — one entry per page: final URL after redirects, the `--pages`
+  `route` (null until captured), and a `status`: `ok`, `failed` (with the
+  capture error in `reason`), or `pending` (still queued when the limit was hit).
+  `round` is `new` for this run and `carried` for a capture reused from an earlier one.
+- `crawl.summary` — counts of each link outcome and page status.
+
+A page that fails to load after at least one page succeeded is skipped and
+recorded as `failed`; if the first page fails, the clone fails. Captures live in
+`<out>/capture/`, which is what makes a folder resumable.
 
 ## `verify <dir>`
 
@@ -86,6 +109,7 @@ dittu-out/<host>/
   astro/        Astro project
   assets/       images, fonts, per-page CSS, dittu-motion.js
   reference/    screenshots of the original
+  capture/      page snapshots, reused when the same folder is cloned again
   report/       clone screenshots, *.diff.png, report.json, build logs
-  dittu.json    manifest, warnings, failed assets
+  dittu.json    manifest, crawl ledger, warnings, failed assets
 ```

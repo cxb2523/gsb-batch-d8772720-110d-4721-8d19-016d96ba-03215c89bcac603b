@@ -1,10 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { launch, newContext } from '../capture/browser.js';
+import { PageCache, type CacheEntry, type CaptureSettings } from '../capture/cache.js';
 import { capturePage } from '../capture/capture.js';
 import { CrawlQueue, crawlScope, loadRobots } from '../capture/crawl.js';
 import { NetworkRecorder } from '../capture/network.js';
-import type { Framework, Manifest, Styling } from '../domain/report.js';
+import type { CrawlPageRecord, CrawlRound, Framework, Manifest, Styling } from '../domain/report.js';
 import { routeScope, type PageModel, type SiteModel } from '../domain/site.js';
 import type { CaptureResult, MotionItem, ResponsiveItem, Viewport } from '../domain/snapshot.js';
 import { exportAstro } from '../export/astro.js';
@@ -21,6 +22,7 @@ import { hash } from '../util/hash.js';
 import { log } from '../util/log.js';
 import { bridgePath } from '../util/paths.js';
 import { normalizePageUrl } from '../util/url.js';
+import { buildLedger, describeCrawl } from './ledger.js';
 
 export interface CloneOptions {
   url: string;
@@ -48,12 +50,29 @@ export interface CloneResult {
   warnings: Record<string, string[]>;
   failedAssets: string[];
   assetBytes: number;
+  /** 1 on the first clone of a folder, incremented when the same folder is resumed. */
+  run: number;
 }
 
 interface CapturedPage {
+  /** Normalized URL that was queued. */
+  requestedUrl: string;
+  /** Final URL after redirects. */
   url: string;
   route: string;
   cap: CaptureResult;
+  round: CrawlRound;
+}
+
+const MANIFEST = 'dittu.json';
+
+/** Read `dittu.json` without failing when it is absent or unreadable. */
+function readManifestFile(outDir: string): Manifest | null {
+  try {
+    return JSON.parse(readFileSync(join(outDir, MANIFEST), 'utf8')) as Manifest;
+  } catch {
+    return null;
+  }
 }
 
 /** CSS overrides for inline styles that the site's JS sets differently at mobile width. */
@@ -75,10 +94,12 @@ function responsiveCss(items: ResponsiveItem[], mq: string): string {
 /**
  * Remove a previous run's results so nothing stale survives (old reference
  * screenshots would be reused by verify, old components would stay in the build).
- * Generated projects keep node_modules to make rebuilds fast.
+ * Generated projects keep node_modules to make rebuilds fast. `keep` holds the
+ * results a resumed run reuses (capture snapshots, downloaded assets, references).
  */
-function prepareOutDir(outDir: string) {
-  for (const name of ['preview', 'assets', 'reference', 'report', 'dittu.json']) {
+function prepareOutDir(outDir: string, keep: string[] = []) {
+  for (const name of ['preview', 'assets', 'reference', 'report', MANIFEST]) {
+    if (keep.includes(name)) continue;
     rmSync(join(outDir, name), { recursive: true, force: true });
   }
   for (const project of ['next', 'astro']) {
@@ -100,12 +121,45 @@ function routeFor(url: string, used: Set<string>): string {
   return route;
 }
 
-/** Capture → transform → export. Verification is a separate step (see verify/). */
+/**
+ * Capture → transform → export. Verification is a separate step (see verify/).
+ *
+ * A clone into a folder that already holds captures taken with the same
+ * start URL and capture settings resumes: those pages are reused (no re-fetch,
+ * routes kept), pages that failed or never got a slot are attempted again, and
+ * the crawl ledger in `dittu.json` says what happened to every link.
+ */
 export async function clone(opts: CloneOptions): Promise<CloneResult> {
   const { outDir } = opts;
   const start = normalizePageUrl(opts.url);
   if (!start) throw new Error(`Invalid URL: ${opts.url}`);
-  prepareOutDir(outDir);
+
+  const settings: CaptureSettings = {
+    startUrl: start,
+    viewport: opts.viewport,
+    mobile: opts.mobile,
+    breakpoint: opts.breakpoint,
+    remove: opts.remove,
+    waitMs: opts.waitMs,
+  };
+  const cache = new PageCache(join(outDir, 'capture'));
+  const resume = cache.matches(settings);
+  const previous = resume ? readManifestFile(outDir) : null;
+  // Reuse at most as many earlier captures as this run may hold; the rest stay
+  // in the cache for a later run with a larger --pages.
+  const cached: CacheEntry[] = resume
+    ? cache
+        .entries()
+        .filter((e) => cache.has(e.route))
+        .slice(0, opts.pages)
+    : [];
+  const run = (previous?.runs ?? 0) + 1;
+  const createdAt = previous?.createdAt ?? new Date().toISOString();
+  prepareOutDir(outDir, resume ? ['assets', 'reference', 'capture'] : []);
+  if (resume) cache.open();
+  else cache.reset(settings);
+  if (!resume) cache.writeAssets({});
+  if (resume && !cached.length) log.info('No reusable captures in this folder — crawling from scratch');
 
   const browser = await launch();
   const context = await newContext(browser, opts.viewport, { record: true });
@@ -117,11 +171,99 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
 
   try {
     // ------------------------------------------------------------ capture
+    const scope = crawlScope(opts.url);
     const captured: CapturedPage[] = [];
-    const crawl = new CrawlQueue(start, new URL(start).origin, crawlScope(opts.url));
     const usedRoutes = new Set<string>();
+    const crawl = new CrawlQueue(start, new URL(start).origin, scope);
+    const pageRecords = new Map<string, CrawlPageRecord>();
+    const cachedByKey = new Map<string, CacheEntry>();
+    for (const entry of cached) {
+      cachedByKey.set(entry.url, entry);
+      cachedByKey.set(entry.requestedUrl, entry);
+      usedRoutes.add(entry.route);
+      // Known to the crawl from the start, so links to it count as duplicates;
+      // still queued below so the links it contains are read again.
+      crawl.markSeen(entry.url);
+      crawl.markSeen(entry.requestedUrl);
+      pageRecords.set(entry.url, {
+        url: entry.url,
+        requestedUrl: entry.requestedUrl,
+        route: entry.route,
+        status: 'ok',
+        round: 'carried',
+      });
+    }
+    // Re-read the links of earlier pages (no browser work) so the ledger covers
+    // them and any page that was left uncaptured is discovered again.
+    for (const entry of cached) if (entry.url !== start && entry.requestedUrl !== start) crawl.seed(entry.url);
 
-    for (let url = crawl.next(); url && captured.length < opts.pages; url = crawl.next()) {
+    const ledger = (state: Manifest['state']): Manifest => ({
+      startUrl: opts.url,
+      viewport: opts.viewport,
+      pages: captured.map((p) => ({ route: p.route, url: p.url })),
+      frameworks: opts.frameworks,
+      styling: opts.styling,
+      crawl: buildLedger({
+        startUrl: start,
+        scope,
+        maxPages: opts.pages,
+        links: crawl.links,
+        pages: [...pageRecords.values()],
+      }),
+      state,
+      runs: run,
+      createdAt,
+      updatedAt: new Date().toISOString(),
+    });
+    const saveManifest = (state: Manifest['state']) =>
+      writeFileSync(join(outDir, MANIFEST), JSON.stringify(ledger(state), null, 2));
+
+    saveManifest('capturing');
+    let okCount = cached.length;
+    let established = false;
+    const establish = async (finalUrl: string) => {
+      if (established) return;
+      established = true;
+      // follow redirects (apex → www etc.)
+      crawl.origin = new URL(finalUrl).origin;
+      if (opts.pages > 1) crawl.allowed = await loadRobots(context.request, crawl.origin);
+    };
+
+    for (let url = crawl.next(); url; url = crawl.next()) {
+      const hit = cachedByKey.get(url);
+      if (hit) {
+        const cap = cache.read(hit.route);
+        if (cap) {
+          log.step(`Reusing ${url}${hit.url === url ? '' : ` → ${hit.url}`} (captured by an earlier run)`);
+          await establish(hit.url);
+          crawl.markRead(hit.url, url);
+          pageRecords.set(hit.url, {
+            url: hit.url,
+            requestedUrl: hit.requestedUrl,
+            route: hit.route,
+            status: 'ok',
+            round: 'carried',
+          });
+          captured.push({ requestedUrl: url, url: hit.url, route: hit.route, cap, round: 'carried' });
+          crawl.enqueue(cap.links, hit.url);
+          saveManifest('capturing');
+          continue;
+        }
+        // Unreadable snapshot: capture it again instead.
+        cachedByKey.delete(hit.url);
+        cachedByKey.delete(hit.requestedUrl);
+        usedRoutes.delete(hit.route);
+        okCount--;
+        pageRecords.delete(hit.url);
+      }
+
+      if (okCount >= opts.pages) {
+        // The --pages limit is reached: keep the link on the record as uncaptured.
+        crawl.markSeen(url);
+        if (!pageRecords.has(url)) pageRecords.set(url, { url, route: null, status: 'pending', round: 'new' });
+        continue;
+      }
+
       log.step(`Capturing ${url}`);
       const route = routeFor(url, usedRoutes);
       const referencePath = join(outDir, 'reference', `${routeScope(route)}@${opts.viewport.width}.png`);
@@ -135,30 +277,58 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
         });
       } catch (err) {
         if (!captured.length) throw err;
-        log.warn(`Skipped ${url}: ${(err as Error).message}`);
+        const reason = (err as Error).message;
+        log.warn(`Skipped ${url}: ${reason}`);
+        crawl.markSeen(url);
+        pageRecords.set(url, { url, requestedUrl: url, route: null, status: 'failed', round: 'new', reason });
+        saveManifest('capturing');
         continue;
       }
       usedRoutes.add(route);
       const finalUrl = normalizePageUrl(cap.snapshot.url) ?? url;
-      if (!captured.length) {
-        // follow redirects (apex → www etc.)
-        crawl.origin = new URL(cap.snapshot.url).origin;
-        if (opts.pages > 1) crawl.allowed = await loadRobots(context.request, crawl.origin);
-      }
+      await establish(finalUrl);
+      crawl.markRead(url, finalUrl);
+      crawl.markSeen(url);
       crawl.markSeen(finalUrl);
-      captured.push({ url: finalUrl, route, cap });
+      const page = { requestedUrl: url, url: finalUrl, route, cap, round: 'new' as const };
+      captured.push(page);
+      pageRecords.set(finalUrl, { url: finalUrl, requestedUrl: url, route, status: 'ok', round: 'new' });
+      cache.write(page);
+      okCount++;
       const s = cap.snapshot;
       log.info(
         `${s.bodyHtml.length.toLocaleString()} chars of markup, ${s.sheets.length} stylesheets, ` +
           `${s.motion.length} animations, ${s.responsive.length} JS-responsive elements`,
       );
-      crawl.enqueue(cap.links);
+      crawl.enqueue(cap.links, finalUrl);
+      saveManifest('capturing');
     }
+    for (const url of crawl.pending()) {
+      if (!pageRecords.has(url)) pageRecords.set(url, { url, route: null, status: 'pending', round: 'new' });
+    }
+    saveManifest('capturing');
     await network.flush();
+
+    const crawlReport = buildLedger({
+      startUrl: start,
+      scope,
+      maxPages: opts.pages,
+      links: crawl.links,
+      pages: [...pageRecords.values()],
+    });
+    for (const line of describeCrawl(crawlReport)) log.info(line);
+    if (crawlReport.summary.pages.pending)
+      log.warn(
+        `${crawlReport.summary.pages.pending} link(s) not captured (--pages ${opts.pages}); ` +
+          'run the same command again to continue',
+      );
+    if (crawlReport.summary.pages.failed)
+      log.warn(`${crawlReport.summary.pages.failed} page(s) failed; run the same command again to retry them`);
 
     // ---------------------------------------------------------- transform
     log.step('Rewriting markup, styles and assets');
     const store = new AssetStore(outDir, network, context.request, { fetchUnloaded: true });
+    if (resume) store.seed(cache.readAssets());
     const routeByUrl = new Map(captured.map((c) => [c.url, c.route]));
     const resolveLink = (abs: string) => {
       const n = normalizePageUrl(abs);
@@ -202,6 +372,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
         warnings: s.warnings,
       });
     }
+    cache.writeAssets(store.downloaded());
 
     let tailwind: Awaited<ReturnType<typeof tailwindSite>> | undefined;
     if (opts.styling === 'tailwind') {
@@ -263,23 +434,24 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
     }
 
     const manifest: Manifest = {
-      startUrl: opts.url,
-      viewport: opts.viewport,
+      ...ledger('complete'),
       pages: pages.map((p) => ({ route: p.route, url: p.url })),
-      frameworks: opts.frameworks,
-      styling: opts.styling,
     };
     const warnings = Object.fromEntries(pages.map((p) => [p.route, p.warnings]));
     writeFileSync(
-      join(outDir, 'dittu.json'),
-      JSON.stringify(
-        { ...manifest, createdAt: new Date().toISOString(), warnings, failedAssets: store.failed },
-        null,
-        2,
-      ),
+      join(outDir, MANIFEST),
+      JSON.stringify({ ...manifest, warnings, failedAssets: store.failed }, null, 2),
     );
     for (const p of pages) for (const w of p.warnings) log.warn(`${p.route}: ${w}`);
-    return { site, manifest, outputs, warnings, failedAssets: store.failed, assetBytes: store.bytes };
+    return {
+      site,
+      manifest,
+      outputs,
+      warnings,
+      failedAssets: store.failed,
+      assetBytes: store.bytes,
+      run,
+    };
   } finally {
     await mobileContext?.close();
     await context.close();

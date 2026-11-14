@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Crawl fixture: home</title>
+  <link rel="stylesheet" href="/css/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/docs/">Docs</a>
+    <nav>
+      <a href="/docs/">Home</a>
+      <a href="/docs/guide">Guide</a>
+      <a href="/docs/guide#setup">Guide (anchor)</a>
+      <a href="/docs/guide">Guide again</a>
+      <a href="/docs/broken">Broken (server hangs up)</a>
+      <a href="/blog/post">Blog (outside /docs)</a>
+      <a href="/docs/archive.zip">Archive (file)</a>
+      <a href="/docs/private/secret">Private (robots)</a>
+      <a href="https://example.com/docs/elsewhere">Cross-origin</a>
+      <a href="mailto:team@example.com">Mail</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Documentation home</h1>
+    <p>Every link on this page has a known outcome.</p>
+    <ul class="cards">
+      <li><a href="/docs/guide">Read the guide</a></li>
+      <li><a href="/docs/api">API reference</a></li>
+      <li><a href="/docs/guide/">Guide with a trailing slash</a></li>
+    </ul>
+  </main>
+</body>
+</html>

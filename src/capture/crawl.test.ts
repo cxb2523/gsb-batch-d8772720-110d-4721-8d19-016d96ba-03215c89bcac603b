@@ -51,3 +51,52 @@ describe('crawl scope', () => {
     expect([q.next(), q.next(), q.next()]).toEqual(['https://x.com/au', 'https://x.com/au/cleaning', undefined]);
   });
 });
+
+describe('crawl ledger', () => {
+  it('records why every inspected link was or was not followed', () => {
+    const q = new CrawlQueue('https://x.com/docs/', 'https://x.com', '/docs/');
+    q.enqueue(
+      [
+        'https://x.com/docs/about',
+        'https://x.com/docs/about', // duplicate of a link already queued
+        'https://y.com/other',
+        'https://x.com/blog/post',
+        'https://x.com/docs/photo.jpg',
+        'javascript:void(0)',
+      ],
+      'https://x.com/docs/',
+    );
+    expect(q.links).toEqual([
+      { url: 'https://x.com/docs/about', outcome: 'enqueued', foundOn: 'https://x.com/docs/' },
+      { url: 'https://x.com/docs/about', outcome: 'duplicate', foundOn: 'https://x.com/docs/' },
+      { url: 'https://y.com/other', outcome: 'cross-origin', foundOn: 'https://x.com/docs/' },
+      { url: 'https://x.com/blog/post', outcome: 'outside-scope', foundOn: 'https://x.com/docs/' },
+      { url: 'https://x.com/docs/photo.jpg', outcome: 'skipped-extension', foundOn: 'https://x.com/docs/' },
+      { url: 'javascript:void(0)', outcome: 'not-a-page', foundOn: 'https://x.com/docs/' },
+    ]);
+  });
+
+  it('records robots.txt refusals and reports what is still queued', () => {
+    const q = new CrawlQueue('https://x.com/', 'https://x.com');
+    q.allowed = (path) => path !== '/private';
+    q.enqueue(['https://x.com/private', 'https://x.com/public', 'https://x.com/later'], 'https://x.com/');
+    expect(q.links.map((l) => l.outcome)).toEqual(['robots-disallowed', 'enqueued', 'enqueued']);
+    expect(q.next()).toBe('https://x.com/');
+    expect(q.pending()).toEqual(['https://x.com/public', 'https://x.com/later']);
+  });
+
+  it('treats a URL whose links were read as a duplicate of the start page', () => {
+    const q = new CrawlQueue('https://x.com/', 'https://x.com');
+    q.markRead('https://x.com/');
+    q.enqueue(['https://x.com/', 'https://x.com/'], 'https://x.com/');
+    expect(q.links.map((l) => l.outcome)).toEqual(['duplicate', 'duplicate']);
+  });
+
+  it('queues a page from an earlier run again without fetching it', () => {
+    const q = new CrawlQueue('https://x.com/a', 'https://x.com');
+    q.markRead('https://x.com/');
+    q.markSeen('https://x.com/a');
+    q.seed('https://x.com/a');
+    expect(q.next()).toBe('https://x.com/a');
+  });
+});

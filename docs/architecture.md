@@ -23,7 +23,7 @@ flowchart LR
     SNAP[snapshot.js — DOM + CSSOM]
     FP[fingerprint.js — mobile render]
     NET[network.ts — response bodies]
-    CRAWL[crawl.ts — robots, BFS]
+    CRAWL[crawl.ts — robots, BFS, link outcomes]
   end
   subgraph transform[transform/]
     HTML[html.ts — URLs, links, canvases]
@@ -52,22 +52,22 @@ flowchart LR
 
 ## Source layout
 
-| Path              | Responsibility                                                                                 |
-| ----------------- | ---------------------------------------------------------------------------------------------- |
-| `src/cli/`        | Commander program; one module per command in `commands/`; terminal output in `output.ts`       |
-| `src/server/`     | MCP server (`@modelcontextprotocol/server`), tool schemas and handlers                         |
-| `src/setup/`      | `dittu setup`: registers the MCP server and skills with Claude Code, Cursor, Gemini CLI, Codex |
-| `src/pipeline/`   | Orchestration: `clone.ts`, `run.ts` (clone + verify), `manifest.ts`, `doctor.ts`               |
-| `src/capture/`    | Browser session, scroll/settle/freeze, page capture, network recorder, crawler                 |
-| `src/transform/`  | Turns a snapshot into a self-contained page: markup, CSS, assets, sections                     |
-| `src/export/`     | Writers for the static preview, Next.js and Astro projects                                     |
-| `src/verify/`     | Screenshot comparison, build/serve of targets, static server                                   |
-| `src/domain/`     | Types and pure model helpers: snapshot, site model + routes, report/manifest                   |
-| `src/config/`     | Defaults and pinned versions (Next, React, Astro)                                              |
-| `src/util/`       | Small pure helpers (URLs, naming, hashing, logging, paths)                                     |
-| `bridge/browser/` | Scripts evaluated **inside the page** (plain JS, no imports)                                   |
-| `bridge/runtime/` | `motion.js`, shipped **into generated sites**                                                  |
-| `.agents/skills/` | Agent skills (installed by `dittu setup`)                                                      |
+| Path              | Responsibility                                                                                              |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| `src/cli/`        | Commander program; one module per command in `commands/`; terminal output in `output.ts`                    |
+| `src/server/`     | MCP server (`@modelcontextprotocol/server`), tool schemas and handlers                                      |
+| `src/setup/`      | `dittu setup`: registers the MCP server and skills with Claude Code, Cursor, Gemini CLI, Codex              |
+| `src/pipeline/`   | Orchestration: `clone.ts`, `run.ts` (clone + verify), `ledger.ts` (crawl audit), `manifest.ts`, `doctor.ts` |
+| `src/capture/`    | Browser session, scroll/settle/freeze, page capture, network recorder, crawler, page cache                  |
+| `src/transform/`  | Turns a snapshot into a self-contained page: markup, CSS, assets, sections                                  |
+| `src/export/`     | Writers for the static preview, Next.js and Astro projects                                                  |
+| `src/verify/`     | Screenshot comparison, build/serve of targets, static server                                                |
+| `src/domain/`     | Types and pure model helpers: snapshot, site model + routes, report/manifest                                |
+| `src/config/`     | Defaults and pinned versions (Next, React, Astro)                                                           |
+| `src/util/`       | Small pure helpers (URLs, naming, hashing, logging, paths)                                                  |
+| `bridge/browser/` | Scripts evaluated **inside the page** (plain JS, no imports)                                                |
+| `bridge/runtime/` | `motion.js`, shipped **into generated sites**                                                               |
+| `.agents/skills/` | Agent skills (installed by `dittu setup`)                                                                   |
 
 Dependency direction: `cli`/`server` → `pipeline` → `capture`/`transform`/`export`/`verify` →
 `domain`/`config`/`util`. `domain` imports nothing outside `domain` (and does no I/O).
@@ -98,6 +98,14 @@ Dependency direction: `cli`/`server` → `pipeline` → `capture`/`transform`/`e
      mutations), and when a desktop-only element's parent exists on mobile it
      gets hidden below the breakpoint.
    - replaces canvases with images (2D: `toDataURL`, WebGL: clipped screenshot)
+
+Pages are captured breadth-first (`crawl.ts`): same origin, inside the start
+URL's folder, skipping known file extensions and robots.txt-disallowed paths.
+Every inspected link is recorded in `dittu.json`'s crawl ledger with its
+outcome, and every page with its status, so a clone explains what it skipped
+and can be resumed. Snapshots are cached in `<out>/capture/` as each page is
+captured; a later run into the same folder reuses them (no re-fetch, routes
+kept) and retries failed and pending pages. See [cli.md](cli.md#crawl-ledger).
 
 ## Transform
 
