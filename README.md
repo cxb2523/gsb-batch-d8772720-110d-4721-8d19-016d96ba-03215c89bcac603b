@@ -326,6 +326,48 @@ Image search returns whatever the query matched, so a query naming a person retu
 
 Other HasData MCP servers: [Google Search](https://github.com/HasData/google-search-mcp), [Google Maps](https://github.com/HasData/google-maps-mcp), [Google Trends](https://github.com/HasData/google-trends-mcp), [Google Flights](https://github.com/HasData/google-flights-mcp), [Bing](https://github.com/HasData/bing-mcp), [DuckDuckGo](https://github.com/HasData/duckduckgo-mcp), [YouTube](https://github.com/HasData/youtube-mcp), [TikTok](https://github.com/HasData/tiktok-mcp), [Instagram](https://github.com/HasData/instagram-mcp), [Amazon](https://github.com/HasData/amazon-mcp), [Walmart](https://github.com/HasData/walmart-mcp), [Shopify](https://github.com/HasData/shopify-mcp), [Yelp](https://github.com/HasData/yelp-mcp), [Yellow Pages](https://github.com/HasData/yellowpages-mcp), [Zillow](https://github.com/HasData/zillow-mcp), [Redfin](https://github.com/HasData/redfin-mcp), [Airbnb](https://github.com/HasData/airbnb-mcp), [Booking.com](https://github.com/HasData/booking-mcp), [Indeed](https://github.com/HasData/indeed-mcp), [Glassdoor](https://github.com/HasData/glassdoor-mcp).
 
+## Reusable sourcing module
+
+`lib/image-sourcing.mjs` turns the workflow in `commands/image-sourcing.md` into code. It builds the `tbs` string from structured inputs using only the tokens in the table above, makes one search call, fetches each candidate's `original`, drops the ones that do not come back as images, and fills vacancies from the rest of the same batch. It never pages on its own: `ijn` is forwarded only when you pass it, and `0` is the first page.
+
+```js
+import { collectImages } from '@hasdata/google-images-mcp/image-sourcing';
+
+const result = await collectImages({
+  q: 'austin skyline',
+  minWidth: 1600,      // mapped to the largest documented isz:lt floor that fits
+  minHeight: 1200,
+  color: 'gray',       // or { color: 'specific', colorName: 'red' }, or a bare 'red'
+  type: 'photo',
+  // ijn: 0,           // only when you actually want a page; absent means no ijn sent
+});
+```
+
+`collectImages` takes `size` (`large`/`medium`/`icon`), `exactWidth`/`exactHeight`, `minWidth`/`minHeight`, `color`/`colorName` and `type`; a pre-built string can be passed as `tbs` instead. `buildTbs` is also exported on its own and throws on vocabulary this README does not document, because an invented token is silently ignored by Google. Each retained candidate keeps `title`, `source`, `originalWidth`/`originalHeight`, the page `link` and the `original` URL, plus the fetched bytes and the fetch status.
+
+Two guarantees match the failure modes above:
+
+- **Filters fail quietly, so the dimensions are checked anyway.** When a retained entry's `originalWidth`/`originalHeight` is below the requested floor (or is missing and cannot be checked), the result sets `filterMaybeIgnored: true` and the entry carries a `sizeBelowMinimum` flag and a human-readable warning instead of pretending the filter held.
+- **Dead originals never reach the delivery list.** Non-2xx responses, timeouts, network errors, non-image content types and bytes without an image signature are all counted in `droppedCount` with a per-entry reason. The default target is ten; `target` is configurable, and an undersized batch is delivered as-is rather than triggering another call.
+
+Both side effects are injectable, so the module is testable without a key or the public internet. Pass `searcher` (receives `{ q, tbs, ijn }`, returns the payload with `imagesResults`) and `fetchImage` (receives the `original` URL, returns `{ ok, ... }`); the defaults are `createHttpSearcher()` and `defaultFetchImage`, which use the hosted endpoint and standard `fetch` with magic-byte image sniffing.
+
+```js
+const result = await collectImages({
+  q: 'austin skyline',
+  searcher: async ({ q, tbs, ijn }) => ({ imagesResults: fakeEntries }),
+  fetchImage: async (url) => ({ ok: true, bytes, contentType: 'image/png', byteLength: bytes.length }),
+});
+```
+
+`test/image-sourcing.test.mjs` covers all-success runs, partially dead originals, dimensions below the requested floor and the empty-filter string, entirely through injected fakes. Run it without any credentials:
+
+```bash
+node --test test/image-sourcing.test.mjs
+```
+
+The data still says where a file sits, not whether it may be used: nothing here answers the usage-rights question.
+
 ## Development
 
 The launcher is a thin stdio bridge to the remote server, so there is nothing to build.

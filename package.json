@@ -4,11 +4,15 @@
   "version": "1.0.0",
   "description": "MCP server for Google Images through HasData's hosted API: image search with size, colour and type filters, returning 100 results a call with the source page and the full-resolution URL. 1,000 free credits every month.",
   "type": "module",
+  "exports": {
+    "./image-sourcing": "./lib/image-sourcing.mjs"
+  },
   "bin": {
     "hasdata-google-images-mcp": "index.mjs"
   },
   "files": [
     "index.mjs",
+    "lib/",
     "README.md",
     "LICENSE"
   ],
