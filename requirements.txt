@@ -1,0 +1,7 @@
+# 京东商品采集系统（Scrapy + DrissionPage）依赖
+# 安装：pip install -r requirements.txt
+
+scrapy>=2.11,<3.0
+drissionpage>=4.0,<5.0
+pymysql>=1.1.0
+requests>=2.31.0
