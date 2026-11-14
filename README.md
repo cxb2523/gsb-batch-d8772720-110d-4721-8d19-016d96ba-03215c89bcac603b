@@ -50,6 +50,10 @@ Initial chart rendering uses one timeline aggregation query, or zero for an empt
 
 Chart labels omit a leading `chart ` prefix and start with a capital letter.
 
+## Segmented collection
+
+Scripts that collect chart data can request one timeline segment at a time from `chart-data/` with `page_size=<buckets>` and, for later segments, the `cursor` from the previous response. Each response reports `start`, exclusive `end`, `count`, `next` (or `null` at the end) and `at_end`, and adjacent segments join without gaps or overlap under the same filters, search, permissions and counts mode. Requests without pagination parameters keep returning the complete payload. Invalid tokens answer `400`. See [optional configuration](docs/advanced.md#segmented-collection).
+
 ## Examples
 
 ```bash

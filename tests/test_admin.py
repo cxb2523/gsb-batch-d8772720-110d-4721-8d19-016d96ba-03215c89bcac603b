@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.core import signing
 from django.core.cache import cache
 from django.db import connection, models
 from django.db.models import Count, Exists, OuterRef
@@ -16,6 +17,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone as django_timezone
 
 from admin_list_charts.admin import ListChartMixin
+from admin_list_charts.charts import bucket_count, next_bucket
 from tests.models import Ambiguous, Company, CompanyProfile, Dated, Event, Tag, Undated
 
 
@@ -622,6 +624,326 @@ class ListChartMixinTests(TestCase):
                 self.assertEqual(obj.get_chart_palette(self.request), {})
         with override_settings(ADMIN_LIST_CHARTS={'palette': {'accent': ' #123456 ', 'series': ['', 12, ' rebeccapurple ']}}):
             self.assertEqual(obj.get_chart_palette(self.request), {'accent': '#123456', 'series': ['rebeccapurple']})
+
+
+class ChartPaginationTests(TestCase):
+    url = '/admin/tests/event/chart-data/'
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_superuser('tester', '', 'password')
+        cls.company = Company.objects.create(name='Example', active=True, source='a')
+        cls.other = Company.objects.create(name='Other', active=False, source='d')
+        cls.start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        # One dated row per month for 30 months; extra rows land in the first
+        # month so per-segment counts are not uniform.
+        cls.dates = [cls.start.replace(year=2024 + month // 12, month=month % 12 + 1)
+                     for month in range(30)]
+        rows = [Event(created_at=value, status='a', enabled=index != 0, company=cls.company)
+                for index, value in enumerate(cls.dates)]
+        rows += [Event(created_at=cls.dates[0], status='b', enabled=None, company=cls.other),
+                 Event(created_at=None, status='a', enabled=False)]
+        Event.objects.bulk_create(rows)
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def fetch(self, **params):
+        response = self.client.get(self.url, params)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def walk(self, page_size, **params):
+        seen = []
+        cursor = None
+        while True:
+            query = dict(params, page_size=page_size)
+            if cursor:
+                query['cursor'] = cursor
+            payload = self.fetch(**query)
+            seen.append(payload)
+            self.assertIs(payload['at_end'], payload['next'] is None)
+            if payload['has_next']:
+                self.assertIsNotNone(payload['next'])
+                cursor = payload['next']
+                continue
+            self.assertIsNone(payload['next'])
+            self.assertTrue(payload['at_end'])
+            return seen
+
+    def test_pages_join_without_overlap_or_gaps(self):
+        full = self.fetch()
+        self.assertNotIn('next', full)
+        self.assertNotIn('has_next', full)
+        self.assertEqual(full['period'], 'month')
+
+        pages = self.walk(4)
+        self.assertGreater(len(pages), 1)
+        collected = []
+        for index, page in enumerate(pages):
+            self.assertLessEqual(len(page['volume']), 4)
+            self.assertEqual(page['page_size'], 4)
+            collected.extend(page['volume'])
+            self.assertEqual(page['count'], sum(point['y'] for point in page['volume']))
+            if index:
+                self.assertEqual(page['start'], pages[index - 1]['end'])
+            elif page['volume']:
+                self.assertEqual(page['start'], page['volume'][0]['x'])
+            self.assertEqual(page['last'], page['volume'][-1]['x'])
+            for point in page['volume']:
+                self.assertEqual(set(point), {'x', 'label', 'y', 'url'})
+                self.assertIsNotNone(point['url'])
+        # Segment points are byte-for-byte the points of the complete payload.
+        self.assertEqual(collected, full['volume'])
+        xs = [point['x'] for point in collected]
+        self.assertEqual(len(xs), len(set(xs)))
+        self.assertEqual(sum(page['count'] for page in pages),
+                         sum(point['y'] for point in full['volume']))
+        self.assertEqual(sum(page['bucket_count'] for page in pages), len(full['volume']))
+        self.assertEqual(pages[-1]['end'], '2026-07-01T00:00:00+00:00')
+
+    def test_segment_boundaries_follow_day_and_hour_periods(self):
+        cases = (
+            {'created_at__day': '1'},          # Hourly buckets.
+            {'created_at__month': '1'},        # Daily buckets.
+            {'created_at__year': '2024'},      # Weekly buckets.
+        )
+        for params in cases:
+            with self.subTest(params=params):
+                full = self.fetch(**params)
+                pages = self.walk(2, **params)
+                self.assertGreater(len(pages), 1)
+                self.assertEqual([point for page in pages for point in page['volume']],
+                                 full['volume'])
+                for previous, page in zip(pages, pages[1:]):
+                    self.assertEqual(page['start'], previous['end'])
+                self.assertEqual(sum(page['count'] for page in pages),
+                                 sum(point['y'] for point in full['volume']))
+                # The final end is the exclusive boundary one coarsened step
+                # past the last bucket, exactly as the drill-down link uses.
+                anchor = datetime.fromisoformat(full['volume'][0]['x'])
+                last = datetime.fromisoformat(full['volume'][-1]['x'])
+                step = full['bucket_step']
+                offset = ((bucket_count(anchor, last, full['period']) - 1) // step + 1) * step
+                self.assertEqual(pages[-1]['end'],
+                                 next_bucket(anchor, full['period'], offset).isoformat())
+
+    def test_hourly_segments_across_a_dst_change(self):
+        Event.objects.all().delete()
+        values = [datetime(2026, 11, 1, hour, 30, tzinfo=timezone.utc) for hour in range(3, 9)]
+        Event.objects.bulk_create([Event(created_at=value) for value in values])
+        with django_timezone.override(ZoneInfo('America/New_York')):
+            full = self.fetch(created_at__day='1')
+            pages = self.walk(2, created_at__day='1')
+            self.assertEqual(full['period'], 'hour')
+            self.assertEqual([point for page in pages for point in page['volume']],
+                             full['volume'])
+            for previous, page in zip(pages, pages[1:]):
+                self.assertEqual(page['start'], previous['end'])
+            self.assertEqual(sum(page['count'] for page in pages),
+                             sum(point['y'] for point in full['volume']))
+            self.assertEqual(sum(page['count'] for page in pages), 5)  # Amplified-hour grouping.
+
+    def test_date_only_fields_page_on_date_labels(self):
+        Dated.objects.bulk_create([Dated(occurred=date(2020 + index, 1, 1))
+                                   for index in range(10)])
+        obj = MagicAdmin(Dated, admin.site)
+        full_request = RequestFactory().get('/admin/tests/dated/chart-data/')
+        full_request.user = self.user
+        full = json.loads(obj.chart_data_view(full_request).content)
+        self.assertTrue(full['volume'][0]['x'].count('-') == 2)
+        cursor = None
+        points = []
+        while True:
+            params = {'page_size': 2}
+            if cursor:
+                params['cursor'] = cursor
+            request = RequestFactory().get('/admin/tests/dated/chart-data/', params)
+            request.user = self.user
+            page = json.loads(obj.chart_data_view(request).content)
+            points.extend(page['volume'])
+            if not page['has_next']:
+                break
+            cursor = page['next']
+            self.assertIsNotNone(page['end'])
+        self.assertEqual(points, full['volume'])
+        self.assertEqual(len(points), len(full['volume']))
+        self.assertGreater(len(points), 2)
+
+    def test_last_page_has_null_token_and_segment_end_is_exclusive(self):
+        payload = self.fetch(page_size=1000)
+        self.assertLessEqual(len(payload['volume']), 240)  # Global coarsening still applies.
+        self.assertIsNone(payload['next'])
+        self.assertIsNone(payload['next_cursor'])
+        self.assertTrue(payload['at_end'])
+        self.assertEqual(payload['start'], payload['volume'][0]['x'])
+        self.assertEqual(payload['end'], '2026-07-01T00:00:00+00:00')
+        self.assertEqual(payload['count'], sum(point['y'] for point in payload['volume']))
+
+    def test_page_size_is_clamped_to_the_bucket_limit(self):
+        payload = self.fetch(page_size=10_000)
+        self.assertLessEqual(len(payload['volume']), 240)
+
+    def test_invalid_cursor_and_page_size_return_readable_400(self):
+        for params in (
+            {'page_size': 3, 'cursor': 'garbage'},
+            {'page_size': 3, 'cursor': 'abc.def.ghi'},
+            {'page_size': 3, 'cursor': 'x' * 5000},
+            {'page_size': 3, 'cursor': signing.dumps({'v': 1, 'after': '1999-01-01T00:00:00+00:00'},
+                                                    salt='other-salt')},
+            {'page_size': 'zero'},
+            {'page_size': -2},
+        ):
+            with self.subTest(params=params):
+                response = self.client.get(self.url, params)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('error', response.json())
+                self.assertIn('private', response.headers['Cache-Control'])
+                self.assertIn('no-store', response.headers['Cache-Control'])
+
+    def test_tampered_token_signature_is_rejected(self):
+        payload = self.fetch(page_size=3)
+        token = payload['next']
+        tampered = token[:-2] + ('A' if token[-2] != 'A' else 'B') + token[-1]
+        response = self.client.get(self.url, {'page_size': 3, 'cursor': tampered})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.json())
+
+    def test_token_for_a_selection_that_changed_returns_400(self):
+        payload = self.fetch(page_size=3)
+        response = self.client.get(self.url, {'page_size': 3, 'cursor': payload['next'],
+                                              'status__exact': 'b'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.json())
+
+    def test_token_is_bound_to_the_requesting_user(self):
+        payload = self.fetch(page_size=3)
+        other = get_user_model().objects.create_superuser('other', '', 'password')
+        self.client.force_login(other)
+        response = self.client.get(self.url, {'page_size': 3, 'cursor': payload['next']})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.json())
+
+    def test_token_pointing_at_a_vanished_bucket_returns_400(self):
+        payload = self.fetch(page_size=3)
+        # Deleting the last bucket of the first page invalidates its token.
+        Event.objects.filter(created_at__gte=datetime.fromisoformat(payload['last'])).delete()
+        response = self.client.get(self.url, {'page_size': 3, 'cursor': payload['next']})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.json())
+
+    def test_empty_or_undated_selection_ends_immediately(self):
+        for params in ({'status__exact': 'missing'}, {'company__exact': '999'}):
+            with self.subTest(params=params):
+                payload = self.fetch(page_size=3, **params)
+                self.assertEqual(payload['volume'], [])
+                self.assertIsNone(payload['next'])
+                self.assertIsNone(payload['start'])
+                self.assertIsNone(payload['end'])
+                self.assertTrue(payload['at_end'])
+                self.assertFalse(payload['has_next'])
+                self.assertEqual(payload['count'], 0)
+                self.assertEqual(payload['total_count'], 0)
+
+    def test_undated_model_ends_immediately(self):
+        Undated.objects.create(state=True)
+        obj = MagicAdmin(Undated, admin.site)
+        request = RequestFactory().get('/admin/tests/undated/chart-data/',
+                                       {'page_size': 3, '_facets': 'True'})
+        request.user = self.user
+        self.assertIsNone(obj.get_chart_date_field(request))
+        response = obj.chart_data_view(request)
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertIsNone(payload['date_field'])
+        self.assertEqual(payload['volume'], [])
+        self.assertIsNone(payload['next'])
+        self.assertIsNone(payload['start'])
+        self.assertTrue(payload['at_end'])
+        self.assertEqual(payload['total_count'], 1)
+
+    def test_segments_respect_filters_and_permissions(self):
+        full = self.fetch(status__exact='a')
+        pages = self.walk(4, status__exact='a')
+        self.assertEqual(sum(page['count'] for page in pages),
+                         sum(point['y'] for point in full['volume']))
+        self.assertEqual(full['total_count'], 31)
+        self.assertEqual(sum(page['count'] for page in pages), 30)
+        blocked = self.walk(4, status__exact='b')
+        self.assertEqual(sum(page['count'] for page in blocked), 1)
+        staff = get_user_model().objects.create_user('staff', is_staff=True)
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get(self.url, {'page_size': 3}).status_code, 403)
+
+    def test_segments_respect_search(self):
+        Event.objects.filter(status='a', created_at__isnull=False).update(title='searchable')
+        obj = ExistingAdmin(Event, admin.site)
+        cursor = None
+        pages = []
+        while True:
+            params = {'page_size': 2, 'q': 'searchable', '_facets': 'True'}
+            if cursor:
+                params['cursor'] = cursor
+            request = RequestFactory().get(
+                '/admin/tests/event/chart-data/', params)
+            request.user = self.user
+            response = obj.chart_data_view(request)
+            self.assertEqual(response.status_code, 200, response.content)
+            data = json.loads(response.content)
+            pages.append(data)
+            if not data['has_next']:
+                break
+            cursor = data['next']
+        full_request = RequestFactory().get('/admin/tests/event/chart-data/', {'q': 'searchable'})
+        full_request.user = self.user
+        full = json.loads(obj.chart_data_view(full_request).content)
+        self.assertGreater(len(pages), 1)
+        self.assertEqual(sum(page['count'] for page in pages), 30)
+        self.assertEqual(sum(point['y'] for point in full['volume']), 30)
+        self.assertTrue(all(len(page['rates'][0]['data']) <= 2 for page in pages))
+
+    def test_counts_switch_applies_to_segments(self):
+        full = self.fetch(page_size=5, _facets='True')
+        self.assertTrue(full['rates'])
+        self.assertLessEqual(len(full['rates'][0]['data']), 5)
+        self.assertEqual([point['x'] for point in full['rates'][0]['data']],
+                         [point['x'] for point in full['volume']])
+        self.assertFalse(self.fetch(page_size=5)['rates'])
+
+    def test_coarsened_buckets_stay_within_the_global_limit(self):
+        Event.objects.all().delete()
+        values = [self.start + timedelta(days=30 * index) for index in range(400)]
+        Event.objects.bulk_create([Event(created_at=value) for value in values])
+        full = self.fetch()
+        self.assertEqual(full['bucket_step'], 2)
+        self.assertLessEqual(len(full['volume']), 240)
+        pages = self.walk(50)
+        self.assertEqual(sum(page['bucket_count'] for page in pages), len(full['volume']))
+        self.assertEqual(sum(page['count'] for page in pages),
+                         sum(point['y'] for point in full['volume']))
+
+    def test_segments_with_extreme_history_do_not_error(self):
+        Dated.objects.bulk_create([Dated(occurred=date(year, 1, 1)) for year in (1600, 9999)])
+        obj = MagicAdmin(Dated, admin.site)
+        # Weekly buckets: 1600 starts in 1599 and 9999 ends after the calendar.
+        request = RequestFactory().get('/admin/tests/dated/chart-data/',
+                                       {'page_size': 1, 'occurred__month': '9999_1'})
+        request.user = self.user
+        payload = json.loads(obj.chart_data_view(request).content)
+        self.assertEqual(payload['volume'], [])
+        self.assertTrue(payload['at_end'])
+
+        for year in ('1600', '9999'):
+            request = RequestFactory().get('/admin/tests/dated/chart-data/',
+                                           {'page_size': 1, 'occurred__year': year})
+            request.user = self.user
+            response = obj.chart_data_view(request)
+            self.assertEqual(response.status_code, 200)
+            payload = json.loads(response.content)
+            self.assertEqual(len(payload['volume']), 1)
+            self.assertEqual(payload['count'], 1)
+            self.assertIsNone(payload['next'])
+            self.assertTrue(payload['at_end'])
 
 
 class DatabaseRoutingTests(TestCase):

@@ -14,6 +14,10 @@ from django.utils.translation import ngettext
 MAX_BUCKETS = 240
 
 
+class ChartPaginationError(Exception):
+    """A pagination cursor that cannot be honoured for the current chart."""
+
+
 def next_bucket(value, period, step=1):
     if period == 'hour':
         result = value + timedelta(hours=step)
@@ -40,6 +44,95 @@ def bucket_count(first, last, period):
         months = (last.year - first.year) * 12 + last.month - first.month
         return months // (3 if period == 'quarter' else 1) + 1
     return last.year - first.year + 1
+
+
+def _parse_iso_bucket(value):
+    """Parse a bucket label into the same kind of value ChartBuilder used.
+
+    Date-only labels stay ``date`` objects; timestamps are normalised to the
+    active timezone so hour arithmetic around DST matches the builder's.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if 'T' not in value:
+        return parsed.date()
+    if timezone.is_aware(parsed):
+        parsed = parsed.astimezone(timezone.get_current_timezone())
+    return parsed
+
+
+def timeline_bucket_end(anchor, bucket, period, step):
+    """Exclusive end of ``bucket`` using ChartBuilder's anchor-based formula.
+
+    Returns ``None`` when the boundary is not representable (the same
+    overflow case which leaves the final full-payload point without a link).
+    """
+    first = _parse_iso_bucket(anchor)
+    last = _parse_iso_bucket(bucket)
+    if first is None or last is None or isinstance(first, datetime) != isinstance(last, datetime):
+        return None
+    try:
+        offset = ((bucket_count(first, last, period) - 1) // step + 1) * step
+        return next_bucket(first, period, offset).isoformat()
+    except (OverflowError, ValueError):
+        return None
+
+
+def slice_timeline(payload, after=None, size=MAX_BUCKETS):
+    """Cut one cursor page out of an already aggregated timeline payload.
+
+    ``after`` is the ``x`` value of the last bucket returned by the previous
+    page. Buckets are coarsened globally before slicing, so every page obeys
+    the same ``MAX_BUCKETS`` rule as the complete payload. Adjacent pages
+    neither overlap nor leave gaps because a page always resumes at the bucket
+    immediately following ``after``.
+    """
+    volume = payload.get('volume') or []
+    period = payload.get('period') or 'month'
+    step = payload.get('bucket_step') or 1
+    size = max(1, int(size))
+    start = 0
+    if after is not None:
+        start = next(
+            (index + 1 for index, point in enumerate(volume) if point.get('x') == after),
+            None,
+        )
+        if start is None:
+            # The token is authentic but its bucket is gone (including an
+            # already empty selection), so resuming would silently skip or
+            # duplicate rows.
+            raise ChartPaginationError(
+                _('The continuation token refers to a bucket that is no longer in this selection.'))
+    page = volume[start:start + size]
+    has_next = start + len(page) < len(volume)
+    rates = [
+        {**rate, 'data': (rate.get('data') or [])[start:start + size]}
+        for rate in payload.get('rates') or [] if isinstance(rate, dict)
+    ]
+    first = page[0].get('x') if page else None
+    last = page[-1].get('x') if page else None
+    if not page:
+        end = None
+    elif has_next:
+        # The next page's first bucket is this page's exclusive end.
+        end = volume[start + size].get('x')
+    else:
+        end = timeline_bucket_end(volume[0].get('x'), last, period, step)
+    return {
+        'volume': page,
+        'rates': rates,
+        'start': first,
+        'end': end,
+        'last': last,
+        'after': last if has_next else None,
+        'count': sum(point.get('y') or 0 for point in page),
+        'bucket_count': len(page),
+        'has_next': has_next,
+    }
 
 
 class ChartBuilder:

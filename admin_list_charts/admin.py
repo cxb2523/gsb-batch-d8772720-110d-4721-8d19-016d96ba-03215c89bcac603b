@@ -1,20 +1,32 @@
+import copy
 import hashlib
 import json
+import zlib
 
 from django.conf import settings
 from django.contrib.admin import FieldListFilter, SimpleListFilter
 from django.contrib.admin.options import IncorrectLookupParameters
-from django.core import checks
+from django.core import checks, signing
 from django.core.cache import caches
 from django.core.exceptions import EmptyResultSet, FieldDoesNotExist, PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
+from django.core.signing import BadSignature
 from django.db import models
 from django.http import HttpResponseNotAllowed, JsonResponse
 from django.urls import path, reverse
 from django.utils import timezone, translation
 from django.utils.translation import gettext as _
 
-from .charts import ChartBuilder
+from .charts import MAX_BUCKETS, ChartBuilder, ChartPaginationError, slice_timeline
+
+
+CHART_PAGE_SIZE_PARAM = 'page_size'
+CHART_PAGE_CURSOR_PARAM = 'cursor'
+CHART_PAGE_PARAMS = (CHART_PAGE_SIZE_PARAM, CHART_PAGE_CURSOR_PARAM)
+CHART_PAGE_MAX_SIZE = MAX_BUCKETS
+CHART_PAGE_CURSOR_SALT = 'admin_list_charts.chart_page'
+CHART_PAGE_CURSOR_VERSION = 1
+CHART_PAGE_CURSOR_MAX_LENGTH = 4096
 
 
 class ListChartMixin:
@@ -29,6 +41,7 @@ class ListChartMixin:
     chart_lazy = False
     chart_cache_timeout = 0
     chart_cache_alias = 'default'
+    chart_page_max_size = CHART_PAGE_MAX_SIZE
 
     def get_chart_field(self, request, queryset, name):
         """Resolve a single-valued model path or scalar queryset annotation."""
@@ -144,6 +157,130 @@ class ListChartMixin:
         return ChartBuilder(self, request, qs).build(
             period or self._get_chart_period(request), total_rows, facets_on)
 
+    # Paginated chart-data collection ----------------------------------------
+
+    def get_chart_page_max_size(self, request):
+        """Largest page size (in timeline buckets) accepted by chart-data."""
+        return self.chart_page_max_size
+
+    def _chart_page_params(self, request):
+        """Return ``(page_size, cursor)`` when pagination was requested.
+
+        Returns ``None`` when no pagination parameter is present, so the
+        endpoint keeps answering with the complete payload. Sizes are clamped
+        to ``get_chart_page_max_size``; anything that is not a positive integer
+        raises ChartPaginationError for a readable 400 response.
+        """
+        if not any(name in request.GET for name in CHART_PAGE_PARAMS):
+            return None
+        try:
+            maximum = max(1, int(self.get_chart_page_max_size(request)))
+        except (TypeError, ValueError):
+            maximum = CHART_PAGE_MAX_SIZE
+        # The global 240-bucket coarsening caps any segment regardless.
+        maximum = min(maximum, CHART_PAGE_MAX_SIZE)
+        raw = request.GET.get(CHART_PAGE_SIZE_PARAM)
+        if raw in (None, ''):
+            size = maximum
+        else:
+            try:
+                size = int(raw)
+            except (TypeError, ValueError):
+                size = 0
+            if size < 1:
+                raise ChartPaginationError(_('The page size must be a positive integer.'))
+            size = min(size, maximum)
+        return size, request.GET.get(CHART_PAGE_CURSOR_PARAM) or None
+
+    @staticmethod
+    def _chart_page_request(request):
+        """Copy ``request`` with pagination parameters removed from ``GET``.
+
+        Django's changelist treats unknown query parameters as ORM lookups and
+        would reject ``page_size``/``cursor``. Removing them here also keeps
+        them out of drill-down links and cache keys; every other filter,
+        search term and counts switch is untouched.
+        """
+        if not any(name in request.GET for name in CHART_PAGE_PARAMS):
+            return request
+        params = request.GET.copy()
+        for name in CHART_PAGE_PARAMS:
+            if name in params:
+                params.pop(name)
+        clean = copy.copy(request)
+        clean.GET = params
+        return clean
+
+    def _chart_page_context(self, request, payload):
+        """Fingerprint of the selection a continuation token belongs to."""
+        config = [
+            self.opts.app_label,
+            self.opts.model_name,
+            getattr(getattr(request, 'user', None), 'pk', None),
+            payload.get('date_field'),
+            payload.get('period'),
+            payload.get('bucket_step'),
+            sorted((key, values) for key, values in request.GET.lists() if key != 'p'),
+            translation.get_language(),
+            timezone.get_current_timezone_name(),
+        ]
+        return hashlib.sha256(json.dumps(config, default=str).encode()).hexdigest()
+
+    def _chart_page_cursor(self, request, payload, after):
+        return signing.dumps(
+            {'v': CHART_PAGE_CURSOR_VERSION,
+             'after': after,
+             'context': self._chart_page_context(request, payload)},
+            salt=CHART_PAGE_CURSOR_SALT, compress=True)
+
+    def _read_chart_page_cursor(self, request, payload, token):
+        if len(token) > CHART_PAGE_CURSOR_MAX_LENGTH:
+            raise ChartPaginationError(_('The continuation token is invalid.'))
+        try:
+            data = signing.loads(token, salt=CHART_PAGE_CURSOR_SALT)
+        except (BadSignature, ValueError, TypeError, KeyError, zlib.error):
+            # Tampered, truncated or otherwise unreadable tokens must never
+            # surface as a server error.
+            raise ChartPaginationError(_('The continuation token is invalid.')) from None
+        if (not isinstance(data, dict)
+                or data.get('v') != CHART_PAGE_CURSOR_VERSION
+                or not isinstance(data.get('after'), str)):
+            raise ChartPaginationError(_('The continuation token is invalid.'))
+        if data.get('context') != self._chart_page_context(request, payload):
+            raise ChartPaginationError(
+                _('The continuation token does not match this chart selection.'))
+        return data['after']
+
+    def _chart_page_payload(self, request, payload, size, cursor):
+        """Return one timeline segment of an already built complete payload.
+
+        The complete payload is sliced, never rebuilt: filtering, search,
+        permissions, counts mode and the global 240-bucket coarsening are
+        exactly those of the unpaged response. ``volume`` and ``rates`` are
+        replaced by the segment; every other key is preserved.
+        """
+        after = self._read_chart_page_cursor(request, payload, cursor) if cursor else None
+        page = slice_timeline(payload, after=after, size=size)
+        next_cursor = (self._chart_page_cursor(request, payload, page['after'])
+                       if page['has_next'] else None)
+        summary = {
+            'start': page['start'],
+            'end': page['end'],
+            'last': page['last'],
+            'count': page['count'],
+            'bucket_count': page['bucket_count'],
+            'page_size': size,
+            'has_next': page['has_next'],
+            'at_end': not page['has_next'],
+            'next_cursor': next_cursor,
+            'next': next_cursor,
+        }
+        result = dict(payload)
+        result['volume'] = page['volume']
+        result['rates'] = page['rates']
+        result.update(summary)
+        return result
+
     def _chart_payload(self, request, changelist):
         queryset = self.get_chart_queryset(request, changelist)
         key = None
@@ -197,13 +334,27 @@ class ListChartMixin:
         if request.method not in ('GET', 'HEAD'):
             response = HttpResponseNotAllowed(['GET', 'HEAD'])
         else:
-            # Reuse the page's filtering and permissions without rendering or pagination.
             try:
-                changelist = self.get_changelist_instance(request)
-            except IncorrectLookupParameters:
-                response = JsonResponse({'error': _('Invalid changelist filters.')}, status=400)
+                page = self._chart_page_params(request)
+            except ChartPaginationError as error:
+                response = JsonResponse({'error': str(error)}, status=400)
             else:
-                response = JsonResponse(self._chart_payload(request, changelist), encoder=DjangoJSONEncoder)
+                # Pagination parameters are transport controls, not lookups.
+                clean = self._chart_page_request(request)
+                # Reuse the page's filtering and permissions without rendering or pagination.
+                try:
+                    changelist = self.get_changelist_instance(clean)
+                except IncorrectLookupParameters:
+                    response = JsonResponse({'error': _('Invalid changelist filters.')}, status=400)
+                else:
+                    try:
+                        payload = self._chart_payload(clean, changelist)
+                        if page is not None:
+                            payload = self._chart_page_payload(clean, payload, *page)
+                    except ChartPaginationError as error:
+                        response = JsonResponse({'error': str(error)}, status=400)
+                    else:
+                        response = JsonResponse(payload, encoder=DjangoJSONEncoder)
         response['Cache-Control'] = 'private, no-store'
         return response
 
@@ -237,7 +388,8 @@ class ListChartMixin:
                       'provide it as a scalar queryset annotation.') % {'name': name},
                     obj=self.__class__, id='admin_list_charts.W001'))
         for name in ('chart_facet_max_series', 'chart_auto_max_facet_fields',
-                     'chart_auto_max_rate_fields', 'chart_cache_timeout'):
+                     'chart_auto_max_rate_fields', 'chart_cache_timeout',
+                     'chart_page_max_size'):
             if not isinstance(getattr(self, name), int) or getattr(self, name) < 0:
                 errors.append(checks.Error(f'{name} must be a nonnegative integer.',
                                           obj=self.__class__, id='admin_list_charts.E002'))

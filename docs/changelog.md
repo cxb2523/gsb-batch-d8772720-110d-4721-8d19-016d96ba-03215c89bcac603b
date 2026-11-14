@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add segmented collection to `chart-data/`: `page_size` and `cursor` parameters return one timeline segment with `start`, exclusive `end`, `count`, `next` token, and `at_end`. Segments reuse the request's filters, search, permissions and counts mode, join without gaps or overlap, and invalid tokens answer `400`. Requests without pagination parameters keep the previous complete payload.
+
 ## 0.5.2
 
 - Keep wide timeline layouts on one row: no full-width overflow row for distributions. Up to three distributions sit beside the timeline; the third appears only when the first two have fewer than 10 categories combined, and the row grows up to 320px to fit it. Sidebar rows are sized by category count.
