@@ -11,6 +11,7 @@
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,36 @@ _logger = logging.getLogger("src.weflow_pipeline")
 WEFLOW_TICK_LIMIT = int(os.getenv("WEFLOW_TICK_LIMIT", "20"))
 WEFLOW_MAX_WORKERS = int(os.getenv("WEFLOW_MAX_WORKERS", "5"))
 WEFLOW_FETCH_TIMEOUT = float(os.getenv("WEFLOW_FETCH_TIMEOUT", "30.0"))
+
+
+# ---------------------------------------------------------------------------
+# 增量同步结果
+# ---------------------------------------------------------------------------
+
+# 一轮增量同步的结局
+SYNC_STATUS_COMPLETE = "complete"  # 完整拉完（可能有 0..N 条新消息）
+SYNC_STATUS_PARTIAL = "partial"    # 中途请求失败，已拉到的消息保留
+SYNC_STATUS_NO_NEW = "no_new"      # 正常拉取，但没有新消息
+
+
+@dataclass
+class SyncResult:
+    """_sync_incremental 的返回结构。
+
+    Attributes:
+        messages: 本轮实际保留的新消息（已按 local_id 去重、过滤旧消息）。
+        status:   SYNC_STATUS_COMPLETE / SYNC_STATUS_PARTIAL / SYNC_STATUS_NO_NEW。
+        error:    中途失败时的失败原因；未失败为 None。
+    """
+
+    messages: list = field(default_factory=list)
+    status: str = SYNC_STATUS_NO_NEW
+    error: Optional[str] = None
+
+    @property
+    def kept_count(self) -> int:
+        """本轮实际保留的消息条数（失败时也不为 0，只要已拉到）。"""
+        return len(self.messages)
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +312,9 @@ class WeFlowPipeline:
             )
 
         # 4. 增量同步：拉取新消息
-        print(f"[perceive] about to call _sync_incremental for {talker}")
         t0 = time.time()
-        new_messages = self._sync_incremental(talker)
-        print(f"[perceive] _sync_incremental returned {len(new_messages)} messages")
+        sync_result = self._sync_incremental(talker)
+        new_messages = sync_result.messages
         self.tick_api_time_ms += (time.time() - t0) * 1000
 
         # 5. 转换为 ChatMessage
@@ -302,15 +332,31 @@ class WeFlowPipeline:
             debug_info={
                 "source": "weflow",
                 "talker": talker,
+                # 失败时仍反映实际保留条数，不因失败清空
                 "new_messages": len(new_messages),
                 "total_history": self.init_total_messages,
+                # 本轮增量同步结局：complete / partial / no_new
+                "sync_status": sync_result.status,
+                "sync_error": sync_result.error,
+                "sync_kept": sync_result.kept_count,
             },
             is_service_account_list=layout.is_service_account_list,
         )
 
-    def _sync_incremental(self, talker: str) -> list[WeFlowMessage]:
-        """增量同步：拉取该聊天自 last_local_id 之后的新消息。"""
-        print(f"[_sync_incremental] called for {talker}, _last_local_ids={self._last_local_ids.get(talker, 0)}")
+    def _sync_incremental(self, talker: str) -> SyncResult:
+        """增量同步：拉取该聊天自 last_local_id 之后的新消息。
+
+        返回 SyncResult，调用方可区分三种结局：
+          - complete: 完整拉完，messages 为全部新消息（可能为空）；
+          - partial:  中途某页请求失败，messages 保留失败前已拉到的新消息，
+                      error 记录失败原因；
+          - no_new:   正常拉取，但没有新消息。
+
+        水位线语义（与 check_unread_all 一致）：
+          - 只推进到「确实纳入结果」的消息的最大 local_id；
+          - 中途失败时，未确认的消息不会推进水位线，后续轮次仍会被发现，
+            不会永久漏读。
+        """
         last_id = self._last_local_ids.get(talker, 0)
 
         # 首次处理该聊天：从历史缓存初始化 last_local_id
@@ -323,50 +369,75 @@ class WeFlowPipeline:
         # 如果全部 localId <= last_id，则无新消息
         # 如果有 hasMore，继续拉直到 localId <= last_id
         msgs: list[WeFlowMessage] = []
+        seen_ids: set[int] = set()  # 本轮已纳入结果的 local_id（跨页去重）
         offset = 0
         limit = self.tick_limit
         max_rounds = 5
+        error: Optional[str] = None
 
-        for _ in range(max_rounds):
+        for round_idx in range(max_rounds):
             try:
                 batch, has_more = self.weflow.get_messages(talker, limit=limit, offset=offset)
             except Exception as e:
-                _logger.warning("[WeFlow] 增量同步 %s 失败: %s", talker, e)
+                # 单页失败：保留已收集的新消息正常返回，水位线只覆盖已保留部分
+                error = str(e)
+                _logger.warning(
+                    "[WeFlow] 增量同步 %s 第 %d 页失败: %s（保留已拉取的 %d 条）",
+                    talker, round_idx + 1, e, len(msgs),
+                )
                 break
 
             if not batch:
                 break
 
-            # 过滤：只保留 local_id > last_id 的消息
-            new_batch = [m for m in batch if m.local_id > last_id]
+            # 过滤 + 去重：只保留 local_id > last_id 且本轮未见过的消息。
+            # 服务端返回重复页或顺序不稳时，同一 local_id 不会重复进入结果。
+            new_batch: list[WeFlowMessage] = []
+            for m in batch:
+                if m.local_id <= last_id or m.local_id in seen_ids:
+                    continue
+                seen_ids.add(m.local_id)
+                new_batch.append(m)
             msgs.extend(new_batch)
 
-            # 如果这批消息全部都已见过，停止
-            if not new_batch and batch:
-                # 所有消息的 localId 都 <= last_id
+            # 整页都是已见消息（旧消息或重复页），说明已经追上了
+            if not new_batch:
                 break
-
-            # 更新 last_local_id
-            if new_batch:
-                self._last_local_ids[talker] = max(m.local_id for m in new_batch)
 
             if not has_more:
                 break
 
             offset += len(batch)
 
+        # 水位线只在消息确实被纳入结果后推进，取已纳入消息的最大 local_id。
+        # 中途失败时，未拉到的消息 local_id 更大，不会被水位线覆盖。
         if msgs:
+            new_watermark = max(m.local_id for m in msgs)
+            self._last_local_ids[talker] = new_watermark
             _logger.info(
-                "[WeFlow] 增量同步 %s: %d 条新消息 (last_id=%d → %d)",
+                "[WeFlow] 增量同步 %s: %d 条新消息 (last_id=%d → %d)%s",
                 talker,
                 len(msgs),
                 last_id,
-                self._last_local_ids.get(talker, last_id),
+                new_watermark,
+                f" [部分失败: {error}]" if error else "",
             )
         else:
-            _logger.info("[WeFlow] 增量同步 %s: 0 条新消息 (last_id=%d)", talker, self._last_local_ids.get(talker, last_id))
+            _logger.info(
+                "[WeFlow] 增量同步 %s: 0 条新消息 (last_id=%d)%s",
+                talker,
+                self._last_local_ids.get(talker, last_id),
+                f" [拉取失败: {error}]" if error else "",
+            )
 
-        return msgs
+        if error is not None:
+            status = SYNC_STATUS_PARTIAL
+        elif msgs:
+            status = SYNC_STATUS_COMPLETE
+        else:
+            status = SYNC_STATUS_NO_NEW
+
+        return SyncResult(messages=msgs, status=status, error=error)
 
     # ------------------------------------------------------------------
     # 辅助
