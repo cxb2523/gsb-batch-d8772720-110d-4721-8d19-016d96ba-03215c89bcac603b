@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Build artifacts
+build/
+dist/
+
+# Generated scraping outputs (from the example scripts)
+docs/examples/*.csv
+docs/examples/*.json
+docs/examples/*.md
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.gstack/
+.claude/
+
+# Secrets
+.env
+
+# Generated output at root
+/pagina.md
+.vercel
+
+# testing
+.coverage
+.pytest_cache/
+
+# `vercel build` run locally converts the requirements files into a uv project
+# and drops these next to each entrypoint. Committing them would change what
+# Vercel installs (it prefers a pyproject/uv.lock over requirements.txt).
+/uv.lock
+/.python-version
+web/landing/pyproject.toml
+web/landing/uv.lock
+web/landing/.python-version
+web/mcp/pyproject.toml
+web/mcp/uv.lock
+web/mcp/.python-version

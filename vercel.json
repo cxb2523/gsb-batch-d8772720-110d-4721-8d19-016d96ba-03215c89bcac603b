@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "web/landing/app.py",
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": ["web/landing/templates/**", "web/landing/static/**", "src/bytecrawl/**"],
+        "maxDuration": 60
+      }
+    },
+    {
+      "src": "web/mcp/mcp_app.py",
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": ["src/bytecrawl/**"],
+        "maxDuration": 45
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "has": [{ "type": "host", "value": "bytecraw.vercel.app" }],
+      "status": 308,
+      "headers": { "Location": "https://bytecrawl.vercel.app/$1" }
+    },
+    { "src": "/mcp(.*)", "dest": "web/mcp/mcp_app.py" },
+    { "src": "/(.*)", "dest": "web/landing/app.py" }
+  ]
+}

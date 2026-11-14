@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bytecrawl"
+dynamic = ["version"]
+description = "Focused crawling for LLM data collection: Shark-Search and OPIC crawlers plus a single scraping API (static HTML, dynamic JS, APIs, session login, Markdown for LLMs) on a 3-dependency core."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "abrahamperz", email = "aperez@adokmx.com" }]
+keywords = ["scraping", "crawler", "focused-crawling", "shark-search", "opic", "pagerank", "beautifulsoup", "playwright", "markdown", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Intended Audience :: Developers",
+]
+dependencies = [
+    "requests>=2.28",
+    "beautifulsoup4>=4.11",
+    "lxml>=4.9",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.40"]
+llm = ["markdownify>=0.11", "trafilatura>=1.6"]
+mcp = ["mcp>=2; python_version >= '3.10'", "markdownify>=0.11", "trafilatura>=1.6"]
+all = ["playwright>=1.40", "markdownify>=0.11", "trafilatura>=1.6", "mcp>=2; python_version >= '3.10'"]
+# flask/python-dotenv/posthog are here (not runtime deps of the library) so the
+# test suite can import the web landing app and exercise the /api seed-error
+# surface. Kept in sync with web/landing/requirements.txt.
+dev = ["pytest>=7", "pytest-cov", "ruff", "mypy", "bandit", "flask", "python-dotenv", "posthog"]
+
+[project.scripts]
+bytecrawl-mcp = "bytecrawl.mcp_server:main"
+bytecrawl-mcp-http = "bytecrawl.mcp_http:main"
+
+[project.urls]
+Homepage = "https://github.com/abrahamperz/ByteCrawl"
+Repository = "https://github.com/abrahamperz/ByteCrawl"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "bytecrawl.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -m 'not live and not smoke'"
+markers = [
+    "live: tests that hit real websites and need Playwright (run with: pytest -m live)",
+    "smoke: tests against the deployed site — network, no CI (run with: pytest -m smoke)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+
+[[tool.mypy.overrides]]
+# playwright is the optional [browser] extra, not installed for the type-check
+# job — Scraper.browser() imports it lazily behind a try/except. Ignore its
+# missing stubs instead of pulling the heavy browser stack into CI.
+module = ["playwright.*"]
+ignore_missing_imports = true
+
+[tool.vercel]
+entrypoint = "landing.app:app"
