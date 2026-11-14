@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes gradient-x {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.animate-gradient-x {
+  animation: gradient-x 3s ease infinite;
+}
+
+@keyframes breathe-dramatic {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 0.3;
+  }
+  50% {
+    transform: scale(1.1) rotate(180deg);
+    opacity: 0.6;
+  }
+}
+
+@keyframes breathe-intense {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 0.25;
+  }
+  50% {
+    transform: scale(1.15) rotate(-90deg);
+    opacity: 0.5;
+  }
+}
+
+@keyframes breathe-powerful {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 0.3;
+  }
+  50% {
+    transform: scale(1.2) rotate(270deg);
+    opacity: 0.55;
+  }
+}
+
+@keyframes breathe-strong {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 0.2;
+  }
+  50% {
+    transform: scale(1.25) rotate(-180deg);
+    opacity: 0.45;
+  }
+}
+
+@keyframes breathe-mega {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.3) rotate(360deg);
+    opacity: 0.65;
+  }
+}
+
+.animate-breathe-dramatic {
+  animation: breathe-dramatic 8s ease-in-out infinite;
+}
+
+.animate-breathe-intense {
+  animation: breathe-intense 10s ease-in-out infinite;
+}
+
+.animate-breathe-powerful {
+  animation: breathe-powerful 12s ease-in-out infinite;
+}
+
+.animate-breathe-strong {
+  animation: breathe-strong 14s ease-in-out infinite;
+}
+
+.animate-breathe-mega {
+  animation: breathe-mega 16s ease-in-out infinite;
+}
+
+.glow-text {
+  text-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+}
+
+.glow-border {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+}
+
+/* Remove default focus styles */
+* {
+  outline: none !important;
+}
+
+input,
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input:focus {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+/* Override browser defaults */
+input {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+/* Remove focus ring from all elements */
+:focus {
+  outline: none !important;
+}
+
+/* Custom focus styles for accessibility */
+.focus-visible:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.5) !important;
+  outline-offset: 2px;
+}

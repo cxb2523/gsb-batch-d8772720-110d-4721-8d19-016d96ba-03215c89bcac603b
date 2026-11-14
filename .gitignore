@@ -1,0 +1,55 @@
+indexer-search/node_modules
+indexer-search/.env
+
+spider/.env
+spider/crawler.log
+spider/main_backup.go
+
+# frontend
+front-end/node_modules
+
+# next.js
+front-end/.next/
+front-end/out/
+front-end/.env
+
+
+# production
+front-end/build
+front-end/.env
+
+# debug
+front-end/npm-debug.log*
+front-end/yarn-debug.log*
+front-end/yarn-error.log*
+front-end/.pnpm-debug.log*
+
+# env files
+front-end/.env*
+
+# vercel
+front-end/.vercel
+
+# typescript
+front-end/*.tsbuildinfo
+front-end/next-env.d.ts
+
+
+# Database data directory (PostgreSQL files)
+db/postgres_data/
+db/pg_backups/
+
+# Environment file with database credentials
+db/.env
+
+# remove server key and the certification
+db/certs/server.crt
+db/certs/server.key
+/front-end/README.md
+
+
+fastembed/models/
+qdrant/qdrant_storage/
+
+froxy-apex/.env
+qdrant/.env

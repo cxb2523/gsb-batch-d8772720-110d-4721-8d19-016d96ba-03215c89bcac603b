@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_server
+    ports:
+    # - "127.0.0.1:6333:6333"
+    # - "127.0.0.1:6334:6334"
+    - "6333:6333"  # API
+    - "6334:6334"  # gRPC (if you want)
+
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - froxy-network
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+      QDRANT__SERVICE__SNAPSHOT_UPLOAD: "true"
+
+networks:
+  froxy-network:
+    external: true
+
+

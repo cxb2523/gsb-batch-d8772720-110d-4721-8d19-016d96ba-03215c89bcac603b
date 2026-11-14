@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3090:3090"
+    env_file:
+      - .env
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      DB_SSLMODE: ${DB_SSLMODE}
+      API_KEY: ${API_KEY}
+      PORT: ${PORT}
+      DB_SSL: ${DB_SSL}
+      NODE_MEMORY_LIMIT: "1024"
+      # embedding service URL
+      EMBEDDING_SERVICE_URL: "http://embedding-service:5050"
+    restart: unless-stopped
+    networks:
+      - froxy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+
+networks:
+  froxy-network:
+    external: true
