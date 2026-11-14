@@ -177,7 +177,7 @@ python scripts/detail_crawler_wrapper.py --url <URL> --no-manual-verify  # 单�
 ## 8. 常见问题（FAQ）
 
 - **DrissionPage 提示找不到浏览器 / 连不上 9222**：检查浏览器是否已用调试端口启动，`EDGE_ADDRESS` 是否匹配。
-- **列表采集没有产出**：若用分类列表，确认 `categories` 表已有 `leaf=1 AND crawl_status=0` 的记录（先跑 `load_categories.py --reset`）。
+- **列表采集没有产出**：若用分类列表，确认 `categories` 表已有 `leaf=1 AND crawl_status IN (0, 4)` 的记录（0=待爬、4=部分完成续爬；先跑 `load_categories.py --reset`）。
 - **触发京东风控验证（需人工在浏览器中完成）**：降低 `CONCURRENT_REQUESTS`、增大 `DOWNLOAD_DELAY` 以降低触发概率；详情采集默认会暂停等待人工完成验证，`--db` 模式则不等待、遇到验证跳过该商品。
 - **图片 / JSON 未生成在预期位置**：命令必须从项目根目录运行，脚本按项目根解析 `data/`、`images/`。
 - **详情图为 0**：通常是滚动太快未触发懒加载；详情采集已改为平滑慢速滚动，必要时调大 `--scroll-pause`。

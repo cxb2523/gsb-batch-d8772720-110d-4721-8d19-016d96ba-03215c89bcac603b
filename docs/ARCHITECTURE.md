@@ -165,11 +165,16 @@ source, source_url, status, created_at, updated_at`
 | 值 | 常量 | 含义 |
 |----|------|------|
 | 0 | `CategoryCrawlStatus.PENDING` | 待爬取 |
-| 1 | `CategoryCrawlStatus.CRAWLING` | 爬取中（start 标记） |
-| 2 | `CategoryCrawlStatus.DONE` | 已爬取完成 |
-| 3 | `CategoryCrawlStatus.FAILED` | 爬取失败（短响应被反爬 / 首页请求失败） |
+| 1 | `CategoryCrawlStatus.CRAWLING` | 爬取中（start 标记；每页存库后同时刷新续爬进度） |
+| 2 | `CategoryCrawlStatus.DONE` | 已爬取完成（含"未采到商品的空页"= 真正没有下一页） |
+| 3 | `CategoryCrawlStatus.FAILED` | 爬取失败（首页请求失败 / 首页即短响应，未采到任何商品） |
+| 4 | `CategoryCrawlStatus.PARTIAL` | 部分完成（已采到至少一页，翻页途中短响应或翻页请求失败；已入库链接保留，下次从断点续爬） |
 
-> 启动时会把 `IN (1, 3)` 的分类重置为 `0`（复苏"死分类"，修复 H1）。
+> 启动复苏只会把卡在 `1` 的分类重置为 `0`；失败(3) 与部分完成(4) 不再重置。
+> 加载待爬分类时取 `crawl_status IN (0, 4)`，其中 4 及带进度（`crawl_page > 0`）的分类
+> 从 `crawl_page + 1` 页、`crawl_items` 累计数量继续。进度存于 categories 表新增的
+> `crawl_page`（最后成功页）/ `crawl_items`（累计商品数）两列（`scripts/db_schema.py`
+> 幂等补齐）。
 
 ### product_links.detail_status（详情采集阶段）
 | 值 | 常量 | 含义 |

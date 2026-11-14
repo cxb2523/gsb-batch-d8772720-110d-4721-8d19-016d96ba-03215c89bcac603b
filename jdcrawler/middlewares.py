@@ -17,6 +17,7 @@ import logging
 import threading
 
 from scrapy import signals
+from scrapy.exceptions import IgnoreRequest
 from scrapy.http import HtmlResponse
 
 logger = logging.getLogger('jdcrawler.middlewares')
@@ -92,10 +93,18 @@ class DrissionPageMiddleware:
             if is_next_page:
                 logger.info(f"[翻页] 正在翻到第 {page_num} 页...")
                 return self._render_next_page(request, page_num)
+            elif page_num and page_num > 1:
+                # 续爬：部分完成分类的断点页 > 1，先打开首页，再连续翻到目标页
+                logger.info(f"[续爬] 正在从断点页第 {page_num} 页继续...")
+                return self._render_resume_page(request, page_num)
             else:
                 logger.info(f"[渲染] 正在渲染: {url}")
                 return self._render_first_page(request)
 
+        except IgnoreRequest:
+            # 渲染明确失败（如续爬时无法到达断点页）：交给 errback_handler 决定状态，
+            # 不能降级为普通下载，否则会把首页内容当成目标页重复解析
+            raise
         except Exception as e:
             logger.error(f"[中间件错误] 渲染失败: {e}", exc_info=True)
             return None
@@ -129,6 +138,45 @@ class DrissionPageMiddleware:
         return HtmlResponse(
             url=request.url,
             body=tab.html.encode("utf-8"),
+            encoding="utf-8",
+            request=request,
+        )
+
+    def _render_resume_page(self, request, page_num):
+        """
+        续爬渲染：先打开首页建立标签页，再连续点击"下一页"直到目标页。
+
+        用于"部分完成(4)"分类从断点页继续（page_num > 1）。任何一次点击失败
+        都抛出 IgnoreRequest 触发 errback_handler，由其保留成果并维持部分完成，
+        不会把首页内容当作断点页解析。
+        """
+        self._render_first_page(request)
+
+        for target in range(2, page_num + 1):
+            logger.info(f"[续爬] 正在翻到第 {target}/{page_num} 页...")
+            page_delay = random.uniform(self.min_page_delay, self.max_page_delay)
+            logger.info(f"[续爬延迟] 翻页前等待 {page_delay:.1f} 秒")
+            interruptible_sleep(page_delay)
+
+            if not self._click_next_page(self.current_tab):
+                logger.info(f"[续爬] 第 {target} 页：无法翻页，放弃本次续爬")
+                raise IgnoreRequest(f"续爬失败：未能到达第 {page_num} 页")
+
+            post_delay = random.uniform(1, 30)
+            interruptible_sleep(post_delay)
+
+            try:
+                self.current_tab.wait.ele_displayed("css:div[data-sku]", timeout=15)
+                logger.info(f"[续爬] 第 {target} 页加载完成")
+            except Exception as e:
+                logger.warning(f"[续爬] 等待第 {target} 页超时: {e}")
+
+            self._scroll_to_load(self.current_tab)
+
+        logger.info(f"[续爬] 已到达断点页第 {page_num} 页")
+        return HtmlResponse(
+            url=request.url,
+            body=self.current_tab.html.encode("utf-8"),
             encoding="utf-8",
             request=request,
         )

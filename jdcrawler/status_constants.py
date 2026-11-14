@@ -12,7 +12,8 @@ class CategoryCrawlStatus:
     PENDING = 0      # 待爬取
     CRAWLING = 1     # 爬取中（start 标记）
     DONE = 2         # 已爬取完成
-    FAILED = 3       # 爬取失败（短响应被反爬 / 首页请求失败）
+    FAILED = 3       # 爬取失败（首页请求失败 / 尚未采到任何商品即被短响应拦截）
+    PARTIAL = 4      # 部分完成（已采到至少一页商品，翻页途中短响应或翻页请求失败；保留已入库链接，下次从断点继续）
 
 
 class DetailStatus:
@@ -28,6 +29,7 @@ CATEGORY_STATUS_TEXT = {
     CategoryCrawlStatus.CRAWLING: "爬取中",
     CategoryCrawlStatus.DONE: "已爬取",
     CategoryCrawlStatus.FAILED: "爬取失败",
+    CategoryCrawlStatus.PARTIAL: "部分完成",
 }
 
 DETAIL_STATUS_TEXT = {

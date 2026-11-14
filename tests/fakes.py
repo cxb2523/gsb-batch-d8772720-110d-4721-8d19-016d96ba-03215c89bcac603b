@@ -17,6 +17,7 @@ class RecordingCursor:
     def __init__(self):
         self.calls = []              # [("execute"|"executemany", sql, params), ...]
         self.fetchone_queue = []     # fetchone() 依次弹出的返回值
+        self.fetchall_queue = []     # fetchall() 依次弹出的返回值
         self.rowcount = 0
         self.lastrowid = 0           # 供 start_session 等取 lastrowid
         self._pending_fetch = None   # 最近一次 SELECT 的待返回结果
@@ -25,6 +26,9 @@ class RecordingCursor:
 
     def push_fetchone(self, value):
         self.fetchone_queue.append(value)
+
+    def push_fetchall(self, value):
+        self.fetchall_queue.append(value)
 
     def _maybe_raise(self, sql):
         if self.raise_if_contains and self.raise_if_contains in sql.upper():
@@ -51,6 +55,8 @@ class RecordingCursor:
         return self._pending_fetch
 
     def fetchall(self):
+        if self.fetchall_queue:
+            return self.fetchall_queue.pop(0)
         return []
 
     def close(self):

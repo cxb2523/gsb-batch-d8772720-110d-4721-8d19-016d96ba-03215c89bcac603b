@@ -11,6 +11,7 @@ from jdcrawler.status_constants import CategoryCrawlStatus, CATEGORY_STATUS_TEXT
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'scripts')))
 from crawl_session import ensure_session_table, start_session, finish_session
+from db_schema import ensure_category_progress_columns
 
 
 # 商品卡片选择器（健壮性 M6）：主选择器优先；仅当主选择器为空才回退，
@@ -105,6 +106,7 @@ class JdProductSpider(scrapy.Spider):
         self.logger.info(f"[配置信息] 每个分类最大页数: {self.max_pages}")
         
         self._reset_stuck_categories()
+        self._ensure_progress_columns()
         self._load_categories_from_db()
         self._check_existing_data()
         self.logger.info("=" * 60)
@@ -165,9 +167,14 @@ class JdProductSpider(scrapy.Spider):
 
     def _reset_stuck_categories(self):
         """
-        复苏被卡在"爬取中(1)"/"失败(3)"的分类，重置为待爬取(0)。
+        复苏被卡在"爬取中(1)"的分类，重置为待爬取(0)。
         修复健壮性缺陷 H1：start() 会把分类标记为 1，一旦中途中断或首页
         短响应未恢复，分类会永久停留 1，导致下次运行永远不再爬取。
+
+        注意：只重置 1。失败(3) 与部分完成(4) 都是"有意义的终态"：
+        - 3 表示首页即失败、本次无有效产出，留待人工判断，不再自动重爬；
+        - 4 表示已采到部分链接，下次启动会作为可续爬分类加载（见 _load_categories_from_db）；
+        把它们重置为 0 会导致已入库链接白费请求，并更容易再次触发风控。
         """
         try:
             conn = pymysql.connect(
@@ -180,21 +187,44 @@ class JdProductSpider(scrapy.Spider):
             )
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE categories SET crawl_status = 0 WHERE crawl_status IN (1, 3)"
+                "UPDATE categories SET crawl_status = 0 WHERE crawl_status = 1"
             )
             reset = cursor.rowcount
             conn.commit()
             cursor.close()
             conn.close()
             if reset:
-                self.logger.info(f"[分类复苏] {reset} 个卡住的分类已重置为待爬取(0)")
+                self.logger.info(f"[分类复苏] {reset} 个卡在爬取中的分类已重置为待爬取(0)")
         except Exception as e:
             self.logger.warning(f"[分类复苏] 重置失败（不影响本次运行）: {e}")
 
+    def _ensure_progress_columns(self):
+        """确保 categories 表存在续爬进度列（crawl_page / crawl_items），失败仅告警。"""
+        try:
+            conn = pymysql.connect(
+                host=self.mysql_host,
+                user=self.mysql_user,
+                password=self.mysql_password,
+                db=self.mysql_db,
+                charset=self.mysql_charset,
+                cursorclass=pymysql.cursors.DictCursor,
+            )
+            cursor = conn.cursor()
+            ensure_category_progress_columns(cursor, conn, self.mysql_db)
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            self.logger.warning(f"[分类进度] 确保进度列失败（部分完成分类将从头爬取）: {e}")
+
     def _load_categories_from_db(self):
-        """从数据库加载待爬取的三级分类（叶子节点）"""
+        """
+        从数据库加载待爬取的三级分类（叶子节点）。
+
+        除待爬取(0)外，也加载"部分完成(4)"的分类，并带上上次中断时的进度
+        （crawl_page / crawl_items），使下次运行能从断点页继续，而不是从第 1 页重爬。
+        """
         self.logger.info("[分类加载] 正在从数据库加载分类...")
-        
+
         try:
             conn = pymysql.connect(
                 host=self.mysql_host,
@@ -205,9 +235,9 @@ class JdProductSpider(scrapy.Spider):
                 cursorclass=pymysql.cursors.DictCursor
             )
             cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT 
+
+            base_sql = """
+                SELECT
                     c.id,
                     c.name,
                     c.parent_id,
@@ -215,18 +245,30 @@ class JdProductSpider(scrapy.Spider):
                     c.level,
                     c.source_url,
                     c.crawl_status,
+                    {progress_cols}
                     p.name AS parent_name,
                     pp.name AS grand_parent_name
                 FROM categories c
                 LEFT JOIN categories p ON c.parent_id = p.id
                 LEFT JOIN categories pp ON p.parent_id = pp.id
                 WHERE c.is_leaf = TRUE
-                  AND c.crawl_status = 0
+                  AND c.crawl_status IN (0, 4)
                 ORDER BY c.sort_order
-            """)
-            
-            rows = cursor.fetchall()
-            
+            """
+            try:
+                cursor.execute(base_sql.format(
+                    progress_cols="c.crawl_page, c.crawl_items,"
+                ))
+                rows = cursor.fetchall()
+                has_progress = True
+            # 进度列可能尚未建立（旧库且无 ALTER 权限）：退回无进度的查询，
+            # 部分完成分类仍会加载，只是从第 1 页重爬，不至于整轮 0 分类退出。
+            except Exception as e:
+                self.logger.warning(f"[分类加载] 读取续爬进度列失败，将从头爬取: {e}")
+                cursor.execute(base_sql.format(progress_cols=""))
+                rows = cursor.fetchall()
+                has_progress = False
+
             for row in rows:
                 names = []
                 if row.get('grand_parent_name'):
@@ -235,24 +277,50 @@ class JdProductSpider(scrapy.Spider):
                     names.append(row['parent_name'])
                 names.append(row['name'])
                 category_full_name = ' > '.join(names)
-                
+
+                status = row.get('crawl_status', CategoryCrawlStatus.PENDING)
+                stored_page = int(row.get('crawl_page') or 0) if has_progress else 0
+                stored_items = int(row.get('crawl_items') or 0) if has_progress else 0
+                # 续爬：部分完成(4)，以及"曾采到过商品、后因中断被复苏为待爬(0)"的分类
+                # （其在爬取中(1)被杀掉后会被重置为 0，但进度列仍保留），
+                # 都从上次中断页的下一页继续，累计数量接着上次的进度。
+                if has_progress and (status == CategoryCrawlStatus.PARTIAL or stored_page > 0):
+                    resume_page = stored_page + 1
+                    resume_total = stored_items
+                else:
+                    resume_page = 1
+                    resume_total = 0
+
                 self.categories.append({
                     'id': row['id'],
                     'name': row['name'],
                     'source_url': row['source_url'],
                     'full_name': category_full_name,
+                    'crawl_status': status,
+                    'resume_page': resume_page,
+                    'resume_total': resume_total,
                 })
-            
+
             cursor.close()
             conn.close()
-            
+
             self.total_categories = len(self.categories)
-            self.logger.info(f"[分类加载] 共加载 {self.total_categories} 个待爬取分类")
-            
+            partial_count = sum(
+                1 for c in self.categories
+                if c.get('crawl_status') == CategoryCrawlStatus.PARTIAL
+            )
+            self.logger.info(
+                f"[分类加载] 共加载 {self.total_categories} 个待爬取分类"
+                f"（其中部分完成续爬 {partial_count} 个）"
+            )
+
             if self.categories:
                 self.logger.info("[分类加载] 分类示例:")
                 for cat in self.categories[:5]:
-                    self.logger.info(f"[分类加载]   ID={cat['id']}, {cat['full_name']}")
+                    self.logger.info(
+                        f"[分类加载]   ID={cat['id']}, {cat['full_name']}, "
+                        f"起始页={cat.get('resume_page', 1)}"
+                    )
                 if len(self.categories) > 5:
                     self.logger.info(f"[分类加载]   ... 还有 {len(self.categories) - 5} 个分类")
             
@@ -290,12 +358,34 @@ class JdProductSpider(scrapy.Spider):
             
             cursor.close()
             conn.close()
-            
+
         except Exception as e:
             self.logger.warning(f"[数据检测] 查询数据库失败: {e}")
 
-    def _update_category_status(self, category_id, status):
-        """更新分类的爬取状态（status 见 jdcrawler.status_constants.CategoryCrawlStatus，健壮性 L4）"""
+    def _mark_partial(self, category_id, last_page, total_extracted, category_full_name=""):
+        """
+        把"已采到至少一页商品、随后被中断"的分类标记为部分完成(4)。
+
+        同时写入断点进度（crawl_page=最后成功页，crawl_items=累计商品数），
+        已入库的 product_links 全部保留；下次启动会从 last_page+1 页继续。
+        """
+        self._update_category_status(
+            category_id, CategoryCrawlStatus.PARTIAL,
+            page=max(int(last_page or 0), 0),
+            items=max(int(total_extracted or 0), 0),
+        )
+        self.logger.info(
+            f"[分类部分完成] [{category_full_name}] 已保留 {total_extracted} 个已入库商品，"
+            f"断点在 {last_page} 页，下次从第 {int(last_page or 0) + 1} 页续爬"
+        )
+
+    def _update_category_status(self, category_id, status, page=None, items=None):
+        """
+        更新分类的爬取状态（status 见 jdcrawler.status_constants.CategoryCrawlStatus，健壮性 L4）。
+
+        page / items 非空时同时记录续爬进度（crawl_page=最后成功页，crawl_items=累计商品数），
+        供"部分完成(4)"的分类下次启动时从断点继续。进度列不存在时退化为只更新状态。
+        """
         try:
             conn = pymysql.connect(
                 host=self.mysql_host,
@@ -305,10 +395,34 @@ class JdProductSpider(scrapy.Spider):
                 charset=self.mysql_charset
             )
             cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE categories SET crawl_status = %s WHERE id = %s",
-                (status, category_id)
-            )
+            try:
+                if page is not None or items is not None:
+                    # 部分完成：同时落库断点进度
+                    cursor.execute(
+                        "UPDATE categories SET crawl_status = %s, "
+                        "crawl_page = %s, crawl_items = %s WHERE id = %s",
+                        (status, int(page or 0), int(items or 0), category_id)
+                    )
+                elif status in (CategoryCrawlStatus.DONE, CategoryCrawlStatus.FAILED):
+                    # 终态（完成/失败）：清空断点，避免日后手动重置状态时误从旧断点续爬
+                    cursor.execute(
+                        "UPDATE categories SET crawl_status = %s, "
+                        "crawl_page = 0, crawl_items = 0 WHERE id = %s",
+                        (status, category_id)
+                    )
+                else:
+                    # 爬取中(1)等：只改状态，保留断点进度供中断后续爬
+                    cursor.execute(
+                        "UPDATE categories SET crawl_status = %s WHERE id = %s",
+                        (status, category_id)
+                    )
+            except pymysql.MySQLError as e:
+                # 兼容旧库（缺 crawl_page / crawl_items 列，且可能无 ALTER 权限）
+                self.logger.warning(f"[分类状态] 写入续爬进度失败，仅更新状态: {e}")
+                cursor.execute(
+                    "UPDATE categories SET crawl_status = %s WHERE id = %s",
+                    (status, category_id)
+                )
             conn.commit()
             cursor.close()
             conn.close()
@@ -363,12 +477,34 @@ class JdProductSpider(scrapy.Spider):
             
             # 使用分类的 source_url 作为搜索链接
             url = cat_url if cat_url else f"https://search.jd.com/Search?keyword={cat_name}&enc=utf-8"
-            
+
+            # 续爬：部分完成(4)与曾中断的待爬分类从上次的断点页、累计数量继续，
+            # 而不是从第 1 页、累计 0 重来（避免已入库链接白费请求、重复触发风控）
+            resume_page = int(cat.get('resume_page') or 1)
+            resume_total = int(cat.get('resume_total') or 0)
+            if resume_page < 1:
+                resume_page = 1
+
+            if self.max_pages and resume_page > self.max_pages:
+                self.logger.info(
+                    f"[分类完成] [{cat_full_name}] 断点页 {resume_page} 已超过最大页数 "
+                    f"{self.max_pages}，不再续爬"
+                )
+                self._update_category_status(cat_id, CategoryCrawlStatus.DONE)
+                self.processed_categories += 1
+                continue
+
+            if resume_page > 1 or resume_total > 0:
+                self.logger.info(
+                    f"[分类解析] 续爬: [{cat_id}] {cat_full_name} "
+                    f"从第 {resume_page} 页继续（已累计 {resume_total} 个）"
+                )
+
             self.logger.info(f"[分类解析] 准备爬取: [{cat_id}] {cat_full_name}")
-            
-            # 标记为爬取中
+
+            # 标记为爬取中（保留 crawl_page / crawl_items 进度，供下次续爬）
             self._update_category_status(cat_id, CategoryCrawlStatus.CRAWLING)
-            
+
             yield scrapy.Request(
                 url=url,
                 callback=self.parse_product_list,
@@ -377,11 +513,11 @@ class JdProductSpider(scrapy.Spider):
                     "category_id": cat_id,
                     "category_name": cat_name,
                     "category_full_name": cat_full_name,
-                    "page": 1,
-                    "total_extracted": 0,
+                    "page": resume_page,
+                    "total_extracted": resume_total,
                     # 告诉中间件这是首页（不是翻页）
                     "dp_next_page": False,
-                    "dp_page_num": 1,
+                    "dp_page_num": resume_page,
                 },
             )
             
@@ -411,8 +547,15 @@ class JdProductSpider(scrapy.Spider):
         html_content = response.text
         if len(html_content) < 1000:
             self.logger.warning("[商品解析] 响应内容过短，可能被反爬")
-            # 修复 H1：标记为失败(3)并计入已处理，避免分类卡在"爬取中(1)"
-            self._update_category_status(category_id, CategoryCrawlStatus.FAILED)
+            # 修复 H1：短响应必须落状态，避免分类卡在"爬取中(1)"。
+            # 已采到过商品 → 部分完成(4)，保留已入库链接与断点进度；
+            # 首页就没采到任何商品 → 失败(3)。
+            if total_extracted > 0:
+                self._mark_partial(
+                    category_id, current_page - 1, total_extracted, category_full_name
+                )
+            else:
+                self._update_category_status(category_id, CategoryCrawlStatus.FAILED)
             self.processed_categories += 1
             return
 
@@ -475,6 +618,13 @@ class JdProductSpider(scrapy.Spider):
             f"[商品解析] [{category_full_name}] 第{current_page}页: "
             f"提取 {count} 个商品并已存库，累计 {new_total} 个"
         )
+
+        # 每页落一次断点进度（状态仍为爬取中）：即使进程被强杀（不走 errback），
+        # 下次启动也能从本页之后继续，而不是从第 1 页重爬
+        self._update_category_status(
+            category_id, CategoryCrawlStatus.CRAWLING,
+            page=current_page, items=new_total,
+        )
         
         # 检查是否达到每个分类的商品数量限制
         if self.items_per_category > 0 and new_total >= self.items_per_category:
@@ -483,8 +633,8 @@ class JdProductSpider(scrapy.Spider):
             self.processed_categories += 1
             return
         
-        # 检查是否达到最大页数
-        if current_page >= self.max_pages:
+        # 检查是否达到最大页数（0 = 不限）
+        if self.max_pages and current_page >= self.max_pages:
             self.logger.info(f"[分类完成] [{category_full_name}] 已达到最大页数 {self.max_pages}")
             self._update_category_status(category_id, CategoryCrawlStatus.DONE)
             self.processed_categories += 1
@@ -514,25 +664,45 @@ class JdProductSpider(scrapy.Spider):
     def errback_handler(self, failure):
         """
         请求失败回调。
-        
-        如果是翻页请求失败（中间件返回None），说明没有下一页了，标记分类完成。
-        如果是首页请求失败，标记分类为失败。
+
+        - 已采到至少一页商品后翻页请求失败：无法区分"真的没有下一页"与"翻页被反爬/超时"，
+          因此保留已入库链接并标记部分完成(4)，下次从断点页续爬（不再误判为完成(2)）。
+        - 未采到任何商品的翻页失败：仍按原来的"没有下一页"语义标记完成(2)。
+        - 请求失败且尚未采到任何商品（含首页失败）：标记失败(3)。
         """
         request = failure.request
         category_id = request.meta.get("category_id", "")
         category_full_name = request.meta.get("category_full_name", "")
         current_page = request.meta.get("page", 1)
+        total_extracted = request.meta.get("total_extracted", 0) or 0
         is_next_page = request.meta.get("dp_next_page", False)
-        
+
         if is_next_page:
-            # 翻页失败 = 没有下一页了 = 本分类正常结束
-            self.logger.info(
-                f"[分类完成] [{category_full_name}] 第{current_page}页翻页失败，"
-                f"视为本分类爬取完成"
-            )
-            self._update_category_status(category_id, CategoryCrawlStatus.DONE)
+            if total_extracted > 0:
+                # 已采到商品：翻页失败可能是风控/超时，保留成果，标记部分完成
+                self.logger.warning(
+                    f"[分类部分完成] [{category_full_name}] 第{current_page}页翻页请求失败，"
+                    f"已保留 {total_extracted} 个已入库商品，下次续爬"
+                )
+                self._mark_partial(
+                    category_id, current_page - 1, total_extracted, category_full_name
+                )
+            else:
+                # 未采到任何商品：维持"没有下一页"的既有语义
+                self.logger.info(
+                    f"[分类完成] [{category_full_name}] 第{current_page}页翻页失败，"
+                    f"视为本分类爬取完成"
+                )
+                self._update_category_status(category_id, CategoryCrawlStatus.DONE)
             self.processed_categories += 1
         else:
-            # 首页失败 = 本分类爬取失败
             self.logger.error(f"[请求失败] [{category_id}] {category_full_name}: {failure.value}")
-            self._update_category_status(category_id, CategoryCrawlStatus.FAILED)
+            if total_extracted > 0:
+                # 续爬请求（页码>1）失败：保留上次的成果，继续停留在部分完成
+                self._mark_partial(
+                    category_id, current_page - 1, total_extracted, category_full_name
+                )
+            else:
+                # 首页失败且无任何产出 = 本分类爬取失败
+                self._update_category_status(category_id, CategoryCrawlStatus.FAILED)
+            self.processed_categories += 1

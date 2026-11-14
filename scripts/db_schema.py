@@ -172,11 +172,52 @@ def ensure_products_table(cursor, conn, db_name):
         print("[schema] 确保 products 表失败: %s" % e)
 
 
+# 分类续爬进度列（部分完成状态使用）：
+#   crawl_page  最后成功采集的页码（0 表示尚未采到任何一页）
+#   crawl_items 该分类累计已产出的商品数量
+CATEGORY_PROGRESS_COLUMNS = {
+    'crawl_page': "INT NOT NULL DEFAULT 0 COMMENT '列表采集断点页（最后成功页，0=未开始）'",
+    'crawl_items': "INT NOT NULL DEFAULT 0 COMMENT '列表采集累计已产出商品数'",
+}
+
+
+def ensure_category_progress_columns(cursor, conn, db_name):
+    """确保 categories 表含续爬进度列 crawl_page / crawl_items（幂等 ALTER ADD COLUMN）。
+
+    categories 表由 scripts/load_categories.py 创建；旧库可能缺少这两列。
+    缺列时"部分完成"分类只能从第 1 页重爬，因此这里做一次幂等补齐。
+    """
+    try:
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'categories'",
+            (db_name,),
+        )
+        fetchall = cursor.fetchall()
+        # 兼容 DictCursor（dict）与普通游标（tuple）两种返回
+        existing = {
+            (row.get('COLUMN_NAME') if isinstance(row, dict) else row[0])
+            for row in fetchall
+        }
+        if not existing:
+            # categories 表尚未创建（由 scripts/load_categories.py 负责），无需补列
+            return
+        for col, ddl in CATEGORY_PROGRESS_COLUMNS.items():
+            if col not in existing:
+                cursor.execute("ALTER TABLE categories ADD COLUMN %s %s" % (col, ddl))
+                conn.commit()
+                print("[schema] categories 已补充续爬进度列 %s" % col)
+    except pymysql.MySQLError as e:
+        print("[schema] 确保 categories 续爬进度列失败: %s" % e)
+
+
 def ensure_core_tables(cursor, conn, db_name):
     """确保全部核心表存在：product_links / product_category_relation / products / crawl_session。"""
     ensure_product_links_table(cursor, conn)
     ensure_product_category_relation_table(cursor, conn)
     ensure_products_table(cursor, conn, db_name)
+    # categories 续爬进度列（表不存在则跳过，由 load_categories.py 建表时自带）
+    ensure_category_progress_columns(cursor, conn, db_name)
     # crawl_session 与具体连接解耦，直接复用既有实现
     try:
         from crawl_session import ensure_session_table

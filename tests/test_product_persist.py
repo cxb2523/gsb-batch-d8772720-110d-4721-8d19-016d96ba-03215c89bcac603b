@@ -112,6 +112,10 @@ class TestStatusConstants(unittest.TestCase):
         self.assertEqual(CategoryCrawlStatus.CRAWLING, 1)
         self.assertEqual(CategoryCrawlStatus.DONE, 2)
         self.assertEqual(CategoryCrawlStatus.FAILED, 3)
+        # 部分完成：取值不得与既有 0/1/2/3 冲突，且有中文文案
+        self.assertNotIn(CategoryCrawlStatus.PARTIAL, {0, 1, 2, 3})
+        from jdcrawler.status_constants import CATEGORY_STATUS_TEXT
+        self.assertIn(CategoryCrawlStatus.PARTIAL, CATEGORY_STATUS_TEXT)
 
     def test_detail_status_values(self):
         self.assertEqual(DetailStatus.PENDING, 0)

@@ -25,6 +25,7 @@ from db_schema import (  # noqa: E402
     CREATE_PRODUCT_LINKS_SQL,
     CREATE_PRODUCT_CATEGORY_RELATION_SQL,
     CREATE_PRODUCTS_SQL,
+    ensure_category_progress_columns,
 )
 from fakes import RecordingCursor, RecordingConnection  # noqa: E402
 
@@ -97,6 +98,34 @@ class TestDbSchema(unittest.TestCase):
         self.assertIn("create table if not exists product_category_relation", sqls)
         self.assertIn("create table if not exists products", sqls)
         self.assertIn("create table if not exists crawl_session", sqls)
+
+
+class TestCategoryProgressColumns(unittest.TestCase):
+    """categories 续爬进度列：幂等补齐，缺列时 ALTER，已存在则跳过。"""
+
+    def test_adds_missing_progress_columns(self):
+        cur = RecordingCursor()
+        conn = RecordingConnection()
+        cur.push_fetchall([{"COLUMN_NAME": "id"}, {"COLUMN_NAME": "crawl_status"}])
+        ensure_category_progress_columns(cur, conn, "jd_data")
+        alters = [c[1].lower() for c in cur.calls if "alter table categories" in c[1].lower()]
+        self.assertEqual(len(alters), 2)
+        self.assertTrue(any("crawl_page" in a for a in alters))
+        self.assertTrue(any("crawl_items" in a for a in alters))
+
+    def test_skips_existing_progress_columns(self):
+        cur = RecordingCursor()
+        cur.push_fetchall([
+            {"COLUMN_NAME": "crawl_page"}, {"COLUMN_NAME": "crawl_items"},
+        ])
+        ensure_category_progress_columns(cur, RecordingConnection(), "jd_data")
+        self.assertFalse(any("alter table categories" in c[1].lower() for c in cur.calls))
+
+    def test_skips_when_categories_table_absent(self):
+        cur = RecordingCursor()
+        cur.push_fetchall([])
+        ensure_category_progress_columns(cur, RecordingConnection(), "jd_data")
+        self.assertFalse(any("alter table categories" in c[1].lower() for c in cur.calls))
 
 
 if __name__ == "__main__":

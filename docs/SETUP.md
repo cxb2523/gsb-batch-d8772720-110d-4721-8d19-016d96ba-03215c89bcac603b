@@ -74,7 +74,8 @@ CREATE DATABASE IF NOT EXISTS jd_data CHARACTER SET utf8mb4 COLLATE utf8mb4_gene
 
 ### 关于分类数据（categories）
 
-列表采集 Spider 从 `categories` 表读取叶子分类（`is_leaf=1 AND crawl_status=0`）。
+列表采集 Spider 从 `categories` 表读取叶子分类（`is_leaf=1 AND crawl_status IN (0, 4)`，
+其中 4=部分完成会从断点页续爬）。
 本仓库提供种子文件 `seeds/jd_categories_full.json`（京东完整 4 级分类树，共 2941 个节点，
 其中 2694 个叶子节点可被列表采集抓取）。使用内置脚本导入：
 
