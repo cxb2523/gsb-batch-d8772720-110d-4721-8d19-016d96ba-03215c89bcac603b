@@ -1,0 +1,58 @@
+[build-system]
+requires = ["uv_build>=0.9.30"]
+build-backend = "uv_build"
+
+[project]
+name = "unofficial-api-for-porntrex"
+version = "1.8.3"
+description = "An asynchronous Python API wrapper and scraper for porntrex.com"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Johannes Habel", email = "EchterAlsFake@proton.me" }
+]
+keywords = [
+    "api",
+    "scraper",
+    "async",
+    "asyncio",
+    "video-downloader",
+    "selectolax",
+    "curl-cffi",
+    "porntrex"
+]
+dependencies = [
+    "eaf-base-api>=4.2.5",
+    "json5",
+    "selectolax",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Video"
+]
+
+[project.urls]
+Homepage = "https://github.com/EchterAlsFake/unofficial-api-for-porntrex"
+Repository = "https://github.com/EchterAlsFake/unofficial-api-for-porntrex"
+"Bug Tracker" = "https://github.com/EchterAlsFake/unofficial-api-for-porntrex/issues"
+"Support me on Ko-Fi" = "https://ko-fi.com/EchterAlsFake"
+"Donate via PayPal" = "https://paypal.me/EchterAlsFake"
+"Donate via Crypto" = "https://nowpayments.io/donation/EchterAlsFake"
+
+[project.scripts]
+porntrex_api = "porntrex_api.api:main"
+
+[tool.setuptools]
+packages = { find = {} }
+
+[tool.uv.build-backend]
+module-name = "porntrex_api"
+module-root = ""
