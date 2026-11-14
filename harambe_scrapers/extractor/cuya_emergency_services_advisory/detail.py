@@ -6,13 +6,37 @@ from harambe import SDK
 from harambe.contrib import playwright_harness
 from playwright.async_api import Page, TimeoutError
 
+# Outcome statuses returned by ``scrape`` so the orchestrator can account
+# for every enqueued meeting link.
+STATUS_VALID = "valid"
+STATUS_INVALID = "invalid"
+STATUS_FAILED = "failed"
+
+# Human-readable reasons (Chinese) attached to invalid records.
+REASON_MISSING_TITLE = "缺少标题"
+REASON_MISSING_DATE = "缺少日期"
+REASON_SHELL_NO_LINK = "跳转壳页无可用链接"
+
+
+def build_invalid_record(url: str, reason: str) -> dict:
+    """Build a traceable record for a detail page that cannot be saved."""
+    return {
+        "status": STATUS_INVALID,
+        "url": url,
+        "reason": reason,
+    }
+
 
 async def scrape(
     sdk: SDK, current_url: str, context: dict[str, Any], *args: Any, **kwargs: Any
-) -> None:
+) -> dict:
     from datetime import datetime
 
     import pytz
+
+    # Timeout (milliseconds) for selector waits. Allows tests to shorten the
+    # wait without relying on real network timing.
+    wait_timeout = context.get("wait_timeout", 30000)
 
     async def change_timezone(date):
         timezone = "America/Detroit"
@@ -128,22 +152,40 @@ async def scrape(
 
     page: Page = sdk.page
     try:
-        await page.wait_for_selector("h1[itemprop='name']")
+        await page.wait_for_selector("h1[itemprop='name']", timeout=wait_timeout)
     except TimeoutError:
-        await page.wait_for_selector(".title a")
+        # The detail URL may land on a redirect shell page that only
+        # contains a link to the real event detail page.
+        try:
+            await page.wait_for_selector(".title a", timeout=wait_timeout)
+        except TimeoutError:
+            return build_invalid_record(current_url, REASON_SHELL_NO_LINK)
         meeting_link = await page.query_selector(".title a")
-        if meeting_link:
-            link = await meeting_link.get_attribute("href")
-            await page.goto(link)
-            await page.wait_for_selector("h1[itemprop='name']")
-        else:
-            raise Exception("unexpected page!")
+        if not meeting_link:
+            return build_invalid_record(current_url, REASON_SHELL_NO_LINK)
+        link = await meeting_link.get_attribute("href")
+        if not link:
+            return build_invalid_record(current_url, REASON_SHELL_NO_LINK)
+        await page.goto(link)
+        await page.wait_for_selector("h1[itemprop='name']", timeout=wait_timeout)
+
     title_element = await page.query_selector("h1[itemprop='name']")
+    if not title_element:
+        return build_invalid_record(current_url, REASON_MISSING_TITLE)
     title = await title_element.inner_text()
+    if not title or not title.strip():
+        return build_invalid_record(current_url, REASON_MISSING_TITLE)
+
     date_atrribute_element = await page.query_selector("[itemprop='startDate']")
+    if not date_atrribute_element:
+        return build_invalid_record(current_url, REASON_MISSING_DATE)
     date_attribute_text = await date_atrribute_element.get_attribute("content")
     date_element = await page.query_selector("[itemprop='startDate'] p")
+    if not date_element:
+        return build_invalid_record(current_url, REASON_MISSING_DATE)
     date_text = await date_element.inner_text()
+    if not date_attribute_text or not date_text or not date_text.strip():
+        return build_invalid_record(current_url, REASON_MISSING_DATE)
 
     start_time, end_time, time_note = await extract_and_format_date(
         date_attribute_text, date_text.strip()
@@ -184,6 +226,7 @@ async def scrape(
     }
     meeting["is_cancelled"] = is_cancelled
     await sdk.save_data(meeting)
+    return {"status": STATUS_VALID, **meeting}
 
 
 if __name__ == "__main__":

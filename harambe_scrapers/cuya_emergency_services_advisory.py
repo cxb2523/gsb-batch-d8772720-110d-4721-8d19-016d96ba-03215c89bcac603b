@@ -15,6 +15,9 @@ from harambe_scrapers.extractor.cuya_emergency_services_advisory.category import
     scrape as category_scrape,
 )
 from harambe_scrapers.extractor.cuya_emergency_services_advisory.detail import (
+    STATUS_FAILED,
+    STATUS_INVALID,
+    STATUS_VALID,
     scrape as detail_scrape,
 )
 from harambe_scrapers.extractor.cuya_emergency_services_advisory.listing import (
@@ -28,6 +31,10 @@ SCRAPER_NAME = "cuya_emergency_services_advisory"
 AGENCY_NAME = "Cuyahoga County Emergency Services Advisory Board"
 TIMEZONE = "America/Detroit"
 START_URL = "https://bc.cuyahogacounty.us/en-US/CC-EmergencySrvcsAdvsryBrd.aspx"
+
+# A structurally complete record whose date could not be turned into a
+# start time cannot be saved; track it alongside the other invalid records.
+REASON_MISSING_START_TIME = "缺少开始时间"
 
 
 class CategorySDK:
@@ -74,6 +81,10 @@ class CuyaEmergencyServicesOrchestrator:
         self.event_urls = []
         self.observer = DataCollector(SCRAPER_NAME, TIMEZONE)
         self.current_url = None
+        # Accounting for every enqueued meeting link.
+        self.invalid_records = []
+        self.failed_records = []
+        self.saved_count = 0
 
     async def run_category_stage(self, page):
         print("\n" + "=" * 60)
@@ -122,7 +133,8 @@ class CuyaEmergencyServicesOrchestrator:
         print(f"\nFound {len(self.event_urls)} unique event URLs")
         return self.event_urls
 
-    async def run_detail_stage(self, page, event_url: str) -> Optional[dict]:
+    async def run_detail_stage(self, page, event_url: str) -> dict:
+        """Process one detail link and always return an accountable record."""
         try:
             # Convert relative URL to absolute URL
             if event_url.startswith("http"):
@@ -133,11 +145,24 @@ class CuyaEmergencyServicesOrchestrator:
             self.current_url = absolute_url
             await page.goto(absolute_url, wait_until="domcontentloaded", timeout=30000)
             detail_sdk = DetailSDK(page)
-            await detail_scrape(detail_sdk, absolute_url, {})
-            return detail_sdk.data
+            result = await detail_scrape(detail_sdk, absolute_url, {})
+            if result is None:
+                # Defensive fallback for extractors that signal nothing.
+                return {
+                    "status": STATUS_FAILED,
+                    "url": absolute_url,
+                    "reason": "解析未返回结果",
+                }
+            result.setdefault("url", absolute_url)
+            return result
         except Exception as e:
-            print(f"    ✗ Error extracting {event_url}: {e}")
-            return None
+            # Unexpected errors (timeouts, navigation failures, ...) are
+            # parse failures, never saved meetings.
+            return {
+                "status": STATUS_FAILED,
+                "url": self.current_url or event_url,
+                "reason": f"{type(e).__name__}: {e}",
+            }
 
     def transform_to_ocd_format(self, raw_data: dict) -> dict:
         all_day = raw_data.get("is_all_day_event")
@@ -162,6 +187,85 @@ class CuyaEmergencyServicesOrchestrator:
             all_day=all_day,
         )
 
+    async def process_detail_results(self, page):
+        """Visit every enqueued link and classify its outcome."""
+        total_events = len(self.event_urls)
+        if self.max_items:
+            self.event_urls = self.event_urls[: self.max_items]
+            total_events = len(self.event_urls)
+            print(
+                f"\nProcessing {total_events} events "
+                f"(limited to {self.max_items})..."
+            )
+        else:
+            print(f"\nProcessing {total_events} events...")
+
+        for i, event_url in enumerate(self.event_urls, 1):
+            print(f"\n[{i}/{total_events}] {event_url}")
+
+            result = await self.run_detail_stage(page, event_url)
+            status = result.get("status")
+            url = result.get("url", event_url)
+            reason = result.get("reason", "")
+
+            if status == STATUS_VALID and result.get("start_time"):
+                ocd_event = self.transform_to_ocd_format(result)
+                await self.observer.on_save_data(ocd_event)
+                self.saved_count += 1
+                print(f"  ✓ Saved: {ocd_event['name']}")
+            elif status == STATUS_VALID:
+                # Parsed page, but the date could not produce a start time:
+                # it is not saveable and is reported as an invalid record.
+                invalid_record = {
+                    "status": STATUS_INVALID,
+                    "url": url,
+                    "reason": REASON_MISSING_START_TIME,
+                }
+                self.invalid_records.append(invalid_record)
+                print(f"  ✗ Invalid: {url} ({REASON_MISSING_START_TIME})")
+            elif status == STATUS_INVALID:
+                self.invalid_records.append(
+                    {
+                        "status": STATUS_INVALID,
+                        "url": url,
+                        "reason": reason,
+                    }
+                )
+                print(f"  ✗ Invalid: {url} ({reason})")
+            else:
+                self.failed_records.append(
+                    {
+                        "status": STATUS_FAILED,
+                        "url": url,
+                        "reason": reason or "未知解析失败",
+                    }
+                )
+                print(f"  ✗ Failed: {url} ({reason})")
+
+    def print_detail_summary(self):
+        """Print saved / invalid / failed counts and per-link details."""
+        print("\n" + "=" * 70)
+        print("Detail Stage Summary")
+        print("=" * 70)
+        print(f"  成功保存 (saved): {self.saved_count}")
+        print(f"  无效记录 (invalid): {len(self.invalid_records)}")
+        print(f"  解析失败 (failed): {len(self.failed_records)}")
+
+        if self.invalid_records:
+            print("\n无效链接明细:")
+            for record in self.invalid_records:
+                print(f"  - {record['url']} | 原因: {record['reason']}")
+
+        if self.failed_records:
+            print("\n解析失败链接明细:")
+            for record in self.failed_records:
+                print(f"  - {record['url']} | 原因: {record['reason']}")
+
+        accounted = (
+            self.saved_count + len(self.invalid_records) + len(self.failed_records)
+        )
+        print(f"\n已处理链接总数: {accounted}")
+
     async def run(self):
         print("=" * 70)
         print(AGENCY_NAME)
@@ -181,28 +285,8 @@ class CuyaEmergencyServicesOrchestrator:
                 print("[Stage 3/3] Detail Stage - Extracting meeting data")
                 print("=" * 60)
 
-                total_events = len(self.event_urls)
-                if self.max_items:
-                    self.event_urls = self.event_urls[: self.max_items]
-                    total_events = len(self.event_urls)
-                    print(
-                        f"\nProcessing {total_events} events "
-                        f"(limited to {self.max_items})..."
-                    )
-                else:
-                    print(f"\nProcessing {total_events} events...")
-
-                for i, event_url in enumerate(self.event_urls, 1):
-                    print(f"\n[{i}/{total_events}] {event_url}")
-
-                    raw_data = await self.run_detail_stage(page, event_url)
-
-                    if raw_data and raw_data.get("start_time"):
-                        ocd_event = self.transform_to_ocd_format(raw_data)
-                        await self.observer.on_save_data(ocd_event)
-                        print(f"  ✓ Saved: {ocd_event['name']}")
-                    else:
-                        print("  ✗ Skipped (missing start_time)")
+                await self.process_detail_results(page)
+                self.print_detail_summary()
 
                 print("\n" + "=" * 70)
                 print(f"Scraping Complete: {len(self.observer.data)} meetings")
