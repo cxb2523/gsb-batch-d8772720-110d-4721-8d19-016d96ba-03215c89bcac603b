@@ -396,7 +396,7 @@ def test_fetcher_endpoint_is_one_address_or_a_list():
     many = build_settings({"config_version": 2, "bedetheque": {"fetcher_endpoint": ["http://a/v1", "http://b/v1"],
                                                                "parallel": 4}})[0].bedetheque
     assert many.fetcher_endpoint == ["http://a/v1", "http://b/v1"] and many.parallel == 4
-    with pytest.raises(ConfigError, match="listed twice"):
-        build_settings({"config_version": 2, "bedetheque": {"fetcher_endpoint": ["http://a/v1", "http://a/v1"]}})
+    merged = build_settings({"config_version": 2, "bedetheque": {"fetcher_endpoint": ["http://a/v1", "http://a/v1"]}})[0].bedetheque
+    assert merged.fetcher_endpoint == ["http://a/v1"]  # a duplicated address is one endpoint, not an error
     with pytest.raises(ConfigError, match="parallel"):
         build_settings({"config_version": 2, "bedetheque": {"parallel": 0}})

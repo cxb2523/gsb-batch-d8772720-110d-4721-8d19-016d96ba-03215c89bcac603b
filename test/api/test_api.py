@@ -53,6 +53,48 @@ def test_stats_and_health(library):
     assert health["status"] == "ok" and health["token_required"] is False
 
 
+def test_fetcher_status_reports_the_pool_without_touching_the_network(library, monkeypatch):
+    import requests
+
+    from bdnex.importer.bedetheque import fetchers
+
+    fetchers.reset_pool()
+    pool = fetchers.get_pool()
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"status": "ok", "solution": {"response": "<html>page</html>"}}
+
+    def post(endpoint, **kwargs):
+        if endpoint == "http://down/v1":
+            raise requests.ConnectionError("refused")
+        return Resp()
+
+    monkeypatch.setattr("requests.post", post)
+    pool.fetch(["http://down/v1", "http://up/v1"], "https://www.bedetheque.com/BD-x-1.html", 60)
+
+    def no_network(*args, **kwargs):  # the query itself must not send anything
+        raise AssertionError("GET /api/fetcher must not perform a request")
+
+    monkeypatch.setattr("requests.post", no_network)
+    answer = client(library).get("/api/fetcher")
+    assert answer.status_code == 200
+    rows = {row["endpoint"]: row for row in answer.json()["items"]}
+    assert rows["http://up/v1"]["successes"] == 1 and rows["http://up/v1"]["failures"] == 0
+    down = rows["http://down/v1"]
+    assert down["failures"] == 1 and down["last_error"] == "refused" and down["isolated"] is True
+    fetchers.reset_pool()
+
+
+def test_fetcher_status_needs_the_token_when_one_is_set(library):
+    c = client(library, token="s3cret")
+    assert c.get("/api/fetcher").status_code == 401
+    assert c.get("/api/fetcher", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
 def test_albums_with_the_ls_query_language(library):
     c = client(library)
     everything = c.get("/api/albums").json()

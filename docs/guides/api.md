@@ -110,6 +110,7 @@ JSON. The reading endpoints are `GET`; the ones that change something are marked
 | `/api/trash` | files waiting in the trash |
 | `/api/stats` | counts of files, albums, series... |
 | `/api/health` | version, schema, whether a token or a login is required |
+| `/api/fetcher` | each configured FlareSolverr endpoint: `successes`, `failures`, `last_error`, `isolated` and `retry_after` (seconds until the isolation ends). In-memory state of real requests only; this endpoint never starts a request of its own |
 | `/api/overview` | the counts and state the front page shows, and whether changes are allowed |
 | `/api/series/{id}` | one series, volume by volume: owned or missing |
 | `/api/files/{id}/cover` | the first page of a file, as a small picture |

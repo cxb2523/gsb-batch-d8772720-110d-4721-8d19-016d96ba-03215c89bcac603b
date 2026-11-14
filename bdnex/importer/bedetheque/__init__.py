@@ -2,7 +2,7 @@
 
 from bdnex.importer.bedetheque.bedetheque import image_fetch, Bedetheque, BlockedError, http_fetch
 from bdnex.importer.bedetheque.fetchers import (uses_saved_pages, DirectoryFetcher, FetcherError, build_fetcher, flaresolverr_fetch,
-                                                load_fetcher)
+                                                load_fetcher, endpoint_status, get_pool, reset_pool)
 from bdnex.importer.source import Candidate
 
 
@@ -19,4 +19,4 @@ def create_source(library, settings):
 
 
 __all__ = ["Bedetheque", "BlockedError", "Candidate", "DirectoryFetcher", "FetcherError", "build_fetcher", "create_source",
-           "http_fetch", "load_fetcher", "flaresolverr_fetch"]
+           "endpoint_status", "get_pool", "http_fetch", "load_fetcher", "flaresolverr_fetch", "reset_pool"]

@@ -187,13 +187,18 @@ bedetheque:
 
 - **Several endpoints:** `fetcher_endpoint` may be a list (it was a single string before; a single string still works).
   They are used **round-robin**, and when one fails the next is tried; one that failed is left alone for a minute as long
-  as another works. With more than one, album pages are also fetched **in parallel**, as many at a time as there are
-  endpoints (or `bedetheque.parallel`, 1 to 16). Each request still waits `bedetheque.delay` first, so several endpoints
-  mean the album pages come faster, not more politely: use that only with servers that can take it. The progress bar lists
-  the titles being fetched at that moment (`Abaddon-Shadmi-Tome-1-Abaddon · Ada-Baldi-Ada · …  (3 of 6 fetched)`, cut to the
-  width of your terminal); it advances page by page, in order, because each page is handled as soon as it is the next one. To see which endpoint
+  as another works (the minute is measured on a monotonic clock, after which the endpoint simply takes its turn again).
+  The same address written twice is one endpoint, merged in order. With more than one, album pages are also fetched
+  **in parallel**, as many at a time as there are endpoints (or `bedetheque.parallel`, 1 to 16). Each request still
+  waits `bedetheque.delay` first, so several endpoints mean the album pages come faster, not more politely: use that
+  only with servers that can take it. The progress bar lists the titles being fetched at that moment
+  (`Abaddon-Shadmi-Tome-1-Abaddon · Ada-Baldi-Ada · …  (3 of 6 fetched)`, cut to the width of your terminal); it
+  advances page by page, in order, because each page is handled as soon as it is the next one. To see which endpoint
   served each page, run `bdnex import -v`: every page logs `… fetched through http://flare2:8191/v1 in 3.2s`, and a
   failing endpoint is reported (even without `-v`) as `… failed (…): trying the next endpoint`.
+  Each endpoint keeps observable counters — successes, failures, its last error and whether it is isolated right now —
+  available from `GET /api/fetcher` while `bdnex serve` runs (see the [API guide](api.md)). Only requests actually sent
+  are counted: a page served from the library cache adds nothing, and skipping an isolated endpoint adds no failure.
 
   ```yaml
   bedetheque:

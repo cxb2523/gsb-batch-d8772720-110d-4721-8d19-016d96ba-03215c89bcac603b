@@ -236,9 +236,8 @@ class Bedetheque(_Section):
         for endpoint in value:
             if not endpoint.strip():
                 raise ValueError("an endpoint can not be empty")
-        if len(set(value)) != len(value):
-            raise ValueError("an endpoint is listed twice")
-        return value
+        # the same address listed twice is one server: keep one entry (first position) so rotation and stats count it once
+        return list(dict.fromkeys(value))
 
     @field_validator("fetcher")
     @classmethod

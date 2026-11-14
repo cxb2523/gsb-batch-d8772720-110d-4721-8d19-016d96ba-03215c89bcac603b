@@ -5,11 +5,33 @@ import types
 import pytest
 
 from bdnex.importer.bedetheque import Bedetheque, DirectoryFetcher, load_fetcher, flaresolverr_fetch
+from bdnex.importer.bedetheque.fetchers import DOWN_FOR, FlareSolverrPool, endpoint_status, reset_pool
 from bdnex.library import Library
 
 TEST_ROOT = os.path.dirname(os.path.dirname(__file__))
 ONESHOT_URL = "https://www.bedetheque.com/BD-Bibliomule-de-Cordoue-433432.html"
 ONESHOT_HTML = os.path.join(TEST_ROOT, "bedetheque_oneshot_bibliomule.html")
+
+
+@pytest.fixture(autouse=True)
+def clean_pool():
+    """The process-wide pool would otherwise carry counters and isolation between tests."""
+    reset_pool()
+    yield
+    reset_pool()
+
+
+class FakeClock:
+    """A controllable monotonic clock: time only moves when a test says so."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
 
 
 def test_load_fetcher_resolves_module_function(monkeypatch):
@@ -140,7 +162,7 @@ def test_fetcher_error_is_still_a_value_error():
 
 
 def test_flaresolverr_without_an_endpoint_says_what_to_set(tmp_path, monkeypatch):
-    import pytest, yaml
+    import yaml
     from bdnex.importer.bedetheque import FetcherError, flaresolverr_fetch
     conf = tmp_path / "bdnex.yaml"
     conf.write_text(yaml.safe_dump({"config_version": 2}))
@@ -159,22 +181,35 @@ def _ok(html="<html>page</html>"):
     return Resp()
 
 
+# ------------------------------------------------- rotation, isolation, stats
+
+def _pool(clock=None):
+    return FlareSolverrPool(clock=clock or FakeClock())
+
+
+def _by_endpoint(rows):
+    return {row["endpoint"]: row for row in rows}
+
+
 def test_several_endpoints_share_the_requests_round_robin(monkeypatch):
-    from bdnex.importer.bedetheque import fetchers
-    fetchers._down.clear()
     _config_with_endpoint(monkeypatch, ["http://a/v1", "http://b/v1", "http://c/v1"])
     used = []
     monkeypatch.setattr("requests.post", lambda endpoint, **k: used.append(endpoint) or _ok())
     for _ in range(6):
         flaresolverr_fetch(ONESHOT_URL)
     assert sorted(used) == ["http://a/v1"] * 2 + ["http://b/v1"] * 2 + ["http://c/v1"] * 2  # each took its share
+    stats = _by_endpoint(endpoint_status())
+    assert set(stats) == {"http://a/v1", "http://b/v1", "http://c/v1"}
+    assert all(row["successes"] == 2 and row["failures"] == 0 for row in stats.values())
+    assert all(row["last_error"] is None and not row["isolated"] for row in stats.values())
 
 
-def test_a_failing_endpoint_falls_back_to_the_next_and_is_left_alone_for_a_while(monkeypatch):
+def test_a_failing_endpoint_falls_back_and_is_isolated_then_recovers(monkeypatch):
     import requests
-    from bdnex.importer.bedetheque import fetchers
-    fetchers._down.clear()
-    _config_with_endpoint(monkeypatch, ["http://down/v1", "http://up/v1"])
+
+    clock = FakeClock()
+    pool = _pool(clock)
+    endpoints = ["http://down/v1", "http://up/v1"]
     used = []
 
     def post(endpoint, **k):
@@ -183,29 +218,143 @@ def test_a_failing_endpoint_falls_back_to_the_next_and_is_left_alone_for_a_while
             raise requests.ConnectionError("refused")
         return _ok()
 
-    monkeypatch.setattr("requests.post", post)
-    for _ in range(4):
-        assert flaresolverr_fetch(ONESHOT_URL) == b"<html>page</html>"
-    assert used.count("http://down/v1") == 1 and used.count("http://up/v1") == 4  # tried once, then left for a minute
+    # request 1: starts on the first endpoint, which fails and is isolated for a minute
+    assert pool.fetch(endpoints, ONESHOT_URL, 60, post=post) == b"<html>page</html>"
+    down = _by_endpoint(pool.status(endpoints))["http://down/v1"]
+    assert down["failures"] == 1 and down["successes"] == 0 and down["last_error"] == "refused"
+    assert down["isolated"] and down["retry_after"] == pytest.approx(DOWN_FOR)
+
+    # requests 2-4: the isolated endpoint is skipped (no new failure counted), the healthy one does the work
+    for _ in range(3):
+        assert pool.fetch(endpoints, ONESHOT_URL, 60, post=post) == b"<html>page</html>"
+    assert used.count("http://down/v1") == 1 and used.count("http://up/v1") == 4
+    down = _by_endpoint(pool.status(endpoints))["http://down/v1"]
+    assert down["failures"] == 1  # being skipped while isolated never adds a failure
+    assert down["isolated"] and down["retry_after"] == pytest.approx(DOWN_FOR)
+
+    # the isolation is measured on the monotonic clock: after a minute the endpoint takes its turn again
+    clock.advance(DOWN_FOR + 1)
+    recovered = _by_endpoint(pool.status(endpoints))["http://down/v1"]
+    assert not recovered["isolated"] and recovered["retry_after"] == 0.0
+    used.clear()
+    pool.fetch(endpoints, ONESHOT_URL, 60, post=post)  # round-robin restarts at the first endpoint
+    assert used == ["http://down/v1", "http://up/v1"]  # tried again first, failed again, fell back
+    down = _by_endpoint(pool.status(endpoints))["http://down/v1"]
+    assert down["failures"] == 2 and down["isolated"]  # a fresh failure starts a fresh minute
 
 
 def test_when_every_endpoint_fails_the_error_says_why_for_each(monkeypatch):
     import requests
-    from bdnex.importer.bedetheque import fetchers
-    fetchers._down.clear()
-    _config_with_endpoint(monkeypatch, ["http://a/v1", "http://b/v1"])
-    monkeypatch.setattr("requests.post", lambda endpoint, **k: (_ for _ in ()).throw(requests.ConnectionError(f"no {endpoint}")))
+
+    pool = _pool()
+    endpoints = ["http://a/v1", "http://b/v1"]
+    def post(endpoint, **k):
+        raise requests.ConnectionError(f"no {endpoint}")
+
     with pytest.raises(RuntimeError, match=r"no FlareSolverr endpoint.*http://a/v1.*http://b/v1"):
-        flaresolverr_fetch(ONESHOT_URL)
+        pool.fetch(endpoints, ONESHOT_URL, 60, post=post)
+    stats = _by_endpoint(pool.status(endpoints))
+    for endpoint in endpoints:  # every endpoint was really tried once, so each has exactly one failure
+        row = stats[endpoint]
+        assert row["failures"] == 1 and row["successes"] == 0 and row["isolated"]
+        assert row["last_error"] == f"no {endpoint}"
+
+
+def test_all_healthy_endpoints_fail_before_an_isolated_one_is_retried():
+    import requests
+
+    clock = FakeClock()
+    pool = _pool(clock)
+    endpoints = ["http://a/v1", "http://b/v1"]
+    attempts = []
+
+    def post(endpoint, **k):
+        attempts.append(endpoint)
+        if endpoint == "http://a/v1":
+            raise requests.ConnectionError("a down")
+        return _ok()
+
+    pool.fetch(endpoints, ONESHOT_URL, 60, post=post)  # a fails -> isolated; b serves
+    attempts.clear()
+
+    def both_fail(endpoint, **k):
+        attempts.append(endpoint)
+        raise requests.ConnectionError(f"{endpoint} down")
+
+    # a is still isolated, but with nothing healthy left it is still tried, last
+    with pytest.raises(RuntimeError):
+        pool.fetch(endpoints, ONESHOT_URL, 60, post=both_fail)
+    assert attempts == ["http://b/v1", "http://a/v1"]
+    stats = _by_endpoint(pool.status(endpoints))
+    assert stats["http://a/v1"]["failures"] == 2 and stats["http://b/v1"]["failures"] == 1
+
+
+def test_duplicate_addresses_are_one_endpoint(monkeypatch):
+    import requests
+
+    pool = _pool()
+    # the same address twice in the config: one server, one position in the rotation, one set of counters
+    merged = pool.normalise(["http://a/v1", "http://a/v1", "http://b/v1", "http://a/v1"])
+    assert merged == ["http://a/v1", "http://b/v1"]
+
+    used = []
+    def post(endpoint, **k):
+        used.append(endpoint)
+        if endpoint == "http://a/v1":
+            raise requests.ConnectionError("refused")
+        return _ok()
+
+    assert pool.fetch(["http://a/v1", "http://a/v1", "http://b/v1"], ONESHOT_URL, 60, post=post) == b"<html>page</html>"
+    assert used == ["http://a/v1", "http://b/v1"]  # the duplicated address got one request, not two
+    assert [row["endpoint"] for row in pool.status()] == ["http://a/v1", "http://b/v1"]
+
+
+def test_status_only_counts_requests_that_were_really_sent_not_cache_hits(tmp_path):
+    """The library cache sits in front of the fetcher: a cache hit never calls it, so no counter moves."""
+    with open(ONESHOT_HTML, "rb") as src:
+        html = src.read()
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return html
+
+    with Library(":memory:") as lib:
+        plugin = Bedetheque(lib, fetch=fetch, sleep=lambda s: None)
+        plugin.album_info(ONESHOT_URL)  # one real fetch, then stored in the cache
+        plugin.album_info(ONESHOT_URL)
+        plugin.album_info(ONESHOT_URL)
+    assert calls == [ONESHOT_URL]  # the next two reads came from the cache: no request, nothing to count
+    assert endpoint_status() == []  # the fetch above was a plain callable, not FlareSolverr: the pool stayed untouched
+
+
+def test_endpoint_status_does_not_touch_the_network(monkeypatch):
+    def post(*a, **k):  # pragma: no cover - must never be called by the query interface
+        raise AssertionError("endpoint_status() must not send a request")
+
+    monkeypatch.setattr("requests.post", post)
+    pool = _pool()
+    pool._register(["http://a/v1", "http://b/v1"])
+    rows = pool.status(["http://a/v1", "http://b/v1"])
+    assert [row["endpoint"] for row in rows] == ["http://a/v1", "http://b/v1"]
+    assert all(row["successes"] == 0 and row["failures"] == 0 and row["last_error"] is None
+               and not row["isolated"] for row in rows)
+    assert endpoint_status() is not None  # the process-wide query entry point is read-only too
+
+
+def test_status_reports_endpoints_seen_before_even_if_the_config_changed(monkeypatch):
+    pool = _pool()
+    monkeypatch.setattr("requests.post", lambda endpoint, **k: _ok())
+    pool.fetch(["http://old/v1"], ONESHOT_URL, 60)
+    # the current config no longer lists it: the history of what served requests is still queryable
+    rows = _by_endpoint(pool.status(["http://new/v1"]))
+    assert set(rows) == {"http://old/v1", "http://new/v1"}
+    assert rows["http://old/v1"]["successes"] == 1 and rows["http://new/v1"]["successes"] == 0
 
 
 def test_which_endpoint_served_each_page_is_logged_and_a_fallback_is_not_silent(monkeypatch, caplog):
     import logging
     import requests
-    from bdnex.importer.bedetheque import fetchers
-    import itertools
-    fetchers._down.clear()
-    monkeypatch.setattr(fetchers, "_turn", itertools.count())  # the first request starts at the first endpoint
     _config_with_endpoint(monkeypatch, ["http://down/v1", "http://up/v1"])
 
     def post(endpoint, **k):

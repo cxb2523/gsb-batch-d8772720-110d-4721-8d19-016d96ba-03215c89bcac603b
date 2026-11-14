@@ -259,6 +259,14 @@ def create_app(settings: Settings, token: Optional[str] = None, allow_changes: O
     def health(lib: Library = Depends(library)):
         return {"status": "ok", "version": __version__, "schema": lib.schema_version, "token_required": bool(token), "login_required": bool(password)}
 
+    @app.get("/api/fetcher", dependencies=guarded,
+             summary="The FlareSolverr endpoints: request counts, last error, isolation (in-memory, no network)")
+    def fetcher_status():
+        from bdnex.importer.bedetheque.fetchers import endpoint_status
+
+        # only reads the in-memory pool: it must never start a request of its own
+        return {"items": endpoint_status()}
+
     @app.get("/api/stats", dependencies=guarded, summary="Counts of files, albums, series...")
     def stats(lib: Library = Depends(library)):
         return lib.stats()
