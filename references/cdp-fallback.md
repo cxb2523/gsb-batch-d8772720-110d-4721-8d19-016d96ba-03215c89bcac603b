@@ -39,6 +39,26 @@ curl -s "http://127.0.0.1:3456/screenshot?target=TARGET_ID"
 
 返回值字段名与 Extension 不同：Extension `{result} | {error}`，CDP `{value} | {error}`。
 
+## 批量采集 /collect
+
+一次请求跑一组 URL：代理对每个 URL 用与 `/new` 相同的方式开后台 tab、等待加载完成后执行表达式、采完即关闭该 tab。单个 URL 失败/超时/表达式抛异常只记入对应项，不中断其余 URL；返回项顺序与输入一致。
+
+```bash
+curl -s -X POST "http://127.0.0.1:3456/collect?logFile=<声明的值>" \
+  -H 'content-type: application/json' \
+  -d '{"urls":["data:text/html,<title>a</title>","http://127.0.0.1:8899/page/1"],
+       "expression":"JSON.stringify({title:document.title,href:location.href})",
+       "concurrency":2,"timeoutMs":30000}'
+# → {"items":[{"url":"...","status":"ok","value":"...","duration_ms":312},
+#             {"url":"...","status":"error","error":"导航失败: ERR_CONNECTION_REFUSED","duration_ms":50}]}
+```
+
+- 请求体：`urls`（非空字符串数组）、`expression`（非空 JS 表达式，返回 JSON 可序列化值）、可选 `concurrency`（正整数，默认 1，同时在采的页面数不超过该值）、可选 `timeoutMs`（单页整体上限，正整数，默认沿用 CDP 命令超时 30000ms）。
+- 每项含 `url`、`status`（`ok`/`error`/`timeout`）、`value`（成功）或 `error`（失败/超时）、`duration_ms`。
+- 参数非法（`urls` 不是数组/为空、`expression` 缺失、`concurrency`/`timeoutMs` 不是正整数等）返回 400，且在连接 Chrome / 创建任何 tab 之前拦截。
+- 带 `logFile` 时，整批结束写一条 `op=cdp.collect` 的 NDJSON，`params.total` 为总数，`result.counts` 含 `ok/error/timeout` 各自计数。
+
+
 ## 回退判定（重要）
 
 只有 Extension 通道整体不可用/eval 持续失败才回退 CDP；单次 `SyntaxError`、`tab not found` 等属脚本问题，不回退。摸清页面结构后切回 Relay——CDP 是临时探查通道，不要进入沉淀的脚本代码。

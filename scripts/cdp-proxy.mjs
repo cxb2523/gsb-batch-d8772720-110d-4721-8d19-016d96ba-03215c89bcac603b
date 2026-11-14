@@ -12,11 +12,20 @@ import os from 'node:os';
 import net from 'node:net';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const CDP_COMMAND_TIMEOUT_MS = 30000; // 单条 CDP 命令超时，/collect 的 timeoutMs 默认沿用此值
+const WAIT_FOR_LOAD_TIMEOUT_MS = 15000;
 let ws = null;
 let cmdId = 0;
 const pending = new Map(); // id -> {resolve, timer}
 const sessions = new Map(); // targetId -> sessionId
 const ariaRefs = new Map(); // targetId -> Map(refId -> { backendDOMNodeId, role, name })
+
+// CDP 会话事件订阅（flatten 模式下事件带 sessionId），供 /collect 等待 Page.loadEventFired 等
+const cdpEventHandlers = new Set();
+function onCdpEvent(handler) {
+  cdpEventHandlers.add(handler);
+  return () => cdpEventHandlers.delete(handler);
+}
 
 // --- 请求日志（NDJSON append，与 relay.mjs 格式一致）---
 const NO_LOG_PATHS = new Set(['/health', '/targets', '/logs']);
@@ -35,6 +44,7 @@ const PATH_TO_OP = {
   '/back': 'cdp.back',
   '/info': 'cdp.info',
   '/setFiles': 'cdp.setFiles',
+  '/collect': 'cdp.collect',
 };
 
 const LOG_RESULT_MAX = 500;
@@ -271,6 +281,16 @@ function getWebSocketUrl(port, wsPath) {
   return `ws://127.0.0.1:${port}/devtools/browser`;
 }
 
+// 新版 Chrome（约 136+）不再接受通用 /devtools/browser 路径，只接受 /json/version 给出的 UUID URL。
+// 通过 HTTP 端点取回浏览器级 webSocketDebuggerUrl。
+async function fetchBrowserWsUrl(port) {
+  const resp = await fetch(`http://127.0.0.1:${port}/json/version`);
+  if (!resp.ok) throw new Error(`获取 /json/version 失败: HTTP ${resp.status}`);
+  const info = await resp.json();
+  if (!info.webSocketDebuggerUrl) throw new Error('/json/version 未返回 webSocketDebuggerUrl');
+  return info.webSocketDebuggerUrl;
+}
+
 // --- WebSocket 连接管理 ---
 let chromePort = null;
 let chromeWsPath = null;
@@ -280,7 +300,9 @@ async function connect() {
   if (ws && (ws.readyState === WS.OPEN || ws.readyState === 1)) return;
   if (connectingPromise) return connectingPromise;  // 复用进行中的连接
 
-  if (!chromePort) {
+  let port = chromePort;
+  let wsPath = chromeWsPath;
+  if (!port) {
     const discovered = await discoverChromePort();
     if (!discovered) {
       throw new Error(
@@ -290,30 +312,55 @@ async function connect() {
         '  或在 chrome://flags 中搜索 "remote debugging" 并启用'
       );
     }
-    chromePort = discovered.port;
-    chromeWsPath = discovered.wsPath;
+    port = discovered.port;
+    wsPath = discovered.wsPath;
   }
 
-  const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
+  const wsUrl = getWebSocketUrl(port, wsPath);
   if (!wsUrl) throw new Error('无法获取 Chrome WebSocket URL');
 
-  return connectingPromise = new Promise((resolve, reject) => {
-    ws = new WS(wsUrl);
+  // 先按既有方式连接；新版 Chrome 拒绝通用路径时，回退到 /json/version 的 UUID URL
+  try {
+    await (connectingPromise = openSocket(wsUrl, port));
+  } catch (firstErr) {
+    let uuidUrl;
+    try {
+      uuidUrl = await fetchBrowserWsUrl(port);
+    } catch {
+      throw firstErr; // 取不到 UUID URL 时抛出原始连接错误
+    }
+    if (uuidUrl === wsUrl) throw firstErr;
+    console.log('[CDP Proxy] 通用路径连接失败，回退到 UUID 浏览器 URL');
+    await (connectingPromise = openSocket(uuidUrl, port));
+  } finally {
+    connectingPromise = null;
+  }
+  // 连接建立后固化端口信息（失败 socket 的滞后 close 事件可能已清空全局状态）
+  chromePort = port;
+  chromeWsPath = wsPath;
+}
+
+function openSocket(wsUrl, port) {
+  return new Promise((resolve, reject) => {
+    const sock = new WS(wsUrl);
+    ws = sock; // 全局 ws 始终指向最新 socket；旧 socket 的事件用身份守卫忽略
 
     const onOpen = () => {
+      if (ws !== sock) return; // 已被更新的连接取代
       cleanup();
-      connectingPromise = null;
-      console.log(`[CDP Proxy] 已连接 Chrome (端口 ${chromePort})`);
+      console.log(`[CDP Proxy] 已连接 Chrome (端口 ${port ?? '?'})`);
       resolve();
     };
     const onError = (e) => {
+      if (ws !== sock) return; // 旧 socket 的滞后错误，忽略
       cleanup();
-      connectingPromise = null;
       const msg = e.message || e.error?.message || '连接失败';
       console.error('[CDP Proxy] 连接错误:', msg);
+      try { sock.close(); } catch { /* 忽略 */ }
       reject(new Error(msg));
     };
     const onClose = () => {
+      if (ws !== sock) return; // 回退期间旧 socket 的关闭事件不得污染新连接
       console.log('[CDP Proxy] 连接断开');
       ws = null;
       chromePort = null; // 重置端口缓存，下次连接重新发现
@@ -321,12 +368,19 @@ async function connect() {
       sessions.clear();
     };
     const onMessage = (evt) => {
+      if (ws !== sock) return;
       const data = typeof evt === 'string' ? evt : (evt.data || evt);
       const msg = JSON.parse(typeof data === 'string' ? data : data.toString());
 
       if (msg.method === 'Target.attachedToTarget') {
         const { sessionId, targetInfo } = msg.params;
         sessions.set(targetInfo.targetId, sessionId);
+      }
+      // flatten 模式下的会话事件（如 Page.loadEventFired）分发给订阅者
+      if (msg.method && msg.sessionId) {
+        for (const handler of cdpEventHandlers) {
+          try { handler(msg.sessionId, msg.method, msg.params); } catch { /* 订阅者异常不影响连接 */ }
+        }
       }
       if (msg.id && pending.has(msg.id)) {
         const { resolve, timer } = pending.get(msg.id);
@@ -337,21 +391,21 @@ async function connect() {
     };
 
     function cleanup() {
-      ws.removeEventListener?.('open', onOpen);
-      ws.removeEventListener?.('error', onError);
+      sock.removeEventListener?.('open', onOpen);
+      sock.removeEventListener?.('error', onError);
     }
 
     // 兼容 Node 原生 WebSocket 和 ws 模块的事件 API
-    if (ws.on) {
-      ws.on('open', onOpen);
-      ws.on('error', onError);
-      ws.on('close', onClose);
-      ws.on('message', onMessage);
+    if (sock.on) {
+      sock.on('open', onOpen);
+      sock.on('error', onError);
+      sock.on('close', onClose);
+      sock.on('message', onMessage);
     } else {
-      ws.addEventListener('open', onOpen);
-      ws.addEventListener('error', onError);
-      ws.addEventListener('close', onClose);
-      ws.addEventListener('message', onMessage);
+      sock.addEventListener('open', onOpen);
+      sock.addEventListener('error', onError);
+      sock.addEventListener('close', onClose);
+      sock.addEventListener('message', onMessage);
     }
   });
 }
@@ -367,7 +421,7 @@ function sendCDP(method, params = {}, sessionId = null) {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error('CDP 命令超时: ' + method));
-    }, 30000);
+    }, CDP_COMMAND_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
     ws.send(JSON.stringify(msg));
   });
@@ -384,7 +438,7 @@ async function ensureSession(targetId) {
 }
 
 // --- 等待页面加载 ---
-async function waitForLoad(sessionId, timeoutMs = 15000) {
+async function waitForLoad(sessionId, timeoutMs = WAIT_FOR_LOAD_TIMEOUT_MS) {
   // 启用 Page 域
   await sendCDP('Page.enable', {}, sessionId);
 
@@ -420,6 +474,98 @@ async function readBody(req) {
   return body;
 }
 
+// --- /collect 批量采集 ---
+class CollectTimeoutError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CollectTimeoutError';
+  }
+}
+
+// 给单个 URL 的整个采集流程加整体超时；超时后原 promise 仍在后台运行（最终由 tab 关闭触发失败），
+// 用 swallow 防止其后续 reject 变成 unhandledRejection
+function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new CollectTimeoutError(`单页采集超时 (${timeoutMs}ms): ${label}`)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+
+// 采集单个 URL：与 /new 同样方式开后台 tab → 显式导航并等待加载 → 执行表达式 → 关闭 tab。
+// 任何失败都包进返回项，不抛出。每个 tab 独立 targetId/sessionId，互不串扰。
+async function collectOne(url, expression, timeoutMs, index) {
+  const start = Date.now();
+  let targetId = null;
+  let closed = false;
+  let offLoadHandler = null; // 加载事件订阅，finally 中确保取消（含超时路径）
+  const item = { url, index, status: 'error', error: null, value: null, duration_ms: 0 };
+  const closeTarget = async () => {
+    if (!targetId || closed) return;
+    closed = true;
+    try {
+      await sendCDP('Target.closeTarget', { targetId });
+    } catch { /* 关闭失败不影响结果 */ }
+    sessions.delete(targetId);
+    ariaRefs.delete(targetId);
+  };
+  try {
+    const run = async () => {
+      // 1) 与 /new 相同方式创建后台 tab（先 about:blank，再显式导航，避免把初始空白页误判为加载完成）
+      const createResp = await sendCDP('Target.createTarget', { url: 'about:blank', background: true });
+      targetId = createResp.result?.targetId;
+      if (!targetId) throw new Error('创建 tab 失败: ' + JSON.stringify(createResp.error || createResp.result));
+      const sid = await ensureSession(targetId);
+
+      // 2) 先订阅加载事件，再发起导航，杜绝事件竞态
+      await sendCDP('Page.enable', {}, sid);
+      const loaded = new Promise((resolve) => {
+        offLoadHandler = onCdpEvent((eventSessionId, method) => {
+          if (eventSessionId === sid && method === 'Page.loadEventFired') {
+            offLoadHandler?.();
+            offLoadHandler = null;
+            resolve();
+          }
+        });
+      });
+
+      const navResp = await sendCDP('Page.navigate', { url }, sid);
+      if (navResp.error) throw new Error('导航失败: ' + navResp.error.message);
+      if (navResp.result?.errorText) throw new Error('导航失败: ' + navResp.result.errorText);
+
+      // 3) 等待加载事件；整体受单页 timeoutMs 约束（挂起的导航在此触发 timeout）
+      await loaded;
+
+      // 4) 执行表达式（awaitPromise 与 /eval 一致，returnByValue 保证 JSON 可序列化）
+      const evalResp = await sendCDP('Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      }, sid);
+      if (evalResp.result?.exceptionDetails) {
+        const details = evalResp.result.exceptionDetails;
+        const text = details.exception?.description || details.text || '表达式执行异常';
+        throw new Error(text);
+      }
+      if (evalResp.error) throw new Error('Runtime.evaluate 失败: ' + evalResp.error.message);
+      return evalResp.result?.result?.value === undefined ? null : evalResp.result.result.value;
+    };
+    const runPromise = run();
+    // 超时路径下 run 仍在后台，其延迟 reject（tab 关闭后 CDP 命令失败等）在此吞掉，避免 unhandledRejection
+    runPromise.catch(() => { /* 后台收尾，结果以 withTimeout 的 race 为准 */ });
+    item.value = await withTimeout(runPromise, timeoutMs, url);
+    item.status = 'ok';
+  } catch (e) {
+    item.status = e instanceof CollectTimeoutError ? 'timeout' : 'error';
+    item.error = e.message || String(e);
+  } finally {
+    offLoadHandler?.(); // 取消可能残留的加载事件订阅，避免超时路径泄漏
+    await closeTarget();
+    item.duration_ms = Date.now() - start;
+  }
+  return item;
+}
+
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
@@ -436,6 +582,114 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/health') {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
       res.end(JSON.stringify({ status: 'ok', connected, sessions: sessions.size, chromePort }));
+      return;
+    }
+
+    // POST /collect - 批量采集（校验在连接 Chrome / 创建任何 tab 之前完成）
+    if (pathname === '/collect') {
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.end(JSON.stringify({ error: '/collect 仅支持 POST' }));
+        return;
+      }
+      let body;
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: '请求体必须是合法 JSON' }));
+        return;
+      }
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: '请求体必须是 JSON 对象' }));
+        return;
+      }
+      if (!Array.isArray(body.urls)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'urls 必须是字符串数组' }));
+        return;
+      }
+      if (body.urls.length === 0) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'urls 不能为空数组' }));
+        return;
+      }
+      if (!body.urls.every(u => typeof u === 'string' && u.length > 0)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'urls 的每一项都必须是非空字符串' }));
+        return;
+      }
+      if (typeof body.expression !== 'string' || body.expression.trim() === '') {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'expression 必须是非空 JS 表达式字符串' }));
+        return;
+      }
+      const concurrency = body.concurrency === undefined ? 1 : body.concurrency;
+      if (!Number.isInteger(concurrency) || concurrency < 1) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'concurrency 必须是正整数（>= 1）' }));
+        return;
+      }
+      const timeoutMs = body.timeoutMs === undefined ? CDP_COMMAND_TIMEOUT_MS : body.timeoutMs;
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'timeoutMs 必须是正整数（>= 1）' }));
+        return;
+      }
+
+      await connect();
+
+      const { urls, expression } = body;
+      const items = new Array(urls.length);
+      let nextIndex = 0;
+      let active = 0;
+      let maxActive = 0;
+      const workers = [];
+      const workerCount = Math.min(concurrency, urls.length);
+      const worker = async () => {
+        while (true) {
+          const i = nextIndex++;
+          if (i >= urls.length) return;
+          active++;
+          if (active > maxActive) maxActive = active;
+          try {
+            items[i] = await collectOne(urls[i], expression, timeoutMs, i);
+          } finally {
+            active--;
+          }
+        }
+      };
+      for (let w = 0; w < workerCount; w++) workers.push(worker());
+      await Promise.all(workers);
+
+      const counts = { ok: 0, error: 0, timeout: 0 };
+      for (const it of items) counts[it.status]++;
+      const payload = {
+        items: items.map(it => ({
+          url: it.url,
+          status: it.status,
+          ...(it.status === 'ok' ? { value: it.value } : { error: it.error }),
+          duration_ms: it.duration_ms,
+        })),
+      };
+      res.end(JSON.stringify(payload));
+
+      // 整批结束后写一条 NDJSON 操作日志（op=cdp.collect，含总数与各状态计数）
+      await logOperation(
+        logFile,
+        req.method,
+        pathname,
+        {
+          total: urls.length,
+          concurrency,
+          timeoutMs,
+          // 日志只保留结构信息，不记录完整 expression / value
+          urls: urls.map(u => truncateForLog(u)),
+        },
+        { total: urls.length, counts, maxObservedConcurrency: maxActive },
+        Date.now() - startTime,
+      );
       return;
     }
 
@@ -805,6 +1059,7 @@ const server = http.createServer(async (req, res) => {
           '/health': 'GET - 健康检查',
           '/targets': 'GET - 列出所有页面 tab',
           '/new?url=': 'GET - 创建新后台 tab（自动等待加载）',
+          '/collect': 'POST JSON {urls, expression, concurrency?, timeoutMs?} - 批量采集，逐页开 tab 执行表达式并关闭',
           '/close?target=': 'GET - 关闭 tab',
           '/navigate?target=&url=': 'GET - 导航（自动等待加载）',
           '/back?target=': 'GET - 后退',
