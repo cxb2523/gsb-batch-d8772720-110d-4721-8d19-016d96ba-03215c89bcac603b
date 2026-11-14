@@ -1,5 +1,6 @@
 import type { ProxyCountry } from "./scrape.js";
 import type { SchemaInput } from "../lib/schema.js";
+import type { PollOptions } from "../lib/poll.js";
 
 export interface CrawlParams<S extends SchemaInput = SchemaInput> {
   baseUrl: string;
@@ -102,6 +103,30 @@ export interface CrawlPagesParams {
   offset?: number;
   /** Pages to return, up to 1,000. Default 1,000. */
   limit?: number;
+}
+
+/** One batch read by `allPages()`, reported to its per-batch callback. */
+export interface CrawlBatchProgress {
+  /** This batch's number, starting at 1. */
+  batchIndex: number;
+  /** Pages in this batch (0 for the empty batch that ends a read). */
+  batchSize: number;
+  /** Pages read so far, across all batches. */
+  totalRead: number;
+  /** True when this batch was judged to be the last one. */
+  isLast: boolean;
+}
+
+/** Called after each `allPages()` batch. Throwing stops the read and rejects with that error. */
+export type CrawlBatchCallback = (progress: CrawlBatchProgress) => void;
+
+/** Positional callback or options object accepted by `allPages()`. */
+export type AllPagesOptions = CrawlBatchCallback | { onBatch?: CrawlBatchCallback };
+
+/** `run()` options: the usual poll options plus a per-batch callback for the pages it reads. */
+export interface CrawlRunOptions extends PollOptions {
+  /** Called once per page batch while a truncated result is completed. */
+  onBatch?: CrawlBatchCallback;
 }
 
 export interface CrawlHistoryParams {

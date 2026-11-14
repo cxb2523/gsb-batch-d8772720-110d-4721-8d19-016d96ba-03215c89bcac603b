@@ -46,6 +46,7 @@ import type {
   CrawlReportParams,
   CrawlReportResponse,
   CrawlPagesParams,
+  CrawlRunOptions,
   MapParams,
   MapResult,
 } from "./types/crawl.js";
@@ -284,7 +285,7 @@ export class SpidraClient {
   /** Crawl a website and wait for all pages to be processed. */
   async crawl<S extends SchemaInput = Record<string, unknown>>(
     params: CrawlParams<S>,
-    options?: PollOptions
+    options?: CrawlRunOptions
   ): Promise<CrawlJobCompleted<InferSchemaOutput<S>>> {
     return this.crawlResource.run<S>(params, options);
   }

@@ -776,7 +776,22 @@ const job = await spidra.crawl({
 });
 ```
 
-`crawl()` returns every page, however large the crawl. The status endpoint keeps only the first 100 pages inline, so for bigger crawls `crawl()` reads the rest for you. When you poll yourself, read them in batches with `crawlPages(jobId, { offset, limit })` (up to 1,000 per call).
+`crawl()` returns every page, however large the crawl. The status endpoint keeps only the first 100 pages inline, so for bigger crawls `crawl()` reads the rest for you. Pass `onBatch` to hear about each batch as it lands, whether the pages come from `crawl()`'s completion or your own `allPages(jobId, onBatch)` call:
+
+```typescript
+const job = await spidra.crawl(
+  { baseUrl: "https://spidra.io/blog", crawlInstruction: "Find all blog posts" },
+  {
+    onBatch: ({ batchIndex, batchSize, totalRead, isLast }) => {
+      console.log(`batch ${batchIndex}: ${batchSize} pages, ${totalRead} so far${isLast ? " (last)" : ""}`);
+    },
+  }
+);
+```
+
+`allPages()` reads in batches of 1,000 until a batch comes back empty, a batch is shorter than requested, a `total` is reached, or the response says `hasMore: false`. It does not need pagination metadata to finish a crawl. Throwing from `onBatch` stops the read and rejects with that error instead of returning partial pages.
+
+When you poll yourself, read them in batches with `crawlPages(jobId, { offset, limit })` (up to 1,000 per call).
 
 Each crawled page includes `html` and `markdown` fields with S3-signed URLs that expire after 1 hour:
 

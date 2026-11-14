@@ -11,6 +11,8 @@ import type {
   CrawlPagesResponse,
   CrawlPage,
   CrawlPagesParams,
+  AllPagesOptions,
+  CrawlRunOptions,
   CrawlHistoryParams,
   CrawlHistoryResponse,
   CrawlStats,
@@ -32,6 +34,9 @@ function parseData(data: unknown): unknown {
     return data;
   }
 }
+
+/** How many pages `allPages()` requests at a time. */
+const PAGE_BATCH_SIZE = 1000;
 
 export class CrawlResource {
   constructor(private http: HttpClient) {}
@@ -84,14 +89,40 @@ export class CrawlResource {
     return this.http.get<CrawlPagesResponse<T>>(`/crawl/${jobId}/pages${qs ? `?${qs}` : ""}`);
   }
 
-  /** Every page of a crawl, read in batches of 1,000. */
-  async allPages<T = unknown>(jobId: string): Promise<CrawlPage<T>[]> {
+  /**
+   * Every page of a crawl, read in batches of 1,000.
+   *
+   * Pagination metadata is optional: when a batch carries neither `hasMore`
+   * nor `total`, batches are read until one comes back empty. A batch with
+   * fewer pages than requested is the last one, and a batch that reaches
+   * `total` stops the read without asking for another.
+   *
+   * `onBatch` is called once per batch with that batch's number (from 1), its
+   * size, the running total and whether it was judged to be the last. Throwing
+   * from it stops the read and rejects with that error instead of returning
+   * the pages read so far.
+   */
+  async allPages<T = unknown>(jobId: string, batchOptions?: AllPagesOptions): Promise<CrawlPage<T>[]> {
+    const callback = typeof batchOptions === "function" ? batchOptions : batchOptions?.onBatch;
     const all: CrawlPage<T>[] = [];
+    let batchIndex = 0;
+
     for (;;) {
-      const batch = await this.pages<T>(jobId, { offset: all.length, limit: 1000 });
-      all.push(...batch.pages);
-      if (!batch.pages.length || batch.hasMore === false || (batch.total != null && all.length >= batch.total)) break;
-      if (batch.hasMore === undefined) break;
+      const batch = await this.pages<T>(jobId, { offset: all.length, limit: PAGE_BATCH_SIZE });
+      const pages = batch.pages ?? [];
+      batchIndex += 1;
+
+      const batchSize = pages.length;
+      const totalRead = all.length + batchSize;
+      const isLast =
+        batchSize === 0 ||
+        batchSize < PAGE_BATCH_SIZE ||
+        batch.hasMore === false ||
+        (batch.total != null && totalRead >= batch.total);
+
+      all.push(...pages);
+      callback?.({ batchIndex, batchSize, totalRead, isLast });
+      if (isLast) break;
     }
     return all;
   }
@@ -138,10 +169,14 @@ export class CrawlResource {
    * Submit a crawl job and wait for it to complete.
    * Throws `SpidraJobError` if the job fails or is cancelled, and
    * `SpidraTimeoutError` if `options.timeout` is set and exceeded.
+   *
+   * When the API truncated a large crawl's inline result, the remaining pages
+   * are read with `allPages()`. Pass `options.onBatch` to follow those reads
+   * batch by batch; throwing from it rejects `run()`.
    */
   async run<S extends SchemaInput = Record<string, unknown>>(
     params: CrawlParams<S>,
-    options?: PollOptions
+    options?: CrawlRunOptions
   ): Promise<CrawlJobCompleted<InferSchemaOutput<S>>> {
     const { jobId } = await this.submit(params);
 
@@ -158,7 +193,7 @@ export class CrawlResource {
     const completed = result as CrawlJobCompleted<InferSchemaOutput<S>>;
     // Large crawls keep only their first 100 pages inline; read every page so `result` is complete.
     if (completed.resultTruncated) {
-      const pages = await this.allPages<InferSchemaOutput<S>>(jobId);
+      const pages = await this.allPages<InferSchemaOutput<S>>(jobId, options?.onBatch);
       completed.result = pages.map(p => ({
         url: p.url,
         title: p.title,
