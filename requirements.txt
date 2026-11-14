@@ -1,0 +1,9 @@
+botcity-framework-base>=0.4.2,<1.0
+pyperclip
+opencv-python
+python-xlib
+pywinauto
+pynput
+psutil
+Pillow>=8.1.1
+numpy

@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    defaults:
+        run:
+          shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+          os: [ubuntu-latest]
+          python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Test Dependencies
+        run: |
+          pip install -r test-requirements.txt
+
+      - name: Install Package
+        run: |
+          pip install .
+
+      - run: sudo apt-get install xvfb
+
+      - name: Run Tests
+        run: |
+          xvfb-run --auto-servernum python run_tests.py
