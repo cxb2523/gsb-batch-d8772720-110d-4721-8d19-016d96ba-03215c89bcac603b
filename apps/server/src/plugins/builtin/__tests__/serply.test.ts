@@ -2946,6 +2946,83 @@ describe('Serply indexed RYM provider', () => {
     )
   })
 
+  it('counts dropped candidates so samples plus dropped equal the evaluated total', async () => {
+    const recordDiagnostic =
+      vi.fn<NonNullable<MediaPluginScrapeContext['recordDiagnostic']>>()
+    const payload = {
+      results: Array.from({ length: 25 }, (_, index) => ({
+        ...pripyat,
+        link: `https://unrelated.invalid/${index}`,
+      })),
+    }
+    await expect(
+      scrape(context(payload, { recordDiagnostic })),
+    ).rejects.toBeInstanceOf(ProviderItemNotFoundError)
+    const search = recordDiagnostic.mock.calls
+      .map(([entry]) => entry)
+      .find((entry) => entry.stage === 'serply.search')
+    expect(search).toMatchObject({
+      evidence: { resultCount: 25, reasons: { 'invalid-url': 25 } },
+    })
+    const evidence = search?.evidence as {
+      candidates: unknown[]
+      droppedCandidates: number
+      reasons: Record<string, number>
+    }
+    expect(evidence.candidates).toHaveLength(20)
+    expect(evidence.droppedCandidates).toBe(5)
+    const evaluated = Object.values(evidence.reasons).reduce(
+      (total, count) => total + count,
+      0,
+    )
+    expect(evidence.candidates.length + evidence.droppedCandidates).toBe(
+      evaluated,
+    )
+  })
+
+  it('keeps accepted candidate evidence consistent with the selection provenance', async () => {
+    const recordDiagnostic =
+      vi.fn<NonNullable<MediaPluginScrapeContext['recordDiagnostic']>>()
+    const output = await scrape(context(undefined, { recordDiagnostic }))
+    const search = recordDiagnostic.mock.calls
+      .map(([entry]) => entry)
+      .find((entry) => entry.stage === 'serply.search')
+    const candidate = (
+      search?.evidence as {
+        candidates: {
+          reason: string
+          identityEvidence?: string
+          yearEvidence?: string
+        }[]
+      }
+    ).candidates[0]
+    expect(candidate).toMatchObject({
+      reason: 'accepted',
+      identityEvidence: 'exact-path',
+      yearEvidence: 'consistent-or-unknown',
+    })
+    const selection = recordDiagnostic.mock.calls
+      .map(([entry]) => entry)
+      .find((entry) => entry.stage === 'serply.selection')
+    expect(selection).toMatchObject({
+      evidence: {
+        reason: 'rated',
+        identityEvidence: candidate?.identityEvidence,
+        yearEvidence: candidate?.yearEvidence,
+      },
+    })
+    expect(
+      output.normalized.mediaPatch?.metadata?.['plugin.serply.provenance'],
+    ).toMatchObject({
+      matchStatus: 'rated',
+      identityEvidence: candidate?.identityEvidence,
+      yearEvidence: candidate?.yearEvidence,
+    })
+    expect(JSON.stringify(recordDiagnostic.mock.calls)).not.toContain(
+      'offline-key',
+    )
+  })
+
   it.each([
     { results: [] },
     { results: [{ ...pripyat, link: 'https://unrelated.invalid/album/' }] },

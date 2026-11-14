@@ -489,7 +489,11 @@ function candidates(
   expectedDate: string | null,
   artistCredits: string[],
   singleEvidence: { artist: string; title: string }[],
-  diagnostic: { candidates: JsonValue[]; reasons: Record<string, number> },
+  diagnostic: {
+    candidates: JsonValue[]
+    reasons: Record<string, number>
+    evaluated: number
+  },
 ) {
   const matches = []
   const results = ResponseSchema.parse(payload).results
@@ -517,8 +521,12 @@ function candidates(
     }
   }
   for (const [index, entry] of results.entries()) {
-    const record = (reason: string) => {
+    const record = (
+      reason: string,
+      evidence?: { identityEvidence: string; yearEvidence: string },
+    ) => {
       diagnostic.reasons[reason] = (diagnostic.reasons[reason] ?? 0) + 1
+      diagnostic.evaluated += 1
       if (diagnostic.candidates.length >= 20) return
       const fields = z
         .object({
@@ -531,6 +539,9 @@ function candidates(
       diagnostic.candidates.push({
         index,
         reason,
+        // Accepted candidates keep the identity/year evidence that admitted
+        // them, using the same enum values as the selection provenance.
+        ...(evidence ?? {}),
         response: fields.success
           ? {
               title: diagnosticField(fields.data.title),
@@ -775,7 +786,28 @@ function candidates(
       sourceYear !== null &&
       expectedYear !== undefined &&
       sourceYear !== expectedYear
-    record(!score && !tags.names.length ? 'identity-only' : 'accepted')
+    const identityEvidence = manualReference
+      ? 'manual-reference'
+      : corroborated
+        ? corroborated.rule
+        : pathMatches
+          ? 'exact-path'
+          : displayPathMatches
+            ? 'corroborated-display-title'
+            : disambiguatedPath
+              ? 'corroborated-disambiguation'
+              : 'owned-reference'
+    const yearEvidence = manualReference
+      ? yearConflict
+        ? 'manual-reference-year-conflict'
+        : 'manual-reference'
+      : editionYear
+        ? 'edition-to-original'
+        : 'consistent-or-unknown'
+    record(!score && !tags.names.length ? 'identity-only' : 'accepted', {
+      identityEvidence,
+      yearEvidence,
+    })
     matches.push({
       result,
       page,
@@ -800,24 +832,8 @@ function candidates(
         titleConflict ||
         descriptionConflict ||
         (!pathMatches && !displayPathMatches && !disambiguatedPath),
-      identityEvidence: manualReference
-        ? 'manual-reference'
-        : corroborated
-          ? corroborated.rule
-          : pathMatches
-            ? 'exact-path'
-            : displayPathMatches
-              ? 'corroborated-display-title'
-              : disambiguatedPath
-                ? 'corroborated-disambiguation'
-                : 'owned-reference',
-      yearEvidence: manualReference
-        ? yearConflict
-          ? 'manual-reference-year-conflict'
-          : 'manual-reference'
-        : editionYear
-          ? 'edition-to-original'
-          : 'consistent-or-unknown',
+      identityEvidence,
+      yearEvidence,
     })
   }
   return matches.sort(
@@ -913,7 +929,7 @@ function tagEvidence(
         null,
         [names.artist],
         singles,
-        { candidates: [], reasons: {} },
+        { candidates: [], reasons: {}, evaluated: 0 },
       ),
     )
     .filter(
@@ -1259,7 +1275,7 @@ export const serplyPlugin: MediaProviderPlugin = {
       searched.add(query)
       const payload = await search(context, query)
       searches.push({ query, response: payload })
-      const diagnostic = { candidates: [], reasons: {} }
+      const diagnostic = { candidates: [], reasons: {}, evaluated: 0 }
       try {
         const accepted = candidates(
           payload,
@@ -1291,6 +1307,10 @@ export const serplyPlugin: MediaProviderPlugin = {
             ? 'evaluated'
             : 'invalid-response',
           reasons: diagnostic.reasons,
+          // Samples stay capped at 20; the dropped count keeps the sample
+          // accountable: candidates.length + droppedCandidates === evaluated.
+          // It precedes the samples so sanitization never truncates it away.
+          droppedCandidates: diagnostic.evaluated - diagnostic.candidates.length,
           candidates: diagnostic.candidates,
         })
       }
