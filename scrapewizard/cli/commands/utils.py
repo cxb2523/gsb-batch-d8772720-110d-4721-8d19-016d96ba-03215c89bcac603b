@@ -1,0 +1,183 @@
+import typer
+import sys
+from typing import Optional, Any, Dict, List
+import os
+import shutil
+import platform
+from pathlib import Path
+from datetime import datetime
+from rich.console import Console
+from rich.table import Table
+from rich import print as rprint
+
+from scrapewizard.core.project_manager import ProjectManager
+from scrapewizard.core.orchestrator import Orchestrator
+from scrapewizard.core.logging import log, Logger
+
+console = Console(width=100) # Force width for better rendering in snapshots
+
+def list_projects() -> None:
+    """List all local scraper projects."""
+    projects = ProjectManager.list_projects()
+    
+    if not projects:
+        rprint("[yellow]No projects found.[/yellow]")
+        return
+
+    rprint(f"\n[bold cyan]Found {len(projects)} projects:[/bold cyan]")
+    
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Project ID", style="dim")
+    table.add_column("URL")
+    table.add_column("Last Modified")
+    table.add_column("Status")
+
+    for p in projects:
+        session = ProjectManager.load_project(str(p))
+        if session:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            status = session.get("state", "unknown")
+            url = session.get("url", "unknown")
+            # Truncate URL if too long
+            if len(url) > 40:
+                url = url[:37] + "..."
+            table.add_row(p.name, url, mtime, status)
+        else:
+            table.add_row(p.name, "[red]Invalid Session[/red]", "-", "-")
+    
+    console.print(table)
+
+def clean(
+    force: bool = typer.Option(False, "--force", "-f", help="Force deletion without confirmation")
+) -> None:
+    """Clean up old projects."""
+    projects = ProjectManager.list_projects()
+    if not projects:
+        rprint("[yellow]Nothing to clean.[/yellow]")
+        return
+        
+    if not force:
+        confirm = typer.confirm(f"Are you sure you want to delete {len(projects)} projects?")
+        if not confirm:
+            rprint("[yellow]Aborted.[/yellow]")
+            return
+
+    for p in projects:
+        try:
+            shutil.rmtree(p)
+            rprint(f"[dim]Deleted {p.name}[/dim]")
+        except Exception as e:
+            rprint(f"[red]Failed to delete {p.name}: {e}[/red]")
+    
+    rprint("[green]Cleanup complete.[/green]")
+
+def doctor() -> None:
+    """Check environment health."""
+    rprint("[bold cyan]Checking ScrapeWizard environment...[/bold cyan]")
+    from scrapewizard.core.config import ConfigManager
+    
+    rprint(f"• OS: {platform.system()} {platform.release()}")
+    rprint(f"• Python: {sys.version.split()[0]}")
+    
+    config_ok = ConfigManager.check_setup()
+    rprint(f"• Configuration: {'[green]OK[/green]' if config_ok else '[red]MISSING (Run setup)[/red]'}")
+    
+    playwright_path = shutil.which("playwright")
+    rprint(f"• Playwright CLI: {'[green]OK[/green]' if playwright_path else '[red]MISSING[/red]'}")
+    
+    # Linux-specific check for dependencies
+    if platform.system() == "Linux" and playwright_path:
+        rprint("  [dim]Note: On Linux, ensure system dependencies are installed: [bold]playwright install-deps[/bold][/dim]")
+    
+    projects_dir = ProjectManager.PROJECTS_ROOT
+    rprint(f"• Projects Directory: {projects_dir} ({'[green]Ready[/green]' if projects_dir.exists() else '[yellow]Not initialized[/yellow]'})")
+    
+    # Check LLM connectivity if config exists
+    if config_ok:
+        try:
+            from scrapewizard.llm.client import LLMClient
+            from scrapewizard.llm.local_runtime import LocalRuntime
+            from scrapewizard.core.constants import LOCAL_LLM_PROBE_TIMEOUT
+            
+            client = LLMClient()
+            provider = client.provider
+            
+            if provider == "local":
+                runtime = LocalRuntime()
+                daemon = runtime.check_daemon()
+                
+                if daemon.running:
+                    rprint(f"• Local AI Runtime: [green]Ollama {daemon.version}[/green]")
+                    models = runtime.list_models()
+                    model_name = client.model
+                    
+                    model_loaded = False
+                    for m in models:
+                        if m == model_name or m.startswith(model_name + ":") or model_name.startswith(m + ":"):
+                            model_loaded = True
+                            break
+                            
+                    if model_loaded:
+                        rprint(f"• Local Model: [green]{model_name}[/green]")
+                        # Run probe
+                        probe_res = runtime.probe(model_name, timeout=LOCAL_LLM_PROBE_TIMEOUT)
+                        if probe_res.success:
+                            rprint(f"• LLM Local: [green]✅ Ollama running, model {model_name} loaded, probe: {probe_res.latency}s[/green]")
+                        else:
+                            rprint(f"• LLM Local: [red]❌ Probe failed: {probe_res.error}[/red]")
+                    else:
+                        rprint(f"• Local Model: [yellow]Not pulled ({model_name})[/yellow]")
+                        rprint(f"• LLM Local: [yellow]⚠️ Model not pulled. Run 'scrapewizard setup'[/yellow]")
+                else:
+                    rprint(f"• Local AI Runtime: [red]Ollama not running[/red]")
+                    rprint(f"• LLM Local: [red]❌ Ollama daemon is down[/red]")
+                    
+                # Hardware Tier
+                hw = runtime.detect_hardware()
+                rprint(f"• Hardware Tier: [cyan]{hw['tier'].upper()}[/cyan] ({hw['ram_gb']} GB RAM, {hw['gpu_name']})")
+                
+            else:
+                # Cloud client probe check
+                import time
+                start_time = time.time()
+                try:
+                    # Let's run a small test call to verify cloud connectivity
+                    response = client.call(
+                        system_prompt="you are a health check assistant. reply with ok",
+                        user_prompt="ping",
+                        json_mode=False
+                    )
+                    latency = round(time.time() - start_time, 2)
+                    if "ok" in response.lower():
+                        rprint(f"• LLM Cloud: [green]✅ {client.provider}/{client.model}, probe: {latency}s[/green]")
+                    else:
+                        rprint(f"• LLM Cloud: [yellow]⚠️ {client.provider}/{client.model} responded but output was: {response} ({latency}s)[/yellow]")
+                except Exception as e:
+                    rprint(f"• LLM Cloud: [red]❌ Connection failed to {client.provider}/{client.model}: {e}[/red]")
+        except Exception as e:
+            rprint(f"• LLM Client: [red]Error initializing client ({e})[/red]")
+    
+    rprint("\n[bold green]System check complete.[/bold green]")
+
+def resume(project_id: str = typer.Argument(..., help="The ID of the project to resume")) -> None:
+    """Resume an existing project."""
+    projects_root = ProjectManager.PROJECTS_ROOT
+    project_dir = projects_root / project_id
+    
+    if not project_dir.exists():
+        rprint(f"[red]Error: Project '{project_id}' not found.[/red]")
+        rprint(f"Looking in: {projects_root}")
+        list_projects()
+        raise typer.Exit(code=1)
+        
+    rprint(f"[bold cyan]Resuming project:[/bold cyan] {project_id}")
+    
+    try:
+        # Setup logging for the orchestrator
+        Logger.setup_logging(log_dir=project_dir, verbose=False)
+        
+        orchestrator = Orchestrator(project_dir)
+        orchestrator.run()
+    except Exception as e:
+        log(f"Resume failed: {e}", level="error")
+        raise typer.Exit(code=1)

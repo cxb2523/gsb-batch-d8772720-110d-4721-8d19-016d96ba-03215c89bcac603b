@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+.env
+
+# Project specific
+scrapewizard_projects/
+output/
+logs/
+llm_logs/
+*.log
+cookies.json
+storage_state.json
+.learn.md
+
+# SQLite databases (runtime artifacts — never commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+ScrapeWizard Studio
+.learn.md
+
+# Frontend build output (generated — not committed)
+studio/frontend/dist/
+studio/frontend/node_modules/
