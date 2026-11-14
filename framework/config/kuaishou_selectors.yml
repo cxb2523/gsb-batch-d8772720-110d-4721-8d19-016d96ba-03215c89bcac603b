@@ -1,0 +1,12 @@
+# Kuaishou field mapping
+# Guests are hard-blocked: the share page is a login-gated SPA and engagement counts are rendered by JS, so the HTML is usually empty.
+# Only seed-ID mode (fetch_by_ids) attempts a parse; when nothing is there the metrics stay empty rather than fabricated.
+
+# JSON fields the share page may expose -> canonical metric names
+metrics:
+  like_count: likeCount
+  comment_count: commentCount
+  view_count: viewCount
+  share_count: shareCount
+
+url_template: "https://www.kuaishou.com/short-video/{video_id}"

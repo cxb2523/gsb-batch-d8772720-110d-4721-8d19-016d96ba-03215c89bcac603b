@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="782" height="524"
+     viewBox="0 0 782 524" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace">
+  <style>
+    .ln { font-size: 13px; opacity: 0; font-variant-ligatures: none;
+           animation-duration: 11.0s; animation-iteration-count: infinite;
+           animation-timing-function: steps(1, end); }
+    @keyframes l0{0%,3.64%{opacity:0}3.99%,95.5%{opacity:1}100%{opacity:0}} @keyframes l1{0%,10.00%{opacity:0}10.35%,95.5%{opacity:1}100%{opacity:0}} @keyframes l3{0%,17.27%{opacity:0}17.62%,95.5%{opacity:1}100%{opacity:0}} @keyframes l5{0%,23.64%{opacity:0}23.99%,95.5%{opacity:1}100%{opacity:0}} @keyframes l7{0%,27.27%{opacity:0}27.62%,95.5%{opacity:1}100%{opacity:0}} @keyframes l8{0%,30.00%{opacity:0}30.35%,95.5%{opacity:1}100%{opacity:0}} @keyframes l9{0%,31.82%{opacity:0}32.17%,95.5%{opacity:1}100%{opacity:0}} @keyframes l10{0%,33.64%{opacity:0}33.99%,95.5%{opacity:1}100%{opacity:0}} @keyframes l11{0%,35.45%{opacity:0}35.80%,95.5%{opacity:1}100%{opacity:0}} @keyframes l12{0%,37.27%{opacity:0}37.62%,95.5%{opacity:1}100%{opacity:0}} @keyframes l14{0%,40.91%{opacity:0}41.26%,95.5%{opacity:1}100%{opacity:0}} @keyframes l15{0%,42.73%{opacity:0}43.08%,95.5%{opacity:1}100%{opacity:0}} @keyframes l16{0%,44.09%{opacity:0}44.44%,95.5%{opacity:1}100%{opacity:0}} @keyframes l18{0%,47.27%{opacity:0}47.62%,95.5%{opacity:1}100%{opacity:0}} @keyframes l19{0%,49.09%{opacity:0}49.44%,95.5%{opacity:1}100%{opacity:0}} @keyframes l21{0%,53.64%{opacity:0}53.99%,95.5%{opacity:1}100%{opacity:0}}
+    @keyframes blink { 0%,44%{opacity:0} 45%,49%{opacity:.85} 50%,54%{opacity:0}
+                        55%,59%{opacity:.85} 60%,100%{opacity:0} }
+    .cur { animation: blink 11.0s infinite; }
+  </style>
+
+  <rect width="782" height="524" rx="10" fill="#0D1117"/>
+  <rect width="782" height="34" rx="10" fill="#161B22"/>
+  <rect y="24" width="782" height="10" fill="#161B22"/>
+  <line x1="0" y1="34" x2="782" y2="34" stroke="#FFFFFF" stroke-opacity="0.07"/>
+  <rect x="0.5" y="0.5" width="781" height="523" rx="10"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.09"/>
+
+  <circle cx="20" cy="17" r="6" fill="#FF5F57"/>
+  <circle cx="40" cy="17" r="6" fill="#FEBC2E"/>
+  <circle cx="60" cy="17" r="6" fill="#28C840"/>
+  <text x="391" y="21" font-size="12" fill="#7C8899"
+        text-anchor="middle">prism — demo</text>
+
+    <text y="62" class="ln" xml:space="preserve" style="animation-name:l0"><tspan x="22.0" fill="#4ADE80">$ </tspan><tspan x="37.7" fill="#FFFFFF">pip install prism-insights</tspan></text>
+  <text y="83" class="ln" xml:space="preserve" style="animation-name:l1"><tspan x="22.0" fill="#7C8899">Successfully installed prism-insights-0.3.0</tspan></text>
+  <text y="125" class="ln" xml:space="preserve" style="animation-name:l3"><tspan x="22.0" fill="#4ADE80">$ </tspan><tspan x="37.7" fill="#FFFFFF">prism demo</tspan></text>
+  <text y="167" class="ln" xml:space="preserve" style="animation-name:l5"><tspan x="22.0" fill="#7C8899">Prism demo · bundled anonymized data</tspan></text>
+  <text y="209" class="ln" xml:space="preserve" style="animation-name:l7"><tspan x="22.0" fill="#7DD3FC">① Collect-rate ranking (save/like — Prism's core signal):</tspan></text>
+  <text y="230" class="ln" xml:space="preserve" style="animation-name:l8"><tspan x="22.0" fill="#4ADE80">    2.38</tspan><tspan x="84.6" fill="#C9D4E3">  save   1520 / like    640   </tspan><tspan x="319.5" fill="#E6EDF3">Every visa document I needed, in order</tspan></text>
+  <text y="251" class="ln" xml:space="preserve" style="animation-name:l9"><tspan x="22.0" fill="#4ADE80">    1.82</tspan><tspan x="84.6" fill="#C9D4E3">  save   1655 / like    910   </tspan><tspan x="319.5" fill="#E6EDF3">Reading a rental contract line by line</tspan></text>
+  <text y="272" class="ln" xml:space="preserve" style="animation-name:l10"><tspan x="22.0" fill="#4ADE80">    1.82</tspan><tspan x="84.6" fill="#C9D4E3">  save   1490 / like    820   </tspan><tspan x="319.5" fill="#E6EDF3">How to pick a rice cooker without overpaying</tspan></text>
+  <text y="293" class="ln" xml:space="preserve" style="animation-name:l11"><tspan x="22.0" fill="#4ADE80">     1.6</tspan><tspan x="84.6" fill="#C9D4E3">  save   1980 / like   1240   </tspan><tspan x="319.5" fill="#E6EDF3">12 museums in the city that are free on Sunda…</tspan></text>
+  <text y="314" class="ln" xml:space="preserve" style="animation-name:l12"><tspan x="22.0" fill="#4ADE80">    1.24</tspan><tspan x="84.6" fill="#C9D4E3">  save   2610 / like   2100   </tspan><tspan x="319.5" fill="#E6EDF3">Beginner sourdough: the whole schedule on one…</tspan></text>
+  <text y="356" class="ln" xml:space="preserve" style="animation-name:l14"><tspan x="22.0" fill="#7DD3FC">② By content type (avg saves):</tspan></text>
+  <text y="377" class="ln" xml:space="preserve" style="animation-name:l15"><tspan x="22.0" fill="#C9D4E3">   image    n=9    avg_save=</tspan><tspan x="241.2" fill="#4ADE80">1748</tspan></text>
+  <text y="398" class="ln" xml:space="preserve" style="animation-name:l16"><tspan x="22.0" fill="#C9D4E3">   video    n=11   avg_save=</tspan><tspan x="241.2" fill="#7C8899">693</tspan></text>
+  <text y="440" class="ln" xml:space="preserve" style="animation-name:l18"><tspan x="22.0" fill="#C9D4E3">③ Save distribution: n=20 median=940 p90=1980 max=2610</tspan></text>
+  <text y="461" class="ln" xml:space="preserve" style="animation-name:l19"><tspan x="22.0" fill="#C9D4E3">④ Save concentration: HHI=657 top3-share=0.284</tspan></text>
+  <text y="503" class="ln" xml:space="preserve" style="animation-name:l21"><tspan x="22.0" fill="#4ADE80">✓</tspan><tspan x="29.8" fill="#7C8899"> offline demo data. Live: </tspan><tspan x="233.4" fill="#FFFFFF">prism analyze bilibili --limit 15</tspan></text>
+
+  <rect class="cur" x="117.0" y="114"
+        width="7.5" height="15" fill="#C9D4E3"/>
+</svg>

@@ -1,0 +1,27 @@
+# Xiaohongshu field mapping — when the site changes, edit this file, not xhs.py
+# Source: cookies + parsing window.__INITIAL_STATE__ out of the note page HTML
+
+initial_state:
+  # Regex to pull __INITIAL_STATE__ out of the HTML (anchored on </script> so nested } don't truncate it)
+  regex: 'window\.__INITIAL_STATE__\s*=\s*(\{.+?\})\s*</script>'
+  # path to the note data inside the state object
+  note_map_path: [note, noteDetailMap]
+  # path to the current note id (noteDetailMap can also hold recommended notes, so pin the right one)
+  current_id_path: [note, currentNoteId]
+
+# interactInfo engagement fields -> canonical metric names (this is what breaks most often on redesigns)
+metrics:
+  like_count: likedCount
+  collect_count: collectedCount      # the core Xiaohongshu signal: saves, not likes
+  comment_count: commentCount
+  share_count: shareCount
+
+# fields inside the note object (re-check after a redesign)
+note_fields:
+  id_keys: [noteId, id]              # take the first non-empty one, in order
+  cover_list: imageList
+  cover_url_key: urlDefault
+  tag_list: tagList
+  tag_name_key: name
+
+url_template: "https://www.xiaohongshu.com/explore/{note_id}"

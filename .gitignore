@@ -1,0 +1,59 @@
+# Credentials — never commit
+cookies.json
+.env
+*.cookies
+secrets*
+*token*
+
+# Data — real scraped data stays local; only the anonymized demo.db ships
+*.db
+!framework/demo.db
+data/raw/
+*.cache
+
+# Python
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Scratch
+*.log
+.DS_Store
+/tmp/
+
+# Working notes — kept out of the repo
+.planning/
+/task_plan.md
+/findings.md
+/progress.md
+
+# Test & tool caches
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# Large artifacts / scraper runtime cache
+/output/
+.playwright-cli/
+examples/.playwright-cli/
+
+# SQLite WAL sidecar files
+*.db-shm
+*.db-wal
+
+# Private analysis scripts — belt-and-braces, so local one-offs can never
+# land in the public repo by accident
+examples/harvest.py
+examples/fans.py
+examples/enrich_detail.py
+examples/build_dashboard.py
+examples/fetch_all_pw.py
+examples/fetch_detail_batch.py
+examples/fetch_search_pw.py
+examples/dashboard_*
+examples/backups/

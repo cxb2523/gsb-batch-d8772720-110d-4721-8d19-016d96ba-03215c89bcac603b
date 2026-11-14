@@ -1,0 +1,73 @@
+name: Publish to PyPI
+
+# Publishing runs on Trusted Publishing (OIDC): GitHub proves this workflow's
+# identity to PyPI and gets a short-lived token in return. There is no API token
+# stored anywhere in this repo — nothing to leak, nothing to rotate.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:        # lets the first release be kicked off by hand
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Don't ship something that doesn't pass its own tests.
+      - name: Install
+        run: pip install -e ".[forecast,cookies,dev]" build twine
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Tests
+        run: pytest tests/ -q
+
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check package metadata
+        run: twine check dist/*
+
+      # The wheel must carry schema.sql, demo.db and the selector configs —
+      # without them `prism demo` traceback on a fresh install.
+      - name: Verify data files made it into the wheel
+        run: |
+          python - <<'PY'
+          import glob, zipfile, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          need = ["framework/schema.sql", "framework/demo.db",
+                  "framework/config/xhs_selectors.yml"]
+          missing = [n for n in need if n not in names]
+          print(f"{whl}: {len(names)} files")
+          if missing:
+              sys.exit(f"MISSING from wheel: {missing}")
+          print("all data files present")
+          PY
+
+      - name: Install the built wheel in a clean env and run the demo
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install --quiet dist/*.whl
+          /tmp/fresh/bin/prism demo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write       # the entire credential for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

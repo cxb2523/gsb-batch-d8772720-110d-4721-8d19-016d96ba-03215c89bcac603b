@@ -1,0 +1,28 @@
+name: Feature Request
+description: Suggest a new capability, analysis lens, or platform adapter
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The research/analysis need behind the request.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of feature
+      options:
+        - New platform adapter (e.g. Douyin, Bilibili, Weibo)
+        - New analysis lens
+        - New metric / signal
+        - Developer experience (DX) / API
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: For a new adapter, note the target platform and the key signals (e.g. Douyin completion-rate vs XHS collect-rate).

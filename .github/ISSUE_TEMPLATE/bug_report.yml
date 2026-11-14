@@ -1,0 +1,46 @@
+name: Bug Report
+description: Report a reproducible bug in Prism
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug! Please fill in the details below.
+  - type: input
+    id: version
+    attributes:
+      label: Prism & Python version
+      placeholder: "Prism 0.2.0, Python 3.11, macOS 14"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      options:
+        - Adapter / scraping (xhs)
+        - Cookie auto-read (xhs_cookies)
+        - Store / schema
+        - Analysis (quant / sentiment / timeseries / forecast / xhs_insights)
+        - Compliance (scrub_user / RateLimiter)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest code/command that triggers the bug.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error log / traceback
+      render: shell

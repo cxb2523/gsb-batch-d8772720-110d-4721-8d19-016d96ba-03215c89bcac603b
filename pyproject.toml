@@ -1,0 +1,70 @@
+[project]
+name = "prism-insights"
+version = "0.4.0"
+description = "The analysis layer for social content — one schema across Xiaohongshu, Bilibili, Douyin and Kuaishou. Ranks by save-rate, not likes."
+keywords = ["social-media", "content-analysis", "xiaohongshu", "bilibili", "douyin", "kuaishou", "analytics", "data-analysis", "rednote"]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "millennialdreamer" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+forecast = ["scikit-learn>=1.3"]      # forecast engine (linear-regression backtests)
+cookies = ["pycryptodome>=3.20"]      # macOS: read and decrypt cookies straight from a Chrome profile (optional convenience)
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.5", "mypy>=1.10"]
+
+[project.scripts]
+prism = "prism:main"
+
+[project.urls]
+Homepage = "https://github.com/millennialdreamer/prism"
+Repository = "https://github.com/millennialdreamer/prism"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["compliance", "prism"]
+packages = ["framework", "framework.adapters", "framework.analysis"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+framework = ["schema.sql", "demo.db", "config/*.yml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# pycodestyle / pyflakes / isort / bugbear / pyupgrade
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]   # line length is handled by the formatter
+
+[tool.mypy]
+ignore_missing_imports = true   # third-party packages without type stubs are fine
+warn_redundant_casts = true
+warn_unused_ignores = true
+# Without this, `mypy .` dies with "Duplicate module" for anyone who has ever
+# run a build — build/lib/ holds a second copy of every module.
+exclude = "^(build|dist)/"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

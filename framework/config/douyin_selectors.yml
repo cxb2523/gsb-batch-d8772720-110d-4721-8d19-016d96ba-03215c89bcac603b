@@ -1,0 +1,21 @@
+# Douyin field mapping — App feed guest endpoint -> canonical metric names
+# Source: aweme.snssdk.com/aweme/v1/feed/ (App guest mode, no login, no signing)
+# Note: web keyword search forces login server-side (status 2483), so we page the feed and filter by keyword
+
+# statistics object fields -> canonical metric names
+metrics:
+  view_count: play_count          # plays
+  like_count: digg_count          # likes
+  comment_count: comment_count    # comments
+  share_count: share_count        # shares
+  collect_count: collect_count    # saves (the long-tail signal that matters)
+
+# fields inside the aweme object
+aweme_fields:
+  id_key: aweme_id
+  desc_key: desc
+  author_key: author
+  video_key: video
+  cover_url_key: origin_cover     # video.origin_cover.url_list[0]
+
+url_template: "https://www.douyin.com/video/{aweme_id}"

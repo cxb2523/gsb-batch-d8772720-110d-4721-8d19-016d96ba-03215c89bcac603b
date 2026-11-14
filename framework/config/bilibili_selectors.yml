@@ -1,0 +1,27 @@
+# Bilibili field mapping config — API fields → unified metric names
+# Scraping: most Bilibili web APIs require no signature and no login (public data, direct fetch) — no anti-scraping burden like Xiaohongshu/Douyin
+
+# stat object field names → unified metric names (update here on API changes, no code changes needed)
+metrics:
+  view_count: view          # views
+  like_count: like          # likes
+  coin_count: coin          # ⭐ Bilibili-specific: coin (costs hard currency — stronger signal than a like)
+  collect_count: favorite   # saves (same core signal as Xiaohongshu)
+  share_count: share        # shares
+  comment_count: reply      # comments
+  danmaku_count: danmaku    # ⭐ Bilibili-specific: danmaku (live comments)
+
+# video object field names (verify on API version changes)
+video_fields:
+  id_key: bvid
+  title_key: title
+  desc_key: desc
+  cover_key: pic
+  pubdate_key: pubdate
+  owner_key: owner          # {mid, name, face}
+
+# API paths (no signature required)
+api:
+  popular: "/x/web-interface/popular"   # trending list
+  view: "/x/web-interface/view"         # single video
+url_template: "https://www.bilibili.com/video/{bvid}"
