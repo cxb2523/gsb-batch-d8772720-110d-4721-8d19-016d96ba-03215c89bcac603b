@@ -50,6 +50,7 @@ __all__ = [
 	"FailRequestSettings",
 	"FetchEnableKwargsSettings",
 	"FetchHandlersSettings",
+	"FetchInterceptionResult",
 	"FetchSettings",
 	"FulfillRequestHandlersSettings",
 	"FulfillRequestSettings",
@@ -58,6 +59,7 @@ __all__ = [
 	"RequestPausedSettings",
 	"auth_required_actions_literal",
 	"auth_required_choose_action_func_type",
+	"fetch_interception_result_callback_type",
 	"handle_auth_required_func_type",
 	"handle_request_paused_func_type",
 	"request_paused_actions_literal",
@@ -84,6 +86,119 @@ auth_required_choose_action_func_type = Callable[[DevToolsTarget, Any], Sequence
 handle_auth_required_func_type = Callable[[DevToolsTarget, "AuthRequiredSettings", Any], Coroutine[Any, Any, None]]
 
 
+class FetchInterceptionResult(DictModel):
+	"""
+	Structured record of what a single Fetch interception action did.
+
+	One record is emitted through the configured ``interception_result_callback``
+	after each action chosen for a 'fetch.RequestPaused' or 'fetch.AuthRequired'
+	event has been executed (or failed before execution, e.g. while building
+	the CDP command parameters).
+
+	Attributes:
+		target_id (Optional[str]): ID of the DevTools target the event was dispatched to.
+		event_path (str): Dot-separated CDP event path of the triggering event
+			(e.g. "fetch.RequestPaused", "fetch.AuthRequired").
+		action_name (str): Name of the chosen action. Matches the actually executed
+			CDP command under the "fetch" package (e.g. "continue_request").
+		success (bool): Whether the action completed successfully. False if parameter
+			handlers or the CDP command raised an error.
+		error_type (Optional[str]): Type name of the raised exception
+			(e.g. "ValueError"). None when the action succeeded.
+		error_message (Optional[str]): Message of the raised exception. None when
+			the action succeeded.
+	"""
+
+	target_id: Optional[str]
+	event_path: str
+	action_name: str
+	success: bool
+	error_type: Optional[str] = None
+	error_message: Optional[str] = None
+
+
+fetch_interception_result_callback_type = Callable[
+	[DevToolsTarget, "FetchInterceptionResult"],
+	Coroutine[Any, Any, None]
+]
+
+
+def _unwrap_exception(error: BaseException) -> BaseException:
+	"""
+	Returns the first concrete exception contained in an ``ExceptionGroup``.
+
+	Trio's structured concurrency reports task failures wrapped in
+	``ExceptionGroup``s; this helper digs out the underlying exception so the
+	recorded failure reason refers to the real problem instead of the wrapper.
+
+	Args:
+		error (BaseException): The caught exception, possibly an ``ExceptionGroup``.
+
+	Returns:
+		BaseException: The unwrapped exception, or the original one if it is not
+			an ``ExceptionGroup``.
+	"""
+
+	while isinstance(error, ExceptionGroup) and error.exceptions:
+		error = error.exceptions[0]
+
+	return error
+
+
+async def _emit_interception_result(
+		self: DevToolsTarget,
+		event_path: str,
+		action_name: str,
+		success: bool,
+		error: Optional[BaseException],
+		callback: Optional[fetch_interception_result_callback_type]
+):
+	"""
+	Builds and delivers a ``FetchInterceptionResult`` through the caller's callback.
+
+	Does nothing when no callback is configured, leaving the interception behavior
+	identical to the behavior without result recording. Any error raised by the
+	callback itself (except CDP termination errors) is swallowed and logged so that
+	a faulty callback can never interrupt processing of subsequent events.
+
+	Args:
+		self (DevToolsTarget): The DevToolsTarget instance.
+		event_path (str): Dot-separated CDP event path of the triggering event.
+		action_name (str): Name of the chosen (and actually executed) action.
+		success (bool): Whether the action completed successfully.
+		error (Optional[BaseException]): The exception that caused the failure, if any.
+		callback (Optional[fetch_interception_result_callback_type]): The caller-provided
+			async callback that receives the result record.
+	"""
+
+	if callback is None:
+		return
+
+	error_type: Optional[str] = None
+	error_message: Optional[str] = None
+
+	if error is not None:
+		unwrapped_error = _unwrap_exception(error)
+		error_type = type(unwrapped_error).__name__
+		error_message = str(unwrapped_error)
+
+	result = FetchInterceptionResult(
+			target_id=self.target_id,
+			event_path=event_path,
+			action_name=action_name,
+			success=success,
+			error_type=error_type,
+			error_message=error_message
+	)
+
+	try:
+		await callback(self, result)
+	except* CDPEndExceptions as end_error:
+		raise end_error
+	except* BaseException as callback_error:
+		await self.log_cdp_error(error=callback_error)
+
+
 class ContinueWithAuthParameterHandlersSettings(AbstractActionParametersHandlersSettings):
 	"""
 	Settings for the handlers that provide authentication credentials when required.
@@ -104,8 +219,10 @@ async def _build_kwargs_from_handlers_func(self: DevToolsTarget, handlers: DictM
 	Asynchronously builds keyword arguments for a CDP command by executing parameter handlers.
 
 	This function iterates through a mapping of parameter handlers, starting each handler
-	in a new Trio task. It waits for all handlers to complete before returning the
-	aggregated keyword arguments.
+	in a new Trio task inside a dedicated nursery. It waits for all handlers to complete
+	before returning the aggregated keyword arguments, so a failure in any handler
+	raises a catchable exception here and prevents partially built kwargs from ever
+	reaching a CDP command.
 
 	Args:
 		self (DevToolsTarget): the DevToolsTarget instance.
@@ -119,31 +236,35 @@ async def _build_kwargs_from_handlers_func(self: DevToolsTarget, handlers: DictM
 	Raises:
 		BaseException: If any error occurs during the execution of parameter handlers or the process.
 	"""
-	
+
 	await self.log_cdp(level="INFO", message=f"Started to build kwargs for '{event}'")
-	
+
 	try:
 		kwargs = {"request_id": event.request_id}
-	
+
 		kwargs_ready_events: List[trio.Event] = []
-	
-		for handler_name, handler_settings in handlers:
-			if handler_settings is not None:
-				kwargs_ready_event = trio.Event()
-				kwargs_ready_events.append(kwargs_ready_event)
-	
-				self._nursery.start_soon(
-						handler_settings.func,
-						self,
-						kwargs_ready_event,
-						handler_settings.instances,
-						event,
-						kwargs
-				)
-	
-		for kwargs_ready_event in kwargs_ready_events:
-			await kwargs_ready_event.wait()
-	
+
+		# A dedicated nursery keeps the handler failures local: if any handler
+		# raises, this nursery surfaces it as an ExceptionGroup on its __aexit__
+		# instead of letting an unreachable Cancelled propagate through the wait.
+		async with trio.open_nursery() as handlers_nursery:
+			for handler_name, handler_settings in handlers:
+				if handler_settings is not None:
+					kwargs_ready_event = trio.Event()
+					kwargs_ready_events.append(kwargs_ready_event)
+
+					handlers_nursery.start_soon(
+							handler_settings.func,
+							self,
+							kwargs_ready_event,
+							handler_settings.instances,
+							event,
+							kwargs
+					)
+
+			for kwargs_ready_event in kwargs_ready_events:
+				await kwargs_ready_event.wait()
+
 		return kwargs
 	except* CDPEndExceptions as error:
 		raise error
@@ -206,6 +327,11 @@ async def _handle_auth_required(
 	chosen actions using their respective parameter handlers, executes the CDP commands,
 	and processes their responses.
 
+	After each chosen action has been executed (or failed), an interception result
+	record is delivered through the configured `interception_result_callback`, if any.
+	If a parameter handler fails, the failure is recorded and no partially built
+	parameters are sent to the CDP.
+
 	Args:
 		self (DevToolsTarget): The DevToolsTarget instance.
 		handler_settings (AuthRequiredSettings): The configuration settings for handling the 'AuthRequired' event.
@@ -214,20 +340,35 @@ async def _handle_auth_required(
 	Raises:
 		BaseException: If a critical error occurs during the event handling process.
 	"""
-	
+
 	await self.log_cdp(level="INFO", message=f"Started to handle for '{event}'")
-	
+
 	try:
 		chosen_actions_func_names = handler_settings.actions_handler.choose_action_func(self, event)
 		await self.log_cdp(level="INFO", message=f"Chosen actions: '{chosen_actions_func_names}'")
-	
+
 		for action_func_name in chosen_actions_func_names:
 			chosen_func = getattr(handler_settings.actions_handler.actions, action_func_name)
-			kwargs = await chosen_func.kwargs_func(self, chosen_func.parameters_handlers, event)
-	
+
+			try:
+				kwargs = await chosen_func.kwargs_func(self, chosen_func.parameters_handlers, event)
+			except* CDPEndExceptions as error:
+				raise error
+			except* BaseException as error:
+				await _emit_interception_result(
+						self=self,
+						event_path=handler_settings.class_to_use_path,
+						action_name=action_func_name,
+						success=False,
+						error=error,
+						callback=handler_settings.interception_result_callback
+				)
+
+				raise error
+
 			await self.log_cdp(level="INFO", message=f"Kwargs for '{action_func_name}': '{kwargs}'")
 			response_handle_func = chosen_func.response_handle_func
-	
+
 			try:
 				response = await execute_cdp_command(
 						self=self,
@@ -239,16 +380,34 @@ async def _handle_auth_required(
 						level="AuthRequired",
 						message=f"Function '{action_func_name}' response: '{response}'"
 				)
-	
+
 				if response_handle_func is not None:
 					self._nursery.start_soon(response_handle_func, self, response)
 			except* CDPEndExceptions:
 				pass
 			except* BaseException as error:
+				await _emit_interception_result(
+						self=self,
+						event_path=handler_settings.class_to_use_path,
+						action_name=action_func_name,
+						success=False,
+						error=error,
+						callback=handler_settings.interception_result_callback
+				)
+
 				await self.log_cdp_error(error=error)
-	
+
 				if handler_settings.on_error_func is not None:
 					handler_settings.on_error_func(self, event, error)
+			else:
+				await _emit_interception_result(
+						self=self,
+						event_path=handler_settings.class_to_use_path,
+						action_name=action_func_name,
+						success=True,
+						error=None,
+						callback=handler_settings.interception_result_callback
+				)
 	except* CDPEndExceptions as error:
 		raise error
 	except* BaseException as error:
@@ -269,13 +428,18 @@ class AuthRequiredSettings(AbstractEventSettings):
 		actions_handler (AuthRequiredActionsHandlerSettings): Configuration for the event's actions handler, determining which action to take (e.g., continueWithAuth) and how to build its parameters.
 		listen_buffer_size (int): The buffer size for the event listener channel. Defaults to 10.
 		on_error_func (on_error_func_type): An optional function to call if an error occurs during event handling. Defaults to None.
+		interception_result_callback (Optional[fetch_interception_result_callback_type]): An optional async callback
+			receiving a structured ``FetchInterceptionResult`` after each chosen action completes or fails.
+			Defaults to None, in which case no result recording happens and behavior is unchanged.
+			Errors raised by the callback itself are logged and do not affect subsequent events.
 	"""
-	
+
 	class_to_use_path: str = "fetch.AuthRequired"
 	handle_function: handle_auth_required_func_type = _handle_auth_required
 	actions_handler: AuthRequiredActionsHandlerSettings
 	listen_buffer_size: int = 10
 	on_error_func: on_error_func_type = None
+	interception_result_callback: Optional[fetch_interception_result_callback_type] = None
 
 
 class ContinueResponseHandlersSettings(AbstractActionParametersHandlersSettings):
@@ -463,6 +627,11 @@ async def _handle_request_paused(
 	chosen actions using their respective parameter handlers, executes the CDP commands,
 	and processes their responses.
 
+	After each chosen action has been executed (or failed), an interception result
+	record is delivered through the configured `interception_result_callback`, if any.
+	If a parameter handler fails, the failure is recorded and no partially built
+	parameters are sent to the CDP.
+
 	Args:
 		self (DevToolsTarget): The DevToolsTarget instance.
 		handler_settings (RequestPausedSettings): The configuration settings for handling the 'RequestPaused' event.
@@ -471,21 +640,36 @@ async def _handle_request_paused(
 	Raises:
 		BaseException: If a critical error occurs during the event handling process.
 	"""
-	
+
 	await self.log_cdp(level="INFO", message=f"Started to handle for '{event}'")
-	
+
 	try:
 		chosen_actions_func_names = handler_settings.actions_handler.choose_action_func(self, event)
 		await self.log_cdp(level="INFO", message=f"Chosen actions: '{chosen_actions_func_names}'")
-	
+
 		for action_func_name in chosen_actions_func_names:
 			chosen_action_func = getattr(handler_settings.actions_handler.actions, action_func_name)
-	
-			kwargs = await chosen_action_func.kwargs_func(self, chosen_action_func.parameters_handlers, event)
+
+			try:
+				kwargs = await chosen_action_func.kwargs_func(self, chosen_action_func.parameters_handlers, event)
+			except* CDPEndExceptions as error:
+				raise error
+			except* BaseException as error:
+				await _emit_interception_result(
+						self=self,
+						event_path=handler_settings.class_to_use_path,
+						action_name=action_func_name,
+						success=False,
+						error=error,
+						callback=handler_settings.interception_result_callback
+				)
+
+				raise error
+
 			await self.log_cdp(level="INFO", message=f"Kwargs for '{action_func_name}': '{kwargs}'")
-	
+
 			response_handle_func = chosen_action_func.response_handle_func
-	
+
 			try:
 				response = await execute_cdp_command(
 						self=self,
@@ -493,24 +677,42 @@ async def _handle_request_paused(
 						function=self.devtools_package.get(["fetch", action_func_name]),
 						**kwargs
 				)
-	
+
 				if isinstance(response, ExceptionThrown):
 					raise response.exception
-	
+
 				await self.log_cdp(
 						level="RequestPaused",
 						message=f"Function '{action_func_name}' response: '{response}'"
 				)
-	
+
 				if response_handle_func is not None:
 					self._nursery.start_soon(response_handle_func, self, response)
 			except* CDPEndExceptions:
 				pass
 			except* BaseException as error:
+				await _emit_interception_result(
+						self=self,
+						event_path=handler_settings.class_to_use_path,
+						action_name=action_func_name,
+						success=False,
+						error=error,
+						callback=handler_settings.interception_result_callback
+				)
+
 				await self.log_cdp_error(error=error)
-	
+
 				if handler_settings.on_error_func is not None:
 					handler_settings.on_error_func(self, event, error)
+			else:
+				await _emit_interception_result(
+						self=self,
+						event_path=handler_settings.class_to_use_path,
+						action_name=action_func_name,
+						success=True,
+						error=None,
+						callback=handler_settings.interception_result_callback
+				)
 	except* CDPEndExceptions as error:
 		raise error
 	except* BaseException as error:
@@ -531,13 +733,18 @@ class RequestPausedSettings(AbstractEventSettings):
 		listen_buffer_size (int): The buffer size for the event listener channel. Defaults to 100.
 		actions_handler (Optional[RequestPausedActionsHandlerSettings]): Configuration for the event's actions handler, determining which action(s) to take (e.g., continueRequest, fulfillRequest) and how to build their parameters. Defaults to None.
 		on_error_func (on_error_func_type): An optional function to call if an error occurs during event handling. Defaults to None.
+		interception_result_callback (Optional[fetch_interception_result_callback_type]): An optional async callback
+			receiving a structured ``FetchInterceptionResult`` after each chosen action completes or fails.
+			Defaults to None, in which case no result recording happens and behavior is unchanged.
+			Errors raised by the callback itself are logged and do not affect subsequent events.
 	"""
-	
+
 	handle_function: handle_request_paused_func_type = _handle_request_paused
 	class_to_use_path: str = "fetch.RequestPaused"
 	listen_buffer_size: int = 100
 	actions_handler: Optional[RequestPausedActionsHandlerSettings] = None
 	on_error_func: on_error_func_type = None
+	interception_result_callback: Optional[fetch_interception_result_callback_type] = None
 
 
 class FetchHandlersSettings(AbstractDomainHandlersSettings):
