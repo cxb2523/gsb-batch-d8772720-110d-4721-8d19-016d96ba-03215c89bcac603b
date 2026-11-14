@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from downloader import downloader, postprocess
-from updater import updater
+from updater import outcomes, updater
 from utils import config
 from utils.notify import notifier
 from utils.rename import rename_series
@@ -183,7 +183,8 @@ def download_chapter(task: Dict[str, Any], uuid: str, chapter_name: str):
         chapter_filename, chapter_num, save_path, is_special
     )
 
-    updater.update_chapter_record(task['site'], task['comic_id'], chapter_name)
+    if not updater.update_chapter_record(task['site'], task['comic_id'], chapter_name):
+        raise RuntimeError('保存章节进度失败')
 
     notifier.add_success("antbyw", task['name'], chapter_name)
 
@@ -191,19 +192,27 @@ def download_chapter(task: Dict[str, Any], uuid: str, chapter_name: str):
 
 
 def download_task(task: Dict[str, Any]):
-    if not task.get('chapter_infos'):
+    infos = task.get('chapter_infos') or []
+    if not infos:
+        outcomes.emit(outcomes.SKIPPED, task['site'], task['name'],
+                      reason=outcomes.REASON_NO_CHAPTERS)
         return
 
-    log.info(f"开始处理 {task['name']} 的 {len(task['chapter_infos'])} 个章节")
+    log.info(f"开始处理 {task['name']} 的 {len(infos)} 个章节")
 
-    for uuid, name in task['chapter_infos']:
+    for uuid, name in infos:
         try:
             success = download_chapter(task, uuid, name)
             if not success:
-                log.error(f"章节下载失败: {name}")
+                raise RuntimeError('获取章节内容失败')
+            outcomes.emit(outcomes.DOWNLOADED, task['site'], task['name'],
+                          detail=f'章节={name} [{uuid}]')
         except Exception as e:
             log.error(f"章节处理异常: {e}")
             notifier.add_error("antbyw", f"{task['name']} - {name}", str(e))
+            outcomes.emit(outcomes.DOWNLOAD_FAILED, task['site'], task['name'],
+                          detail=f'章节={name} [{uuid}]: {e}',
+                          reason=outcomes.REASON_FETCH_FAILED)
         time.sleep(2)
 
     log.info(f"{task['name']} 需要更新的下载已完成")

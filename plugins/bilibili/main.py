@@ -5,7 +5,7 @@ import time
 from typing import List, Dict, Any
 
 from downloader import downloader, postprocess
-from updater import updater
+from updater import outcomes, updater
 from utils import config
 from utils.notify import notifier
 from .client import get_list, get_co, get_opus, get_opus_images
@@ -95,9 +95,10 @@ def download_chapter(task: Dict[str, Any], uuid: str, chapter_name: str, chapter
     )
 
     # 更新下载记录
-    updater.update_chapter_record(
+    if not updater.update_chapter_record(
         task['site'], task['id'], uuid
-    )
+    ):
+        raise RuntimeError('保存章节进度失败')
 
     notifier.add_success("bilibili", task['name'], current_name)
     log.info(f"{current_name} CBZ 打包完成")
@@ -105,17 +106,22 @@ def download_chapter(task: Dict[str, Any], uuid: str, chapter_name: str, chapter
 
 def download_task(task: Dict[str, Any]):
     """处理单个 Bilibili 任务 (Lid/CV/Opus)"""
-    if not task.get('chapter_infos'):
+    infos = task.get('chapter_infos') or []
+    if not infos:
         log.info(f"{task['name']} 没有待下载内容")
+        outcomes.emit(outcomes.SKIPPED, task['site'], task['name'],
+                      reason=outcomes.REASON_NO_CHAPTERS)
         return
 
-    log.info(f"开始处理 Bilibili {task['name']} 的 {len(task['chapter_infos'])} 个项目")
+    log.info(f"开始处理 Bilibili {task['name']} 的 {len(infos)} 个项目")
 
-    for i, (uuid, name) in enumerate(task['chapter_infos']):
+    for i, (uuid, name) in enumerate(infos):
         try:
             success = download_chapter(task, uuid, name, i)
             if not success:
-               log.error(f"下载失败: {name} (ID: {uuid})")
+                raise RuntimeError('获取内容失败')
+            outcomes.emit(outcomes.DOWNLOADED, task['site'], task['name'],
+                          detail=f'章节={name} [{uuid}]')
         except BilibiliAbortError:
             raise
         except Exception as e:
@@ -123,6 +129,9 @@ def download_task(task: Dict[str, Any]):
             import traceback
             log.debug(traceback.format_exc())
             notifier.add_error("bilibili", f"{task['name']} - {name}", str(e))
+            outcomes.emit(outcomes.DOWNLOAD_FAILED, task['site'], task['name'],
+                          detail=f'章节={name} [{uuid}]: {e}',
+                          reason=outcomes.REASON_FETCH_FAILED)
         time.sleep(2)
 
 def download_batch(tasks: List[Dict[str, Any]]):

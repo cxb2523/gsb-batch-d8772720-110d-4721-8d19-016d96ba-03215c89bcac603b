@@ -3,6 +3,7 @@ import logging
 from typing import Dict, List, Any
 
 from utils.notify import notifier
+from updater import outcomes
 from site_registry import SITE_MODULES
 
 log = logging.getLogger(__name__)
@@ -34,13 +35,18 @@ class DownloadDispatcher:
                     log.info(f"{site} 的所有任务处理完成")
                 except ImportError as e:
                     err_msg = f"找不到 {site} 站点的下载器: {e}"
-                    log.error(err_msg)
-                    notifier.add_error(site, "调度器", err_msg)
+                    cls._fail_tasks(site, tasks, err_msg, outcomes.REASON_DEPENDENCY_MISSING)
                 except Exception as e:
                     err_msg = f"处理 {site} 下载任务时出错: {e}"
-                    log.error(err_msg)
-                    notifier.add_error(site, "调度器", str(e))
+                    cls._fail_tasks(site, tasks, err_msg, outcomes.REASON_DOWNLOAD_ERROR)
             else:
                 err_msg = f"未知站点: {site}, 无法处理下载任务"
-                log.error(err_msg)
-                notifier.add_error(site, "调度器", err_msg)
+                cls._fail_tasks(site, tasks, err_msg, outcomes.REASON_SITE_UNKNOWN)
+
+    @staticmethod
+    def _fail_tasks(site, tasks, err_msg, reason):
+        log.error(err_msg)
+        notifier.add_error(site, "调度器", err_msg)
+        for task in tasks:
+            outcomes.emit(outcomes.DOWNLOAD_FAILED, site, task.get('name', '未知记录'),
+                          detail=err_msg, reason=reason)

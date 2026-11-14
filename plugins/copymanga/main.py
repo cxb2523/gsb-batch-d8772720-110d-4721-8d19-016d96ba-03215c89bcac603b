@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 from downloader import downloader, postprocess
 from plugins.copymanga.headers import HEADERS
-from updater import updater
+from updater import outcomes, updater
 from utils import config
 from utils.notify import notifier
 from utils.rename import rename_series
@@ -70,9 +70,10 @@ def download_chapter(task: Dict[str, Any], uuid: str, chapter_name: str):
     )
 
     # 更新下载记录
-    updater.update_chapter_record(
+    if not updater.update_chapter_record(
         task['site'], task['path_word'], current_name
-    )
+    ):
+        raise RuntimeError('保存章节进度失败')
 
     notifier.add_success("copymanga", task['name'], current_name)
     log.info(f"{task['name']} {current_name} cbz打包完成")
@@ -81,20 +82,28 @@ def download_chapter(task: Dict[str, Any], uuid: str, chapter_name: str):
 
 def download_task(task: Dict[str, Any]):
     """处理单个漫画任务的所有章节下载"""
-    if not task.get('chapter_infos'):
+    infos = task.get('chapter_infos') or []
+    if not infos:
         log.info(f"{task['name']} 没有待下载章节")
+        outcomes.emit(outcomes.SKIPPED, task['site'], task['name'],
+                      reason=outcomes.REASON_NO_CHAPTERS)
         return
 
-    log.info(f"开始处理 {task['name']} 的 {len(task['chapter_infos'])} 个章节")
+    log.info(f"开始处理 {task['name']} 的 {len(infos)} 个章节")
 
-    for uuid, name in task['chapter_infos']:
+    for uuid, name in infos:
         try:
             success = download_chapter(task, uuid, name)
             if not success:
-                log.error(f"章节下载失败: {task['name']} {name}, UUID: {uuid}")
+                raise RuntimeError('获取章节内容失败')
+            outcomes.emit(outcomes.DOWNLOADED, task['site'], task['name'],
+                          detail=f'章节={name} [{uuid}]')
         except Exception as e:
             log.error(f"章节处理异常: {e}")
             notifier.add_error("copymanga", f"{task['name']} - {name}", str(e))
+            outcomes.emit(outcomes.DOWNLOAD_FAILED, task['site'], task['name'],
+                          detail=f'章节={name} [{uuid}]: {e}',
+                          reason=outcomes.REASON_FETCH_FAILED)
         time.sleep(3)
 
     log.info(f"{task['name']} 需要更新的下载已完成")
