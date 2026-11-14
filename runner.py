@@ -1,0 +1,751 @@
+"""
+Background runner for chunked-progressive audits.
+
+One worker thread serialises sessions (LibreCrawl is single-tenant upstream).
+Each session runs as ONE upstream crawl that we observe via polling windows
+("chunks"). After every polling window we:
+
+  1. Compute p95_ms + err_rate from the pages crawled this window
+  2. Run the AIMD controller to decide next crawlDelay
+  3. Push the new crawlDelay to LibreCrawl mid-crawl via /api/save_settings
+  4. Persist the chunk row in state.db so PM2 restart can resume
+
+When the upstream crawl finishes (or hits total_max_pages), the runner
+finalises: builds the Markdown report + sidecar CSVs + checks_manifest +
+sitemap_reconciliation + crawl_completeness, registers artifacts, transitions
+session to 'done'.
+
+State recovery on boot: any session in {queued, crawling, throttled, paused}
+when the runner starts is resumed — if the upstream crawl is still alive we
+pick polling back up; otherwise we issue resume_from_crawl_id and continue.
+"""
+
+import threading
+import time
+from pathlib import Path
+from datetime import datetime
+
+import state
+import libreclient
+
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+POLL_INTERVAL_SECONDS    = 20     # Window between status snapshots
+MAX_POLL_INTERVAL        = 60     # Throttled mode upper bound
+TARGET_P95_MS            = 1500
+TARGET_ERR_RATE          = 0.02
+MIN_DELAY_MS             = 0
+MAX_DELAY_MS             = 5000
+SANITY_CEILING_PAGES     = 100_000   # Override needs confirm_unbounded=True
+# politeness -> (upstream workers, delay floor ms). Before 2.3.3 the mode was stored and
+# ignored, so every crawl ran upstream's default 5 workers.
+POLITENESS = {
+    "polite": (2, 1500),
+    "auto":   (3, 0),
+    "fast":   (5, 0),
+}
+STATUS_ERROR_LIMIT       = 6          # consecutive failed polls (~2 min) before giving up
+UPSTREAM_HEALTH_TIMEOUT  = 600        # 10 min of no-progress → throttled
+HARD_DEADLINE_SECONDS    = 43200      # 12 hr ceiling — full polite crawls of
+                                      # very large heavy sites can run for
+                                      # hours; never abort a real audit early.
+
+
+_runner_thread: threading.Thread | None = None
+_wake = threading.Event()
+_shutdown = threading.Event()
+
+
+# ── AIMD adaptive controller ──────────────────────────────────────────────────
+
+def _tune_delay(prev_delay_ms: int, p95_ms: int | None, err_rate: float,
+                robots_floor_ms: int = 0) -> int:
+    """Return the next crawlDelay (ms) based on the previous window's signals.
+
+    Additive-increase / multiplicative-decrease. Conservative bias: prefer
+    slowing down to speeding up. Honors robots.txt Crawl-Delay floor.
+    """
+    delay = prev_delay_ms
+
+    # Hard signals first
+    if err_rate is not None and err_rate > 0.10:
+        delay = min(MAX_DELAY_MS, delay * 2 + 500)
+    elif err_rate is not None and err_rate > TARGET_ERR_RATE:
+        delay = min(MAX_DELAY_MS, delay + 250)
+    elif p95_ms and p95_ms > TARGET_P95_MS * 1.5:
+        delay = min(MAX_DELAY_MS, int(delay * 1.5) + 100)
+    elif p95_ms and p95_ms < TARGET_P95_MS * 0.6 and (err_rate or 0) < TARGET_ERR_RATE:
+        delay = max(MIN_DELAY_MS, delay - 100)
+
+    return max(delay, robots_floor_ms)
+
+
+# ── Runner loop ───────────────────────────────────────────────────────────────
+
+def _run_session(session: dict) -> None:
+    """Drive one session from start → done. Synchronous, blocks the worker thread."""
+    sid = session["id"]
+    settings = session.get("settings", {}) or {}
+    workers, polite_floor_ms = POLITENESS.get(session.get("politeness") or "auto", POLITENESS["auto"])
+    robots_floor_ms = max(int(settings.get("robots_floor_ms", 0)), polite_floor_ms)
+    chunk_no = state.chunk_count(sid)
+    started_window = time.time()
+    last_seen_crawled = session.get("pages_done", 0)
+    total_max = session["total_max_pages"]
+    sanity_cap = total_max if total_max > 0 else SANITY_CEILING_PAGES
+    delay_ms = max(session["current_delay_ms"], robots_floor_ms)
+    last_progress_at = time.time()
+    started_session = session.get("started_at") or time.time()
+
+    # If we're resuming an existing crawl, attach to upstream rather than start fresh
+    upstream_crawl_id = session.get("upstream_crawl_id")
+    if upstream_crawl_id is None:
+        state.set_status(sid, "crawling")
+        result = libreclient.start_crawl(
+            session["url"],
+            max_pages=total_max if total_max > 0 else 0,
+            crawl_delay_s=delay_ms / 1000.0,
+            concurrency=workers,
+        )
+        if not result.get("success"):
+            err = result.get("message", "Upstream rejected start_crawl")
+            state.update_session(sid, last_error=err, incomplete_reasons="upstream_start_failed")
+            state.set_status(sid, "failed", detail=err)
+            return
+        upstream_crawl_id = result.get("crawl_id")
+        state.update_session(sid, upstream_crawl_id=upstream_crawl_id)
+    else:
+        # Resume path — make sure upstream is still alive
+        state.set_status(sid, "crawling", detail="resumed_from_state")
+        try:
+            libreclient.resume_crawl()
+        except Exception:
+            pass  # Best-effort; full crash recovery deferred to v1.5
+
+    # ── Polling loop ──
+    status_errors = 0
+    while not _shutdown.is_set():
+        # Refresh session row in case operator paused/cancelled
+        cur = state.get_session(sid)
+        if not cur:
+            return
+        if cur["status"] in ("paused", "cancelled", "failed"):
+            return
+        if cur["status"] == "cancelled":
+            libreclient.stop_crawl()
+            return
+
+        # Hard deadline guard
+        if (time.time() - started_session) > HARD_DEADLINE_SECONDS:
+            state.update_session(sid, incomplete_reasons="hard_deadline_exceeded")
+            state.set_status(sid, "failed", f"Hard {HARD_DEADLINE_SECONDS // 3600}-hour deadline reached")
+            libreclient.stop_crawl()
+            return
+
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+        st = libreclient.status()
+        if st.get("error"):
+            status_errors += 1
+            state.log_event(sid, "status_poll_failed", st["error"][:300])
+            if status_errors >= STATUS_ERROR_LIMIT:
+                state.update_session(sid, incomplete_reasons="upstream_unreachable",
+                                     last_error=st["error"][:500])
+                state.set_status(sid, "failed", f"Upstream status failed {status_errors} polls in a row")
+                return
+            continue
+        status_errors = 0
+        crawled = st.get("crawled", 0)
+        queued = st.get("queued", 0)
+        speed = st.get("speed_rps")
+        status_str = st.get("status_str", "")
+
+        pages_in_window = max(0, crawled - last_seen_crawled)
+        if pages_in_window > 0:
+            last_progress_at = time.time()
+
+        # Sanity cap check
+        if crawled >= sanity_cap and total_max == 0:
+            state.update_session(sid, incomplete_reasons="sanity_ceiling_hit")
+            libreclient.stop_crawl()
+
+        # Stale crawl detection
+        if (time.time() - last_progress_at) > UPSTREAM_HEALTH_TIMEOUT and queued > 0:
+            state.set_status(sid, "throttled", "no_progress_10min")
+            state.update_session(sid, current_delay_ms=min(MAX_DELAY_MS, delay_ms * 2))
+
+        # AIMD tuning — sample p95 from the export tail (every chunk_target_pages)
+        target_chunk = session["chunk_target_pages"] or 50
+        if pages_in_window >= target_chunk or (status_str == "completed") or (status_str == "idle" and crawled > 0):
+            # Sample the most recent pages for metrics (export is heavy; sample only)
+            metrics = {"p95_ms": None, "err_rate": None}
+            try:
+                pages, _ = libreclient.export_pages(upstream_crawl_id)
+                window_pages = pages[-pages_in_window:] if pages_in_window else []
+                metrics = libreclient.compute_chunk_metrics(window_pages)
+            except Exception as e:
+                state.log_event(sid, "metrics_export_failed", str(e))
+
+            new_delay = _tune_delay(delay_ms, metrics["p95_ms"], metrics["err_rate"], robots_floor_ms)
+            if abs(new_delay - delay_ms) >= 100:
+                try:
+                    libreclient.update_crawl_delay(new_delay / 1000.0)
+                except Exception:
+                    pass
+                state.log_event(sid, "delay_tuned", {"from_ms": delay_ms, "to_ms": new_delay,
+                                                      "p95": metrics["p95_ms"], "err": metrics["err_rate"]})
+                delay_ms = new_delay
+
+            chunk_no += 1
+            state.record_chunk(
+                sid, chunk_no,
+                started_at=started_window,
+                pages_in_chunk=pages_in_window,
+                p95_ms=metrics["p95_ms"],
+                err_rate=metrics["err_rate"],
+                delay_used_ms=delay_ms,
+                upstream_speed=speed,
+            )
+            state.update_session(sid, pages_done=crawled, current_delay_ms=delay_ms)
+            started_window = time.time()
+            last_seen_crawled = crawled
+
+        # Termination
+        done = (status_str == "completed") or (status_str == "idle" and crawled > 0) or (st.get("is_running") is False)
+        if done and crawled > 0:
+            break
+        if done and crawled == 0:
+            # Cross-check via DB before declaring failure
+            try:
+                listing = libreclient.list_crawls()
+                row = next((c for c in (listing.get("crawls") or [])
+                            if c.get("id") == upstream_crawl_id), None)
+                if row and (row.get("urls_crawled") or 0) > 0:
+                    crawled = row["urls_crawled"]
+                    break
+            except Exception:
+                pass
+            state.update_session(sid, incomplete_reasons="upstream_stopped_zero_pages")
+            state.set_status(sid, "failed", "Upstream stopped with 0 pages")
+            return
+
+    if _shutdown.is_set():
+        state.log_event(sid, "runner_shutdown_during_session")
+        return
+
+    # Finalise — write artifacts
+    _finalize_session(sid, upstream_crawl_id, delay_ms, started_session)
+
+
+def _finalize_session(sid: str, upstream_crawl_id: int, last_delay_ms: int,
+                      started_session: float) -> None:
+    """Build the report + sidecars and register them as artifacts."""
+    from server import (_build_report, _site_check, _write_per_page_csv,
+                        _write_sitemap_recon_csv, _compute_sitemap_reconciliation,
+                        _build_checks_manifest, _compute_crawl_completeness,
+                        _safe_domain, _site_hosts, _on_site, _split_audit_pages,
+                        REPORTS_DIR)
+
+    sess = state.get_session(sid)
+    url = sess["url"]
+    settings = sess.get("settings", {}) or {}
+    try:
+        pages, links = libreclient.export_pages(upstream_crawl_id)
+    except Exception as e:
+        state.update_session(sid, last_error=f"export_failed: {e}",
+                             incomplete_reasons="export_failed")
+        state.set_status(sid, "failed", str(e))
+        return
+
+    if not pages:
+        state.update_session(sid, incomplete_reasons="no_pages_exported")
+        state.set_status(sid, "failed", "No pages exported")
+        return
+
+    # Off-site pages (a redirect or a followed link to another host) are not
+    # part of this site's audit.
+    site_hosts = _site_hosts(url, pages)
+    offsite = [p for p in pages if not _on_site(p.get("url", ""), site_hosts)]
+    if offsite:
+        pages = [p for p in pages if _on_site(p.get("url", ""), site_hosts)]
+        state.log_event(sid, "offsite_pages_dropped",
+                        {"count": len(offsite), "sample": [p.get("url") for p in offsite[:5]]})
+
+    # Upstream reports a "successful" crawl of an unreachable seed as one page
+    # with status 0. That is a failed audit, not a clean one.
+    if not any(int(p.get("status_code") or 0) > 0 for p in pages):
+        state.update_session(sid, incomplete_reasons="seed_unreachable")
+        state.set_status(sid, "failed", "Seed unreachable: no page returned an HTTP status")
+        return
+
+    # A WAF challenge page is not the site, and an image is not a page. Neither
+    # may be scored as a broken page or counted as sitemap coverage.
+    crawled_rows = len(pages)
+    pages, challenged, assets = _split_audit_pages(pages)
+    challenged_urls = {p.get("url") for p in challenged}
+    if challenged or assets:
+        state.log_event(sid, "non_audit_rows_dropped", {
+            "challenge_pages": len(challenged), "non_page_files": len(assets),
+            "challenge_sample": [p.get("url") for p in challenged[:5]],
+        })
+    if not pages:
+        reason = (f"bot_challenge: all {len(challenged)} crawled pages were WAF/bot challenge "
+                  "pages; allowlist the crawler and re-run" if challenged
+                  else "no_html_pages: the crawl returned only non-page files")
+        state.update_session(sid, incomplete_reasons=reason)
+        state.set_status(sid, "failed", reason)
+        return
+    challenge_ratio = len(challenged) / max(crawled_rows - len(assets), 1)
+    # Upstream can finish the page in flight after hitting maxUrls (a cap of 2
+    # returned 3). The operator's cap is the contract, so hold to it.
+    if sess["total_max_pages"] > 0 and len(pages) > sess["total_max_pages"]:
+        state.log_event(sid, "cap_overshoot_trimmed",
+                        {"cap": sess["total_max_pages"], "crawled": len(pages)})
+        pages = pages[:sess["total_max_pages"]]
+
+    site_data = _site_check(url)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    domain = _safe_domain(url)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
+
+    # ── v1.6 sitemap-orphan fill ─────────────────────────────────────────────
+    # LibreCrawl upstream only traverses from a single seed URL via internal
+    # links up to maxDepth, so any sitemap URLs that aren't reachable that way
+    # never get crawled. Before we build the report, do a lightweight HTTP
+    # fetch on those orphans and merge them into the pages list — the
+    # downstream report engine + checks_manifest then treats them as
+    # first-class crawled pages. Opt-out via session setting.
+    sitemap_url = (site_data.get("sitemap") or {}).get("url") or f"{url.rstrip('/')}/sitemap.xml"
+    pre_recon = _compute_sitemap_reconciliation(pages, sitemap_url)
+
+    fill_enabled = bool(settings.get("fill_sitemap_orphans", True))
+    # v2.1.0: FULL COVERAGE BY DEFAULT. sitemap_fill_cap=0 (the new default)
+    # means "crawl the ENTIRE sitemap" — bounded only by total_max_pages as a
+    # runaway safety ceiling. No silent page-dropping: anyone who runs the tool
+    # gets every page, every text, every link. Politeness (low concurrency +
+    # delay) keeps it safe on heavy sites; it just takes longer.
+    # The fill tops up to total_max_pages, it never adds another full budget.
+    _raw_cap = int(settings.get("sitemap_fill_cap", 0))
+    _ceiling = sess["total_max_pages"] if sess["total_max_pages"] > 0 else 100_000
+    _remaining = max(0, _ceiling - len(pages))
+    fill_cap = min(_raw_cap, _remaining) if _raw_cap > 0 else _remaining
+    # Sitemaps can list other hosts (CDNs, sister sites). Only fill this site's URLs.
+    # URLs that already came back as a challenge are not retried.
+    _sm_only = [u for u in pre_recon.get("sitemap_only", [])
+                if _on_site(u, site_hosts) and u not in challenged_urls]
+    fill_summary = {"attempted": 0, "skipped_disabled": not fill_enabled}
+    # A site that is challenging the crawler will challenge the fill too.
+    # Stop sending it requests instead of adding hundreds more.
+    fill_blocked = challenge_ratio > 0.2
+
+    if fill_enabled and _sm_only and fill_cap > 0 and not fill_blocked:
+        try:
+            import sitemap_fill
+            # v2.0.9: Screaming-Frog-grade politeness for heavy sites.
+            # Heavy pages (4-5 MB) need more TIME (25s timeout), NOT more
+            # PARALLELISM. v2.0.8 wrongly raised workers to 16 → ~75 MB
+            # concurrent transfer slowed a large origin. Corrected: LOW
+            # concurrency (4 workers, SF's 2-5 range) + 500ms jittered
+            # per-request delay. All tunable per audit via settings.
+            fill_result = sitemap_fill.fill_sitemap_orphans(
+                _sm_only,
+                max_workers=int(settings.get("fetch_workers", 4)),
+                timeout_seconds=float(settings.get("fetch_timeout_s", 25.0)),
+                cap=fill_cap,
+                delay_ms=float(settings.get("fetch_delay_ms", 500.0)),
+            )
+            new_pages = fill_result.get("pages_added", []) or []
+            new_pages, fill_challenged, fill_assets = _split_audit_pages(new_pages)
+            challenged += fill_challenged
+            assets += fill_assets
+            pages = pages + new_pages
+            fill_summary = {
+                "attempted":     fill_result.get("attempted", 0),
+                "missed_total":  fill_result.get("missed_total", 0),
+                "cap_hit":       fill_result.get("cap_hit", False),
+                "success_count": fill_result.get("success_count", 0),
+                "broken_count":  fill_result.get("broken_count", 0),
+            }
+            state.log_event(sid, "sitemap_fill", fill_summary)
+        except Exception as e:
+            state.log_event(sid, "sitemap_fill_failed", str(e))
+            fill_summary = {"attempted": 0, "error": str(e)}
+    elif fill_enabled:
+        fill_summary["reason"] = ("bot_challenge" if fill_blocked and _sm_only else
+                                  "no_orphans" if not _sm_only else "page_budget_spent")
+
+    # ── v1.6.1: compute completeness FIRST so the report banner can use it ──
+    # Re-compute recon AFTER sitemap_fill so the CSV + completeness reflect
+    # actual coverage. Then build completeness BEFORE _build_report so the
+    # report can render the coverage-warning banner up top when partial.
+    recon = _compute_sitemap_reconciliation(pages, sitemap_url)
+    recon_csv = REPORTS_DIR / f"{domain}-{timestamp}.sitemap-recon.csv"
+    _write_sitemap_recon_csv(recon, recon_csv)
+    state.add_artifact(sid, "sitemap_recon_csv", recon_csv)
+
+    # Build completeness — v1.5.1 fix: previously audit_complete was hardcoded
+    # True on the success path. That's wrong when the crawler quit before
+    # exhausting the sitemap. The HARD RULE:
+    #   if sitemap_total > crawl_total and sitemap_only_count > 0,
+    #   audit_complete MUST be False with an incomplete_reasons explainer.
+    sitemap_total      = recon.get("sitemap_total", 0) or 0
+    sitemap_only_count = recon.get("sitemap_only_count", 0) or 0
+    max_pages_hit      = sess["total_max_pages"] > 0 and len(pages) >= sess["total_max_pages"]
+    coverage_pct       = round(100.0 * (1 - sitemap_only_count / max(sitemap_total, 1)), 1) if sitemap_total else None
+
+    incomplete_reasons = []
+    if sitemap_only_count > 0:
+        incomplete_reasons.append(
+            f"sitemap_coverage_partial: {sitemap_total - sitemap_only_count}/{sitemap_total} "
+            f"sitemap URLs crawled ({sitemap_only_count} missed)"
+        )
+    if challenged:
+        incomplete_reasons.append(
+            f"bot_challenge: {len(challenged)} URLs returned a WAF/bot challenge page instead "
+            f"of the site and are excluded from every count; allowlist the crawler and re-run"
+        )
+    if max_pages_hit:
+        incomplete_reasons.append(
+            f"max_pages_hit: crawler stopped at configured cap of {sess['total_max_pages']}"
+        )
+
+    audit_complete = (len(incomplete_reasons) == 0)
+
+    completeness = {
+        "crawl_id":             upstream_crawl_id,
+        "pages_crawled":        len(pages),
+        "sitemap_total":        sitemap_total,
+        "sitemap_only_count":   sitemap_only_count,
+        "sitemap_coverage_pct": coverage_pct,
+        "queued_remaining":     0,
+        "max_pages":            sess["total_max_pages"],
+        "max_pages_hit":        max_pages_hit,
+        "timeout_hit":          False,
+        "robots_blocked_count": 0,
+        "challenge_pages":      len(challenged),
+        "non_page_files":       len(assets),
+        "batch_caps_hit":       False,
+        "elapsed_seconds":      round(time.time() - started_session),
+        "audit_complete":       audit_complete,
+        "incomplete_reasons":   incomplete_reasons,
+    }
+
+    # v2.0.2 — external-link validator runs BEFORE the MD report build so
+    # broken external URLs + counts can be surfaced in the report's Summary
+    # scorecard and a dedicated "Broken External Links" section. Was buried
+    # in the .external-links.csv sidecar only; now first-class in the PDF.
+    ext_summary = None
+    try:
+        import external_links
+        ext_csv = REPORTS_DIR / f"{domain}-{timestamp}.external-links.csv"
+        # External links span MANY hosts (not one origin), so concurrency is
+        # safer here — but still capped at 8 to stay polite to any single
+        # heavily-linked destination.
+        ext_summary = external_links.audit_external_links(
+            pages, url, ext_csv, links=links,
+            max_workers=int(settings.get("external_fetch_workers", 8)),
+            timeout_seconds=float(settings.get("fetch_timeout_s", 45.0)),
+        )
+        state.add_artifact(sid, "external_links_csv", ext_csv)
+        state.log_event(sid, "external_links_audited", {
+            "total":  ext_summary.get("total_external_links", 0),
+            "broken": ext_summary.get("broken_count", 0),
+            "by_class": ext_summary.get("by_status_class", {}),
+        })
+    except Exception as e:
+        # Never fail the whole finalize on external-link audit issues —
+        # the .md report + per-page CSV are the primary artifacts.
+        state.log_event(sid, "external_links_audit_failed", str(e))
+
+    # Now build the Markdown report — passing completeness for the partial-
+    # coverage banner AND external_links_summary so broken externals are
+    # surfaced in the Summary + Critical sections.
+    report_md = _build_report(pages, url, upstream_crawl_id or 0,
+                              site_data=site_data, links=links,
+                              completeness=completeness,
+                              external_links_summary=ext_summary)
+    md_path = REPORTS_DIR / f"{domain}-{timestamp}.md"
+    md_path.write_text(report_md, encoding="utf-8")
+    state.add_artifact(sid, "md", md_path)
+
+    per_page_csv = REPORTS_DIR / f"{domain}-{timestamp}.per-page.csv"
+    _write_per_page_csv(pages, per_page_csv)
+    state.add_artifact(sid, "per_page_csv", per_page_csv)
+
+    manifest = _build_checks_manifest(pages, site_data, links or [])
+
+    # Content audit (v1.5) — paragraph-level checks (readability, AI-tells,
+    # passive voice, lorem ipsum, boilerplate). Fetches first 50 pages by
+    # default; capped to stay polite to the target. Best-effort.
+    try:
+        import content_audit
+        ca_csv = REPORTS_DIR / f"{domain}-{timestamp}.content-audit.csv"
+        # v2.1.2: covers ALL pages. The v2.1.1 500-page cap existed because
+        # holding every page's full HTML OOM-killed the process on a
+        # 1900-page site; content_audit now fetches in batches and keeps only
+        # stripped text, so memory stays bounded. content_check_limit > 0 is
+        # an optional ceiling; 0 or unset means every page.
+        _ca_raw = int(settings.get("content_check_limit", 0))
+        _ca_limit = _ca_raw if _ca_raw > 0 else len(pages)
+        ca_summary = content_audit.audit_content(
+            pages, ca_csv,
+            limit=min(_ca_limit, len(pages)),
+            timeout_seconds=float(settings.get("fetch_timeout_s", 45.0)),
+        )
+        state.add_artifact(sid, "content_audit_csv", ca_csv)
+        state.log_event(sid, "content_audited", {
+            "pages_audited": ca_summary.get("pages_audited", 0),
+            "by_check": ca_summary.get("by_check", {}),
+        })
+    except Exception as e:
+        state.log_event(sid, "content_audit_failed", str(e))
+
+    # Extended SEO checks (v1.5) — security headers, mixed content, soft-404,
+    # hreflang return-tag, sitemap cross-checks, canonical chains, URL quality.
+    try:
+        import extended_checks
+        ec_csv = REPORTS_DIR / f"{domain}-{timestamp}.extended-checks.csv"
+        # v2.1.2: covers ALL pages, batch-fetched like content_audit.
+        # extended_check_limit > 0 is an optional ceiling.
+        _ec_raw = int(settings.get("extended_check_limit", 0))
+        _ec_limit = _ec_raw if _ec_raw > 0 else len(pages)
+        ec_summary = extended_checks.run_extended_checks(
+            pages, url, ec_csv, links=links,
+            limit=min(_ec_limit, len(pages)),
+            timeout_seconds=float(settings.get("fetch_timeout_s", 45.0)),
+        )
+        state.add_artifact(sid, "extended_checks_csv", ec_csv)
+        state.log_event(sid, "extended_checks_done", {
+            "findings": ec_summary.get("findings", 0),
+            "by_check": ec_summary.get("by_check", {}),
+        })
+    except Exception as e:
+        state.log_event(sid, "extended_checks_failed", str(e))
+
+    # Schema / structured-data validation. Runs on the json_ld already captured
+    # in the crawl export, so it covers every page with no re-fetch.
+    try:
+        import csv as _csv
+        import schema_validator
+        sch_csv = REPORTS_DIR / f"{domain}-{timestamp}.schema-validation.csv"
+        sch = schema_validator.validate_crawl_schemas(pages)
+        pages_no_schema = max(0, len([p for p in pages
+            if str(p.get("status_code", "")).startswith("2")]) - sch.get("pages_with_schema", 0))
+        with open(sch_csv, "w", newline="", encoding="utf-8") as _f:
+            _w = _csv.writer(_f)
+            _w.writerow(["url", "schema_type", "severity", "check", "detail"])
+            for fnd in sch.get("findings", []):
+                _w.writerow([fnd.get("url", ""), fnd.get("type", ""), fnd.get("severity", ""),
+                             fnd.get("check", ""), fnd.get("detail", "")])
+        state.add_artifact(sid, "schema_validation_csv", sch_csv)
+        state.log_event(sid, "schema_validated", {
+            "pages_with_schema":    sch.get("pages_with_schema", 0),
+            "pages_without_schema": pages_no_schema,
+            "pages_with_errors":    sch.get("pages_with_errors", 0),
+            "total_findings":       sch.get("total_findings", 0),
+            "by_type":              dict(sch.get("by_type", {})),
+            "by_check":             dict(sch.get("by_check", {})),
+        })
+    except Exception as e:
+        state.log_event(sid, "schema_validation_failed", str(e))
+
+    # PDF report (v1.5) — Aditya-branded WeasyPrint render of the MD report.
+    # Last so it includes all the analysis above.
+    try:
+        import pdf_report
+        pdf_path = REPORTS_DIR / f"{domain}-{timestamp}.pdf"
+        pdf_meta = pdf_report.render_pdf(report_md, pdf_path, base_url=url)
+        state.add_artifact(sid, "pdf", pdf_path)
+        state.log_event(sid, "pdf_generated", {
+            "pages": pdf_meta.get("pages", 0),
+            "size_bytes": pdf_meta.get("size_bytes", 0),
+        })
+    except Exception as e:
+        # PDF failure must NOT kill finalize — the MD + CSVs are the primary
+        # artifacts.
+        state.log_event(sid, "pdf_generation_failed", str(e))
+
+    state.log_event(sid, "finalized", {
+        "pages": len(pages),
+        "delay_at_finish_ms": last_delay_ms,
+        "elapsed_s": completeness["elapsed_seconds"],
+        "audit_complete": audit_complete,
+        "sitemap_coverage_pct": coverage_pct,
+        "incomplete_reasons": incomplete_reasons,
+    })
+
+    state.update_session(
+        sid,
+        pages_done=len(pages),
+        audit_complete=1 if audit_complete else 0,
+        incomplete_reasons=";".join(incomplete_reasons) if incomplete_reasons else None,
+    )
+    # Status stays "done" either way — artifacts ARE on disk. Coverage truth
+    # lives in audit_complete + incomplete_reasons (visible via audit_status).
+    state.set_status(sid, "done",
+                     detail=("partial: " + "; ".join(incomplete_reasons)) if incomplete_reasons else "complete")
+
+
+# ── Worker thread ─────────────────────────────────────────────────────────────
+
+MAX_BOOT_REQUEUES = 3  # v2.1.1: a session that crashes the process this many
+                       # times is poison — fail it instead of looping forever.
+
+
+def _legacy_crawl_active() -> bool:
+    # Under PM2, server.py runs as __main__, and `import server` would load a
+    # second copy with its own lock. Ask the module that actually serves tools.
+    import sys
+    mod = sys.modules.get("__main__")
+    f = getattr(mod, "_legacy_crawl_active", None)
+    if f is None:
+        try:
+            from server import _legacy_crawl_active as f
+        except Exception:
+            return False
+    try:
+        return bool(f())
+    except Exception:
+        return False
+
+
+def _worker_loop():
+    """Pick up queued sessions FIFO. Resume any active-but-not-running on boot."""
+    # Boot recovery — anything in non-terminal state gets re-queued, BUT with a
+    # circuit breaker. v2.1.1 fix: a session whose finalize OOM-kills the
+    # process gets restarted by PM2, re-queued here, OOMs again — an infinite
+    # loop that ran ~37x over 12h on a 1900-page heavy site. Count prior
+    # boot_recovery_requeue events; past the limit, mark it failed so it can't
+    # re-poison every restart.
+    for s in state.find_active_sessions():
+        if s["status"] != "queued":
+            prior = state.count_events(s["id"], "boot_recovery_requeue")
+            if prior >= MAX_BOOT_REQUEUES:
+                state.update_session(s["id"],
+                                     incomplete_reasons="boot_requeue_limit_exceeded")
+                state.set_status(s["id"], "failed",
+                                 f"aborted after {prior} restart loops "
+                                 "(likely OOM in finalize — lower content/extended check limits)")
+            else:
+                state.set_status(s["id"], "queued", "boot_recovery_requeue")
+
+    while not _shutdown.is_set():
+        queued = state.find_queued_sessions()
+        if not queued:
+            _wake.wait(timeout=5)
+            _wake.clear()
+            continue
+
+        if _legacy_crawl_active():
+            # A legacy tool owns the shared upstream crawler. Starting now would
+            # either fail with "already in progress" or clobber its settings.
+            _wake.wait(timeout=10)
+            _wake.clear()
+            continue
+
+        session = queued[0]
+        try:
+            _run_session(session)
+        except Exception as e:
+            state.update_session(session["id"], last_error=str(e))
+            state.set_status(session["id"], "failed", f"runner_exception: {e}")
+
+
+def start_runner():
+    """Idempotent. Spawn the worker thread if not already running."""
+    global _runner_thread
+    state.init_db()
+    if _runner_thread and _runner_thread.is_alive():
+        return
+    _shutdown.clear()
+    _runner_thread = threading.Thread(target=_worker_loop, name="librecrawl-runner",
+                                       daemon=True)
+    _runner_thread.start()
+
+
+def stop_runner(timeout: float = 5.0):
+    """Signal the worker to exit. Used on graceful shutdown."""
+    _shutdown.set()
+    _wake.set()
+    if _runner_thread:
+        _runner_thread.join(timeout=timeout)
+
+
+def nudge():
+    """Wake the worker from its sleep — call after queueing a session."""
+    _wake.set()
+
+
+# ── Operator controls ─────────────────────────────────────────────────────────
+
+def enqueue_session(url: str, total_max_pages: int = 10_000,
+                    chunk_target_pages: int = 50, politeness: str = "auto",
+                    confirm_unbounded: bool = False,
+                    extra_settings: dict | None = None) -> dict:
+    """Create a session row and wake the runner. Returns the new session dict."""
+    from server import _seed_gate
+    gate = _seed_gate(url)
+    if gate:
+        return gate
+    url = url.strip()
+    if total_max_pages == 0 and not confirm_unbounded:
+        return {
+            "success": False,
+            "error": "total_max_pages=0 (unlimited) requires confirm_unbounded=True. "
+                     "Sites can have millions of URLs — set a sensible ceiling.",
+        }
+    sid = state.create_session(
+        url=url,
+        total_max_pages=total_max_pages,
+        chunk_target_pages=chunk_target_pages,
+        politeness=politeness,
+        settings=extra_settings or {},
+    )
+    nudge()
+    return state.get_session(sid)
+
+
+def pause_session(session_id: str) -> dict:
+    s = state.get_session(session_id)
+    if not s:
+        return {"success": False, "error": "Unknown session_id"}
+    libreclient.pause_crawl()
+    state.set_status(session_id, "paused", "operator_pause")
+    return {"success": True, "session_id": session_id, "status": "paused"}
+
+
+def resume_session(session_id: str) -> dict:
+    s = state.get_session(session_id)
+    if not s:
+        return {"success": False, "error": "Unknown session_id"}
+    if s["status"] not in ("paused", "throttled"):
+        return {"success": False, "error": f"Cannot resume from status={s['status']}"}
+    libreclient.resume_crawl()
+    state.set_status(session_id, "queued", "operator_resume")
+    nudge()
+    return {"success": True, "session_id": session_id, "status": "queued"}
+
+
+def cancel_session(session_id: str) -> dict:
+    s = state.get_session(session_id)
+    if not s:
+        return {"success": False, "error": "Unknown session_id"}
+    libreclient.stop_crawl()
+    state.set_status(session_id, "cancelled", "operator_cancel")
+    return {"success": True, "session_id": session_id, "status": "cancelled"}
+
+
+def force_advance(session_id: str) -> dict:
+    """Stuck-recovery: force-finalise from whatever pages have been crawled."""
+    s = state.get_session(session_id)
+    if not s:
+        return {"success": False, "error": "Unknown session_id"}
+    libreclient.stop_crawl()
+    try:
+        _finalize_session(session_id, s.get("upstream_crawl_id"),
+                          s.get("current_delay_ms") or 500,
+                          s.get("started_at") or time.time())
+        return {"success": True, "session_id": session_id, "status": "done", "forced": True}
+    except Exception as e:
+        return {"success": False, "session_id": session_id, "error": str(e)}

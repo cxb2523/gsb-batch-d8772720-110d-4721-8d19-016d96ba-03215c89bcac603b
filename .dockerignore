@@ -1,0 +1,13 @@
+.git
+.gitignore
+*.md
+docs/
+.claude/
+librecrawl-reports/
+*.db
+*.db-*
+reports/
+__pycache__/
+*.pyc
+.env
+.env.*

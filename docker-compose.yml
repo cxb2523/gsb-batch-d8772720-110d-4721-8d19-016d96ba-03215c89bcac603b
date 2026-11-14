@@ -1,0 +1,47 @@
+# Full stack: LibreCrawl engine + the MCP server that drives it.
+#   docker compose up --build      → MCP at http://127.0.0.1:5081/mcp
+# The MCP only comes up once LibreCrawl is healthy.
+services:
+  librecrawl:
+    build:
+      context: .
+      dockerfile: docker/librecrawl.Dockerfile
+    environment:
+      - LOCAL_MODE=true
+      - HOST_BINDING=0.0.0.0
+    volumes:
+      # Shared so the MCP can read LibreCrawl's SQLite for orphan/cleanup checks.
+      - librecrawl-data:/opt/librecrawl/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+    restart: unless-stopped
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      librecrawl:
+        condition: service_healthy
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=5081
+      - LIBRECRAWL_URL=http://librecrawl:5000
+      - REPORTS_DIR=/reports
+      - LIBRECRAWL_UPSTREAM_DB=/librecrawl-data/users.db
+      - PAGESPEED_API_KEY=${PAGESPEED_API_KEY:-}
+    volumes:
+      - ./reports:/reports
+      - librecrawl-data:/librecrawl-data:ro
+    ports:
+      # Bound to loopback by default — expose deliberately on a trusted host only.
+      - "127.0.0.1:5081:5081"
+    restart: unless-stopped
+
+volumes:
+  librecrawl-data:
