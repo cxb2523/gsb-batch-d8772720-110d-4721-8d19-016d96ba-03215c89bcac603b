@@ -28,6 +28,7 @@ https://mcp.hasdata.com/mcp?apis=youtube
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [Tool selection](#tool-selection)
+- [Walking a channel tab page by page](#walking-a-channel-tab-page-by-page)
 - [How it compares](#how-it-compares)
 - [FAQ](#faq)
 - [HasData links](#hasdata-links)
@@ -439,6 +440,35 @@ The `apis` query parameter decides which tools your agent sees. Fewer tools mean
 
 The parameter takes provider names like `youtube` and individual API names like `google_maps_search`. Misspelled names are ignored. If every name is wrong the request fails with 400, and the body lists both what it did not recognise and every valid value. Drop the parameter and the same endpoint exposes all 57 HasData tools.
 
+## Walking a channel tab page by page
+
+`lib/channel-walk.mjs` is a small, dependency-free helper for the case that a single call cannot answer: collecting every page of one channel tab. It takes the same `(method, params) -> { raw, body }` function the contract tests use, so it never reads `HASDATA_API_KEY`, never calls `fetch`, and can be pointed at any transport, including a test stub.
+
+```js
+import { walkChannelTab } from './lib/channel-walk.mjs';
+
+const run = await walkChannelTab(rpc, '@GoogleDevelopers', 'shorts', {
+  maxPages: 10,
+  onPage: (page) => console.error(`page ${page.page}: ${page.status}, ${page.itemCount} items`),
+});
+
+console.error(run.outcome, run.itemCount, run.resumeToken);
+```
+
+Every page reports its own `page`, `status` (`success`, `empty`, `rate_limited` or `failed`), `itemCount`, `hasNext`, `nextPageToken`, and `requestMetadata`. A tab with nothing left does not raise an error: the call succeeds with `requestMetadata.status` of `ok` and the data key absent, so the walk records an `empty` page and ends `completed`.
+
+`concurrency_limit` is retried with a growing wait before the page is declared `rate_limited`. A `401` or any other `isError` stops the walk at once with the reason in `outcomeReason`. Hitting `maxPages` while a next token exists reports `truncated`, never `completed`.
+
+The `resumeToken` is the paginationToken to hand back as `options.paginationToken` to retry the page that failed, or to continue after a cut-off:
+
+```js
+const next = await walkChannelTab(rpc, '@GoogleDevelopers', 'shorts', {
+  paginationToken: run.resumeToken,
+});
+```
+
+Pages that were fetched before the stop stay in `pages`; no credit was spent on anything after it. `test/channel-walk.test.mjs` covers two normal pages, an empty second page, a retry that succeeds, retries exhausted, a 401, a `maxPages` truncation, and a resumed run, all against local stubs.
+
 ## How it compares
 
 Against the official **YouTube Data API v3**:
@@ -520,6 +550,8 @@ HasData accesses publicly available data only. A platform's terms may restrict a
 This repository is configuration and documentation for a remote server. There is no build step and nothing to containerize.
 
 The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=youtube` returns exactly four tools, that every tool still declares its required parameter, that no name changed, and that the key in use is actually accepted. That last check calls a tool for real and costs 10 credits, which is the price of a canary that can fail for the right reason.
+
+The channel walk tests need no key and make no network calls; they run with the stub `rpc` described above even on a fork.
 
 ```bash
 # macOS and Linux
