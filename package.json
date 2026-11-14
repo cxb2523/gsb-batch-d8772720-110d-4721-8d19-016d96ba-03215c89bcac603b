@@ -5,15 +5,20 @@
   "description": "MCP server for Facebook through HasData's hosted API: a public page or profile by handle with likes, followers, contact details and the post feed with reactions, paged three posts at a time. No Meta developer app. 1,000 free credits every month.",
   "type": "module",
   "bin": {
-    "hasdata-facebook-mcp": "index.mjs"
+    "hasdata-facebook-mcp": "index.mjs",
+    "facebook-snapshot": "bin/facebook-snapshot.mjs"
   },
   "files": [
     "index.mjs",
+    "bin/",
+    "src/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/tools.test.mjs test/snapshot.test.mjs test/cli.test.mjs",
+    "test:offline": "node --test test/snapshot.test.mjs test/cli.test.mjs",
+    "snapshot": "node bin/facebook-snapshot.mjs"
   },
   "dependencies": {
     "mcp-remote": "^0.1.43"

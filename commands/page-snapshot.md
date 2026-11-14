@@ -1,18 +1,42 @@
 ---
-description: What a public Facebook page looks like right now, with its recent posts
+description: Snapshot a public Facebook page and walk its feed with a reusable, resumable run
 ---
 
-Snapshot a public Facebook page.
+Snapshot a public Facebook page and its recent feed.
 
-Ask me for the page handle if I have not given it. The handle is the part of the URL after facebook.com, or the numeric id from a `profile.php?id=` URL.
+Ask me for the page handle if I have not given it. The handle is the part of the URL after
+facebook.com, or the numeric id from a `profile.php?id=` URL.
 
-Then:
+Run the bundled pipeline rather than calling the tool by hand:
 
-1. Call `hasdata_facebook_profile_getFacebookProfile` with that handle.
-2. Check that the payload carries a profile. If it carries `error` instead, tell me the page is missing, private or deleted, and stop.
-3. Report the name, category, `likesCount`, `talkingAboutCount`, `checkInsCount`, the `phone`, the `owner` and the site as `websiteUrl` rather than the `website` display text.
-4. Keep everything you need from this first response before paging, because a call with `nextPageToken` returns only `posts` and `pagination`.
-5. Follow `nextPageToken` for two more pages, then summarise the feed: how often they post, what the posts are about, and which ones drew the most reactions.
-6. Quote `followersCount` as the string it is, label included. It is not a number, and converting it silently loses the fact that Facebook rounded it.
+```bash
+HASDATA_API_KEY=... node bin/facebook-snapshot.mjs <handle> --max-pages 4 --out snapshots
+```
 
-If the page posts rarely, say that plainly. A quiet page is a finding, not a gap to fill with adjectives.
+It writes `snapshots/<handle>.snapshot.json` (the complete record) and
+`snapshots/<handle>.snapshot.md` (the readable report) after every run, including a run that
+stopped partway.
+
+What the run guarantees, and what to report back:
+
+1. One opening call returns `profile`, `photos`, one post and `pagination`. Keep the profile and
+   photos there: a call made with `nextPageToken` returns `posts` and `pagination` only.
+2. Page forward with the previous response's `nextPageToken` unchanged. Never pass `nextPage`;
+   it is a label, not a parameter. Stop when a response arrives without a token.
+3. Count the posts actually returned. The opening page carries one post, later pages three; do
+   not pad either page to `postsPerPage`.
+4. Test for `profile` before reading it. A page that is missing, deleted or private answers 200
+   with `error` instead. Report it as unavailable and stop; do not request another token.
+5. Retry a 429 or concurrency limit with a backoff. If retries run out, mark that page failed,
+   keep the posts already collected, and stop.
+6. Quote `followersCount` as the string it is, label included. It is not a number, and converting
+   it silently loses the fact that Facebook rounded it.
+
+The JSON carries `profile`, `photos`, `posts`, `stats` (posting cadence, totals and the
+highest-engagement posts), `pages[]` with one outcome per page (`success`, `end`, `failed`,
+`unavailable` plus a reason), and `calls` with the billable count and credits. When a walk stops
+early, `resume.token` holds the token for the next run; pass it back with `--start-token` and the
+earlier file with `--prior` to continue without re-paying for pages already read.
+
+If the page posts rarely, say that plainly. A quiet page is a finding, not a gap to fill with
+adjectives.

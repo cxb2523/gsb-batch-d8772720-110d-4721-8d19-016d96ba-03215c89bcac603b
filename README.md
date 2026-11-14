@@ -27,6 +27,7 @@ https://mcp.hasdata.com/mcp?apis=facebook
 - [Quick start](#quick-start)
 - [Example prompts](#example-prompts)
 - [Tools](#tools)
+- [Snapshot a page and walk its feed](#snapshot-a-page-and-walk-its-feed)
 - [Errors and failure paths](#errors-and-failure-paths)
 - [Pricing, free tier and limits](#pricing-free-tier-and-limits)
 - [How it compares](#how-it-compares)
@@ -229,6 +230,38 @@ Every call made with a token returns `posts` and `pagination` only, three posts 
 }
 ```
 
+## Snapshot a page and walk its feed
+
+The one tool returns the page record and the newest post; walking the feed is your loop. `bin/facebook-snapshot.mjs` (the `facebook-snapshot` bin, or `npm run snapshot`) runs that loop for you and keeps the result auditable:
+
+```bash
+HASDATA_API_KEY=... node bin/facebook-snapshot.mjs nike adidas --max-pages 4 --out snapshots
+```
+
+Each run writes `snapshots/<handle>.snapshot.json` and `snapshots/<handle>.snapshot.md`:
+
+- **Profile and photos** are kept from the opening call, because a token call returns posts and pagination only.
+- **Posts** are the ones actually returned. The first page contributes one post and later pages three, counted as they are rather than padded to `postsPerPage`.
+- **`stats`** carries posting cadence (posts per day, median gap, newest and oldest post), reaction/comment/share totals, and the highest-engagement posts ranked by the sum of the three.
+- **`pages`** carries one outcome per request: `success` (data, more to come), `end` (the response had no `nextPageToken`), `failed` (retries exhausted) or `unavailable` (the payload carried `error` instead of the page), each with the reason code and message.
+- **`calls`** counts billable calls and credits, so a run can be reconciled against the dashboard.
+
+A 429 or concurrency limit is retried with an exponential backoff, honouring `Retry-After`. When the retries run out the page is marked failed and the posts from earlier pages are kept. A page that does not exist, was deleted or is not public is reported as `unavailable` and the walk stops without asking for another token.
+
+A run that stopped early keeps `resume.token`. Continue it from the CLI with the earlier file, or from the module directly:
+
+```bash
+node bin/facebook-snapshot.mjs nike --start-token "$TOKEN" --prior snapshots/nike.snapshot.json
+```
+
+```js
+import { snapshotPage } from './src/snapshot.mjs';
+const first = JSON.parse(await readFile('snapshots/nike.snapshot.json', 'utf8'));
+const rest = await snapshotPage({ handle: 'nike', client, startToken: first.resume.token, prior: first });
+```
+
+The CLI exits `0` when the page answered and the walk completed (feed end or the page budget), `1` when the page was unavailable or a page failed, and `2` on bad usage. A partial snapshot is written before the non-zero exit.
+
 ## Prompts and resources
 
 The server exposes one resource, the accepted values of the single parameter that takes a fixed list. Reading it is cheaper than learning the vocabulary from a rejected call, and it costs no credits.
@@ -347,12 +380,15 @@ The launcher is a thin stdio bridge to the remote server, so there is nothing to
 
 ```bash
 npm install
+npm run test:offline     # fixtures only: no key, no network, no credits
 HASDATA_API_KEY=your_key_here npm test
 ```
 
-The tests in `test/` assert the tool contract, the part that can break without a commit here. They check that `?apis=facebook` returns the one expected tool, that its name has not changed, that it still requires `handle` and carries a description, that `language` still offers the codes this README names, and that the key in use is actually accepted.
+`test/snapshot.test.mjs` covers the snapshot pipeline against hand-written response fixtures: a normal multi-page walk, a page whose feed ends on the opening call, an `error` payload mid-walk and on the first page, retry exhaustion that keeps earlier posts, the page budget and resume path, and the client's retry/backoff and SSE parsing. `test/cli.test.mjs` drives the CLI end to end against a local MCP-shaped HTTP server. Neither file reads `HASDATA_API_KEY`, and `npm run test:offline` runs exactly those two.
 
-One test reads a live page and asserts the two things this README leans on: that `likesCount` is a number rather than display text, and that `pagination.nextPageToken` arrives, because without the token the feed walk this README documents does not exist. That call costs 10 credits, which is the price of a canary that can fail for the right reason.
+The rest of `test/` asserts the tool contract, the part that can break without a commit here. They check that `?apis=facebook` returns the one expected tool, that its name has not changed, that it still requires `handle` and carries a description, that `language` still offers the codes this README names, and that the key in use is actually accepted.
+
+One test reads a live page and asserts the two things this README leans on: that `likesCount` is a number rather than display text, and that `pagination.nextPageToken` arrives, because without the token the feed walk this README documents does not exist. That call costs 10 credits, which is the price of a canary that can fail for the right reason. The snapshot tests are separate and always offline.
 
 The contract suite also runs weekly on a schedule, because the upstream tool list can change without anyone touching this repository.
 

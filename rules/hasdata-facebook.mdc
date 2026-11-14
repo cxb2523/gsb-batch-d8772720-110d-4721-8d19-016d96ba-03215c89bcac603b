@@ -25,9 +25,24 @@ A page that never existed, was deleted or is not public still answers 200. The p
 
 ## Paging drops most of the payload
 
-The first response carries the profile, the photos and one post. A call made with `nextPageToken` returns `posts` and `pagination` only, so the profile is not there to re-read on page two. Keep what you need from the first response before paging.
+The first response carries the profile, the photos and one post. A call made with
+`nextPageToken` returns `posts` and `pagination` only, so the profile is not there to re-read on page two. Keep what you need from the first response before paging.
 
-Contact details are two different fields. `website` is the display text and `websiteUrl` is the address that resolves, alongside `phone` and an `owner` object.
+Walk the feed only with the token. `nextPage` is a page number for bookkeeping, not a parameter,
+so pass the previous `nextPageToken` unchanged and stop when a response arrives without one.
+
+## A snapshot is a pipeline, not a loop of ad-hoc calls
+
+`bin/facebook-snapshot.mjs` (npm script `snapshot`, module `src/snapshot.mjs`) wraps the walk:
+it retains the profile and photos from page one, collects the posts, records one outcome per
+page (`success`, `end`, `failed`, `unavailable` with a reason), and counts billable calls. It
+returns a partial result instead of throwing, so a run that stops partway still writes its
+artefacts and leaves `resume.token` for the next one. Prefer it over hand-rolling the loop:
+retry, backoff and error-payload detection are already there, and half-finished manual walks are
+what it exists to prevent.
+
+Contact details are two different fields. `website` is the display text and `websiteUrl` is the
+address that resolves, alongside `phone` and an `owner` object.
 
 ## Prompts and resources
 
