@@ -1,0 +1,30 @@
+{
+	"name": "fav-vault",
+	"version": "2.0.10",
+	"description": "Automated social media favorite downloader with WebUI",
+	"main": "dst/index.js",
+	"scripts": {
+		"build": "tsc && node scripts/copy-assets.mjs",
+		"start": "npm run build && node dst/index.js",
+		"docker:build": "docker compose build",
+		"docker:up": "docker compose up -d",
+		"docker:down": "docker compose down"
+	},
+	"dependencies": {
+		"@types/ejs": "^3.1.5",
+		"better-sqlite3": "^12.11.1",
+		"ejs": "^6.0.1",
+		"express": "^5.2.1",
+		"node-cron": "^4.5.0",
+		"puppeteer-core": "^25.1.0",
+		"puppeteer-extra": "^3.3.6",
+		"puppeteer-extra-plugin-stealth": "^2.11.2",
+		"undici": "^7.28.0"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/express": "^5.0.6",
+		"@types/node": "^26.0.0",
+		"typescript": "^6.0.3"
+	}
+}
