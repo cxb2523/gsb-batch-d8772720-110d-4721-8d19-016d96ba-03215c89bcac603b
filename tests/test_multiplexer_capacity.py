@@ -14,6 +14,7 @@ registry's bookkeeping, not about a real Chrome.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -154,6 +155,221 @@ def test_a_worker_whose_age_is_unknown_is_left_alone():
 
         assert await mux._reap_idle("test") == []
         assert "ageless" in mux._workers
+
+    asyncio.run(scenario())
+
+
+def test_setting_the_ttl_to_zero_disables_every_sweep():
+    """TTL 0 means sweeping is off, including the on-demand sweep at the cap.
+
+    The periodic _reaper exits on its own check, but _reap_idle is also called
+    from _ensure_worker when the registry is full. Without the guard living in
+    _reap_idle itself, an operator who asked to keep idle names forever still
+    had them destroyed the moment a thirteenth browser arrived.
+    """
+
+    async def scenario():
+        for i in range(mux._MAX_BROWSERS - 1):
+            worker = await mux._ensure_worker(f"b{i}")
+            worker.chrome_running = False
+
+        original_ttl = mux._IDLE_TTL_S
+        mux._IDLE_TTL_S = 0
+        try:
+            # The direct sweep collects nothing...
+            assert await mux._reap_idle("test") == []
+            assert len(mux._workers) == mux._MAX_BROWSERS - 1
+            # ...and the capacity path refuses rather than reclaiming.
+            with pytest.raises(RuntimeError, match="none could be reclaimed"):
+                await mux._ensure_worker("late-arrival")
+            assert len(mux._workers) == mux._MAX_BROWSERS - 1
+        finally:
+            mux._IDLE_TTL_S = original_ttl
+
+    asyncio.run(scenario())
+
+
+def test_the_periodic_reaper_runs_its_sweep_and_can_be_switched_off():
+    """The background task is what makes collection automatic, not on-demand."""
+
+    async def scenario():
+        sweeps: list[str] = []
+
+        async def record(reason: str):
+            sweeps.append(reason)
+            return []
+
+        original_reap, original_interval, original_ttl = (
+            mux._reap_idle,
+            mux._REAP_INTERVAL_S,
+            mux._IDLE_TTL_S,
+        )
+        mux._reap_idle = record
+        mux._REAP_INTERVAL_S = 0.01
+        try:
+            task = asyncio.create_task(mux._reaper())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert sweeps, "the background reaper never swept"
+            assert all(s == "idle sweep" for s in sweeps)
+
+            # With the TTL at 0 the task returns immediately instead of looping.
+            mux._IDLE_TTL_S = 0
+            disabled = asyncio.create_task(mux._reaper())
+            await asyncio.wait_for(disabled, timeout=1.0)
+            assert disabled.done()
+        finally:
+            mux._reap_idle = original_reap
+            mux._REAP_INTERVAL_S = original_interval
+            mux._IDLE_TTL_S = original_ttl
+
+    asyncio.run(scenario())
+
+
+def test_a_stopped_or_unresponsive_worker_is_reclaimable_even_with_chrome():
+    """A worker that cannot answer cannot serve anyone, so its slot is dead weight.
+
+    The status call reports this independently of chrome_running, which the
+    worker may never have had a chance to set honestly before it hung.
+    """
+
+    async def scenario():
+        worker = await mux._ensure_worker("zombie")
+        worker.last_used = 0.0  # ancient
+        for worker_state in ("stopped", "unresponsive"):
+            assert mux._reclaimable(
+                worker, {"chrome_running": True, "worker": worker_state}
+            ), worker_state
+        # A responsive worker with a live Chrome is never collectible, however idle.
+        assert not mux._reclaimable(
+            worker, {"chrome_running": True, "worker": "running"}
+        )
+        # An alive worker whose status could not be obtained is given the benefit
+        # of the doubt; only a corpse (alive=False) is collectible with no status.
+        assert not mux._reclaimable(worker, None)
+
+    asyncio.run(scenario())
+
+
+def test_a_locked_name_is_skipped_without_waiting_for_its_lock():
+    """The sweep must never block on a name another call holds.
+
+    _reap_idle runs from _ensure_worker while that call already holds its own
+    name's lock; waiting here would let two spawns deadlock the whole server.
+    """
+
+    async def scenario():
+        worker = await mux._ensure_worker("busy-lock")
+        worker.chrome_running = False
+        worker.last_used = 0.0
+        lock = await mux._name_lock("busy-lock")
+        async with lock:
+            collected = await asyncio.wait_for(
+                mux._reap_idle("test"), timeout=5
+            )
+        assert collected == []
+        assert "busy-lock" in mux._workers
+
+    asyncio.run(scenario())
+
+
+def test_a_name_that_is_still_starting_is_never_reaped():
+    """A slot claimed before the slow spawn must not look like a dead browser.
+
+    The startup holds the name's lock for its whole duration, so the sweep
+    skips the name rather than collecting a Chrome that is still coming up.
+    """
+
+    async def scenario():
+        real_worker_cls = mux._Worker
+
+        class SlowStart(real_worker_cls):
+            async def start(self):
+                await asyncio.sleep(0.15)
+                await super().start()
+
+        mux._Worker = SlowStart
+        try:
+            spawn = asyncio.create_task(mux._ensure_worker("booting"))
+            await asyncio.sleep(0.05)  # mid-spawn: slot claimed, lock held
+            assert await mux._reap_idle("test") == []
+            assert "booting" in mux._workers
+            await asyncio.wait_for(spawn, timeout=5)
+            assert "booting" in mux._workers
+        finally:
+            mux._Worker = real_worker_cls
+
+    asyncio.run(scenario())
+
+
+def test_reclaim_is_rechecked_under_the_lock():
+    """State seen during the status scan may have changed by the time we lock.
+
+    A call that arrived in between can relaunch Chrome; collecting anyway would
+    tear a live browser out from under that caller.
+    """
+
+    async def scenario():
+        worker = await mux._ensure_worker("revived")
+        worker.chrome_running = False
+        worker.last_used = 0.0
+        original = mux._reclaimable
+        decisions = iter([True, False])  # passes the scan, fails under the lock
+        mux._reclaimable = lambda w, status: next(decisions)
+        try:
+            assert await mux._reap_idle("test") == []
+            assert "revived" in mux._workers
+        finally:
+            mux._reclaimable = original
+
+    asyncio.run(scenario())
+
+
+def test_list_browsers_names_the_reclaimable_names_at_capacity():
+    """The caller refused a slot must be told exactly which names free themselves.
+
+    It has to say both that collection is automatic and that shutdown_browser
+    releases one immediately, while keeping every field the report already had.
+    """
+
+    async def scenario():
+        for i in range(mux._MAX_BROWSERS - 1):
+            worker = await mux._ensure_worker(f"b{i}")
+            worker.chrome_running = False
+
+        result = await mux.call_tool("list_browsers", {})
+        report = json.loads(mux._text(result))
+
+        assert report["open"] == report["max"]
+        assert report["slots_free"] == 0
+        assert "At capacity" in report["hint"]
+        assert "collected automatically" in report["hint"]
+        assert "shutdown_browser" in report["hint"]
+        # Every reclaimable name is spelled out.
+        for i in range(mux._MAX_BROWSERS - 1):
+            assert f"b{i}" in report["hint"]
+        # The existing shape is untouched.
+        assert {"browsers", "open", "max", "slots_free", "hint"} <= set(report)
+        assert all("browser" in entry for entry in report["browsers"])
+
+    asyncio.run(scenario())
+
+
+def test_list_browsers_with_no_reclaimable_name_says_to_release_your_own():
+    """At capacity with every Chrome still up, there is nothing to promise away."""
+
+    async def scenario():
+        for i in range(mux._MAX_BROWSERS - 1):
+            await mux._ensure_worker(f"busy{i}")  # chrome_running stays True
+
+        report = json.loads(
+            mux._text(await mux.call_tool("list_browsers", {}))
+        )
+        assert report["open"] == report["max"]
+        assert "collected automatically" not in report["hint"]
+        assert "shutdown_browser" in report["hint"]
 
     asyncio.run(scenario())
 

@@ -165,6 +165,8 @@ If you'd rather paste it yourself, this works in any MCP client (`claude_desktop
 | `NODRIVER_BROWSER_URL` | Attach to a Chrome already running at this address (e.g. `http://127.0.0.1:9222`) instead of launching one | Launch our own |
 | `NODRIVER_ENABLE_TRANSLATE` | Set `true` to re-enable Chrome's Google Translate popup | Disabled |
 | `NODRIVER_ENABLE_EXTENSIONS` | Set `true` to allow externally-installed Chrome extensions (and their prompts) | Disabled |
+| `NODRIVER_MAX_BROWSERS` | Maximum browsers open at once, including `default` (minimum 2) | `12` |
+| `NODRIVER_BROWSER_IDLE_TTL_S` | Seconds with no calls after which a closed-Chrome, idle browser name is reaped automatically. Set `0` to disable reaping | `900` |
 
 By default the browser starts clean for automation: the **Google Translate popup is suppressed** and **externally-installed Chrome extensions are blocked** (so you don't get "an extension requires your attention" prompts). Re-enable either via the env vars above **or at runtime with the `set_browser_flags` tool** — which can also set **any other Chrome launch flags** (e.g. `--lang=de-DE`, `--window-size=1280,800`) via its `extra_args` parameter. The browser also **auto-recovers** if Chrome is closed or crashes between calls — tools relaunch it instead of failing.
 
@@ -200,10 +202,12 @@ The default costs nothing. `"default"` runs inside the server process itself, so
 
 | Tool | |
 |---|---|
-| `list_browsers` | What is open: names, whether Chrome runs, profile, tabs and their URLs. Reports without starting anything. |
+| `list_browsers` | What is open: names, whether Chrome runs, profile, tabs and their URLs. Reports without starting anything. At capacity it names any browsers that will be reaped automatically. |
 | `shutdown_browser` | Quits one browser's Chrome and frees its name. `close_browser` only quits Chrome and keeps the browser's profile and flags for next time. |
 
 Each extra browser is a Python process plus a full Chrome — roughly 200 MB and about a second to start. Up to **12** can be open at once, including the default. Two callers sharing one *name* still share one Chrome: the isolation is per browser, not per caller, so parallel agents each need their own.
+
+`close_browser` keeps the name, its profile and flags, so a closed browser still counts against the limit until the name is reused. To stop twelve well-behaved agents that each open and close a browser from wedging the server at the limit, a **background sweep reaps names automatically**: a browser whose Chrome is not running (or whose worker has stopped answering) and which has had no calls for `NODRIVER_BROWSER_IDLE_TTL_S` seconds (default 900; set `0` to disable) has its name and slot released. Browsers whose idle time cannot be determined, the `default` browser, and names another call currently holds are never touched. When a new browser is requested at capacity, one on-demand reclaim is attempted first; if nothing can be reclaimed the call is refused and tells you so. `shutdown_browser` still releases a name immediately rather than waiting for the sweep.
 
 ## Profiles
 

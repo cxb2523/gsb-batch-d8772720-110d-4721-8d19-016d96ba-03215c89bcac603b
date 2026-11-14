@@ -29,7 +29,9 @@ List every browser this server currently holds: its name, whether its Chrome is 
 
 There is always a browser called "default", which runs in the server process. Others are created implicitly, by passing a new name as the `browser` argument of any tool, so this only shows names already used. A name missing here is not an error; it simply has not been opened.
 
-chrome_running=false means the browser exists but has no Chrome, either because no tool has needed one yet or because close_browser was called. The next call relaunches it.  
+chrome_running=false means the browser exists but has no Chrome, either because no tool has needed one yet or because close_browser was called. The next call relaunches it.
+
+A browser with no Chrome that has been idle past the idle TTL is reaped automatically, releasing its name and slot. At capacity, the hint lists the names eligible for that reaping; shutdown_browser frees one at once.  
 <sub>read-only</sub>
 
 *Takes no parameters.*

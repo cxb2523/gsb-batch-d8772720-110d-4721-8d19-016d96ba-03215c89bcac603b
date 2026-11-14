@@ -292,6 +292,11 @@ def _reclaimable(worker: _Worker, status: dict[str, Any] | None) -> bool:
 
 async def _reap_idle(reason: str) -> list[str]:
     """Retire idle, Chrome-less browsers. Returns the names collected."""
+    # 0 disables sweeping altogether. _reaper exits on its own check, but this is
+    # also called on demand from _ensure_worker, so the guard has to live here or
+    # a full server would still reclaim names the operator asked to keep forever.
+    if _IDLE_TTL_S <= 0:
+        return []
     names = [n for n, w in _workers.items() if not w.retired]
     if not names:
         return []
@@ -492,7 +497,10 @@ _LIST_BROWSERS = types.Tool(
         "A name missing here is not an error; it simply has not been opened.\n\n"
         "chrome_running=false means the browser exists but has no Chrome, either "
         "because no tool has needed one yet or because close_browser was called. "
-        "The next call relaunches it."
+        "The next call relaunches it.\n\n"
+        "A browser with no Chrome that has been idle past the idle TTL is reaped "
+        "automatically, releasing its name and slot. At capacity, the hint lists "
+        "the names eligible for that reaping; shutdown_browser frees one at once."
     ),
     inputSchema={"type": "object", "properties": {}},
     annotations=types.ToolAnnotations(

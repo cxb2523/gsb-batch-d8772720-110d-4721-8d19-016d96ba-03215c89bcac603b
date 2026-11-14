@@ -7,14 +7,14 @@
     "url": "https://github.com/andresolbach/nodriver-mcp-server",
     "source": "github"
   },
-  "version": "2.6.1",
+  "version": "2.6.2",
   "websiteUrl": "https://pypi.org/project/nodriver-mcp/",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "nodriver-mcp",
-      "version": "2.6.1",
+      "version": "2.6.2",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -38,6 +38,16 @@
         {
           "name": "NODRIVER_PROXY",
           "description": "Proxy server address passed to Chrome as --proxy-server.",
+          "isRequired": false
+        },
+        {
+          "name": "NODRIVER_MAX_BROWSERS",
+          "description": "Maximum browsers open at once, including the default. Default 12, minimum 2.",
+          "isRequired": false
+        },
+        {
+          "name": "NODRIVER_BROWSER_IDLE_TTL_S",
+          "description": "Seconds without calls after which an idle, Chrome-less browser name is reaped. Default 900; set 0 to disable reaping.",
           "isRequired": false
         }
       ]

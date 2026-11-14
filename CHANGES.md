@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.6.2 — automatic reaping of idle, Chrome-less browser names
+
+Several agents each opening an independent browser and dutifully calling
+`close_browser` used to wedge the server at its browser cap for the rest of the
+session. `close_browser` deliberately keeps the name, profile and flags, but
+nothing ever gave the slot back, so the twelfth browser onwards was refused
+forever even though no Chrome was running.
+
+A background sweep in the multiplexer now reaps those names. A name is
+collected only when it is not retired, its last use is known and older than
+`NODRIVER_BROWSER_IDLE_TTL_S` (default 900 seconds; set 0 to disable sweeping
+altogether), and its Chrome is not running or its worker has stopped
+responding. Names with an unknown age, the `default` browser, and names
+another call currently holds are never touched; reclaim is re-confirmed under
+the name's lock so it cannot race a concurrent call. When a new browser is
+requested at the cap, one on-demand reclaim is attempted before refusing.
+`list_browsers` now names the reclaimable browsers in its capacity hint,
+noting both that they are collected automatically and that
+`shutdown_browser` releases one immediately.
+
+Tool count: 70 (unchanged).
+
 ## 2.6.1 — reliable audit headers and browser regression checks
 
 `audit_security` now waits up to five seconds for the response headers of its
