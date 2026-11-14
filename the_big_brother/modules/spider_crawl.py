@@ -10,8 +10,11 @@ import asyncio
 import re
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse, urljoin
-from typing import Dict, Any, List, Set, Optional
+from urllib.parse import urlparse, urljoin, urlunparse
+from typing import Dict, Any, List, Set, Optional, Tuple
+
+# Maximum number of unvisited entries surfaced in crawl_status["unvisited"].
+MAX_UNVISITED_REPORTED = 50
 
 # Verified Secret Regex Signatures
 SECRET_PATTERNS = {
@@ -46,6 +49,15 @@ LINK_RE = re.compile(r'href=["\'](https?://[^"\']+|/[^"\']*)["\']', re.IGNORECAS
 ENDPOINT_RE = re.compile(r'["\'](/api/v[0-9]/[^"\']+|/api/[^"\']+|/v[0-9]/[^"\']+)["\']')
 
 
+def _canon_url(url: str) -> str:
+    """Canonicalize a URL for dedup: lowercase scheme/host, empty path -> '/',
+    drop fragment. Prevents 'http://host' and 'http://host/' (or '#'-variants)
+    from being crawled as distinct pages."""
+    p = urlparse(url)
+    path = p.path or "/"
+    return urlunparse((p.scheme.lower(), p.netloc.lower(), path, "", p.query, ""))
+
+
 def _fetch_sync(url: str, timeout: int = 5) -> Tuple[int, str, dict]:
     try:
         req = urllib.request.Request(
@@ -65,7 +77,34 @@ def _fetch_sync(url: str, timeout: int = 5) -> Tuple[int, str, dict]:
         return 0, "", {}
 
 
-async def spider_crawl(target_url: str, max_depth: int = 2, max_pages: int = 20) -> Dict[str, Any]:
+def _normalize_pending_entry(entry: Any, default_depth: int = 0) -> Optional[Tuple[str, int]]:
+    """Accept a pending entry as a plain URL string or a crawl_status unvisited
+    record ({"url": ..., "depth": ...}) and normalize to (url, depth)."""
+    if isinstance(entry, str):
+        url, depth = entry, default_depth
+    elif isinstance(entry, dict):
+        url = entry.get("url")
+        if not url:
+            return None
+        try:
+            depth = int(entry.get("depth", default_depth))
+        except (TypeError, ValueError):
+            depth = default_depth
+    else:
+        return None
+    url = _canon_url(url.strip())
+    if not url.startswith(("http://", "https://")):
+        return None
+    return url, max(0, depth)
+
+
+async def spider_crawl(
+    target_url: str,
+    max_depth: int = 2,
+    max_pages: int = 20,
+    pending_urls: Optional[List[Any]] = None,
+    skip_urls: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     target_url = target_url.strip()
     if not target_url.startswith(("http://", "https://")):
         target_url = "https://" + target_url
@@ -74,7 +113,29 @@ async def spider_crawl(target_url: str, max_depth: int = 2, max_pages: int = 20)
     target_domain = parsed.netloc.lower()
 
     visited_urls: Set[str] = set()
-    crawl_queue: List[Tuple[str, int]] = [(target_url, 0)]
+    failed_urls: Set[str] = set()
+    previously_fetched: Set[str] = {_canon_url(u.strip()) for u in (skip_urls or [])
+                                    if isinstance(u, str) and u.strip()}
+
+    if pending_urls is not None:
+        # Resume mode: seed the queue exclusively with the unvisited entries
+        # reported by a previous run; never re-fetch previously visited pages.
+        crawl_queue: List[Tuple[str, int]] = []
+        seen_seed: Set[str] = set()
+        for entry in pending_urls:
+            norm = _normalize_pending_entry(entry)
+            if not norm:
+                continue
+            url, depth = norm
+            if url in previously_fetched or url in seen_seed:
+                continue
+            seen_seed.add(url)
+            crawl_queue.append((url, depth))
+    else:
+        crawl_queue = [(_canon_url(target_url), 0)]
+
+    enqueued: Set[str] = {u for u, _ in crawl_queue}
+    fetch_failures: List[Dict[str, Any]] = []
 
     discovered_secrets: List[Dict[str, Any]] = []
     discovered_emails: Set[str] = set()
@@ -86,18 +147,30 @@ async def spider_crawl(target_url: str, max_depth: int = 2, max_pages: int = 20)
     loop = asyncio.get_event_loop()
 
     crawl_log.append(f"[START] Initializing recursive harvest on {target_url} (Domain: {target_domain})")
+    if pending_urls is not None:
+        crawl_log.append(f"[RESUME] Seeded queue with {len(crawl_queue)} pending URL(s); "
+                         f"{len(previously_fetched)} previously fetched URL(s) will be skipped")
 
     # 1. Recursive Link Walker & Secrets Extractor
     while crawl_queue and len(visited_urls) < max_pages:
         curr_url, depth = crawl_queue.pop(0)
-        if curr_url in visited_urls:
+        if curr_url in visited_urls or curr_url in failed_urls or curr_url in previously_fetched:
             continue
-        visited_urls.add(curr_url)
 
         crawl_log.append(f"[CRAWL:D{depth}] Requesting {curr_url}")
         status, content, headers = await loop.run_in_executor(None, _fetch_sync, curr_url, 5)
         if status != 200 or not content:
+            # Failed pages are NOT counted as visited; record them for the report.
+            failed_urls.add(curr_url)
+            fetch_failures.append({
+                "url": curr_url,
+                "depth": depth,
+                "reason": "fetch_failed",
+                "http_status": status
+            })
+            crawl_log.append(f"[FETCH_FAILED] {curr_url} -> HTTP {status}")
             continue
+        visited_urls.add(curr_url)
 
         # Extract Secrets
         for sec_name, pattern in SECRET_PATTERNS.items():
@@ -129,15 +202,56 @@ async def spider_crawl(target_url: str, max_depth: int = 2, max_pages: int = 20)
         if depth < max_depth:
             for m in LINK_RE.finditer(content):
                 href = m.group(1)
-                full = urljoin(curr_url, href)
+                full = _canon_url(urljoin(curr_url, href))
                 u_parsed = urlparse(full)
                 if u_parsed.netloc.lower() == target_domain:
                     # Ignore binary media assets
                     if not any(full.lower().endswith(ext) for ext in [".png", ".jpg", ".gif", ".pdf", ".zip", ".mp4", ".mp3"]):
-                        if full not in visited_urls:
+                        if (full not in visited_urls and full not in failed_urls
+                                and full not in previously_fetched and full not in enqueued):
+                            enqueued.add(full)
                             crawl_queue.append((full, depth + 1))
                 elif u_parsed.scheme in ("http", "https"):
                     external_links.add(full)
+
+    # 1b. Collection accounting — what was not crawled, and why.
+    # Remaining queue entries (only present when the page budget cut the crawl
+    # short) are reported in queue order; failed fetches are reported in the
+    # order they occurred. A URL appears at most once across the whole list.
+    budget_remaining: List[Dict[str, Any]] = []
+    if crawl_queue:
+        crawl_log.append(f"[BUDGET_EXHAUSTED] Page budget {max_pages} reached with "
+                         f"{len(crawl_queue)} link(s) still queued")
+        seen_remaining: Set[str] = set()
+        for q_url, q_depth in crawl_queue:
+            if (q_url in visited_urls or q_url in failed_urls
+                    or q_url in previously_fetched or q_url in seen_remaining):
+                continue
+            seen_remaining.add(q_url)
+            budget_remaining.append({
+                "url": q_url,
+                "depth": q_depth,
+                "reason": "budget_exhausted",
+                "http_status": None
+            })
+
+    unvisited_all: List[Dict[str, Any]] = fetch_failures + budget_remaining
+    unvisited_total = len(unvisited_all)
+    crawl_status = {
+        "completed": not fetch_failures and not budget_remaining,
+        "visited_count": len(visited_urls),
+        "queued_remaining": len(budget_remaining),
+        "visited_urls": sorted(visited_urls),
+        "unvisited": unvisited_all[:MAX_UNVISITED_REPORTED],
+        "unvisited_total": unvisited_total,
+        "truncated": unvisited_total > MAX_UNVISITED_REPORTED
+    }
+    crawl_log.append(
+        f"[CRAWL_STATUS] completed={crawl_status['completed']} "
+        f"visited={crawl_status['visited_count']} "
+        f"queued_remaining={crawl_status['queued_remaining']} "
+        f"fetch_failed={len(fetch_failures)}"
+    )
 
     # 2. Sensitive Path Probing
     crawl_log.append(f"[PATH_AUDIT] Concurrently auditing {len(SENSITIVE_PATHS)} critical paths...")
@@ -198,5 +312,26 @@ async def spider_crawl(target_url: str, max_depth: int = 2, max_pages: int = 20)
             "api_endpoints": list(discovered_endpoints)[:40],
             "external_links_count": len(external_links)
         },
+        "crawl_status": crawl_status,
         "crawl_log": crawl_log
     }
+
+
+async def spider_crawl_resume(
+    target_url: str,
+    pending_urls: List[Any],
+    max_depth: int = 2,
+    max_pages: int = 20,
+    skip_urls: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Resume an incomplete crawl: fetch only the unvisited URLs reported by a
+    previous run's crawl_status["unvisited"] (plain URL strings are accepted
+    too). URLs listed in skip_urls (previously fetched pages) are never
+    requested again. Returns a fresh result including a new crawl_status."""
+    return await spider_crawl(
+        target_url,
+        max_depth=max_depth,
+        max_pages=max_pages,
+        pending_urls=pending_urls,
+        skip_urls=skip_urls,
+    )

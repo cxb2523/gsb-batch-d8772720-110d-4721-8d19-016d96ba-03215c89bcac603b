@@ -7,7 +7,7 @@ import os
 import sys
 import io
 import csv
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -187,6 +187,10 @@ class ShadowCloneRequest(BaseModel):
 
 class SpiderCrawlRequest(BaseModel):
     target: str
+    max_depth: int = 2
+    max_pages: int = 20
+    pending_urls: Optional[List[Any]] = None  # unvisited entries from a previous crawl_status
+    skip_urls: Optional[List[str]] = None     # previously fetched pages to never re-fetch
 
 class OrbitalEyeRequest(BaseModel):
     lat: float
@@ -550,7 +554,13 @@ async def shadow_clone_api(request: ShadowCloneRequest):
 
 @app.post("/api/spidercrawl")
 async def spider_crawl_api(request: SpiderCrawlRequest):
-    return await spider_crawl(request.target)
+    return await spider_crawl(
+        request.target,
+        max_depth=request.max_depth,
+        max_pages=request.max_pages,
+        pending_urls=request.pending_urls,
+        skip_urls=request.skip_urls,
+    )
 
 @app.post("/api/docautopsy/upload")
 async def doc_autopsy_upload(file: UploadFile = File(...)):
@@ -780,7 +790,13 @@ async def dispatch_module(module_id: str, payload: dict):
             return await shadow_clone_search(target, deep_recon=deep_recon, probe_clones=probe_clones)
         
         elif mid in ("spider_crawl", "spidercrawl"):
-            return await spider_crawl(target)
+            return await spider_crawl(
+                target,
+                max_depth=payload.get("max_depth", 2),
+                max_pages=payload.get("max_pages", 20),
+                pending_urls=payload.get("pending_urls"),
+                skip_urls=payload.get("skip_urls"),
+            )
         
         elif mid in ("orbital_eye", "orbitaleye"):
             lat = payload.get("lat")
