@@ -1,0 +1,21 @@
+{# Offer batch collection on a single job page. The File List card provides
+   its own entry point, so the button is only shown when that card is absent. #}
+{% set collect_ns = namespace(file_list_enabled=false) %}
+{% for module in modules_by_context["JobContext"] %}
+{% if loop.index0 in enabled_module_indices["JobContext"] and module.download_name is defined %}
+{% set collect_ns.file_list_enabled = true %}
+{% endif %}
+{% endfor %}
+{% if g.jobs | length == 1 and not collect_ns.file_list_enabled %}
+{% set collect_jobid = g.jobs[0].job._id %}
+<div class="column">
+    <section class="panel">
+        <div class="panel-block collect-job-panel">
+            <a class="button is-small" href="{{ url_for('collect_job', jobid=collect_jobid) }}">
+                <span class="icon is-small"><i class="fas fa-file-archive"></i></span>
+                <span>Collect all files</span>
+            </a>
+        </div>
+    </section>
+</div>
+{% endif %}

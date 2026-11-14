@@ -675,6 +675,11 @@ class Dashboard:
             "views.get_file",
             ["/jobs/<jobid>/file/<path:filename>", "/project/file/<path:filename>"],
         )
+        self.add_url("views.collect_job", ["/jobs/<jobid>/collect"])
+        self.add_url(
+            "views.download_collection",
+            ["/jobs/<jobid>/collect/<collection_id>.zip"],
+        )
         self.add_url("views.change_modules", ["/modules"], methods=["POST"])
 
     def update_cache(self):

@@ -15,6 +15,10 @@ Added
 
 - Tile view, enabling compact layouts of module cards (#286).
 - Make state point keys hyperlinks (#304).
+- Batch collection of job files: ``/jobs/<jobid>/collect`` packages all regular
+  files in a job directory into a zip archive and reports the outcome of every
+  entry. Directories, symbolic links and paths resolving outside of the job
+  directory are skipped and listed with the reason.
 
 Updated
 +++++++

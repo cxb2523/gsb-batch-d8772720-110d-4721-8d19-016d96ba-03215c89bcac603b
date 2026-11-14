@@ -23,3 +23,10 @@ Searches with $where
 ~~~~~~~~~~~~~~~~~~~~
 
 The use of the :code:`$where` operator in searches is disabled by default and must be :ref:`explicitly enabled<python-api-dashboard>`, in which case the dashboard is vulnerable against `code-injection attacks <https://en.wikipedia.org/wiki/Code_injection>`_.
+
+File Collection
+~~~~~~~~~~~~~~~
+
+The batch collection endpoint (:code:`/jobs/<jobid>/collect`) only reads regular files that resolve to a location inside the job directory.
+Directories, symbolic links and paths that resolve outside of the job directory are skipped and listed in the per-file results.
+Archive member names are derived from the file names within the job directory, so collected archives never contain entries that could be extracted outside of the destination directory.

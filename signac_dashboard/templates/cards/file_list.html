@@ -3,3 +3,9 @@
   <li><a href="{{ url_for('get_file', jobid=file.jobid, filename=file.name, download_name=file.download) }}" download="{{ file.download }}">{{ file.name }}</a></li>
   {% endfor %}
 </ul>
+<p class="collect-all">
+  <a class="button is-small" href="{{ url_for('collect_job', jobid=jobid) }}">
+    <span class="icon is-small"><i class="fas fa-file-archive"></i></span>
+    <span>Collect all files</span>
+  </a>
+</p>

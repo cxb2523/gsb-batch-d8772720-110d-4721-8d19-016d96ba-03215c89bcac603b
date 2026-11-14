@@ -1,0 +1,15 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ g.title }}{% endblock %}
+{% block subtitle %}Something went wrong.{% endblock %}
+{% block view_options %}{% endblock %}
+{% block module_selector %}{% endblock %}
+{% block panels %}
+<div class="column">
+    <section class="panel">
+        <div class="panel-block">
+            <p>{{ message }}</p>
+        </div>
+    </section>
+</div>
+{% endblock %}

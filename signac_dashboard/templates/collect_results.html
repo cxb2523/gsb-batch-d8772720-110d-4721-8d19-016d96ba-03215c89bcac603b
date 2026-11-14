@@ -1,0 +1,66 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ g.title }}{% endblock %}
+{% block subtitle %}{{ g.subtitle }}{% endblock %}
+{% block view_options %}{% endblock %}
+{% block module_selector %}{% endblock %}
+
+{% block panels %}
+<div class="column">
+    <section class="panel">
+        <div class="panel-block">
+            <p>
+                Job <strong>{{ jobid }}</strong>.
+                {% if summary.total == 0 %}
+                The job directory is empty: 0 files were collected and the archive is empty.
+                {% else %}
+                {{ summary.packaged }} of {{ summary.total }} entries were packaged;
+                {{ summary.skipped }} entries were skipped.
+                {% endif %}
+            </p>
+        </div>
+        <div class="panel-block">
+            <a class="button is-primary" href="{{ archive_url }}" download>
+                Download archive
+            </a>
+        </div>
+    </section>
+</div>
+<div class="column">
+    <section class="panel">
+        <div class="panel-heading">Collection results</div>
+        {% if summary.results | length == 0 %}
+        <div class="panel-block">No files.</div>
+        {% else %}
+        <table class="table is-fullwidth is-striped is-hoverable">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>File</th>
+                    <th>Outcome</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for result in summary.results %}
+                <tr class="collect-result collect-result-{{ result.status }}">
+                    <td>{{ loop.index }}</td>
+                    <td>{{ result.name }}</td>
+                    <td>{{ result.status_label }}</td>
+                    <td>
+                        {% if result.status == "success" %}
+                        Collected as <code>{{ result.archive_name }}</code>
+                        ({{ result.size }} bytes)
+                        {% else %}
+                        {{ result.reason or "" }}
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </section>
+</div>
+<script type="application/json" id="collect-results">{{ results_json | tojson }}</script>
+{% endblock %}

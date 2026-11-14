@@ -11,6 +11,10 @@ from signac_dashboard.module import Module
 class FileList(Module):
     """Lists files in the job directory with download links.
 
+    The card also links to a batch collection endpoint that packages every
+    regular file in the job directory into a single archive and reports the
+    outcome of each entry.
+
     :param context: Supports :code:`'JobContext'`.
     :type context: str
     :param prefix_jobid: Whether filenames should be prefixed with the job id
@@ -55,5 +59,8 @@ class FileList(Module):
             key=lambda filedata: filedata["name"],
         )
         return [
-            {"name": self.name, "content": render_template(self.template, files=files)}
+            {
+                "name": self.name,
+                "content": render_template(self.template, files=files, jobid=job._id),
+            }
         ]
