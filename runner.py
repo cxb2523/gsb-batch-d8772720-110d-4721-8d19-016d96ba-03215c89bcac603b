@@ -263,21 +263,20 @@ def _finalize_session(sid: str, upstream_crawl_id: int, last_delay_ms: int,
         state.set_status(sid, "failed", "No pages exported")
         return
 
-    # Off-site pages (a redirect or a followed link to another host) are not
-    # part of this site's audit.
+    # ── Page filtering — the order here is the contract ──────────────────────
+    # 1. drop off-site hosts (a redirect or followed link to another host is
+    #    not part of this site's audit)
+    # 2. drop WAF/bot challenge pages and non-HTML resources
+    # 3. truncate to the operator's total_max_pages
+    # 4. only then require at least one page that actually returned an HTTP
+    #    status. Anything that survives feeds the report; if nothing survives
+    #    the audit fails and NO report is written.
     site_hosts = _site_hosts(url, pages)
     offsite = [p for p in pages if not _on_site(p.get("url", ""), site_hosts)]
     if offsite:
         pages = [p for p in pages if _on_site(p.get("url", ""), site_hosts)]
         state.log_event(sid, "offsite_pages_dropped",
                         {"count": len(offsite), "sample": [p.get("url") for p in offsite[:5]]})
-
-    # Upstream reports a "successful" crawl of an unreachable seed as one page
-    # with status 0. That is a failed audit, not a clean one.
-    if not any(int(p.get("status_code") or 0) > 0 for p in pages):
-        state.update_session(sid, incomplete_reasons="seed_unreachable")
-        state.set_status(sid, "failed", "Seed unreachable: no page returned an HTTP status")
-        return
 
     # A WAF challenge page is not the site, and an image is not a page. Neither
     # may be scored as a broken page or counted as sitemap coverage.
@@ -289,20 +288,51 @@ def _finalize_session(sid: str, upstream_crawl_id: int, last_delay_ms: int,
             "challenge_pages": len(challenged), "non_page_files": len(assets),
             "challenge_sample": [p.get("url") for p in challenged[:5]],
         })
+
+    # Upstream can finish the page in flight after hitting maxUrls (a cap of 2
+    # returned 3). The operator's cap is the contract, so hold to it.
+    cap_trimmed = 0
+    if sess["total_max_pages"] > 0 and len(pages) > sess["total_max_pages"]:
+        cap_trimmed = len(pages) - sess["total_max_pages"]
+        state.log_event(sid, "cap_overshoot_trimmed",
+                        {"cap": sess["total_max_pages"], "crawled": len(pages),
+                         "trimmed": cap_trimmed})
+        pages = pages[:sess["total_max_pages"]]
+
+    # Failure gate — only run when no usable page remains, and say precisely
+    # why. Upstream reports a "successful" crawl of an unreachable seed as one
+    # page with status 0; all-challenge and assets-only crawls are distinct
+    # outcomes with their own reasons. No report is generated on this path.
     if not pages:
-        reason = (f"bot_challenge: all {len(challenged)} crawled pages were WAF/bot challenge "
-                  "pages; allowlist the crawler and re-run" if challenged
-                  else "no_html_pages: the crawl returned only non-page files")
+        if challenged:
+            reason = (f"bot_challenge: all {len(challenged)} crawled pages were WAF/bot challenge "
+                      "pages; allowlist the crawler and re-run")
+        elif assets:
+            reason = "no_html_pages: the crawl returned only non-page files"
+        elif offsite:
+            reason = "no_usable_pages: every crawled page belonged to an off-site host"
+        else:
+            reason = "seed_unreachable: no page returned an HTTP status"
+        state.log_event(sid, "finalize_failed_no_report",
+                        {"reason": reason, "challenge_pages": len(challenged),
+                         "non_page_files": len(assets), "offsite_pages": len(offsite)})
         state.update_session(sid, incomplete_reasons=reason)
         state.set_status(sid, "failed", reason)
         return
+
+    if not any(int(p.get("status_code") or 0) > 0 for p in pages):
+        reason = "seed_unreachable: no page returned an HTTP status"
+        state.log_event(sid, "finalize_failed_no_report",
+                        {"reason": reason, "pages_without_status": len(pages),
+                         "challenge_pages": len(challenged), "non_page_files": len(assets)})
+        state.update_session(sid, incomplete_reasons=reason)
+        state.set_status(sid, "failed", reason)
+        return
+
+    # Challenge ratio among the rows that could have been real pages (assets
+    # were never pages). A site that challenges >20% of requests will keep
+    # challenging, so the sitemap fill must not add more load to it.
     challenge_ratio = len(challenged) / max(crawled_rows - len(assets), 1)
-    # Upstream can finish the page in flight after hitting maxUrls (a cap of 2
-    # returned 3). The operator's cap is the contract, so hold to it.
-    if sess["total_max_pages"] > 0 and len(pages) > sess["total_max_pages"]:
-        state.log_event(sid, "cap_overshoot_trimmed",
-                        {"cap": sess["total_max_pages"], "crawled": len(pages)})
-        pages = pages[:sess["total_max_pages"]]
 
     site_data = _site_check(url)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -366,14 +396,29 @@ def _finalize_session(sid: str, upstream_crawl_id: int, last_delay_ms: int,
                 "cap_hit":       fill_result.get("cap_hit", False),
                 "success_count": fill_result.get("success_count", 0),
                 "broken_count":  fill_result.get("broken_count", 0),
+                "challenge_pages": len(challenged),
+                "fill_challenge_pages": len(fill_challenged),
+                "non_page_files": len(assets),
             }
             state.log_event(sid, "sitemap_fill", fill_summary)
         except Exception as e:
             state.log_event(sid, "sitemap_fill_failed", str(e))
             fill_summary = {"attempted": 0, "error": str(e)}
-    elif fill_enabled:
-        fill_summary["reason"] = ("bot_challenge" if fill_blocked and _sm_only else
-                                  "no_orphans" if not _sm_only else "page_budget_spent")
+    else:
+        skip_reason = ("bot_challenge" if fill_blocked and _sm_only else
+                       "fill_disabled" if not fill_enabled else
+                       "no_orphans" if not _sm_only else "page_budget_spent")
+        fill_summary["reason"] = skip_reason
+        # Every skipped backfill is recorded — especially the >20% bot block,
+        # so the event trail explains why the site kept being challenged and
+        # why no further requests were sent at it.
+        state.log_event(sid, "sitemap_fill_skipped", {
+            "reason": skip_reason,
+            "orphan_candidates": len(_sm_only),
+            "fill_cap": fill_cap,
+            "challenge_ratio": round(challenge_ratio, 3),
+            "challenge_pages": len(challenged),
+        })
 
     # ── v1.6.1: compute completeness FIRST so the report banner can use it ──
     # Re-compute recon AFTER sitemap_fill so the CSV + completeness reflect
