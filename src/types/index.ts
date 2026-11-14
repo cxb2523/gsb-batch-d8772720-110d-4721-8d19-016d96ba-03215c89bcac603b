@@ -20,6 +20,12 @@ export interface TaskResult {
 	failed: number;
 	total: number;
 	duration: number;
+	// Paged collection outcome: 'completed' = all pages fetched, 'page_failed' = a page
+	// fetch threw mid-run (downloads so far are kept, next run resumes from failedPage),
+	// 'limit_reached' = stopped at the page cap, not a failure.
+	pageStatus?: 'completed' | 'page_failed' | 'limit_reached';
+	pages?: Array<{ page: number; items: number; downloaded: number; failed: number }>;
+	failedPage?: number;
 }
 
 export interface DownloadFile {

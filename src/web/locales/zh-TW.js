@@ -81,6 +81,8 @@ window.I18N={
 "status.no_last":"未執行",
 "status.interrupted":"下載中斷",
 "status.login_expired":"登入失效",
+"status.page_failed":"翻頁抓取失敗（下次從失敗頁繼續）",
+"status.page_limit_reached":"達到翻頁上限（非失敗）",
 "detail.state":"狀態",
 "detail.user_id":"使用者ID",
 "detail.interval":"間隔",

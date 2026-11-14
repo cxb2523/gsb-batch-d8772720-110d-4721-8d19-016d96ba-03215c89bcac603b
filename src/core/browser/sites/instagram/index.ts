@@ -9,6 +9,7 @@ import { unsavePage } from './unsave';
 import path from 'path';
 import fs from 'fs';
 import { runPool, type Executable } from '../../../utils/pool';
+import { runPagedCollection, type PagedRunResult } from '../shared/pagination';
 
 class InstagramSite extends BaseSite {
 	constructor() {
@@ -265,33 +266,41 @@ class InstagramSite extends BaseSite {
 			}
 		};
 
+		let paged: PagedRunResult;
 		try {
-			let endCursor: string | null = null;
-			let maxRequestCount = 20;
-
-			do {
-				const fetched = await this.fetchItems(page, handle, skipIds, endCursor);
-				maxRequestCount--;
-				endCursor = fetched.endCursor;
-				const executables: Executable[] = fetched.items.map(item => ({ execute: () => processItem(item) }));
-				await runPool(executables, concurrency);
-				if (fetched.items.length > 0) {
-					await new Promise<void>(r => setTimeout(r, 3000));
-				}
-			} while (endCursor && maxRequestCount > 0);
+			paged = await runPagedCollection<InstagramItem>({
+				ctx,
+				label: 'Instagram',
+				maxPages: 20,
+				fetchPage: async (_pageNum, cursor) => {
+					const fetched = await this.fetchItems(page, handle, skipIds, cursor);
+					return { items: fetched.items, hasMore: !!fetched.endCursor, cursor: fetched.endCursor };
+				},
+				processPage: async (items) => {
+					const executables: Executable[] = items.map(item => ({ execute: () => processItem(item) }));
+					await runPool(executables, concurrency);
+					if (items.length > 0) {
+						await new Promise<void>(r => setTimeout(r, 3000));
+					}
+				},
+				counters: () => ({ downloaded, failed })
+			});
 		} catch (err) {
 			ctx.addLog('error', `Instagram task error: ${(err as Error).message}`);
-			return { state: 2, message: (err as Error).message, downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
+			return { state: 2, message: (err as Error).message, downloaded, failed, total: downloaded + failed, duration: Date.now() - startTime };
 		} finally {
 			if (page) await page.close().catch(() => {});
 		}
 
 		return {
-			state: 1,
-			message: 'ok',
+			state: paged.status === 'page_failed' ? 2 : 1,
+			message: paged.status === 'completed' ? 'ok' : paged.status === 'limit_reached' ? 'status.page_limit_reached' : 'status.page_failed',
 			downloaded, failed,
 			total: downloaded + failed,
-			duration: Date.now() - startTime
+			duration: Date.now() - startTime,
+			pageStatus: paged.status,
+			pages: paged.pages,
+			failedPage: paged.failedPage
 		};
 	}
 }

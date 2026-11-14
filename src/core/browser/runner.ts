@@ -108,6 +108,16 @@ async function runTask(taskId: string): Promise<TaskResult> {
 			hasSuccessfulDownload: (postId) => store.hasSuccessfulDownload(taskId, postId),
 			hasPostDownload: (postId) => store.hasPostDownload(taskId, postId),
 			addLog: (level, message) => store.addLog(taskId, level, message),
+			updateCustomConfig: (patch) => {
+				const current = store.getTask(taskId);
+				const merged: Record<string, unknown> = { ...((current?.customConfigJson as Record<string, unknown>) || {}) };
+				for (const [key, value] of Object.entries(patch)) {
+					if (value === null || value === undefined) delete merged[key];
+					else merged[key] = value;
+				}
+				store.updateTask(taskId, { customConfigJson: merged });
+				task.customConfigJson = merged;
+			},
 		};
 
 		const result = await site.executeTask(ctx);

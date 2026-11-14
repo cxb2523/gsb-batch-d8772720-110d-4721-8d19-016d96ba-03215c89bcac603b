@@ -5,6 +5,7 @@
 	"main": "dst/index.js",
 	"scripts": {
 		"build": "tsc && node scripts/copy-assets.mjs",
+		"test": "npm run build && node dst/core/browser/sites/shared/pagination.test.js",
 		"start": "npm run build && node dst/index.js",
 		"docker:build": "docker compose build",
 		"docker:up": "docker compose up -d",

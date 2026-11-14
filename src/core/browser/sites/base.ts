@@ -23,6 +23,9 @@ export interface TaskContext {
   hasSuccessfulDownload(postId: string): boolean;
   hasPostDownload(postId: string): boolean;
   addLog(level: string, message: string): void;
+  // Merge a patch into the task's persisted customConfigJson (null/undefined values delete the key).
+  // Used to store the paged-fetch resume position so it survives restarts.
+  updateCustomConfig(patch: Record<string, unknown>): void;
 }
 
 export default abstract class BaseSite {

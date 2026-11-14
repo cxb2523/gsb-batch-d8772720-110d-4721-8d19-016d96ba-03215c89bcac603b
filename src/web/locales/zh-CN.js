@@ -83,6 +83,8 @@ window.I18N={
 "status.no_last":"未执行",
 "status.interrupted":"下载中断",
 "status.login_expired":"登录失效",
+"status.page_failed":"翻页抓取失败（下次从失败页继续）",
+"status.page_limit_reached":"达到翻页上限（非失败）",
 "detail.state":"状态",
 "detail.user_id":"用户ID",
 "detail.interval":"间隔",

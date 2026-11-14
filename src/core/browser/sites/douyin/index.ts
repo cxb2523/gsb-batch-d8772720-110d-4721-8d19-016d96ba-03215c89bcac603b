@@ -10,6 +10,7 @@ import { interceptApiResponse } from '../shared/page-utils';
 import path from 'path';
 import fs from 'fs';
 import { runPool, type Executable } from '../../../utils/pool';
+import { runPagedCollection, type PagedRunResult } from '../shared/pagination';
 
 const COLLECTION_URL = 'https://www.douyin.com/user/self?showSubTab=video&showTab=favorite_collection';
 
@@ -171,28 +172,38 @@ class DouyinSite extends BaseSite {
 			await unfavoriteWithNewPage(detailUrl);
 		};
 
+		let paged: PagedRunResult;
 		try {
-			let fetched: { items: FetchItem[]; has_more: 0 | 1; };
-			let maxRequestCount = 20;
-			do {
-				fetched = await this.fetchItems(page, skipIds);
-				maxRequestCount--;
-				const executables: Executable[] = fetched.items.map(item => ({ execute: () => processItem(item) }));
-				await runPool(executables, concurrency);
-			} while (fetched.items?.length !== 0 && fetched.has_more === 1 && maxRequestCount > 0);
+			paged = await runPagedCollection<FetchItem>({
+				ctx,
+				label: 'Douyin',
+				maxPages: 20,
+				fetchPage: async () => {
+					const fetched = await this.fetchItems(page, skipIds);
+					return { items: fetched.items, hasMore: fetched.has_more === 1 && fetched.items.length !== 0 };
+				},
+				processPage: async (items) => {
+					const executables: Executable[] = items.map(item => ({ execute: () => processItem(item) }));
+					await runPool(executables, concurrency);
+				},
+				counters: () => ({ downloaded, failed })
+			});
 		} catch (err) {
 			ctx.addLog('error', `Douyin task error: ${(err as Error).message}`);
-			return { state: 0, message: (err as Error).message, downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
+			return { state: 0, message: (err as Error).message, downloaded, failed, total: downloaded + failed, duration: Date.now() - startTime };
 		} finally {
 			if (page) await page.close().catch(() => { });
 		}
 
 		return {
-			state: 1,
-			message: 'ok',
+			state: paged.status === 'page_failed' ? 2 : 1,
+			message: paged.status === 'completed' ? 'ok' : paged.status === 'limit_reached' ? 'status.page_limit_reached' : 'status.page_failed',
 			downloaded, failed,
 			total: downloaded + failed,
-			duration: Date.now() - startTime
+			duration: Date.now() - startTime,
+			pageStatus: paged.status,
+			pages: paged.pages,
+			failedPage: paged.failedPage
 		};
 	}
 }

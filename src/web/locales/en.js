@@ -81,6 +81,8 @@ window.I18N={
 "status.no_last":"Not run yet",
 "status.interrupted":"Download interrupted",
 "status.login_expired":"Login expired",
+"status.page_failed":"Page fetch failed (will resume from that page)",
+"status.page_limit_reached":"Page limit reached (not a failure)",
 "detail.state":"Status",
 "detail.user_id":"User ID",
 "detail.interval":"Interval",
