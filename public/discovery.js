@@ -158,6 +158,28 @@ function collectConfiguredEntityModules(config) {
   return byId;
 }
 
+// Diagnostica — the fallback for an entity collectConfiguredEntities flags as
+// claimed but collectConfiguredEntityModules can't attribute to a specialized
+// module: it's referenced by a *meta* config block instead (entities.hide,
+// rooms.order, ...). Returns the first top-level config.js key whose subtree
+// mentions the id, so the discard row can still name where it went — calling
+// those "claimed by a module" (with a blank module) would be a lie.
+function configKeyForEntity(config, entityId) {
+  if (!config || typeof config !== 'object') return null;
+  for (const key of Object.keys(config)) {
+    if (MODULE_CONFIG_KEYS.indexOf(key) !== -1) continue;
+    let found = false;
+    (function walk(n) {
+      if (found) return;
+      if (typeof n === 'string') { if (n === entityId) found = true; return; }
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      if (n && typeof n === 'object') { Object.values(n).forEach(walk); }
+    })(config[key]);
+    if (found) return key;
+  }
+  return null;
+}
+
 // --- smart plugs (v1.5.4) ---------------------------------------------------
 // A switch's relay state answers "is it energized" (`switch.x` = on), not
 // "is the appliance plugged into it actually running" — see CLAUDE.md's
@@ -288,6 +310,11 @@ function discoverRooms(states, registries, config, opts) {
   // twice" reasoning as claimedEntities above, just keyed by device instead
   // of by config.
   const switchPowerMap = powerSensorForSwitch(states, registries);
+  // The power sensors switchPowerMap pairs to a switch: their watts render on
+  // the switch's own row, so they get no pill/row of their own — but they're
+  // not "discarded" either, so the log says where they went (paired_to_switch)
+  // instead of leaving them silent or calling their device_class unsupported.
+  const pairedPowerIds = new Set(switchPowerMap.values());
 
   for (const ent of entities) {
     const exReason = isExcluded(ent);
@@ -302,7 +329,9 @@ function discoverRooms(states, registries, config, opts) {
     // guards is filtering-neutral (both just `continue`, same net result)
     // and only changes which reason gets logged.
     if (claimedEntities.has(ent.entity_id)) {
-      pushDiscard(ent, 'claimed_by_module', { module: claimedModules.get(ent.entity_id) || null });
+      const claimedModule = claimedModules.get(ent.entity_id) || null;
+      if (claimedModule) pushDiscard(ent, 'claimed_by_module', { module: claimedModule });
+      else pushDiscard(ent, 'claimed_by_config', { configKey: configKeyForEntity(config, ent.entity_id) });
       continue;
     }
     const device = ent.device_id ? deviceById.get(ent.device_id) : null;
@@ -353,6 +382,10 @@ function discoverRooms(states, registries, config, opts) {
         // normal state and would just be noise (see B2 in the fix ticket).
         if (st.state === 'on') room.status.push([ent.entity_id, name, meta.icon, dc, meta.group]);
       }
+      // A binary_sensor whose device_class isn't in BINARY_PILL_CLASS never
+      // becomes room content — say so (with the raw class) instead of
+      // silently dropping it.
+      else pushDiscard(ent, 'unsupported_device_class', { deviceClass: dc || null });
     }
     else if (dom === 'sensor') {
       const dc = st.attributes && st.attributes.device_class;
@@ -371,8 +404,14 @@ function discoverRooms(states, registries, config, opts) {
           room.sensors.push([ent.entity_id, name, m.icon, m.decimals, m.unit, m.kind]);
           catalogEntry('device_class', dc);
         }
+        else if (pairedPowerIds.has(ent.entity_id)) pushDiscard(ent, 'paired_to_switch');
+        else pushDiscard(ent, 'unsupported_device_class', { deviceClass: dc || null });
       }
     }
+    // Any other domain (person, device_tracker, camera, input_*, ...) has no
+    // room-content mapping at all — logged, not silently skipped, so every
+    // entity this function looks at ends up either in a room or in the log.
+    else pushDiscard(ent, 'unsupported_domain');
   }
 
   const hideSet = new Set((cfg.hide || []).map(String));
@@ -435,16 +474,31 @@ function discoverRooms(states, registries, config, opts) {
 // the same physical thing: an old one with the user's area/name, and a new
 // one — factory name, no area — holding the entities that actually work now
 // (see CLAUDE.md's v1.7.1 spec for the exact bug this is modeled on).
-// Paired by `serial_number` first, since that's the one field that doesn't
-// drift when a name does; hw_version+model+via_device_id is a fallback for
-// integrations that don't expose a serial, and only fires when all three
-// agree — a partial match is worse than no warning at all (false positive
-// on a wall of identical lightbulbs), so an unmatched device stays silent.
+//
+// Two confidence tiers, distinguished on every returned pair:
+//   confirmed — `serial_number` equal (the one field that doesn't drift when
+//     a name does), or hw_version+model+via_device_id all three equal (the
+//     fallback for integrations that don't expose a serial; it only fires
+//     when all three agree — a partial match is worse than no warning at
+//     all: false positive on a wall of identical lightbulbs).
+//   pending — the evidence is weaker: same model on the same hub
+//     (via_device_id), typically with only the name differing (the user
+//     renamed the old row; the re-registered one kept the factory name), but
+//     no serial/hw combination to *prove* it's the same physical device.
+//     These are never merged and never silently dropped: they're returned
+//     for the user to confirm, with `matchedBy: 'model_via'` — a basis that
+//     stays visibly distinct from the confirmed codes. Pending only fires
+//     when exactly one with-area candidate fits (two identical bulbs on one
+//     hub is a guess, not a lead) and nothing contradicts it (a serial or
+//     hw_version both sides have but disagree on rules the candidate out —
+//     missing fields are what make a match pending; contradictory fields
+//     unmake it).
 function findDuplicateDevices(registries) {
   const devices = (registries && registries.devices) || [];
   const withArea = devices.filter((d) => d.area_id);
   const withoutArea = devices.filter((d) => !d.area_id);
   const pairs = [];
+  const nameOf = (d) => d.name_by_user || d.name || null;
   for (const orphan of withoutArea) {
     let match = null;
     let matchedBy = null;
@@ -457,7 +511,19 @@ function findDuplicateDevices(registries) {
         && d.via_device_id === orphan.via_device_id) || null;
       if (match) matchedBy = 'hw_model';
     }
-    if (match) pairs.push({ withoutArea: orphan, withArea: match, matchedBy });
+    if (match) { pairs.push({ withoutArea: orphan, withArea: match, matchedBy, confidence: 'confirmed' }); continue; }
+    if (!orphan.model || !orphan.via_device_id) continue;
+    const candidates = withArea.filter((d) => d.model === orphan.model && d.via_device_id === orphan.via_device_id
+      && !(orphan.serial_number && d.serial_number && d.serial_number !== orphan.serial_number)
+      && !(orphan.hw_version && d.hw_version && d.hw_version !== orphan.hw_version));
+    if (candidates.length !== 1) continue;
+    const candidate = candidates[0];
+    const orphanName = nameOf(orphan);
+    const candidateName = nameOf(candidate);
+    pairs.push({
+      withoutArea: orphan, withArea: candidate, matchedBy: 'model_via', confidence: 'pending',
+      nameMismatch: !!(orphanName && candidateName && orphanName !== candidateName)
+    });
   }
   return pairs;
 }

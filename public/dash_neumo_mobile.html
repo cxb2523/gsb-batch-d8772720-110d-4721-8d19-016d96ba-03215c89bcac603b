@@ -1217,6 +1217,20 @@ input[type=range]::-moz-range-thumb{width:30px;height:30px;border:5px solid var(
 </div>
 </sc-if>
 
+<sc-if value="{{ hasDiagPendingDuplicates }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:6px;background:var(--nu-d);border-radius:14px;padding:11px 12px">
+<div style="font:600 11.5px/1.3 var(--font-body)">{{ diagPendingDuplicatesTitle }}</div>
+<div style="font:500 10.5px/1.4 var(--font-body);color:var(--tx2)">{{ S.diagPendingDuplicatesBody }}</div>
+<sc-for list="{{ diagPendingDuplicates }}" as="pair" hint-placeholder-count="1">
+<div style="font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--tx2);white-space:normal;overflow-wrap:break-word">{{ pair.line }}</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasDiagNoDiscards }}" hint-placeholder-val="{{ false }}">
+<div style="font:500 11px/1.4 var(--font-body);color:var(--tx2);padding:9px 11px">{{ S.diagReasonsNone }}</div>
+</sc-if>
+
 <sc-if value="{{ hasDiagReasonGroups }}" hint-placeholder-val="{{ true }}">
 <sc-for list="{{ diagReasonGroups }}" as="grp" hint-placeholder-count="3">
 <div style="background:var(--nu-d);border-radius:14px;overflow:hidden">
@@ -1997,7 +2011,9 @@ class Component extends window.CasaCore.base(DCLogic) {
       diagConfigAttempts, diagConfigSummary, diagConfigOutsideIframe, diagEnergyInstantRows, diagEnergyDailyRows, diagPrefsFailed,
       diagEnvRows, diagActionRows, hasDiagActions, diagIrrigationRows, hasDiagIrrigationRows, diagCameraRows,
       diagRingValue, diagHourlyValue, diagAlarmRows, diagReasonGroups, diagReasonTotalLabel, hasDiagReasonGroups,
-      hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle, doDiag, settingsTabs, powerUnitOptions,
+      hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle,
+      hasDiagPendingDuplicates, diagPendingDuplicates, diagPendingDuplicatesTitle, hasDiagNoDiscards,
+      doDiag, settingsTabs, powerUnitOptions,
       plugThresholdOptions, showBatterySignControl, batterySignOptions, batterySignLiveLabel, batterySignSuspect, batterySignInvert
     } = this.vmSettingsDiag({ hasAlarm, alarmId, alarmNeedsCodeArm, alarmNeedsCodeDisarm, supp, batterySign, camList, consumptionDisplayWatts, en, gridT, prodT, hasEnergy, hasNewRing, irrZones });
 
@@ -2174,6 +2190,7 @@ class Component extends window.CasaCore.base(DCLogic) {
       diagReasonsChevRotate: this.state.diagReasonsOpen ? 'rotate(180deg)' : 'rotate(0deg)',
       diagReasonTotalLabel, diagReasonGroups, hasDiagReasonGroups,
       hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle,
+      hasDiagPendingDuplicates, diagPendingDuplicates, diagPendingDuplicatesTitle, hasDiagNoDiscards,
       diagCopyRun: doDiag,
       diagOpen: !!diagSheet, diagText: diagSheet ? diagSheet.text : '',
       diagCopied: diagSheet ? diagSheet.copied : false, diagNotCopied: diagSheet ? !diagSheet.copied : false,

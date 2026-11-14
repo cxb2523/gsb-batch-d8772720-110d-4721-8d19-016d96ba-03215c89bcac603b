@@ -103,7 +103,17 @@ window.CasaStrings = window.CasaStrings || {}; window.CasaStrings.en = {
   diagReasonDisabledBy: 'Disabled in Home Assistant',
   diagReasonDiagnosticCategory: 'Diagnostic entity',
   diagReasonConfigCategory: 'Configuration entity',
+  diagReasonClaimedByConfig: 'Referenced by config.js',
+  diagReasonPairedToSwitch: 'Shown with its switch',
+  diagReasonUnsupportedDeviceClass: 'Sensor type not shown in rooms',
+  diagReasonUnsupportedDomain: 'Not room content',
+  diagReasonsNone: 'No discards',
   diagDuplicateDevicesBody: 'After a Home Assistant update, Matter can re-register the same device. The copy with the working commands has no area and stays invisible.',
+  diagDuplicateBasisSerial: 'same serial number',
+  diagDuplicateBasisHwModel: 'same hardware, model and hub',
+  diagPendingDuplicatesBody: 'These area-less devices look like the same physical device as one that has an area, but there is no serial number to prove it. Nothing is merged automatically — check and assign the area by hand.',
+  diagPendingBasisNameDiffers: 'same model on the same hub, only the name differs',
+  diagPendingBasisModelVia: 'same model and name on the same hub',
   diagModuleWeatherStation: 'Weather station', diagModuleWeather: 'Weather', diagModulePeople: 'People',
 
   // dynamic strings, referenced via this.t('key', vars)
@@ -208,8 +218,11 @@ window.CasaStrings = window.CasaStrings || {}; window.CasaStrings.en = {
   'diag.hourlyPartial': '{n}/24 hours available (partial)',
   'diag.reasonsTotal': '{n} entities not shown',
   'diag.reasonClaimedByModule': 'already used by {module}',
+  'diag.reasonClaimedByConfig': 'referenced by config.js key "{key}"',
   'diag.duplicateDevicesTitle': '{n} devices registered twice.',
   'diag.duplicateDeviceLine': '{from} → assign the area of {to}',
+  'diag.pendingDuplicatesTitle': '{n} possible duplicates to confirm',
+  'diag.pendingDuplicateLine': '{from} ↔ {to} — {basis}',
 
   'siren.sounding': 'sounding',
 

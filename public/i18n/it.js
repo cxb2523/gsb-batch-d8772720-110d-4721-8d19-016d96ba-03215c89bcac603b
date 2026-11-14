@@ -103,7 +103,17 @@ window.CasaStrings = window.CasaStrings || {}; window.CasaStrings.it = {
   diagReasonDisabledBy: 'Disabilitata in Home Assistant',
   diagReasonDiagnosticCategory: 'Entità di diagnostica',
   diagReasonConfigCategory: 'Entità di configurazione',
+  diagReasonClaimedByConfig: 'Richiamata da config.js',
+  diagReasonPairedToSwitch: 'Mostrata con il suo interruttore',
+  diagReasonUnsupportedDeviceClass: 'Tipo di sensore non mostrato nelle stanze',
+  diagReasonUnsupportedDomain: 'Non è contenuto da stanza',
+  diagReasonsNone: 'Nessuno scarto',
   diagDuplicateDevicesBody: 'Dopo un aggiornamento di Home Assistant, Matter può registrare di nuovo lo stesso dispositivo. La copia con i comandi non ha area e resta invisibile.',
+  diagDuplicateBasisSerial: 'stesso numero di serie',
+  diagDuplicateBasisHwModel: 'stesso hardware, modello e hub',
+  diagPendingDuplicatesBody: "Questi dispositivi senza area sembrano lo stesso dispositivo fisico di uno che ha un'area, ma non c'è un numero di serie a provarlo. Niente viene unito in automatico — controlla e assegna l'area a mano.",
+  diagPendingBasisNameDiffers: 'stesso modello sullo stesso hub, cambia solo il nome',
+  diagPendingBasisModelVia: 'stesso modello e stesso nome sullo stesso hub',
   diagModuleWeatherStation: 'Stazione meteo', diagModuleWeather: 'Meteo', diagModulePeople: 'Persone',
 
   // dynamic strings, referenced via this.t('key', vars)
@@ -208,8 +218,11 @@ window.CasaStrings = window.CasaStrings || {}; window.CasaStrings.it = {
   'diag.hourlyPartial': '{n}/24 ore disponibili (parziale)',
   'diag.reasonsTotal': '{n} entità non mostrate',
   'diag.reasonClaimedByModule': 'già usata da {module}',
+  'diag.reasonClaimedByConfig': 'richiamata da config.js (chiave "{key}")',
   'diag.duplicateDevicesTitle': '{n} dispositivi registrati due volte.',
   'diag.duplicateDeviceLine': "{from} → assegna l'area di {to}",
+  'diag.pendingDuplicatesTitle': '{n} possibili duplicati da confermare',
+  'diag.pendingDuplicateLine': '{from} ↔ {to} — {basis}',
 
   'siren.sounding': 'in suono',
 

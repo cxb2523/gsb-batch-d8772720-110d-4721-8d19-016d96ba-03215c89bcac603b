@@ -195,6 +195,10 @@ function diagText(d) {
       lines.push('  ' + d.duplicateDevicesTitle);
       (d.duplicateDeviceLines || []).forEach((l) => lines.push('    ' + l));
     }
+    if (d.pendingDuplicatesTitle) {
+      lines.push('  ' + d.pendingDuplicatesTitle);
+      (d.pendingDuplicateLines || []).forEach((l) => lines.push('    ' + l));
+    }
     d.reasonGroups.forEach((g) => {
       lines.push('  ' + g.label + ' (' + g.count + ')');
       g.rows.forEach((r) => lines.push(diagRowLine(['    ' + r.name, r.entityIdLabel, r.reasonExtra || ''], [30, 34])));

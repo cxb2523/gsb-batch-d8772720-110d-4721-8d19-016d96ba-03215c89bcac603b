@@ -109,6 +109,51 @@ test('findDuplicateDevices: a partial hw/model match stays silent', () => {
   assert.equal(pairs.length, 0);
 });
 
+test('findDuplicateDevices: confirmed pairs are labelled confirmed', () => {
+  const pairs = D.findDuplicateDevices({ devices: [
+    { id: 'old', area_id: 'x', serial_number: 'SN1' },
+    { id: 'new', area_id: null, serial_number: 'SN1' }
+  ] });
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].confidence, 'confirmed');
+  assert.equal(pairs[0].matchedBy, 'serial_number');
+});
+
+test('findDuplicateDevices: same model on the same hub with only the name changed is pending, never merged nor silent', () => {
+  const pairs = D.findDuplicateDevices({ devices: [
+    { id: 'old', area_id: 'soggiorno', name: 'Tapparella 1', model: 'Relay 2PM', via_device_id: 'hub1' },
+    { id: 'new', area_id: null, name: 'Relay 2PM Shade', model: 'Relay 2PM', via_device_id: 'hub1' }
+  ] });
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].confidence, 'pending');
+  assert.equal(pairs[0].matchedBy, 'model_via', 'the basis must be distinguishable from a confirmed match');
+  assert.equal(pairs[0].nameMismatch, true);
+  assert.equal(pairs[0].withoutArea.id, 'new');
+  assert.equal(pairs[0].withArea.id, 'old');
+});
+
+test('findDuplicateDevices: two equally-good pending candidates stay silent (a guess is not a lead)', () => {
+  const pairs = D.findDuplicateDevices({ devices: [
+    { id: 'a', area_id: 'x', model: 'Bulb', via_device_id: 'hub1' },
+    { id: 'b', area_id: 'y', model: 'Bulb', via_device_id: 'hub1' },
+    { id: 'new', area_id: null, model: 'Bulb', via_device_id: 'hub1' }
+  ] });
+  assert.equal(pairs.length, 0);
+});
+
+test('findDuplicateDevices: a contradictory serial or hw_version rules the pending candidate out', () => {
+  const bySerial = D.findDuplicateDevices({ devices: [
+    { id: 'old', area_id: 'x', model: 'M', via_device_id: 'hub1', serial_number: 'SN1' },
+    { id: 'new', area_id: null, model: 'M', via_device_id: 'hub1', serial_number: 'SN2' }
+  ] });
+  assert.equal(bySerial.length, 0);
+  const byHw = D.findDuplicateDevices({ devices: [
+    { id: 'old', area_id: 'x', model: 'M', via_device_id: 'hub1', hw_version: 'v1' },
+    { id: 'new', area_id: null, model: 'M', via_device_id: 'hub1', hw_version: 'v2' }
+  ] });
+  assert.equal(byHw.length, 0);
+});
+
 // --- discoverRooms discard reasons (v1.7.1) -------------------------------
 
 test('discoverRooms: every discarded entity says why', () => {
@@ -140,4 +185,83 @@ test('discoverRooms: every discarded entity says why', () => {
 
 test('discoverRooms: no areas at all is an empty result, not a crash', () => {
   assert.deepEqual(plain(D.discoverRooms({}, { areas: [] }, {})), { rooms: [], overflow: [], discardLog: [] });
+});
+
+test('discoverRooms: an entity with a valid area but no room-content mapping still says why', () => {
+  const states = {
+    'light.kitchen': { state: 'on', attributes: {} },
+    'device_tracker.car': { state: 'home', attributes: {} },
+    'sensor.air': { state: '1', attributes: { device_class: 'aqi' } },
+    'binary_sensor.thing': { state: 'off', attributes: { device_class: 'whatever' } }
+  };
+  const registries = {
+    areas: [{ area_id: 'kitchen', name: 'Kitchen' }],
+    devices: [],
+    entities: [
+      { entity_id: 'light.kitchen', area_id: 'kitchen' },
+      { entity_id: 'device_tracker.car', area_id: 'kitchen' },
+      { entity_id: 'sensor.air', area_id: 'kitchen' },
+      { entity_id: 'binary_sensor.thing', area_id: 'kitchen' }
+    ]
+  };
+  const res = D.discoverRooms(states, registries, {});
+  assert.deepEqual(plain(res.rooms.map((r) => r.id)), ['kitchen']);
+  const reasons = Object.fromEntries(res.discardLog.map((d) => [d.entity_id, d.reason]));
+  assert.equal(reasons['device_tracker.car'], 'unsupported_domain');
+  assert.equal(reasons['sensor.air'], 'unsupported_device_class');
+  assert.equal(reasons['binary_sensor.thing'], 'unsupported_device_class');
+  assert.equal(res.discardLog.find((d) => d.entity_id === 'sensor.air').deviceClass, 'aqi');
+});
+
+test('discoverRooms: an entity claimed by a non-module config block names the key, not a module', () => {
+  const states = {
+    'light.kitchen': { state: 'on', attributes: {} },
+    'switch.hidden': { state: 'off', attributes: {} }
+  };
+  const registries = {
+    areas: [{ area_id: 'kitchen', name: 'Kitchen' }],
+    devices: [],
+    entities: [
+      { entity_id: 'light.kitchen', area_id: 'kitchen' },
+      { entity_id: 'switch.hidden', area_id: 'kitchen' }
+    ]
+  };
+  const res = D.discoverRooms(states, registries, { entities: { hide: ['switch.hidden'] } });
+  const row = res.discardLog.find((d) => d.entity_id === 'switch.hidden');
+  assert.equal(row.reason, 'claimed_by_config');
+  assert.equal(row.configKey, 'entities');
+});
+
+test('discoverRooms: a power sensor paired to its switch is logged, not silently dropped', () => {
+  const states = {
+    'switch.plug': { state: 'on', attributes: {} },
+    'sensor.plug_power': { state: '5', attributes: { device_class: 'power', unit_of_measurement: 'W' } }
+  };
+  const registries = {
+    areas: [{ area_id: 'kitchen', name: 'Kitchen' }],
+    devices: [{ id: 'dev1', area_id: 'kitchen' }],
+    entities: [
+      { entity_id: 'switch.plug', device_id: 'dev1' },
+      { entity_id: 'sensor.plug_power', device_id: 'dev1' }
+    ]
+  };
+  const res = D.discoverRooms(states, registries, {});
+  const row = res.discardLog.find((d) => d.entity_id === 'sensor.plug_power');
+  assert.equal(row.reason, 'paired_to_switch');
+  // …and the switch itself still landed in the room.
+  assert.equal(res.rooms[0].switches.length, 1);
+});
+
+test('discoverRooms: a room dropped for having no content says so', () => {
+  const states = { 'light.kitchen': { state: 'on', attributes: {} } };
+  const registries = {
+    areas: [{ area_id: 'kitchen', name: 'Kitchen' }, { area_id: 'attic', name: 'Attic' }],
+    devices: [],
+    entities: [{ entity_id: 'light.kitchen', area_id: 'kitchen' }]
+  };
+  const res = D.discoverRooms(states, registries, {});
+  assert.deepEqual(plain(res.rooms.map((r) => r.id)), ['kitchen']);
+  const row = res.discardLog.find((d) => d.reason === 'empty_room');
+  assert.equal(row.areaId, 'attic');
+  assert.equal(row.name, 'Attic');
 });

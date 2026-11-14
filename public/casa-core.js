@@ -1675,6 +1675,8 @@ function base(DCLogic) {
     let diagCameraRows = [], diagRingValue = '', diagHourlyValue = '', diagAlarmRows = [];
     let diagReasonGroups = [], diagReasonTotalLabel = '', hasDiagReasonGroups = false, diagHasHighSeverityReason = false;
     let hasDiagDuplicateDevices = false, diagDuplicateDevices = [], diagDuplicateDevicesTitle = '';
+    let hasDiagPendingDuplicates = false, diagPendingDuplicates = [], diagPendingDuplicatesTitle = '';
+    let hasDiagNoDiscards = false;
     let doDiag = () => {};
     let settingsTabs = [], powerUnitOptions = [], plugThresholdOptions = [];
     let showBatterySignControl = false, batterySignOptions = [], batterySignLiveLabel = '', batterySignSuspect = false, batterySignInvert = () => {};
@@ -1832,12 +1834,15 @@ function base(DCLogic) {
       // is about problems, not preferences.
       if (this.discovery) {
         const REASON_ORDER = ['no_area', 'unknown_area', 'no_registry_entry', 'no_state',
-          'claimed_by_module', 'empty_room', 'hidden_by', 'disabled_by', 'diagnostic_category', 'config_category'];
+          'claimed_by_module', 'claimed_by_config', 'empty_room', 'hidden_by', 'disabled_by',
+          'diagnostic_category', 'config_category', 'paired_to_switch', 'unsupported_device_class', 'unsupported_domain'];
         const REASON_LABEL_KEYS = {
           no_area: 'diagReasonNoArea', unknown_area: 'diagReasonUnknownArea', no_registry_entry: 'diagReasonNoRegistryEntry',
-          no_state: 'diagReasonNoState', claimed_by_module: 'diagReasonClaimedByModule', empty_room: 'diagReasonEmptyRoom',
-          hidden_by: 'diagReasonHiddenBy', disabled_by: 'diagReasonDisabledBy',
-          diagnostic_category: 'diagReasonDiagnosticCategory', config_category: 'diagReasonConfigCategory'
+          no_state: 'diagReasonNoState', claimed_by_module: 'diagReasonClaimedByModule', claimed_by_config: 'diagReasonClaimedByConfig',
+          empty_room: 'diagReasonEmptyRoom', hidden_by: 'diagReasonHiddenBy', disabled_by: 'diagReasonDisabledBy',
+          diagnostic_category: 'diagReasonDiagnosticCategory', config_category: 'diagReasonConfigCategory',
+          paired_to_switch: 'diagReasonPairedToSwitch', unsupported_device_class: 'diagReasonUnsupportedDeviceClass',
+          unsupported_domain: 'diagReasonUnsupportedDomain'
         };
         const REASON_EXPLAIN_KEYS = { no_area: 'diagReasonNoAreaBody', unknown_area: 'diagReasonUnknownAreaBody', no_registry_entry: 'diagReasonNoRegistryEntryBody' };
         const HIGH_SEVERITY_REASONS = ['no_area', 'unknown_area', 'no_registry_entry'];
@@ -1851,7 +1856,11 @@ function base(DCLogic) {
         const byReason = {};
         discardLog.forEach((d) => { (byReason[d.reason] = byReason[d.reason] || []).push(d); });
 
-        diagReasonTotalLabel = this.t('diag.reasonsTotal', { n: discardLog.length });
+        // Zero discards is a result worth showing too ("nessuno scarto") —
+        // an empty section would read as "diagnostics didn't run", not as
+        // "everything found its room".
+        diagReasonTotalLabel = discardLog.length ? this.t('diag.reasonsTotal', { n: discardLog.length }) : S.diagReasonsNone;
+        hasDiagNoDiscards = discardLog.length === 0;
         diagHasHighSeverityReason = HIGH_SEVERITY_REASONS.some((r) => byReason[r] && byReason[r].length);
         const groupsOpen = this.state.diagReasonGroupsOpen || {};
         diagReasonGroups = REASON_ORDER.filter((r) => byReason[r] && byReason[r].length).map((reasonCode) => {
@@ -1865,26 +1874,49 @@ function base(DCLogic) {
             explain: REASON_EXPLAIN_KEYS[reasonCode] ? S[REASON_EXPLAIN_KEYS[reasonCode]] : '',
             open, chevRotate: open ? 'rotate(180deg)' : 'rotate(0deg)',
             toggle: () => this.setState({ diagReasonGroupsOpen: Object.assign({}, groupsOpen, { [reasonCode]: !open }) }),
-            rows: entries.map((d) => ({
-              name: d.name,
-              entityIdLabel: d.entity_id || '—',
-              hasReasonExtra: reasonCode === 'claimed_by_module',
-              reasonExtra: reasonCode === 'claimed_by_module'
-                ? this.t('diag.reasonClaimedByModule', { module: claimModuleLabels[d.module] || d.module || '—' })
-                : ''
-            }))
+            rows: entries.map((d) => {
+              let hasReasonExtra = false;
+              let reasonExtra = '';
+              if (reasonCode === 'claimed_by_module') {
+                hasReasonExtra = true;
+                reasonExtra = this.t('diag.reasonClaimedByModule', { module: claimModuleLabels[d.module] || d.module || '—' });
+              } else if (reasonCode === 'claimed_by_config') {
+                hasReasonExtra = true;
+                reasonExtra = this.t('diag.reasonClaimedByConfig', { key: d.configKey || '—' });
+              } else if (reasonCode === 'unsupported_device_class' && d.deviceClass) {
+                hasReasonExtra = true;
+                reasonExtra = this.t('settings.reasonDeviceClass', { dc: d.deviceClass });
+              }
+              return { name: d.name, entityIdLabel: d.entity_id || '—', hasReasonExtra, reasonExtra };
+            })
           };
         });
         hasDiagReasonGroups = diagReasonGroups.length > 0;
 
+        // Duplicate devices come in two tiers (see discovery.js): confirmed
+        // pairs (serial / hw+model+hub) keep the original warning block;
+        // pending pairs (same model on the same hub, no proof) get their own
+        // list with the match basis spelled out — never merged, never silent.
         const dupPairs = this.discovery.findDuplicateDevices(this.registries) || [];
-        hasDiagDuplicateDevices = dupPairs.length > 0;
+        const dupNameOf = (d) => d.name_by_user || d.name || d.model || d.id;
+        const confirmedPairs = dupPairs.filter((p) => p.confidence !== 'pending');
+        const pendingPairs = dupPairs.filter((p) => p.confidence === 'pending');
+        const confirmedBasisLabels = { serial_number: S.diagDuplicateBasisSerial, hw_model: S.diagDuplicateBasisHwModel };
+        hasDiagDuplicateDevices = confirmedPairs.length > 0;
         if (hasDiagDuplicateDevices) {
-          diagDuplicateDevicesTitle = this.t('diag.duplicateDevicesTitle', { n: dupPairs.length });
-          diagDuplicateDevices = dupPairs.map((p) => ({
-            line: this.t('diag.duplicateDeviceLine', {
-              from: p.withoutArea.name_by_user || p.withoutArea.name || p.withoutArea.model || p.withoutArea.id,
-              to: p.withArea.name_by_user || p.withArea.name || p.withArea.model || p.withArea.id
+          diagDuplicateDevicesTitle = this.t('diag.duplicateDevicesTitle', { n: confirmedPairs.length });
+          diagDuplicateDevices = confirmedPairs.map((p) => ({
+            line: this.t('diag.duplicateDeviceLine', { from: dupNameOf(p.withoutArea), to: dupNameOf(p.withArea) })
+              + ' · ' + (confirmedBasisLabels[p.matchedBy] || p.matchedBy)
+          }));
+        }
+        hasDiagPendingDuplicates = pendingPairs.length > 0;
+        if (hasDiagPendingDuplicates) {
+          diagPendingDuplicatesTitle = this.t('diag.pendingDuplicatesTitle', { n: pendingPairs.length });
+          diagPendingDuplicates = pendingPairs.map((p) => ({
+            line: this.t('diag.pendingDuplicateLine', {
+              from: dupNameOf(p.withoutArea), to: dupNameOf(p.withArea),
+              basis: p.nameMismatch ? S.diagPendingBasisNameDiffers : S.diagPendingBasisModelVia
             })
           }));
         }
@@ -1947,7 +1979,9 @@ function base(DCLogic) {
             rows: g.rows.map((r) => ({ name: r.name, entityIdLabel: r.entityIdLabel, reasonExtra: r.reasonExtra }))
           })),
           duplicateDevicesTitle: hasDiagDuplicateDevices ? diagDuplicateDevicesTitle : null,
-          duplicateDeviceLines: diagDuplicateDevices.map((p) => p.line)
+          duplicateDeviceLines: diagDuplicateDevices.map((p) => p.line),
+          pendingDuplicatesTitle: hasDiagPendingDuplicates ? diagPendingDuplicatesTitle : null,
+          pendingDuplicateLines: diagPendingDuplicates.map((p) => p.line)
         });
         const copied = await window.CasaPrefs.copyToClipboard(text);
         this.setState({ diagSheet: { text, copied } });
@@ -1958,7 +1992,9 @@ function base(DCLogic) {
       diagConfigAttempts, diagConfigSummary, diagConfigOutsideIframe, diagEnergyInstantRows, diagEnergyDailyRows, diagPrefsFailed,
       diagEnvRows, diagActionRows, hasDiagActions, diagIrrigationRows, hasDiagIrrigationRows, diagCameraRows,
       diagRingValue, diagHourlyValue, diagAlarmRows, diagReasonGroups, diagReasonTotalLabel, hasDiagReasonGroups,
-      hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle, doDiag, settingsTabs, powerUnitOptions,
+      hasDiagDuplicateDevices, diagDuplicateDevices, diagDuplicateDevicesTitle,
+      hasDiagPendingDuplicates, diagPendingDuplicates, diagPendingDuplicatesTitle, hasDiagNoDiscards,
+      doDiag, settingsTabs, powerUnitOptions,
       plugThresholdOptions, showBatterySignControl, batterySignOptions, batterySignLiveLabel, batterySignSuspect, batterySignInvert
     };
   }
