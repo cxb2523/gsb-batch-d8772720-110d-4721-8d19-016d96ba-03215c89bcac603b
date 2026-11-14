@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-tooling:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+      runtime:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Keep development types aligned with the supported Node and TypeScript
+      # majors. Revisit these when those policies change.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+  - package-ecosystem: npm
+    directory: /benchmarks/competitive
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      benchmark-dependencies:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -1,0 +1,20 @@
+{
+	// Type-checking only — tsup owns all emit (see tsup.config.ts).
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"strict": true,
+		"verbatimModuleSyntax": true,
+		"esModuleInterop": true,
+		"skipLibCheck": false,
+		"forceConsistentCasingInFileNames": true,
+		"noEmit": true,
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"types": [],
+		// Silence TS 6.0 deprecation warnings from defaults we do not set ourselves.
+		"ignoreDeprecations": "6.0"
+	},
+	"include": ["src"],
+	"exclude": ["node_modules", "dist", "test"]
+}

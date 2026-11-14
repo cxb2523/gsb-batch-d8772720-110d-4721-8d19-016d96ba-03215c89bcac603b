@@ -1,0 +1,46 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab"
+	},
+	"html": {
+		"parser": {
+			"interpolation": true
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended"
+		}
+	},
+	"files": {
+		"includes": [
+			"**",
+			"!**/dist",
+			"!**/node_modules",
+			"!**/coverage",
+			"!website/dist",
+			"!**/.context",
+			"!**/.taste-skill",
+			"!output",
+			"!test/fixtures",
+			"!**/.claude",
+			"!**/.DS_Store",
+			"!**/*.tgz"
+		]
+	},
+	"markdown": {
+		"formatter": {
+			"enabled": false
+		}
+	}
+}
