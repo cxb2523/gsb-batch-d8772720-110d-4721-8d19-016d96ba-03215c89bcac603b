@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,21 @@ class JobLockedError(JobQueueError):
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_enqueue_clock_lock = threading.Lock()
+_last_enqueue_timestamp: datetime | None = None
+
+
+def _enqueue_timestamp() -> datetime:
+    """Strictly increasing timestamp so creation order survives coarse clocks."""
+    global _last_enqueue_timestamp
+    with _enqueue_clock_lock:
+        now = utc_now()
+        if _last_enqueue_timestamp is not None and now <= _last_enqueue_timestamp:
+            now = _last_enqueue_timestamp + timedelta(microseconds=1)
+        _last_enqueue_timestamp = now
+        return now
 
 
 def isoformat(value: datetime | None = None) -> str:
@@ -361,7 +377,7 @@ class JobQueue:
             raise JobQueueError(f"job already exists: {resolved_job_id}")
 
         job_output_dir = Path(output_dir).expanduser().resolve() if output_dir else self.queue_root / "outputs" / resolved_job_id
-        created_at = isoformat()
+        created_at = _enqueue_timestamp().isoformat()
         attempts = max(1, int(max_attempts)) if max_attempts is not None else self.default_max_attempts
         delay = max(0, int(retry_delay_seconds)) if retry_delay_seconds is not None else self.default_retry_delay_seconds
         multiplier = float(retry_multiplier) if retry_multiplier is not None else self.default_retry_multiplier
@@ -418,6 +434,28 @@ class JobQueue:
 
     def list_jobs(self, states: list[str] | set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         return self.list(states=states)
+
+    def runnable(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Return jobs that run_next could claim right now.
+
+        A job is runnable when it is queued, or in retry_wait with a
+        next_retry_at that has already passed. Terminal jobs (cancelled,
+        failed, succeeded, ...) never appear. Each entry is the public job
+        record plus a ``next_run_at`` field: the job's next_retry_at for
+        retry_wait jobs, or None for queued jobs (claimable immediately).
+        The current attempt count is available as ``attempts``.
+        """
+        moment = now or utc_now()
+        jobs: list[dict[str, Any]] = []
+        for job in self.list(states=["queued", "retry_wait"]):
+            if not _is_due(job, moment):
+                continue
+            job["next_run_at"] = job.get("next_retry_at") if str(job.get("state")) == "retry_wait" else None
+            jobs.append(job)
+        return jobs
+
+    def list_runnable(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        return self.runnable(now=now)
 
     def cancel(self, job_id: str, *, reason: str | None = None) -> dict[str, Any]:
         job = _load_job(self.queue_root, job_id)
@@ -520,6 +558,8 @@ class JobQueue:
                     "event": "worker_exception_after_cancel",
                     "attempt": job.get("attempts"),
                     "at": finished_at,
+                    "worker_id": worker_id,
+                    "detail": "job was cancelled while running; worker exception recorded, job left cancelled",
                     "error": repr(exc),
                 }
             )
@@ -566,6 +606,8 @@ class JobQueue:
                     "event": "worker_result_after_cancel",
                     "attempt": job.get("attempts"),
                     "at": finished_at,
+                    "worker_id": worker_id,
+                    "detail": "job was cancelled while running; worker result discarded, job left cancelled",
                     "result_keys": sorted(result.keys()),
                 }
             )
@@ -622,6 +664,10 @@ def list_jobs(queue_root: str | Path, states: list[str] | set[str] | tuple[str, 
     return JobQueue(queue_root).list(states=states)
 
 
+def runnable(queue_root: str | Path, *, now: datetime | None = None, **queue_kwargs: Any) -> list[dict[str, Any]]:
+    return JobQueue(queue_root, **queue_kwargs).runnable(now=now)
+
+
 def cancel(queue_root: str | Path, job_id: str, *, reason: str | None = None) -> dict[str, Any]:
     return JobQueue(queue_root).cancel(job_id, reason=reason)
 
@@ -676,4 +722,5 @@ __all__ = [
     "run",
     "run_job",
     "run_next",
+    "runnable",
 ]
