@@ -1,0 +1,121 @@
+{
+  "name": "top-user-agents",
+  "description": "Always up-to-date list of the top 100 most common browser user-agents for HTTP clients.",
+  "homepage": "https://microlink.io/user-agents",
+  "version": "2.1.146",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./desktop": {
+      "types": "./src/index.d.ts",
+      "default": "./src/desktop.js"
+    },
+    "./mobile": {
+      "types": "./src/index.d.ts",
+      "default": "./src/mobile.js"
+    }
+  },
+  "author": {
+    "email": "hello@microlink.io",
+    "name": "microlink.io",
+    "url": "https://microlink.io"
+  },
+  "contributors": [
+    {
+      "name": "Kiko",
+      "email": "josefrancisco.verdu@gmail.com"
+    },
+    {
+      "name": "Karl Horky",
+      "email": "karl.horky@gmail.com"
+    },
+    {
+      "name": "Kevin van Rijn",
+      "email": "6368561+kevinvanrijn@users.noreply.github.com"
+    },
+    {
+      "name": "Sukka",
+      "email": "isukkaw@gmail.com"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/microlinkhq/top-user-agents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/microlinkhq/top-user-agents/issues"
+  },
+  "keywords": [
+    "browser",
+    "crawler",
+    "desktop",
+    "headers",
+    "http",
+    "list",
+    "mobile",
+    "scraping",
+    "ua",
+    "user-agent"
+  ],
+  "devDependencies": {
+    "@commitlint/cli": "latest",
+    "@commitlint/config-conventional": "latest",
+    "@microlink/ua": "latest",
+    "ava": "7",
+    "ci-publish": "latest",
+    "debug-logfmt": "latest",
+    "finepack": "latest",
+    "git-authors-cli": "latest",
+    "github-generate-release": "latest",
+    "ioredis": "latest",
+    "nano-staged": "latest",
+    "simple-git-hooks": "latest",
+    "standard": "latest",
+    "standard-version": "latest",
+    "ua-parser-js": "latest"
+  },
+  "engines": {
+    "node": ">= 16"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "clean": "rm -rf node_modules",
+    "contributors": "(npx git-authors-cli && npx finepack && git add package.json && git commit -m 'build: contributors' --no-verify) || true",
+    "lint": "standard",
+    "postrelease": "npm run release:tags && npm run release:github && (ci-publish || npm publish --access=public)",
+    "pretest": "npm run lint",
+    "release": "standard-version -a",
+    "release:github": "github-generate-release",
+    "release:tags": "git push --follow-tags origin HEAD:master",
+    "test": "ava"
+  },
+  "license": "MIT",
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ],
+    "rules": {
+      "body-max-line-length": [
+        0
+      ]
+    }
+  },
+  "nano-staged": {
+    "*.js": [
+      "npx @kikobeats/prettier-standard",
+      "standard --fix"
+    ],
+    "package.json": [
+      "finepack"
+    ]
+  },
+  "simple-git-hooks": {
+    "commit-msg": "npx commitlint --edit",
+    "pre-commit": "npx nano-staged"
+  }
+}

@@ -1,0 +1,68 @@
+name: cron
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Cron job every monday
+    # https://crontab.guru/every-monday
+    - cron: '0 0 * * MON'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v6
+        with:
+          version: latest
+      - name: Install
+        env:
+          pnpm_config_dangerously_allow_all_builds: true
+          SKIP_INSTALL_SIMPLE_GIT_HOOKS: true
+        run: pnpm install
+      - name: Update
+        env:
+          REDIS_UA_URI: ${{ secrets.REDIS_UA_URI }}
+        run: |
+          git config --global user.email ${{ secrets.GIT_EMAIL }}
+          git config --global user.name ${{ secrets.GIT_USERNAME }}
+          DEBUG="ua*" node bin/update.js
+          git add src/index.json src/desktop.json src/mobile.json
+          git diff-index --quiet HEAD || git commit -m 'build(update): user agents' --no-verify
+          # Must fail the job: flush (needs: update) wipes Redis, so it cannot
+          # run after a commit that never reached master.
+          git push origin HEAD:master
+          curl -fsS -m 10 --retry 5 -o /dev/null https://hc-ping.com/2345b25e-fe7d-4efd-b085-5886e6c85cc7
+  flush:
+    needs: [update]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v6
+        with:
+          version: latest
+      - name: Install
+        env:
+          pnpm_config_dangerously_allow_all_builds: true
+          SKIP_INSTALL_SIMPLE_GIT_HOOKS: true
+        run: pnpm install
+      - name: Update
+        env:
+          REDIS_UA_URI: ${{ secrets.REDIS_UA_URI }}
+        run: node bin/flush.js
