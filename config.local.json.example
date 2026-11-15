@@ -1,0 +1,32 @@
+{
+  "_说明": "本机配置。由安装程序生成，每台电脑一份，不要提交、不要跨机拷贝。",
+  "paths": {
+    "work": "<你的工作目录>",
+    "xianyuMonitor": "C:/Users/<用户名>/Desktop/xianyu-monitor",
+    "playwrightService": "C:/Users/<用户名>/.kun/default_workspace/playwright-service",
+    "images": "C:/Users/<用户名>/Desktop/闲鱼上架图片",
+    "templates": "C:/Users/<用户名>/.xianyu-templates.json"
+  },
+  "node": {
+    "path": "C:/Program Files/nodejs/node.exe",
+    "wecomCli": "C:/Users/<用户名>/.workbuddy/binaries/node/cli-connector-packages/wecom-cli.cmd",
+    "museavCli": "C:/Users/<用户名>/.workbuddy/binaries/node/workspace/node_modules/museav-cli/dist/index.js"
+  },
+  "service": {
+    "_说明": "8093 本机服务的访问密钥。2026-10-07 从 lib/config.json 挪到这里（那个文件要进版本库）——它是本仓能加 remote 的前提。默认值见 lib/config.json 的同名字段注释；换机器时向负责人要，或用 XY_API_KEY 环境变量临时覆盖。",
+    "apiKey": "<你的 8093 apiKey>"
+  },
+  "middle": {
+    "_说明": "中台（museav）接口。base/tenant 每台一样；key 是账号密钥，向负责人要，不要提交到版本库。",
+    "base": "https://manager.museav.top",
+    "tenant": "<你的中台 tenant>",
+    "key": "<你的中台密钥>"
+  },
+  "wecom": {
+    "chatId": "<你的企微群 chatId>"
+  },
+  "store": {
+    "default": "<你的店铺名>",
+    "active": ["<你的店铺名>"]
+  }
+}

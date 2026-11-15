@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>闲鱼自动化 · 五步上手</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    max-width: 820px; margin: 0 auto; padding: 90px 28px 60px;
+    color: #1d2129; line-height: 1.7; background: #fff;
+  }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.5px; }
+  .lede { color: #86909c; font-size: 14px; margin-bottom: 36px; }
+  .step {
+    display: flex; gap: 20px; padding: 22px 0;
+    border-top: 1px solid #f2f3f5;
+  }
+  .step:last-of-type { border-bottom: 1px solid #f2f3f5; }
+  .no {
+    flex: 0 0 52px; height: 52px; border-radius: 50%;
+    background: #165dff; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700;
+  }
+  .body { flex: 1; min-width: 0; }
+  .title { font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+  .desc { font-size: 15px; color: #4e5969; }
+  .desc b { color: #1d2129; }
+  code {
+    background: #f2f3f5; padding: 2px 7px; border-radius: 4px;
+    font-size: 14px; font-family: Consolas, Monaco, monospace;
+    word-break: break-all;
+  }
+  .url {
+    display: inline-block; background: #165dff; color: #fff;
+    padding: 10px 18px; border-radius: 8px; text-decoration: none;
+    font-size: 15px; font-weight: 600; margin-top: 10px;
+  }
+  .tip {
+    background: #fff7e8; border-left: 4px solid #ff7d00;
+    padding: 14px 18px; border-radius: 6px; margin: 26px 0 0;
+    font-size: 14px;
+  }
+  .tip b { color: #d25f00; }
+  .tip ol { margin: 8px 0 0; padding-left: 20px; }
+  .tip li { margin: 4px 0; }
+  .foot {
+    margin-top: 36px; padding-top: 22px; border-top: 1px dashed #e5e6eb;
+    font-size: 14px; color: #4e5969;
+  }
+  .foot b { color: #1d2129; }
+  .kbd {
+    display: inline-block; background: #fff; border: 1px solid #d9dce1;
+    border-bottom-width: 2px; border-radius: 5px; padding: 1px 8px;
+    font-family: Consolas, monospace; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<h1>闲鱼自动化 · 五步上手</h1>
+<div class="lede">装一次，之后每天只用第 ⑤ 步。</div>
+
+<div class="step">
+  <div class="no">1</div>
+  <div class="body">
+    <div class="title">下载</div>
+    <div class="desc">打开下面这个网址，点页面上那个大按钮。地址是固定的，永远是最新版。</div>
+    <a class="url" href="https://achun1107.github.io/xianyu-project/">achun1107.github.io/xianyu-project</a>
+  </div>
+</div>
+
+<div class="step">
+  <div class="no">2</div>
+  <div class="body">
+    <div class="title">解压到一个固定位置</div>
+    <div class="desc">
+      右键 zip → 解压到 <code>D:\</code>。<br>
+      <b>不要解压到桌面</b>，也别把里面的文件夹搬来搬去 —— 三个目录必须并排放在一起。
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="no">3</div>
+  <div class="body">
+    <div class="title">双击 <code>install.cmd</code> 装</div>
+    <div class="desc">
+      会弹出一个黑窗口，一路往下跑，最后显示「剩下必须人工做的三件事」。<br>
+      装的过程会下载浏览器内核，<b>第一次大约 5–15 分钟</b>，别关窗口。
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="no">4</div>
+  <div class="body">
+    <div class="title">配一次自己的店铺（只做一次）</div>
+    <div class="desc">
+      双击 <code>xianyu-achun\tools\staff-ui\启动.cmd</code>，浏览器会自动打开。<br>
+      点「⑤ 配置一家新店」，五步填完：店铺名、标价、规格、主图风格、预算。<br>
+      然后点右上角「店铺 ▾」→「登录」→ 在弹出的窗口里<b>扫码</b>。
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="no">5</div>
+  <div class="body">
+    <div class="title">输入「城市 + 明星」，发</div>
+    <div class="desc">
+      点「① 发一条新链接」，在<b>「一句话输入」</b>里敲 <code>广州 王嘉尔</code>。<br>
+      先<b>不勾</b>「确认发布」跑一次预演，看着没问题再勾上重跑 —— 这次才真发。<br>
+      <span style="color:#b25000">如果停在「大麦有 X、但没有 Y」——
+      <b>不是故障</b>，是这场在这个城市<b>还没开票</b>。
+      打开大麦 app 搜一下哪场<b>还有票</b>，换个<b>确定在卖</b>的「城市 明星」再试就行。</span>
+    </div>
+  </div>
+</div>
+
+<div class="tip">
+  <b>装之前先做两件事，能省你半天：</b>
+  <ol>
+    <li><b>关掉 VPN / 系统代理</b> —— 否则闲鱼连不上，表现为「浏览器一直转圈」</li>
+    <li><b>确认杀毒软件没拦 node.exe</b> —— 360/火绒会静默阻止它联网，不弹任何提示</li>
+  </ol>
+</div>
+
+<div class="foot">
+  更详细的每一步（为什么这么配、出问题怎么查）在同一目录的 <b>install-guide.html</b>。<br>
+  <b>卡住了怎么办？</b>打开网页点右上角「<b>一键体检</b>」，它会告诉你哪里不对，每项都带修复命令。<br>
+  <b>记住一条：</b>报错里出现 <code>-9</code> 是「审核中」不是被删，等 10–30 分钟自己会转正，<b>别重复发</b>。
+</div>
+
+</body>
+</html>

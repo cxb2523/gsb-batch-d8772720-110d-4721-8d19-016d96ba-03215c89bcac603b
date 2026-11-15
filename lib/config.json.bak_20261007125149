@@ -1,0 +1,53 @@
+{
+  "_说明": "全项目唯一配置出口。改端口/Key/店铺/阈值只改这里，其余脚本一律 require lib/env.js 读取。",
+
+  "service": {
+    "host": "127.0.0.1",
+    "port": 8093,
+    "_说明_apiKey": "8093 服务的访问密钥【故意留空】：它已挪到 config.local.json（本机专属、不入库）。lib/env.js 会把本机那份合进来；也可以用 XY_API_KEY 环境变量临时覆盖。2026-10-07 为「把 achun 推上 gitlab」做的密钥外置。",
+    "apiKey": ""
+  },
+
+  "store": {
+    "default": "好易美代拍",
+    "_说明_active": "当前实际运营的店铺。ready() 只启动这几个，其余不启动（省内存/省一次页面导航）。要开启更多店铺就把名字加进 active。",
+    "active": ["好易美代拍"],
+    "all": ["好易美代拍", "好易美娱乐", "超能水手代拍"]
+  },
+
+  "url": {
+    "dayu": "https://dayu.goofish.com/",
+    "adConsole": "https://dayu.goofish.com/?site=FISHAD#/ad/polish/campaign-manage",
+    "goofish": "https://www.goofish.com/",
+    "publish": "https://www.goofish.com/publish"
+  },
+
+  "node": {
+    "workbuddy": "C:\\Users\\43462\\.workbuddy\\binaries\\node\\versions\\22.22.2-5\\node.exe",
+    "scoop": "C:\\Users\\43462\\scoop\\apps\\nodejs\\current\\node.exe"
+  },
+
+  "thresholds": {
+    "adCumCost": 50,
+    "adCostPerChat": 10,
+    "adBudgetPct": 0.8,
+    "adDayCost": 100,
+    "adTargetCost": 4,
+    "adOrderCum": 150
+  },
+
+  "rules": {
+    "_说明": "永久规则，不要改。集合计划前缀用于熔断护栏：绝不自动暂停主/副集合。",
+    "collectionPrefix": "擦亮宝贝",
+    "chatCap": 4,
+    "orderCap": 35,
+    "superPolishMaxItems": 10,
+    "superPolishSharedPerPlan": 4
+  },
+
+  "output": {
+    "maxLines": 15,
+    "logMaxKB": 1024,
+    "logKeepLines": 2000
+  }
+}

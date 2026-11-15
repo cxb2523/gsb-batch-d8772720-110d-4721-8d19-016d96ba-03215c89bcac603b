@@ -1,0 +1,38 @@
+{
+  "tool": "cangjie-tools v2.5.0",
+  "published_hashes": {
+    "references\\capabilities\\douyin-clean-asset-extract.md": "cfd1fb7d74706c5a59d22b4c8f2b05cd3542d35e257db7c4dc622a699d7718f0",
+    "references\\capabilities\\layout-pixel-spec.md": "0cd89adc9aa7086acc17f766b93903a1a2e634b543af5166fbb7884ffb735f42",
+    "references\\capabilities\\measure-to-shoot-plan.md": "7c5b29deb1351cfcd386e9f057e5ba28af5facb82de9b56987638f3241ef42ee",
+    "references\\capabilities\\reference-breakdown-two-round.md": "b96687a2f9113a6e883792082535843549f52d52059efd4a85693dd79c18b61f",
+    "references\\capabilities\\remake-acceptance-diff.md": "2e7be29f8bcc4863dc732d8209f692ca2534fb65b8ddebe7158803b7af96a3d0",
+    "references\\capabilities\\rhythm-structure-extract.md": "f35ff847b84835f29a770b90408da81f2371a8cc58a0fa73c3c47e2cdc98555b",
+    "references\\capabilities\\sound-recipe-replicate.md": "1ffa0e8aac85f8125143c2946740eb5ce804a0c8b405394a4956e2bc1187b9b1",
+    "references\\capabilities\\storyboard-local-pipeline.md": "19da747dfa73b82f63882ee46e4ef919f00f468976ebb6eba7222b28566eb4cb",
+    "references\\capability-index.md": "61cfdc2d98516981af8c40d1420e62b28c817b51915fd5d94ff5691c17dd1352",
+    "references\\cheatsheet.md": "a6c15560e19ab55b8017c10658e972d4a18264264e06526a32a60c0e2e21bafb",
+    "references\\glossary.md": "3cfd9c75d78809c948b97cd1d3821b56dbe6116b359c490e2f16a7bbd708b1ad",
+    "references\\overview.md": "04d1f6c4dbfed843261e6626271dfb1fe8c556771daa36cd6384e17badf1f282",
+    "SKILL.md": "0066e2120c75ced7ffaaa5289ba3f7cb97a259ffb7a19f3a0a95d69efb09f199"
+  },
+  "note": "update/重编译前比对 published_hashes；检测到本地手改不得静默覆盖",
+  "bundle_id": "bundle.fentiao-video-remake",
+  "bundle_sha256": "b36c9c1d42748b0935e4fe203bd184387251fb2805c1b57b5ac2e5cdfa123fe5",
+  "variant": "single",
+  "run_id": "run-20261114-140610-6b9780",
+  "decision": {
+    "schema_version": 1,
+    "requested": "single",
+    "selected": "single",
+    "decision_policy": "single-first-v1",
+    "skill_budget": 8,
+    "promoted_count": 4,
+    "capability_count": 8,
+    "reasons": [
+      "用户显式选择 single，auto 决策器不覆盖用户选择"
+    ],
+    "alternative": "compact pack（1 个来源路由入口 + 4 个晋级 Skill，共 5 个可发现入口）",
+    "user_confirmed": true,
+    "preserve_strategy_on_update": true
+  }
+}

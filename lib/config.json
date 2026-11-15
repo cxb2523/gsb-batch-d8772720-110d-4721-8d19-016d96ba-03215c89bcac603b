@@ -1,0 +1,74 @@
+{
+  "_说明": "全项目唯一配置出口。改端口/Key/店铺/阈值只改这里，其余脚本一律 require lib/env.js 读取。",
+  "service": {
+    "host": "127.0.0.1",
+    "port": 8093,
+    "_说明_apiKey": "8093 服务的访问密钥【故意留空】：它已挪到 config.local.json（本机专属、不入库）。lib/env.js 会把本机那份合进来；也可以用 XY_API_KEY 环境变量临时覆盖。2026-10-07 为「把 achun 推上 gitlab」做的密钥外置。",
+    "apiKey": ""
+  },
+  "store": {
+    "default": "好易美代拍",
+    "_说明_active": "当前实际运营的店铺。ready() 只启动这几个，其余不启动（省内存/省一次页面导航）。要开启更多店铺就把名字加进 active。",
+    "active": [
+      "好易美代拍"
+    ],
+    "all": [
+      "好易美代拍",
+      "好易美娱乐",
+      "超能水手代拍",
+      "好易美票务Hope"
+    ]
+  },
+  "url": {
+    "dayu": "https://dayu.goofish.com/",
+    "adConsole": "https://dayu.goofish.com/?site=FISHAD#/ad/polish/campaign-manage",
+    "goofish": "https://www.goofish.com/",
+    "publish": "https://www.goofish.com/publish"
+  },
+  "node": {
+    "_说明": "这个文件要进版本库，所以绝不能在这里写本机路径。node 路径的优先级是：config.local.json 的 node.path > 自动读 versions\\current > 回落到 process.execPath（正在跑脚本的那个 node）。也就是新机器什么都不填也能跑。原来这里写死的 node.workbuddy / node.scoop 两个绝对路径已于 2026-10-08 删除 —— 没有任何代码在读它们，却让「克隆到别的机器」直接不成立。"
+  },
+  "thresholds": {
+    "adCumCost": 50,
+    "adCostPerChat": 10,
+    "adBudgetPct": 0.8,
+    "adDayCost": 100,
+    "adTargetCost": 4,
+    "adOrderCum": 150
+  },
+  "rules": {
+    "_说明": "永久规则，不要改。集合计划前缀用于熔断护栏：绝不自动暂停主/副集合。",
+    "collectionPrefix": "擦亮宝贝",
+    "chatCap": 4,
+    "orderCap": 35,
+    "superPolishMaxItems": 10,
+    "superPolishSharedPerPlan": 4
+  },
+  "output": {
+    "maxLines": 15,
+    "logMaxKB": 1024,
+    "logKeepLines": 2000
+  },
+  "quietHours": {
+    "_说明": "夜间静默区间（老板 2026-10-12：「11点到8点这段时间，停止活动」）。落点是带 NIGHT-QUIET-SET 标记的 PAUSE-ADS / PAUSE-PUBLISH，由 tools/night-quiet.js 在区间内落下、区间外摘掉。改成任意区间只需改 from/to，不用动计划任务。",
+    "_口径": "左闭右开 [from, to)：from 时刻进入静默，to 时刻解除。跨午夜照常支持（from > to 即视为跨夜）。",
+    "_只摘自己落的": "只摘第一行是 NIGHT-QUIET-SET 的开关。手动放假开关（暂停发布.cmd / tools/ad-pause-all.js）不带标记，永远不会被它摘掉。",
+    "enabled": true,
+    "from": "23:00",
+    "to": "08:00"
+  },
+  "reqGate": {
+    "_说明": "请求预算闸门（老板 2026-10-13「要」）。实现见 lib/req-gate.js，挂在 lib/http.js 的 /api/agent/eval* 路径上 —— 那是所有 eval-on-store / mtop 调用的必经之路。存在理由：2026-10-13 我一小时里反复轮询把店铺打到淘宝风控的【疲劳限流】（所有 mtop 回 Session过期、后台弹登录页），而当时分不清是限流还是掉登录，继续重试把情况压得更死。",
+    "_三道防线": "① 命中限流后【指数退避】—— 最重要，退避期间重试只会更糟；② minGapMs 给连续调用插间隔，拉平突发（手工探针最爱连着发）；③ per10Min/perHour 是【失控保护】，兜住死循环调用，不是限流的精确阈值。",
+    "_别照抄别人的数": "真实阈值未知，默认给得偏宽（宁可漏杀不可误杀，批量发布不能被打断）。要收紧先看 node tools/req-gate.js --report 的真实数据。",
+    "_逃生口": "XY_NO_GATE=1 完全关掉；XY_GATE_BYPASS=1 只跳过『拦』但仍计数；XY_GATE_CONFIG='{\"perHour\":10}' 一次性覆盖；XY_GATE_STATE=<路径> 换状态文件（测试用）。",
+    "enabled": true,
+    "per10Min": 60,
+    "perHour": 240,
+    "minGapMs": 1200,
+    "maxGapWaitMs": 5000,
+    "backoffMinutes": [10, 20, 40, 60],
+    "stateFile": "req-gate-state.json",
+    "keepHistHours": 48
+  }
+}

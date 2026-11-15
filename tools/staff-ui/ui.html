@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>闲鱼上架助手</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.6 -apple-system, "Microsoft YaHei", sans-serif;
+         background: #f5f6f8; color: #1f2329; }
+  header { background: #fff; border-bottom: 1px solid #e5e6eb; padding: 14px 24px;
+           display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .store { color: #86909c; font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+  .store:hover { background: #f2f3f5; color: #165dff; }
+  header .right { margin-left: auto; display: flex; gap: 10px; }
+  main { max-width: 1080px; margin: 22px auto; padding: 0 20px 60px; }
+  .onboard { background: #f7f8fa; border: 1px solid #e5e6eb; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+  .ob-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .ob-steps { margin: 0 0 10px 18px; padding: 0; font-size: 13px; line-height: 1.9; color: #4e5969; }
+  .ob-steps code { background: #fff; border: 1px solid #e5e6eb; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .ob-foot { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .ob-foot button { margin-left: auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px; padding: 18px;
+          cursor: pointer; transition: .15s; }
+  .card:hover { border-color: #165dff; box-shadow: 0 2px 10px rgba(22,93,255,.10); }
+  .card.on { border-color: #165dff; background: #f2f6ff; }
+  .card .no { color: #165dff; font-weight: 700; font-size: 13px; }
+  .card h3 { margin: 6px 0 4px; font-size: 16px; }
+  .card p { margin: 0; color: #86909c; font-size: 13px; }
+  .panel { background: #fff; border: 1px solid #e5e6eb; border-radius: 10px;
+           padding: 20px; margin-top: 18px; display: none; }
+  .panel.on { display: block; }
+  .panel h2 { margin: 0 0 4px; font-size: 16px; }
+  .panel .hint { color: #86909c; font-size: 13px; margin-bottom: 16px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  label { display: block; font-size: 13px; color: #4e5969; margin-bottom: 4px; }
+  input, select { padding: 8px 10px; border: 1px solid #d0d3d9; border-radius: 6px;
+                  font-size: 14px; min-width: 160px; font-family: inherit; }
+  button { padding: 9px 18px; border: 0; border-radius: 6px; background: #165dff;
+           color: #fff; font-size: 14px; cursor: pointer; font-family: inherit; }
+  button:disabled { background: #a9c0ff; cursor: not-allowed; }
+  button.ghost { background: #fff; color: #4e5969; border: 1px solid #d0d3d9; }
+  .warn { background: #fff7e8; border: 1px solid #ffd591; color: #ad6800;
+          padding: 10px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
+  .log { background: #1e1e1e; color: #d4d4d4; font: 12.5px/1.55 Consolas, monospace;
+         padding: 14px; border-radius: 8px; height: 340px; overflow: auto;
+         white-space: pre-wrap; word-break: break-all; display: none; margin-top: 16px; }
+  .log.on { display: block; }
+  .status { font-size: 13px; color: #86909c; margin-top: 8px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .badge.run { background: #e8f1ff; color: #165dff; }
+  .badge.ok { background: #e8ffea; color: #00b42a; }
+  .badge.bad { background: #ffece8; color: #f53f3f; }
+  .badge.warn { background: #fff7e8; color: #d25f00; }
+</style>
+</head>
+<body>
+<header>
+  <h1>闲鱼上架助手</h1>
+  <span class="store" id="storeBtn" onclick="toggleStores()" title="点这里切换店铺 / 登录另一个店">店铺：{{STORE}} ▾</span>
+  <div class="right">
+    <button class="ghost" onclick="runHealthcheck()">一键体检</button>
+    <button class="ghost" onclick="warmup()">预热浏览器</button>
+  </div>
+</header>
+
+<div id="storePanel" style="display:none;position:absolute;top:56px;left:180px;z-index:20;
+     background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:10px;min-width:340px;
+     box-shadow:0 6px 24px rgba(0,0,0,.12)">
+  <div style="font-size:12px;color:#86909c;margin-bottom:8px">
+    一个闲鱼账号只能在一台机器登录。换店要重新扫码。
+  </div>
+  <div id="storeList"></div>
+  <div style="border-top:1px solid #f2f3f5;margin-top:8px;padding-top:8px">
+    <div style="font-size:12px;color:#86909c;margin-bottom:6px">
+      想看某个店的在售数据？先「登录」它（弹出窗口里扫码），再用 ④ 查看。
+    </div>
+  </div>
+</div>
+
+<main>
+  <div id="onboard" class="onboard">
+    <div class="ob-title">第一次用？按这三步走：</div>
+    <ol class="ob-steps">
+      <li><b>配置店铺</b> —— 点下面「⑤ 配置一家新店」，填价格/规格/主图风格/预算。配完档案就存好了，以后不用再配。</li>
+      <li><b>登录闲鱼</b> —— 点右上角「店铺：xxx ▾」，选你的店，点「登录」，在弹出的窗口里扫码。</li>
+      <li><b>发链接</b> —— 点「① 发一条新链接」，在「一句话输入」里敲 <code>广州 王嘉尔</code>，先不勾「确认发布」跑一次预演，看着没问题再勾上重跑。
+      <br><span style="color:#b25000">停在「大麦有 X 但没有 Y」不是故障 —— 那场在这个城市还没开票，换个<b>大麦上正在卖</b>的「城市 明星」就行。</span></li>
+    </ol>
+    <div class="ob-foot">
+      <span id="ob-status">正在检查当前状态…</span>
+      <button class="ghost" onclick="document.getElementById('onboard').style.display='none'">知道了，隐藏</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card" data-k="publish" onclick="pick('publish')">
+      <div class="no">①</div><h3>发一条新链接</h3>
+      <p>自动查大麦、下海报、避开重复标题</p>
+    </div>
+    <div class="card" data-k="promote" onclick="pick('promote')">
+      <div class="no">②</div><h3>给链接开推广</h3>
+      <p>出价 ¥4 / 日上限 ¥50，全自动</p>
+    </div>
+    <div class="card" data-k="reanchor" onclick="pick('reanchor')">
+      <div class="no">③</div><h3>把旧链接改成新场次</h3>
+      <p>改标题、正文、主图、所在地</p>
+    </div>
+    <div class="card" data-k="onsale" onclick="pick('onsale')">
+      <div class="no">④</div><h3>看在售情况</h3>
+      <p>只读，不动任何东西</p>
+    </div>
+    <div class="card" data-k="wizard" onclick="pick('wizard')">
+      <div class="no">⑤</div><h3>配置一家新店</h3>
+      <p>五步配好：价格、主图、版式、预算</p>
+    </div>
+  </div>
+
+  <!-- ① 发新链接 -->
+  <div class="panel" id="p-publish">
+    <h2>发一条新链接</h2>
+    <div class="hint">会先去大麦查场次；查不到就停，不会乱花钱。发之前会给你预演。</div>
+    <div class="row">
+      <div style="flex:1">
+        <label>一句话输入（城市 + 明星 —— 填这一栏，下面两栏就不用手动填）</label>
+        <input id="pub-oneline" placeholder="例：广州 王嘉尔　也可以：广州王嘉尔 / 广州,王嘉尔" style="width:100%;min-width:260px">
+      </div>
+    </div>
+    <div class="row">
+      <div><label>城市</label><input id="pub-city" placeholder="例：广州"></div>
+      <div><label>是谁的场子</label><input id="pub-star" placeholder="例：王嘉尔"></div>
+      <div><label>场次</label>
+        <select id="pub-session"><option>首开</option><option>二开</option><option>三开</option></select></div>
+      <div><label>活动类型</label>
+        <select id="pub-event"><option>演唱会</option><option>见面会</option><option>音乐节</option><option>脱口秀</option><option>全球总决赛</option></select></div>
+      <div><label>主图底图</label>
+        <select id="pub-base">
+          <option value="">跟随店铺配置（推荐）</option>
+          <option value="damai">大麦官方海报（有明星脸）</option>
+          <option value="shop">店铺专属底图（museav）</option>
+        </select></div>
+    </div>
+    <div class="row" style="align-items:center;gap:8px">
+      <input type="checkbox" id="pub-confirm" style="min-width:auto">
+      <label for="pub-confirm" style="margin:0">确认发布（<b>不勾只跑预演，什么都不发</b>；看完预演再勾上重跑）</label>
+    </div>
+    <button onclick="go('publish')">开始</button>
+  </div>
+
+  <!-- ② 开推广 -->
+  <div class="panel" id="p-promote">
+    <h2>给链接开推广</h2>
+    <div class="hint">出价 ¥4、日上限 ¥50、只投 8:00–23:00，都是店里定好的，不用填。</div>
+    <div class="row">
+      <div><label>商品 itemId</label><input id="pro-id" placeholder="商品链接 ?id= 后面那串数字" style="min-width:280px"></div>
+      <div><label>城市</label><input id="pro-city" placeholder="例：广州"></div>
+      <div><label>是谁的场子</label><input id="pro-star" placeholder="例：王嘉尔"></div>
+    </div>
+    <button onclick="go('promote')">建计划并开启</button>
+  </div>
+
+  <!-- ③ 改旧链接 -->
+  <div class="panel" id="p-reanchor">
+    <h2>把旧链接改成新场次</h2>
+    <div class="warn">
+      ⚠️ 只能改<b>已经死了</b>的链接：场次演完了、没成交、没在投广告。<br>
+      正在出单的主力链接绝对不能改 —— 会丢权重，正文也找不回来。
+    </div>
+    <div class="hint">提交后工具会先去查这条链接的成交记录，有成交会直接拒绝。</div>
+    <div class="row">
+      <div><label>要改的 itemId</label><input id="re-id" placeholder="例：1091514912987" style="min-width:280px"></div>
+    </div>
+    <div class="row">
+      <div><label>新场次城市</label><input id="re-city" placeholder="例：广州"></div>
+      <div><label>新场次主体</label><input id="re-star" placeholder="例：王嘉尔"></div>
+      <div><label>活动类型</label>
+        <select id="re-event"><option>演唱会</option><option>见面会</option><option>音乐节</option><option>脱口秀</option><option>全球总决赛</option></select></div>
+      <div><label>场次</label>
+        <select id="re-session"><option>首开</option><option>二开</option><option>三开</option></select></div>
+    </div>
+    <div class="row" style="align-items:center;gap:8px">
+      <input type="checkbox" id="re-dry" checked style="min-width:auto">
+      <label for="re-dry" style="margin:0">只预览（<b>默认勾上</b>，先看改前/改后；确认无误再取消勾选重跑才写入）</label>
+    </div>
+    <button onclick="go('reanchor')">开始改造</button>
+  </div>
+
+  <!-- ④ 在售情况 -->
+  <div class="panel" id="p-onsale">
+    <h2>在售情况</h2>
+    <div class="hint">只读，不会改动任何东西。</div>
+    <button onclick="go('onsale')">拉取</button>
+  </div>
+
+  <!-- ⑤ 配置新店 -->
+  <div class="panel" id="p-wizard">
+    <h2>配置一家新店（五步）</h2>
+    <div class="hint">
+      每家店的配置都不一样，这里就是让你定自己的。填完会先出样图给你看，你点头才写档案。
+    </div>
+    <div class="warn">
+      🎨 主图底图会调 <b>museav 中台</b>生成（约 30–60 秒），一次生成长期复用。<br>
+      底图颜色决定能用哪套版式 —— 红底配红字会糊，所以版式会按你选的风格自动推荐。
+    </div>
+    <div class="row">
+      <div><label>店铺名（要跟闲鱼账号名一致）</label><input id="wz-store" placeholder="例：超能水手代拍" style="min-width:240px"></div>
+    </div>
+    <div class="row">
+      <div><label>标价（元）</label><input id="wz-price" value="50" style="min-width:110px"></div>
+      <div><label>规格档位</label><input id="wz-spec" value="标准" placeholder="单档写「标准」，多档用 / 隔开" style="min-width:200px"></div>
+      <div><label>分类</label>
+        <select id="wz-cat"><option>演出票代拍</option><option>代购</option></select></div>
+    </div>
+    <div class="row">
+      <div><label>主图风格</label>
+        <select id="wz-style">
+          <option value="gold">金色舞台（最通用）</option>
+          <option value="red">中国红（喜庆）</option>
+          <option value="blue">科技蓝紫（电竞）</option>
+          <option value="pink">粉紫梦幻（偶像）</option>
+          <option value="dark">极简黑金（高级）</option>
+        </select></div>
+      <div><label>版式</label>
+        <select id="wz-tpl">
+          <option value="__shoukai">紫块+三行红字</option>
+          <option value="xuliang-v1">三黄块+一紫块</option>
+          <option value="tpl_redtext">满屏红字</option>
+        </select></div>
+      <div><label>文案口味</label>
+        <select id="wz-tone"><option>稳</option><option>狠</option><option>捡漏</option></select></div>
+    </div>
+    <div class="row">
+      <div><label>日推广预算（元）</label><input id="wz-budget" value="50" style="min-width:110px"></div>
+      <div><label>单次咨询出价（元，红线 ≤4）</label><input id="wz-bid" value="4" style="min-width:110px"></div>
+    </div>
+    <div class="row" style="align-items:center;gap:8px">
+      <input type="checkbox" id="wz-dry" style="min-width:auto">
+      <label for="wz-dry" style="margin:0">只预览，不写档案（第一次配建议先勾上，看完效果再正式配）</label>
+    </div>
+    <button onclick="go('wizard')">开始配置</button>
+  </div>
+
+  <div class="status" id="status"></div>
+  <pre class="log" id="log"></pre>
+</main>
+
+<script>
+const S = { cur: null, timer: null };
+
+function pick(k) {
+  document.querySelectorAll('.card').forEach(c => c.classList.toggle('on', c.dataset.k === k));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === 'p-' + k));
+  if (k === 'onsale') go('onsale');
+}
+
+const val = id => (document.getElementById(id) || {}).value || '';
+const setStatus = (html) => { document.getElementById('status').innerHTML = html; };
+
+// ── 统一的后端请求：失败时一定给学员看得懂的提示 ──
+// 起因（2026-11-12）：审计发现 9 个 fetch 里 7 个没写 catch，
+//   服务不可用时点按钮 → JS 抛未捕获异常 → 界面【毫无反应】，什么都不显示。
+//   学员只会觉得"点了没用"，然后反复点、或者以为电脑坏了。
+async function apiFetch(url, opts) {
+  let r;
+  try {
+    r = r = await fetch(url, opts);
+  } catch (e) {
+    showOffline('连不上本地服务');
+    throw e;
+  }
+  if (!r.ok) {
+    showOffline('本地服务返回错误 HTTP ' + r.status);
+    throw new Error('HTTP ' + r.status);
+  }
+  try {
+    return await r.json();
+  } catch (e) {
+    showOffline('本地服务返回的不是正常数据');
+    throw e;
+  }
+}
+
+function showOffline(what) {
+  const log = document.getElementById('log');
+  if (log) {
+    log.classList.add('on');
+    log.textContent =
+      '❌ ' + what + '\n\n' +
+      '几乎都是同一个原因：这个黑窗口里的服务没在跑。\n' +
+      '  · 黑窗口被关掉了？\n' +
+      '  · 或者服务崩了（窗口里会有红色报错）？\n\n' +
+      '怎么办：\n' +
+      '  1) 关掉那个黑窗口\n' +
+      '  2) 重新双击 xianyu-achun\\tools\\staff-ui\\启动.cmd\n' +
+      '  3) 浏览器会自动重新打开页面\n\n' +
+      '如果重新启动后还是这样，把黑窗口里的内容截图发给管理员。';
+  }
+  setStatus('<span class="badge bad">连不上本地服务</span>');
+}
+
+// ── 第一次用引导：按实际状态告诉学员"下一步做什么" ──
+//   起因：学员打开网页看到五个卡片，不知道从哪下手。
+//   检查三件事：有没有当前店铺 → 这店档案配了没 → 这个号登录了没。
+async function refreshOnboard() {
+  const el = document.getElementById('ob-status');
+  if (!el) return;
+  try {
+    const d = await apiFetch('/api/stores');
+    // 三种情况要分开说，别都报「还没登录」：
+    //   ① 8093 没在跑          → 根目录/服务问题
+    //   ② 8093 在跑但 state=idle（空闲 20 分钟回收了上下文）→ 点预热就回来，不用重新扫码
+    //   ③ 真的没有账号         → 去填 service.local.json
+    if (!d.active) {
+      const hasAccounts = (d.stores || []).length > 0;
+      if (!d.serviceUp) {
+        el.innerHTML = '<span class="badge bad">浏览器服务没启动</span> —— 双击 <code>xianyu-playwright-service\\start.bat</code> 启动它，然后点右上角「预热浏览器」。';
+      } else if (hasAccounts && d.serviceState === 'idle') {
+        el.innerHTML = '<span class="badge warn">服务空闲中</span> —— 你的 ' + (d.stores || []).length
+          + ' 个店铺都在，只是浏览器上下文被回收了（空闲 20 分钟正常回收）。<b>不用重新扫码</b>，点右上角「预热浏览器」就会回来。';
+      } else if (hasAccounts) {
+        el.innerHTML = '<span class="badge warn">还没选店铺</span> —— 点右上角「店铺 ▾」，选一个点「登录」扫码。';
+      } else {
+        el.innerHTML = '<span class="badge bad">浏览器服务里没有你的账号</span> —— 先填 <code>xianyu-playwright-service\\service.local.json</code> 并重启服务（见发放说明第 3 步）。';
+      }
+      return;
+    }
+    // 已登录的店再看档案配没配（profile 有没有 baseImg / 主图池）
+    const det = await apiFetch('/api/store-detail?name=' + encodeURIComponent(d.active));
+    if (!det || !det.configured) {
+      el.innerHTML = '<span class="badge warn">「' + d.active + '」还没配置</span> —— 点「⑤ 配置一家新店」配一次（五步，约 2 分钟）。';
+      return;
+    }
+    el.innerHTML = '<span class="badge ok">「' + d.active + '」已就绪</span> —— 直接点「① 发一条新链接」，'
+      + '一句话输入 <code>城市 明星</code> 就行。第一次建议先不勾「确认发布」，看预演。';
+  } catch (e) {
+    el.textContent = '状态检查失败（不影响使用）：' + e.message;
+  }
+}
+
+// ── 店铺切换 / 登录 ──
+// ⚠️ 顶上那句「店铺：xxx」是服务端启动时{{STORE}}替换进去的，写死在 HTML 里，
+//   登录/切换之后不会自己变（实测：超能水手已经登录成当前店，顶部还写着好易美代拍）。
+//   所以统一由这个函数按 /api/stores 的实时结果刷新。
+async function refreshStoreLabel() {
+  try {
+    const d = await apiFetch('/api/stores');
+    if (d.active) {
+      document.getElementById('storeBtn').innerText = '店铺：' + d.active + ' ▾';
+      document.title = '闲鱼上架助手 · ' + d.active;
+    }
+    return d;
+  } catch (e) { return null; }
+}
+// 脚本在 body 末尾，DOMContentLoaded 多半已经触发过，直接调一次更稳；
+// 再兜几次重试——服务刚重启时首个请求可能还没就绪。
+// ⚠️【2026-11-12】refreshOnboard 也要重试：实测页面刚加载时它偶尔不生效，
+//   引导条一直停在「正在检查当前状态…」，而手动再调一次就正常。
+refreshStoreLabel();
+refreshOnboard();
+setTimeout(refreshStoreLabel, 800);
+setTimeout(refreshOnboard, 900);
+setTimeout(refreshStoreLabel, 2500);
+setTimeout(refreshOnboard, 2600);
+
+async function toggleStores() {
+  const panel = document.getElementById('storePanel');
+  if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+  const d = (await refreshStoreLabel()) || {};
+  const box = document.getElementById('storeList');
+  if (!d.stores || !d.stores.length) {
+    box.innerHTML = '<div style="font-size:13px;color:#f53f3f">读不到店铺列表（浏览器服务没起来？）' +
+      (d.error ? '<br>' + d.error : '') + '</div>';
+  } else {
+    box.innerHTML = d.stores.map(s => {
+      const cur = s.active;
+      return '<div style="display:flex;align-items:center;gap:8px;padding:7px 6px;border-radius:6px;' +
+        (cur ? 'background:#e8f1ff' : '') + '">' +
+        '<span style="flex:1;font-size:14px">' + s.name + '</span>' +
+        '<span style="font-size:12px;color:#86909c">' + (s.username || '') + '</span>' +
+        (cur
+          ? '<span class="badge ok">当前</span>'
+          : '<button class="ghost" style="padding:3px 10px;font-size:12px" onclick="doLogin(\'' + s.name + '\')">登录</button>') +
+        '</div>';
+    }).join('');
+  }
+  panel.style.display = 'block';
+}
+
+async function doLogin(name) {
+  document.getElementById('storePanel').style.display = 'none';
+  const log = document.getElementById('log');
+  log.classList.add('on');
+  log.textContent = '正在唤出「' + name + '」的登录窗口…\n\n⚠️ 会弹出一个 Chrome 窗口，请在里面扫码 / 过滑块 / 输短信验证码。';
+  setStatus('<span class="badge run">等待扫码</span>');
+  const d = await apiFetch('/api/action', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'login', store: name }),
+  });
+  if (d.error) { log.textContent = d.error; setStatus('<span class="badge bad">参数不对</span>'); return; }
+  watch(d.taskId);
+}
+
+function body(k) {
+  if (k === 'publish') {
+    // 「一句话输入」优先：学员只要敲「广州 王嘉尔」就能发，不用记两栏怎么填。
+    // 支持 空格 / 逗号 / 顿号 / 斜杠 分隔；也支持直接连写（广州王嘉尔），靠常见城市名切。
+    let city = val('pub-city').trim(), star = val('pub-star').trim();
+    const one = (val('pub-oneline') || '').trim();
+    if (one && (!city || !star)) {
+      const parts = one.split(/[\s,，、\/]+/).filter(Boolean);
+      if (parts.length >= 2) { city = parts[0]; star = parts.slice(1).join(''); }
+      else {
+        const CITIES = ['北京','上海','广州','深圳','成都','杭州','南京','武汉','西安','重庆','天津','苏州',
+          '青岛','长沙','郑州','济南','合肥','福州','厦门','昆明','南宁','贵阳','太原','石家庄','沈阳',
+          '大连','长春','哈尔滨','兰州','西宁','银川','乌鲁木齐','呼和浩特','海口','三亚','香港','澳门','台北'];
+        const hit = CITIES.find(c => one.startsWith(c) && one.length > c.length);
+        if (hit) { city = hit; star = one.slice(hit.length); }
+        else { city = one; star = ''; }
+      }
+    }
+    return { kind: k, city, star,
+      session: val('pub-session'), event: val('pub-event'), base: val('pub-base'),
+      confirm: document.getElementById('pub-confirm').checked };
+  }
+  if (k === 'promote') return { kind: k, itemId: val('pro-id'), city: val('pro-city'), star: val('pro-star') };
+  if (k === 'reanchor') return { kind: k, itemId: val('re-id'), city: val('re-city'),
+    star: val('re-star'), event: val('re-event'), session: val('re-session'),
+    dry: document.getElementById('re-dry').checked };
+  if (k === 'wizard') return { kind: k, store: val('wz-store'), price: val('wz-price'),
+    spec: val('wz-spec'), cat: val('wz-cat'), style: val('wz-style'), tpl: val('wz-tpl'),
+    tone: val('wz-tone'), budget: val('wz-budget'), bid: val('wz-bid'), dry: document.getElementById('wz-dry').checked };
+  return { kind: k };
+}
+
+async function go(kind) {
+  const log = document.getElementById('log');
+  log.classList.add('on');
+  log.textContent = '正在启动…';
+  setStatus('<span class="badge run">运行中</span>');
+
+  if (kind === 'onsale') {
+    const d = await apiFetch('/api/onsale', { method: 'POST' });
+    return watch(d.taskId);
+  }
+
+  const b = body(kind);
+  // ⚠️ 布尔字段（confirm / dry）值为 false 时是【合法输入】，不能当成"没填"。
+  // ⚠️【第 200 轮修】base 也一样：它的默认项「跟随店铺配置（推荐）」value 就是空串，
+  //   服务端 `if (p.base)` 也只在有值时才加 --base —— 空是【合法的「跟随档案」语义】。
+  //   不加进这个名单的话，学员什么都不改直接点「开始」，会被拦下：
+  //       请先填完整：base
+  //   而他根本没看见哪个框「没填」（下拉框明明显示着「跟随店铺配置（推荐）」）。
+  //   实测（第 200 轮真浏览器）：填好城市明星点开始 → 卡在这句。
+  const EMPTY_OK = ['confirm', 'dry', 'base'];
+  for (const [k, v] of Object.entries(b)) {
+    if (k === 'kind' || EMPTY_OK.includes(k)) continue;
+    if (!v) { log.textContent = '请先填完整：' + k; setStatus(''); return; }
+  }
+
+  const d = await apiFetch('/api/action', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b),
+  });
+  if (d.error) { log.textContent = d.error; setStatus('<span class="badge bad">参数不对</span>'); return; }
+  watch(d.taskId);
+}
+
+function watch(id) {
+  clearInterval(S.timer);
+  const log = document.getElementById('log');
+  S.timer = setInterval(async () => {
+    const d = await apiFetch('/api/task/' + id);
+    // ⚠️ 任务表在服务端内存里，服务一重启就没了；这时轮询会 404，
+    //   原来只 clearInterval 不改状态，页面永远停在「运行中」。现在明确告诉人。
+    if (d.error) {
+      clearInterval(S.timer);
+      setStatus('<span class="badge bad">任务丢了（服务重启过？）—— 重新点一次</span>');
+      return;
+    }
+    log.textContent = (d.out || d.log.join('\n')) || '…';
+    log.scrollTop = log.scrollHeight;
+    if (d.status === 'done') { clearInterval(S.timer); setStatus('<span class="badge ok">完成</span>'); refreshStoreLabel(); }
+    else if (d.status === 'blocked') { clearInterval(S.timer); setStatus('<span class="badge warn">已拦截（这是保护，不是故障）</span>'); }
+    else if (d.status === 'preview') {
+      clearInterval(S.timer);
+      // 预览文案要按动作区分 —— 发链接是"勾确认发布"，改链接是"去掉只预览"，别串
+      const msg = d.kind === 'reanchor'
+        ? '预览完成 —— 线上一个字都没改。确认无误就去掉「只预览」再点一次'
+        : d.kind === 'publish'
+          ? '预演完成 —— 什么都没发。看完没问题勾「确认发布」再跑一次'
+          : '预览完成';
+      setStatus('<span class="badge warn">' + msg + '</span>');
+    }
+    else if (d.status === 'failed') { clearInterval(S.timer); setStatus('<span class="badge bad">失败了 —— 把日志发给技术</span>'); }
+  }, 1200);
+}
+
+async function warmup() {
+  const log = document.getElementById('log');
+  log.classList.add('on');
+  log.textContent = '正在预热店铺浏览器…\n\n浏览器已启动时约 30 秒；如果它刚被停过、要重新起 Chromium，可能要 2 分钟。\n窗口别关，进度会在下面自动刷新。';
+  setStatus('<span class="badge run">运行中</span>');
+  const d = await apiFetch('/api/warmup', { method: 'POST' });
+  watch(d.taskId);
+}
+
+// 一键体检：学员装完点这个就知道"到底能不能用"
+async function runHealthcheck() {
+  const log = document.getElementById('log');
+  log.classList.add('on');
+  log.textContent = '正在体检（环境 / 服务 / 依赖 / 档案 / 推广 / 监控 / 安全）…\n约 10 秒，别关页面。';
+  setStatus('<span class="badge run">体检中</span>');
+  const d = await apiFetch('/api/healthcheck', { method: 'POST' });
+  if (d.error) { log.textContent = d.error; setStatus('<span class="badge bad">失败</span>'); return; }
+  const timer = setInterval(async () => {
+    const tr = await apiFetch('/api/task/' + d.taskId);
+    const td = await tr.json();
+    if (td.status === 'running') return;
+    clearInterval(timer);
+    if (td.result) renderHealth(td.result);
+    else {
+      log.textContent = (td.log || []).join('\n');
+      setStatus('<span class="badge bad">体检失败 —— 把日志发给技术</span>');
+    }
+  }, 1500);
+}
+
+function renderHealth(r) {
+  const log = document.getElementById('log');
+  log.classList.add('on');
+  const rows = r.rows || [];
+  const bad = rows.filter(x => x.level === 'bad');
+  const warn = rows.filter(x => x.level === 'warn');
+  const out = [];
+  out.push('体检结果：✅ ' + (r.ok || 0) + ' 项正常    ⚠️ ' + (r.warn || 0) + ' 项注意    ❌ ' + (r.bad || 0) + ' 项要修');
+  out.push('');
+  if (bad.length) {
+    out.push('❌ 必须先修的：');
+    bad.forEach(x => { out.push('  · [' + x.sec + '] ' + x.name + '：' + x.detail); if (x.fix) out.push('      → ' + x.fix); });
+    out.push('');
+  }
+  if (warn.length) {
+    out.push('⚠️ 注意（不挡用）：');
+    warn.forEach(x => { out.push('  · [' + x.sec + '] ' + x.name + '：' + x.detail); if (x.fix) out.push('      → ' + x.fix); });
+    out.push('');
+  }
+  out.push(bad.length ? '把上面 ❌ 那几项处理掉就能用了。' : '✅ 没有必须修的项目，可以开始发链接了。');
+  log.textContent = out.join('\n');
+  setStatus(bad.length
+    ? '<span class="badge bad">有 ' + bad.length + ' 项要修</span>'
+    : '<span class="badge ok">体检通过</span>');
+}
+</script>
+</body>
+</html>

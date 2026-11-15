@@ -1,0 +1,17 @@
+{
+  "_说明": [
+    "这是模板，不是可直接用的配置。复制成 xianyu-playwright-service\\service.local.json 之后再填。",
+    "id：用 `node -e \"console.log(require('crypto').randomUUID())\"` 生成一次，填好之后【永不再改】—— 闲鱼登录态就存在 browser-profiles/<id>/ 下，改了等于退出登录。",
+    "name：你的店铺名，后面所有命令都用它。不能用 湖畔暴富的蓝环章鱼 / 追梦的镇宇 / casa家居（服务端内置排除项）。",
+    "username / password：可留空。扫码登录就不需要密码，这两项只是密码登录时的兜底。",
+    "本文件含明文密码：别发群、别进 git。代码包里本来就不含它（安装器也不会生成它）。"
+  ],
+  "localAccounts": [
+    {
+      "id": "<生成一次的 UUID，形如 3f2a6c1e-8b4d-4a91-9a77-0c5e2d1b7f30>",
+      "name": "<你的店铺名>",
+      "username": "<闲鱼账号手机号，可留空>",
+      "password": "<闲鱼密码，可留空>"
+    }
+  ]
+}

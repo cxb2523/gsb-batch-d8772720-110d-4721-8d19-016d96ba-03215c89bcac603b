@@ -1,0 +1,24 @@
+{
+  "name": "xianyu-achun",
+  "version": "1.0.0",
+  "description": "闲鱼自动化 · 代拍上架全流程：输入「城市 明星」一条命令出商品",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node tools/verify-student-view.js",
+    "paths": "node tools/print-paths.js",
+    "stores": "node tools/store-list.js",
+    "health": "node tools/healthcheck.js"
+  },
+  "dependencies": {},
+  "optionalDependencies": {},
+  "devDependencies": {},
+  "_说明": [
+    "核心代码【零第三方依赖】，全部用 Node 内置模块（fs/path/http/child_process/os/https/crypto/zlib/vm/readline）。",
+    "所以 npm install 不是必须的 —— clone 下来直接 node tools/xxx.js 就能跑。",
+    "playwright 由独立仓 xianyu-playwright-service 自带，本仓不装。",
+    "出图客户端 museav 是可选的：装了才有专属底图，没装就用大麦底图。"
+  ]
+}

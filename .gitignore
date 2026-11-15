@@ -1,0 +1,134 @@
+# ══════════════════════════════════════════════════════════════
+# 这个仓库是【公开代码仓】，只放代码和学员材料。
+# 业务数据、账号笔记、投放记录一律不进 git —— 那些留在本机。
+#
+# 规则来源：2026-11-13 曾误把整个工作目录推成公开仓库，
+#   暴露了账号 UUID、登录手机号、中台 key 前缀、广告花费明细。
+#   虽然 6 分钟内就改回私有且无人 fork，但从此立下这条规矩。
+# ══════════════════════════════════════════════════════════════
+
+# ── ① 账号与环境笔记（含真实 accountId / 手机号 / 内部地址）──
+index/
+中台账号与Key-对照.md
+xianyu-monitor-密钥清理说明.md
+给王恩博-密钥轮换需求.md
+
+# ── ② 业务数据（每天变，且含商品 ID、标题、价格）──
+shows/
+shows-hold.json
+shows.json
+data/
+上架台账.json
+plans-*.json
+待删除清单-*.json
+提到150-*.json
+AD-EXCLUDE.json
+
+# ── ③ 素材（体积大，学员自己出图）──
+publish-assets/
+publish-out/
+publish-groups/
+desc/
+video-*/
+头像-生成/
+前三条视频/
+预览/
+报告素材-*/
+
+# ── ④ 投放记录与调试输出 ──
+ad-*.json
+ad-*.cfg.json
+console-out-*.json
+*.cfg.json
+my-plans.json
+plan-*.json
+plans-*.json
+items-*.json
+xy-*.json
+cz-*.json
+damai-*.json
+all-items*.json
+verify*.json
+half-year*.json
+table.json
+campaigns-now.json
+dangling-fix.json
+find-ad-link.json
+item-data.json
+new-plan.json
+onsale.json
+order-fields.json
+pager.json
+bid-types.json
+clickables.json
+combined.json
+healthcheck.json
+im-keywords.json
+raise150-verify.json
+publish-batch-*.json
+publish-schedule.json
+webkubor-baseline.json
+wechat-messages.json
+poster-templates.backup*.json
+三套模板测试-*.json
+
+# ── ⑤ 给具体人的沟通件（含真名/账号）──
+*给王恩博*
+*给吴伟龙*
+*给小美*
+*给AI王*
+*协同小美*
+发给*/
+交接-*
+私董会-*
+分润系统设计-*
+
+# ── ⑥ 一次性脚本与临时目录 ──
+tools/_*
+_*
+!/_archive-placeholder
+_tmp*/
+_tmp_*/
+_gh/
+_repos/
+_ref/
+_read/
+__pycache__/
+
+# ── ⑦ 运行产物 ──
+*.log
+*.ndjson
+logs/
+release/
+publish-out/
+node_modules/
+
+# ── ⑧ 本机配置（含真实 key / 路径）──
+config.local.json
+service.local.json
+*.local.json
+.museav.json*
+xianyu-templates.json
+
+# ── ⑨ 杂项 ──
+.dsh/
+.opencode/
+ego-browser/
+opencode/
+page-agent/
+toolchain/
+va/
+vault/
+geo/
+dist/
+skills/.cache/
+*.bak
+*.bak-*
+替换备份/
+replace-backup/
+提前备份/
+
+# ── ⑩ 系统 ──
+.DS_Store
+Thumbs.db
+desktop.ini
