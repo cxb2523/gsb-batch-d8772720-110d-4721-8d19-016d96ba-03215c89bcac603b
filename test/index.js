@@ -13,6 +13,8 @@ const SAFARI_MACOS =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15'
 const FIREFOX_WINDOWS =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0'
+const SAFARI_IPHONE =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 
 const ISSUE_60_ENTRIES = [
   'Event-Admin/1.0 (thumbnail)',
@@ -91,7 +93,8 @@ test('selectTopUserAgents keeps ranking order and drops non-browsers', t => {
     [FIREFOX_WINDOWS, 7]
   ]
 
-  t.deepEqual(selectTopUserAgents(data, 2), [data[0], data[4]])
+  const { index } = selectTopUserAgents(data, 2, { minPerDevice: 0 })
+  t.deepEqual(index, [data[0], data[4]])
 })
 
 test.serial('logs rejected user agents only', t => {
@@ -130,11 +133,37 @@ test('selectTopUserAgents refuses short results', t => {
     [SAFARI_MACOS, 8]
   ]
 
-  t.throws(() => selectTopUserAgents(data, 3), {
-    message: /Unable to collect 3 real browser user agents \(got 2\)/
+  t.throws(() => selectTopUserAgents(data, 3, { minPerDevice: 0 }), {
+    message: /total is short 1 \(has 2\/3\)/
   })
 
   t.throws(() => selectTopUserAgents([], 100), {
-    message: /Unable to collect 100 real browser user agents \(got 0\)/
+    message: /desktop is short 25 \(has 0\/25\).*mobile is short 25 \(has 0\/25\).*total is short 100/
   })
+})
+
+test('selectTopUserAgents guarantees every device its quota', t => {
+  const data = [
+    [CHROME_WINDOWS, 10],
+    [SAFARI_MACOS, 9],
+    [FIREFOX_WINDOWS, 8],
+    ['Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36', 7],
+    ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36', 6],
+    [SAFARI_IPHONE, 2],
+    ['Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36', 1]
+  ]
+
+  const { index, desktop, mobile } = selectTopUserAgents(data, 6, {
+    minPerDevice: 2
+  })
+
+  // mobile entries score below every desktop one, yet the quota keeps them
+  t.is(mobile.length, 2)
+  t.is(desktop.length, 4)
+  t.is(index.length, 6)
+  t.deepEqual(
+    index.map(([, score]) => score),
+    [10, 9, 8, 7, 2, 1]
+  )
+  t.deepEqual([...index].sort(), [...desktop, ...mobile].sort())
 })

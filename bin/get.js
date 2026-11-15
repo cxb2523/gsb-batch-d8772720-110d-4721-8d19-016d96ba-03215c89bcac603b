@@ -5,7 +5,8 @@ const { top } = require('./util')
 const percentage = (count, total) => `${((count / total) * 100).toFixed(2)}%`
 
 async function main (n) {
-  const userAgents = await top(n)
+  // inspection tool: no per-device quota, just the best scoring entries
+  const { index: userAgents } = await top(n, { minPerDevice: 0 })
   const total = userAgents.reduce((acc, [_, count]) => acc + count, 0)
   userAgents.forEach(([userAgent, count], index) =>
     console.log(
