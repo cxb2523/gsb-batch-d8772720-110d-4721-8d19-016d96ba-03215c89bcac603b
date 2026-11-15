@@ -33,7 +33,13 @@ if (A.on('status') || (!A.on('report') && !A.on('reset'))) {
   if (A.on('json')) {
     console.log(JSON.stringify({
       enabled: snap.enabled, bypass: snap.bypass, blocked: snap.blocked,
-      blockedForSec: snap.blockedForSec, strikes: snap.strikes,
+      blockedForSec: snap.blockedForSec,
+      // 批量采集入口（lib/batch-eval.js）的脚本判断要用这三个：
+      // 退避到哪个时间点、为什么退避、逐条结局词表。
+      blockedUntil: snap.blockedUntil,
+      blockedReason: snap.blockedReason,
+      outcomes: gate.OUTCOMES,
+      strikes: snap.strikes,
       used10Min: snap.used10Min, usedHour: snap.usedHour, total: snap.total,
       limits: snap.limits, stateFile: snap.stateFile,
     }));

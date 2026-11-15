@@ -10,7 +10,9 @@
     "check": "node tools/verify-student-view.js",
     "paths": "node tools/print-paths.js",
     "stores": "node tools/store-list.js",
-    "health": "node tools/healthcheck.js"
+    "health": "node tools/healthcheck.js",
+    "test:gate": "node tools/test-req-gate.js",
+    "test:batch": "node tools/test-batch-eval.js"
   },
   "dependencies": {},
   "optionalDependencies": {},
