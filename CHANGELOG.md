@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Added
+
+- `PreviewResult.redirects` records every HTTP redirect and followed meta refresh in order, with the source and target URL, the redirect type, whether the step succeeded, and a failure category. Blocked and unreachable hops appear in the trail instead of being silently dropped; validation errors still throw and expose the trail as `error.redirects`. Existing `url`, `canonicalUrl`, and `statusCode` semantics are unchanged.
+
 ## 2.1.7 - 2026-10-29
 
 ### Fixed

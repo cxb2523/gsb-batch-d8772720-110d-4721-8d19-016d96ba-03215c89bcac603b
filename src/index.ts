@@ -2,11 +2,18 @@ export type { LinkpeekErrorCode } from "./errors.js";
 export { LinkpeekError } from "./errors.js";
 export { isPrivateHost, validateUrl } from "./fetch.js";
 export { parseHTML } from "./parse.js";
-export type { PreviewOptions, PreviewResult } from "./types.js";
+export type {
+	PreviewOptions,
+	PreviewResult,
+	RedirectFailureCode,
+	RedirectStep,
+	RedirectType,
+} from "./types.js";
 
+import { redirectFailureCode } from "./errors.js";
 import { fetchUrl, validateUrl } from "./fetch.js";
 import { extractMetaRefreshUrl, parseHTML } from "./parse.js";
-import type { PreviewOptions, PreviewResult } from "./types.js";
+import type { PreviewOptions, PreviewResult, RedirectStep } from "./types.js";
 
 /** Pre-built option presets. Presets are plain objects — spread and override any field. */
 export const presets = {
@@ -38,9 +45,12 @@ export async function preview(
 	url: string,
 	options: PreviewOptions = {},
 ): Promise<PreviewResult> {
+	// HTTP redirects and a followed meta refresh append to one ordered trail.
+	const redirects: RedirectStep[] = [];
 	const { html, finalUrl, contentType, isHtml, statusCode } = await fetchUrl(
 		url,
 		options,
+		{ trace: redirects },
 	);
 
 	// Non-HTML response: synthesize a minimal result from the content type
@@ -51,6 +61,7 @@ export async function preview(
 		if (mediaTypeHeader.startsWith("image/")) result.image = finalUrl;
 		if (mediaTypeHeader.startsWith("video/")) result.video = finalUrl;
 		if (mediaTypeHeader.startsWith("audio/")) result.audio = finalUrl;
+		result.redirects = redirects;
 		return result;
 	}
 
@@ -64,13 +75,22 @@ export async function preview(
 	if (options.followMetaRefresh === true) {
 		const refreshUrl = extractMetaRefreshUrl(html, finalUrl);
 		if (refreshUrl && refreshUrl !== finalUrl) {
+			// The meta hop is recorded before its request so the trail stays in
+			// order; it is marked ok once the target response has been read.
+			const step: RedirectStep = {
+				from: finalUrl,
+				to: refreshUrl,
+				type: "meta-refresh",
+				ok: false,
+			};
+			redirects.push(step);
 			try {
 				validateUrl(refreshUrl, options.allowPrivateIPs);
-				const refreshed = await fetchUrl(
-					refreshUrl,
-					options,
-					new URL(url).origin,
-				);
+				const refreshed = await fetchUrl(refreshUrl, options, {
+					headerOrigin: new URL(url).origin,
+					trace: redirects,
+					pendingStep: step,
+				});
 				if (refreshed.isHtml) {
 					result = parseHTML(refreshed.html, refreshed.finalUrl, options);
 					result.url = refreshed.finalUrl;
@@ -80,11 +100,16 @@ export async function preview(
 				if (options.signal?.aborted) {
 					throw options.signal.reason ?? error;
 				}
-				// Meta-refresh target unreachable or blocked — return what we have
+				// Meta-refresh target unreachable, blocked, or over budget —
+				// keep the metadata already extracted. The meta hop itself is
+				// marked failed only when its own request never answered; a
+				// later failing hop carries its own record.
+				if (!step.ok) step.errorCode ??= redirectFailureCode(error);
 			}
 		}
 	}
 
+	result.redirects = redirects;
 	return result;
 }
 
@@ -118,6 +143,7 @@ function emptyResult(
 		twitterCreator: null,
 		themeColor: null,
 		oEmbedUrl: null,
+		redirects: [],
 	};
 }
 

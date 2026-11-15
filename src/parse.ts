@@ -527,6 +527,8 @@ export function parseHTML(
 		twitterCreator,
 		themeColor,
 		oEmbedUrl: resolveHttpUrl(oEmbedUrl, effectiveBaseUrl),
+		// parseHTML() makes no requests, so there is no redirect trail to report.
+		redirects: [],
 	};
 
 	return result;

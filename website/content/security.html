@@ -12,7 +12,7 @@
 		</ul>
 
 		<h2 id="redirects">Redirect validation</h2>
-		<p>Platform fetch runs with <code>redirect: "manual"</code>. Each Location target is resolved and validated before another request starts. Custom headers are dropped when a redirect crosses origins.</p>
+		<p>Platform fetch runs with <code>redirect: "manual"</code>. Each Location target is resolved and validated before another request starts. Custom headers are dropped when a redirect crosses origins. A target rejected by validation is never requested; the rejected hop appears in <code>result.redirects</code> (or <code>error.redirects</code> when the error is thrown) with <code>ok: false</code> and the block reason, so callers can audit what was attempted.</p>
 
 		<h2 id="credentials">Cookies and credentials</h2>
 		<p>Do not attach user cookies, authorization headers, cloud tokens, or internal service credentials to arbitrary preview URLs. linkpeek rejects common secret-bearing headers, but deployments should also keep the preview worker isolated from internal credentials.</p>

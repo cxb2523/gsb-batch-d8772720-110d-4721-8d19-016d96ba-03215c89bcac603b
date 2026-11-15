@@ -1,7 +1,11 @@
 import { Parser } from "htmlparser2";
-import { LinkpeekError } from "./errors.js";
+import { LinkpeekError, redirectFailureCode } from "./errors.js";
 import { createHeadBoundaryDetector } from "./parse.js";
-import type { PreviewOptions } from "./types.js";
+import type {
+	PreviewOptions,
+	RedirectFailureCode,
+	RedirectStep,
+} from "./types.js";
 
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -221,19 +225,50 @@ export interface FetchResult {
 	contentType: string;
 	isHtml: boolean;
 	statusCode: number;
+	/** Redirect steps observed during this fetch, in order. Shared with the caller's trace array. */
+	redirects: RedirectStep[];
+}
+
+/**
+ * Cross-request state for one preview: the shared ordered trail, the origin
+ * custom headers were issued to, and a step the caller already recorded whose
+ * target this fetch requests first.
+ */
+export interface FetchContext {
+	headerOrigin?: string;
+	trace?: RedirectStep[];
+	/**
+	 * A step already pushed to `trace` (e.g. a meta refresh) that this fetch
+	 * follows. It is marked ok as soon as the first response arrives, so a
+	 * failure deeper in the chain is attributed only to the failing hop.
+	 */
+	pendingStep?: RedirectStep;
 }
 
 /**
  * Fetch a URL with a streaming body, stopping after the head when possible and
  * always enforcing maxBytes on retained decoded response-body bytes.
  * Returns the HTML string and metadata about the response.
+ *
+ * `context.trace` optionally receives every redirect step in order. Passing the
+ * same array to consecutive fetches (HTTP then meta-refresh) yields one ordered
+ * trace; it is filled even when this function throws. For backward compatibility
+ * a bare origin string is still accepted as `headerOrigin`.
  */
 export async function fetchUrl(
 	url: string,
 	options: PreviewOptions = {},
-	headerOrigin?: string,
+	context: FetchContext | string = {},
 ): Promise<FetchResult> {
 	validateUrl(url, options.allowPrivateIPs);
+	const {
+		trace,
+		headerOrigin,
+		pendingStep: initialStep,
+	} = typeof context === "string"
+		? { trace: undefined, headerOrigin: context, pendingStep: undefined }
+		: context;
+	const redirects = trace ?? [];
 	const timeout = normalizeTimeout(options.timeout ?? DEFAULT_TIMEOUT);
 	const maxBytes = normalizeMaxBytes(options.maxBytes ?? DEFAULT_MAX_BYTES);
 	const maxRedirects = normalizeMaxRedirects(
@@ -268,14 +303,36 @@ export async function fetchUrl(
 	try {
 		let currentUrl = url;
 		let redirectCount = 0;
+		// The step whose target is currently being requested. It stays pending
+		// until its target answer is fully used (redirect followed, or body
+		// read finished) so a timeout during the body read marks that hop.
+		let pendingStep: RedirectStep | null = initialStep ?? null;
+		const settleStep = () => {
+			if (pendingStep) {
+				pendingStep.ok = true;
+				pendingStep = null;
+			}
+		};
 
 		while (true) {
 			const sameOrigin = new URL(currentUrl).origin === startOrigin;
-			const response = await fetchImpl(currentUrl, {
-				headers: sameOrigin ? headers : crossOriginHeaders,
-				redirect: "manual",
-				signal: controller.signal,
-			});
+			let response: Response;
+			try {
+				response = await fetchImpl(currentUrl, {
+					headers: sameOrigin ? headers : crossOriginHeaders,
+					redirect: "manual",
+					signal: controller.signal,
+				});
+			} catch (error) {
+				// The target was requested but never answered: mark that hop.
+				if (pendingStep)
+					pendingStep.errorCode = fetchFailureCode(
+						error,
+						timedOut,
+						options.signal,
+					);
+				throw error;
+			}
 
 			if (
 				options.followRedirects !== false &&
@@ -284,41 +341,132 @@ export async function fetchUrl(
 				const location = response.headers.get("location");
 				if (location) {
 					await response.body?.cancel().catch(() => {});
-					if (redirectCount >= maxRedirects)
-						throw new LinkpeekError("TOO_MANY_REDIRECTS", "Too many redirects");
-					let nextUrl: string;
+					// Reaching the redirect response fulfills this hop; the next
+					// hop owns whatever happens after it.
+					settleStep();
+					let nextUrl: string | null = null;
 					try {
 						nextUrl = new URL(location, currentUrl).href;
 					} catch {
+						/* Reported below; keep the raw Location as the step target. */
+					}
+					// Preserve the existing precedence: the budget is checked
+					// before Location validity.
+					if (redirectCount >= maxRedirects) {
+						redirects.push({
+							from: currentUrl,
+							to: nextUrl ?? location,
+							type: "http",
+							ok: false,
+							errorCode: "TOO_MANY_REDIRECTS",
+						});
+						throw new LinkpeekError("TOO_MANY_REDIRECTS", "Too many redirects");
+					}
+					if (!nextUrl) {
+						redirects.push({
+							from: currentUrl,
+							to: location,
+							type: "http",
+							ok: false,
+							errorCode: "INVALID_URL",
+						});
 						throw new LinkpeekError("INVALID_URL", "Invalid URL");
 					}
-					validateUrl(nextUrl, options.allowPrivateIPs);
+					try {
+						validateUrl(nextUrl, options.allowPrivateIPs);
+					} catch (error) {
+						// Record the hop we refuse to request, then surface the
+						// original validation error (and its code).
+						redirects.push({
+							from: currentUrl,
+							to: nextUrl,
+							type: "http",
+							ok: false,
+							errorCode: redirectFailureCode(error),
+						});
+						throw error;
+					}
+					pendingStep = {
+						from: currentUrl,
+						to: nextUrl,
+						type: "http",
+						ok: false,
+					};
+					redirects.push(pendingStep);
 					currentUrl = nextUrl;
 					redirectCount++;
 					continue;
 				}
 			}
 
-			return await readFetchResponse(
+			const fetched = await readFetchResponse(
 				response,
 				currentUrl,
 				maxBytes,
 				options.includeBodyContent !== true,
+				redirects,
 			);
+			// The body was read (or deliberately not needed), so the hop that
+			// led here really landed.
+			settleStep();
+			return fetched;
 		}
 	} catch (err) {
-		if (err instanceof LinkpeekError) throw err;
+		// A redirect target that was requested but never answered is a failed
+		// step, whether or not the thrown error is a LinkpeekError.
+		const failureCode = fetchFailureCode(err, timedOut, options.signal);
+		for (const step of redirects) {
+			if (!step.ok && !step.errorCode) step.errorCode = failureCode;
+		}
+		if (err instanceof LinkpeekError) {
+			err.redirects = redirects;
+			throw err;
+		}
 		if (timedOut)
-			throw new LinkpeekError(
-				"TIMEOUT",
-				`Request timed out after ${timeout}ms`,
-				{ cause: err },
+			throw appendTrace(
+				new LinkpeekError("TIMEOUT", `Request timed out after ${timeout}ms`, {
+					cause: err,
+				}),
+				redirects,
 			);
-		throw err;
+		throw appendTrace(err, redirects);
 	} finally {
 		clearTimeout(timer);
 		options.signal?.removeEventListener("abort", onExternalAbort);
 	}
+}
+
+/**
+ * Attach the observed trail to errors that cannot expose it directly (native
+ * TypeError from fetch, caller abort reasons). Non-object errors pass through.
+ */
+function appendTrace<T>(error: T, redirects: RedirectStep[]): T {
+	if (!error || typeof error !== "object" || !Object.isExtensible(error)) {
+		return error;
+	}
+	if ("redirects" in error) {
+		(error as { redirects: RedirectStep[] }).redirects = redirects;
+	} else {
+		// Native TypeError / caller abort reason: define non-enumerably so
+		// existing serialization and equality checks stay unchanged.
+		Object.defineProperty(error, "redirects", {
+			value: redirects,
+			configurable: true,
+			writable: true,
+		});
+	}
+	return error;
+}
+
+function fetchFailureCode(
+	error: unknown,
+	timedOut: boolean,
+	signal: PreviewOptions["signal"],
+): RedirectFailureCode {
+	if (timedOut) return "TIMEOUT";
+	if (error instanceof LinkpeekError) return redirectFailureCode(error);
+	if (signal?.aborted) return "ABORTED";
+	return "NETWORK_ERROR";
 }
 
 function normalizeMaxBytes(maxBytes: number): number {
@@ -395,6 +543,7 @@ async function readFetchResponse(
 	currentUrl: string,
 	maxBytes: number,
 	stopAfterHead: boolean,
+	redirects: RedirectStep[],
 ): Promise<FetchResult> {
 	const finalUrl = response.url || currentUrl;
 	const statusCode = response.status;
@@ -407,7 +556,7 @@ async function readFetchResponse(
 	if (!isHtml || !response.body || maxBytes === 0) {
 		// Drain unused bodies so the connection is released immediately.
 		response.body?.cancel().catch(() => {});
-		return { html: "", finalUrl, contentType, isHtml, statusCode };
+		return { html: "", finalUrl, contentType, isHtml, statusCode, redirects };
 	}
 
 	// Stream body with byte limit
@@ -450,7 +599,7 @@ async function readFetchResponse(
 	const charset = detectCharset(contentType, combined);
 	const html = createTextDecoder(charset).decode(combined);
 
-	return { html, finalUrl, contentType, isHtml, statusCode };
+	return { html, finalUrl, contentType, isHtml, statusCode, redirects };
 }
 
 function combineChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {

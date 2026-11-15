@@ -1,3 +1,45 @@
+/** Mechanism that produced a redirect step. */
+export type RedirectType = "http" | "meta-refresh";
+
+/**
+ * Machine-readable reason a redirect step failed.
+ *
+ * - `PRIVATE_NETWORK_BLOCKED`, `INVALID_URL`, `UNSUPPORTED_PROTOCOL`: the
+ *   target was rejected by `validateUrl`, so no request was sent to it.
+ * - `TOO_MANY_REDIRECTS`: the HTTP redirect budget was exhausted.
+ * - `TIMEOUT`: following the target exceeded the request timeout.
+ * - `NETWORK_ERROR`: `fetch` (or the response body) failed.
+ * - `ABORTED`: the caller's `signal` aborted the preview.
+ */
+export type RedirectFailureCode =
+	| "INVALID_URL"
+	| "UNSUPPORTED_PROTOCOL"
+	| "PRIVATE_NETWORK_BLOCKED"
+	| "TOO_MANY_REDIRECTS"
+	| "TIMEOUT"
+	| "NETWORK_ERROR"
+	| "ABORTED";
+
+/**
+ * One observed redirect step, in the order it occurred. HTTP redirects and
+ * followed `<meta http-equiv="refresh">` targets share this shape.
+ * `ok` is false when the target was blocked, unreachable, or over budget;
+ * `errorCode` carries that failure category. A blocked target is recorded and
+ * never requested.
+ */
+export interface RedirectStep {
+	/** URL the redirect was resolved from (the page actually fetched). */
+	from: string;
+	/** Absolute URL the redirect pointed to. */
+	to: string;
+	/** `http` for 3xx Location redirects, `meta-refresh` for meta refresh. */
+	type: RedirectType;
+	/** Whether the target was followed and its response obtained. */
+	ok: boolean;
+	/** Failure category when `ok` is false. */
+	errorCode?: RedirectFailureCode;
+}
+
 export interface PreviewOptions {
 	/** Request timeout in milliseconds, from 0 to 2_147_483_647 (default: 8000) */
 	timeout?: number;
@@ -90,4 +132,11 @@ export interface PreviewResult {
 	themeColor: string | null;
 	/** Discovered oEmbed endpoint URL. Not fetched. */
 	oEmbedUrl: string | null;
+	/**
+	 * Every redirect step observed while fetching, in order. HTTP redirects and
+	 * followed meta refreshes are both recorded, including steps that were
+	 * blocked by URL validation or failed to load. Empty when the URL was
+	 * fetched directly. `parseHTML()` returns `[]`.
+	 */
+	redirects: RedirectStep[];
 }

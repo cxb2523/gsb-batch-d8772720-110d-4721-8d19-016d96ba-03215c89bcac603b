@@ -309,6 +309,23 @@ Fetches a URL and extracts link preview metadata. Returns `Promise<PreviewResult
 | `twitterCreator` | `string \| null` | Twitter creator handle |
 | `themeColor` | `string \| null` | Theme color |
 | `oEmbedUrl` | `string \| null` | Discovered oEmbed endpoint URL. Not fetched |
+| `redirects` | `RedirectStep[]` | Ordered trail of HTTP redirects and followed meta refreshes, including hops that were blocked or failed. Empty for a direct fetch; `parseHTML()` returns `[]` |
+
+### Redirect trail
+
+`result.redirects` records every hop the preview took, in order, so a caller can tell a direct fetch from a chain that was blocked or stopped partway:
+
+```typescript
+const result = await preview(url, { followMetaRefresh: true });
+
+for (const step of result.redirects) {
+  if (!step.ok) {
+    console.warn(`${step.type} hop to ${step.to} failed: ${step.errorCode}`);
+  }
+}
+```
+
+Each `RedirectStep` has `from`, `to`, `type` (`"http"` or `"meta-refresh"`), `ok`, and an optional `errorCode`. A hop blocked by URL validation is recorded with `ok: false` and no request is sent to it; that validation error is still thrown by `preview()`, and the trail is attached to the `LinkpeekError` as `error.redirects`. A meta refresh whose target cannot be loaded is recorded as a failed `meta-refresh` step while `preview()` still returns the metadata of the page it already parsed. `url`, `canonicalUrl`, and `statusCode` keep their existing meaning.
 
 ### `parseHTML(html, baseUrl, options?)`
 

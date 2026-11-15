@@ -1,3 +1,5 @@
+import type { RedirectFailureCode, RedirectStep } from "./types.js";
+
 /** Machine-readable failure categories thrown by linkpeek. */
 export type LinkpeekErrorCode =
 	| "INVALID_URL"
@@ -15,6 +17,12 @@ export type LinkpeekErrorCode =
  */
 export class LinkpeekError extends Error {
 	readonly code: LinkpeekErrorCode;
+	/**
+	 * Redirect steps observed before this error was thrown. A blocked or
+	 * over-budget redirect hop appears here as a failed step even though the
+	 * error itself is what reaches the caller.
+	 */
+	redirects: RedirectStep[] = [];
 
 	constructor(
 		code: LinkpeekErrorCode,
@@ -24,5 +32,27 @@ export class LinkpeekError extends Error {
 		super(message, options);
 		this.name = "LinkpeekError";
 		this.code = code;
+	}
+}
+
+/**
+ * Map a thrown value to the redirect-step failure category it represents.
+ * Used both for hops rejected before a request and for hops that failed while
+ * being requested.
+ */
+export function redirectFailureCode(
+	error: unknown,
+	fallback: RedirectFailureCode = "NETWORK_ERROR",
+): RedirectFailureCode {
+	if (!(error instanceof LinkpeekError)) return fallback;
+	switch (error.code) {
+		case "INVALID_URL":
+		case "UNSUPPORTED_PROTOCOL":
+		case "PRIVATE_NETWORK_BLOCKED":
+		case "TOO_MANY_REDIRECTS":
+		case "TIMEOUT":
+			return error.code;
+		default:
+			return fallback;
 	}
 }

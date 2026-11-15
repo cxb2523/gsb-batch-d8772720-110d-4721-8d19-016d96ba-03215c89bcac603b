@@ -624,6 +624,187 @@ describe("fetchUrl", () => {
 		>;
 		expect(secondHeaders["X-Preview-Locale"]).toBe("en-US");
 	});
+
+	it("records every same-origin redirect step in order", async () => {
+		const fetchMock = vi
+			.fn<(url: string, init?: RequestInit) => Promise<Response>>()
+			.mockResolvedValueOnce(
+				new Response(null, { status: 301, headers: { location: "/one" } }),
+			)
+			.mockResolvedValueOnce(
+				new Response(null, { status: 302, headers: { location: "/two" } }),
+			)
+			.mockResolvedValueOnce(htmlResponse(["<title>Done</title>"]));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await fetchUrl("https://example.com/start");
+
+		expect(result.redirects).toEqual([
+			{
+				from: "https://example.com/start",
+				to: "https://example.com/one",
+				type: "http",
+				ok: true,
+			},
+			{
+				from: "https://example.com/one",
+				to: "https://example.com/two",
+				type: "http",
+				ok: true,
+			},
+		]);
+		expect(result.finalUrl).toBe("https://example.com/two");
+	});
+
+	it("appends to a caller-provided trace array", async () => {
+		const fetchMock = vi
+			.fn<(url: string, init?: RequestInit) => Promise<Response>>()
+			.mockResolvedValueOnce(
+				new Response(null, { status: 302, headers: { location: "/next" } }),
+			)
+			.mockResolvedValueOnce(htmlResponse(["<title>Next</title>"]));
+		vi.stubGlobal("fetch", fetchMock);
+		const trace = [
+			{
+				from: "https://example.com/x",
+				to: "https://example.com/y",
+				type: "meta-refresh" as const,
+				ok: true,
+			},
+		];
+
+		const result = await fetchUrl("https://example.com/start", {}, { trace });
+
+		expect(result.redirects).toBe(trace);
+		expect(trace).toHaveLength(2);
+		expect(trace[1]?.to).toBe("https://example.com/next");
+	});
+
+	it("marks a caller-recorded starting step ok once its target responds", async () => {
+		const fetchMock = vi.fn<() => Promise<Response>>(async () =>
+			htmlResponse(["<title>Arrived</title>"]),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const step = {
+			from: "https://example.com/interstitial",
+			to: "https://example.com/next",
+			type: "meta-refresh" as const,
+			ok: false,
+		};
+
+		await fetchUrl(
+			"https://example.com/next",
+			{},
+			{
+				trace: [step],
+				pendingStep: step,
+			},
+		);
+
+		expect(step.ok).toBe(true);
+		expect(step).not.toHaveProperty("errorCode");
+	});
+
+	it("records the blocked private-network hop and sends no request to it", async () => {
+		const fetchMock = vi.fn<
+			(url: string, init?: RequestInit) => Promise<Response>
+		>(
+			async () =>
+				new Response(null, {
+					status: 302,
+					headers: { location: "http://127.0.0.1/admin" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const error = await fetchUrl("https://example.com/start").catch(
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(LinkpeekError);
+		expect((error as LinkpeekError).code).toBe("PRIVATE_NETWORK_BLOCKED");
+		expect((error as LinkpeekError).redirects).toEqual([
+			{
+				from: "https://example.com/start",
+				to: "http://127.0.0.1/admin",
+				type: "http",
+				ok: false,
+				errorCode: "PRIVATE_NETWORK_BLOCKED",
+			},
+		]);
+		// Only the initial hop was requested; the blocked target never was.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock).not.toHaveBeenCalledWith(
+			"http://127.0.0.1/admin",
+			expect.anything(),
+		);
+	});
+
+	it("marks a redirect hop failed when its request throws", async () => {
+		const fetchMock = vi
+			.fn<(url: string, init?: RequestInit) => Promise<Response>>()
+			.mockResolvedValueOnce(
+				new Response(null, { status: 302, headers: { location: "/broken" } }),
+			)
+			.mockRejectedValueOnce(new TypeError("fetch failed"));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const error = await fetchUrl("https://example.com/start").catch(
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(TypeError);
+		expect((error as { redirects?: unknown }).redirects).toEqual([
+			{
+				from: "https://example.com/start",
+				to: "https://example.com/broken",
+				type: "http",
+				ok: false,
+				errorCode: "NETWORK_ERROR",
+			},
+		]);
+	});
+
+	it("marks a redirect hop failed when the target times out", async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi
+			.fn<(url: string, init?: RequestInit) => Promise<Response>>()
+			.mockResolvedValueOnce(
+				new Response(null, { status: 302, headers: { location: "/slow" } }),
+			)
+			.mockImplementationOnce(
+				(_url: string, init?: RequestInit) =>
+					new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener(
+							"abort",
+							() => reject(new DOMException("Aborted", "AbortError")),
+							{ once: true },
+						);
+					}),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = fetchUrl("https://example.com/start", { timeout: 10 });
+		const assertion = expect(result).rejects.toMatchObject({
+			name: "LinkpeekError",
+			code: "TIMEOUT",
+		});
+		await vi.advanceTimersByTimeAsync(10);
+
+		const error = (await result.catch(
+			(caught: unknown) => caught,
+		)) as LinkpeekError;
+		await assertion;
+		expect(error.redirects).toEqual([
+			{
+				from: "https://example.com/start",
+				to: "https://example.com/slow",
+				type: "http",
+				ok: false,
+				errorCode: "TIMEOUT",
+			},
+		]);
+	});
 });
 
 describe("charset detection", () => {
