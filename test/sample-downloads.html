@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Download Inspector Sample</title>
+</head>
+<body>
+  <!-- 本地巡检样例：链接均为相对地址，由 test/run-inspection.js 的本地服务器承接 -->
+  <section class="section" id="downloads">
+    <h2>Download</h2>
+    <div class="download-grid">
+
+      <!-- 1. 正常平台链接：标注 Windows，地址为 .exe，应判 ok -->
+      <article class="download-card">
+        <h3>Windows OneFile Executable</h3>
+        <a class="button" href="/files/AppleMapDownloader.exe">Download EXE</a>
+      </article>
+
+      <!-- 2. 平台错配：标注 Linux，地址却是 .exe，应判 platform-mismatch -->
+      <article class="download-card">
+        <h3>Linux Installer</h3>
+        <a class="button" href="/files/AppleMapDownloader_Setup_OneDir.exe">Download Linux Installer</a>
+      </article>
+
+      <!-- 3. 重定向链接：/legacy/*.pkg 会 302 到 /files/*.pkg，标注 macOS 一致，应判 ok 且记录重定向 -->
+      <article class="download-card">
+        <h3>macOS Installer</h3>
+        <a class="button" href="/legacy/AppleMapDownloader-1.0.5.pkg">Download PKG</a>
+      </article>
+
+      <!-- 4. 超时：服务器永不响应，应判 unreachable / timeout -->
+      <article class="download-card">
+        <h3>Windows Setup</h3>
+        <a class="button" href="/hang/AppleMapDownloader-Setup.exe">Download Setup</a>
+      </article>
+
+      <!-- 5. 非 2xx：服务器返回 404，应判 unreachable / http-error -->
+      <article class="download-card">
+        <h3>Linux AppImage</h3>
+        <a class="button" href="/missing/AppleMapDownloader.AppImage">Download AppImage</a>
+      </article>
+
+      <!-- 6. 网络错误：服务器直接断开连接，应判 unreachable / network-error -->
+      <article class="download-card">
+        <h3>Windows Portable Zip</h3>
+        <a class="button" href="/reset/AppleMapDownloader.zip">Download ZIP</a>
+      </article>
+
+      <!-- 7. 非平台文件入口（个人主页）：只判可达性，应判 ok -->
+      <article class="download-card">
+        <h3>GitHub Profile</h3>
+        <a class="button" href="/home">Open GitHub Profile</a>
+      </article>
+
+    </div>
+  </section>
+</body>
+</html>
