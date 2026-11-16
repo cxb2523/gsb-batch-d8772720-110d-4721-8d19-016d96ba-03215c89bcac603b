@@ -137,15 +137,22 @@ class ActivityStore {
       latestSnapshot: db.prepare(
         "SELECT snapshot FROM run_account_snapshots ORDER BY ended_at DESC LIMIT 1",
       ),
-      pcGet: db.prepare(
-        "SELECT done, total, locked FROM punchcard_progress WHERE email = ? AND offer_id = ? AND day = ?",
-      ),
+      // Monotonic upsert: one row per (email, offer_id, day). A strictly
+      // larger done wins; with done equal, only a total/locked change
+      // rewrites the row (done itself never moves backwards); a smaller done
+      // is a stale observation (log replay, or a lagging desktop/mobile
+      // report) and is dropped. Replays that change nothing match no WHERE
+      // branch, so the write is skipped and `changes` stays 0.
       pcUpsert: db.prepare(
         `INSERT INTO punchcard_progress (email, offer_id, day, done, total, locked, seen_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (email, offer_id, day) DO UPDATE SET
            done = excluded.done, total = excluded.total,
-           locked = excluded.locked, seen_at = excluded.seen_at`,
+           locked = excluded.locked, seen_at = excluded.seen_at
+         WHERE excluded.done > punchcard_progress.done
+            OR (excluded.done = punchcard_progress.done
+                AND (excluded.total <> punchcard_progress.total
+                     OR excluded.locked IS NOT punchcard_progress.locked))`,
       ),
       pcForAccount: db.prepare(
         `SELECT offer_id, day, done, total, locked FROM punchcard_progress
@@ -194,7 +201,10 @@ class ActivityStore {
 
   /**
    * Record a "punchcard-progress" event from parser.js. Idempotent: the same
-   * line seen twice (desktop + mobile, or a log replay) changes nothing.
+   * line seen twice (desktop + mobile, or a log replay) changes nothing, and
+   * a stale observation never moves done backwards — the further-along
+   * progress always wins, so the version (and the frontend cache) is only
+   * bumped when the stored row actually changes.
    * @returns {boolean} whether anything changed
    */
   recordPunchcard(ev) {
@@ -202,10 +212,10 @@ class ActivityStore {
     if (!ev || !ev.email || !ev.offerId || !Number.isFinite(at)) return false;
     if (!(ev.total > 0) || !(ev.done >= 0) || ev.done > ev.total) return false;
     const day = rewardsDayOf(at, this._resetHour);
-    const cur = this.stmts.pcGet.get(ev.email, ev.offerId, day);
-    const locked = ev.locked ?? null;
-    if (cur && cur.done === ev.done && cur.total === ev.total && cur.locked === locked) return false;
-    this.stmts.pcUpsert.run(ev.email, ev.offerId, day, ev.done, ev.total, locked, ev.ts);
+    const res = this.stmts.pcUpsert.run(
+      ev.email, ev.offerId, day, ev.done, ev.total, ev.locked ?? null, ev.ts,
+    );
+    if (!Number(res.changes)) return false;
     this.version++;
     return true;
   }
